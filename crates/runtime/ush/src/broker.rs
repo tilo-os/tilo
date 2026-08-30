@@ -1,24 +1,23 @@
 //! The permission broker.
 //!
 //! Starts with the session, runs on the host, outlives nothing. Every
-//! privileged request from inside the guest arrives here as a line of JSON on a
-//! Unix socket, is decided against [`crate::policy`], and is written to
-//! [`crate::audit`] whichever way it went.
+//! privileged request from inside the guest arrives here as a line of JSON
+//! on a Unix socket, is decided against [`crate::policy`], and is written
+//! to [`crate::audit`] whichever way it went.
 //!
 //! # Why a broker at all, when the guest is uid 0
 //!
-//! The guest is root *in its own user namespace*, so it can already write its
-//! own layer without asking. What it cannot do is reach the store: `policy.json`
-//! and `audit/` are not bound into the namespace at any path. So the broker is
-//! not a politeness layer over things the guest could do anyway — it is the
-//! only route to the two files that decide what the *next* session will be able
-//! to see, and the only writer of the record of what was asked for.
+//! The guest is root *in its own user namespace*, so it can already write
+//! its own layer without asking — what it cannot do is reach the store:
+//! `policy.json` and `audit/` are not bound into the namespace at any path.
+//! The broker is the only route to the two files that decide what the
+//! *next* session can see, and the only writer of the record of what was
+//! asked for.
 //!
-//! A decision here does not take effect in the running guest. A new bind needs
-//! a new mount namespace, so `perm trust-dir` answers with
-//! [`Response::NeedsRestart`] and the user runs `restart`. That is what the
-//! reference runtime's `restart` command is for, and pretending otherwise would
-//! mean a grant that appears to have been made and has not.
+//! A decision here does not take effect in the running guest: a new bind
+//! needs a new mount namespace, so `perm trust-dir` answers with
+//! [`Response::NeedsRestart`] and the user runs `restart` — pretending
+//! otherwise would mean a grant that appears made and has not.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -55,9 +54,8 @@ pub enum Request {
     /// `pkg diff` — what the layer changed relative to the base. Answered on
     /// the host: from inside the guest the two are one merged view.
     LayerDiff { limit: usize },
-    /// `pkg burn` — destroy the layer's files. Deferred to the end of the
-    /// session, because an overlay `upperdir` cannot be removed from under a
-    /// live mount.
+    /// `pkg burn` — destroy the layer's files, deferred to session end since an
+    /// overlay `upperdir` can't be removed from under a live mount.
     Burn,
     /// `guard status`.
     Status,
@@ -71,15 +69,25 @@ pub enum Request {
 pub enum Response {
     Ok,
     /// Allowed, and it will be in force after `restart`.
-    NeedsRestart { detail: String },
-    Denied { reason: String },
-    Perms { entries: Vec<PermEntry> },
-    Check { allowed: bool },
+    NeedsRestart {
+        detail: String,
+    },
+    Denied {
+        reason: String,
+    },
+    Perms {
+        entries: Vec<PermEntry>,
+    },
+    Check {
+        allowed: bool,
+    },
     Diff {
         entries: Vec<DiffEntry>,
         truncated: usize,
     },
-    Status { status: SessionStatus },
+    Status {
+        status: SessionStatus,
+    },
 }
 
 /// One line of `pkg diff`.
@@ -149,7 +157,9 @@ impl BrokerState {
             Request::Check { path, write } => {
                 let verb = if write { Verb::Write } else { Verb::Read };
                 Response::Check {
-                    allowed: self.policy.permits(&path, verb, Some(crate::audit::now_unix())),
+                    allowed: self
+                        .policy
+                        .permits(&path, verb, Some(crate::audit::now_unix())),
                 }
             }
             Request::PkgRecorded {
@@ -183,21 +193,30 @@ impl BrokerState {
     }
 
     fn trust_dir(&mut self, path: &Path) -> Response {
-        // Resolve first: a symlink under a directory the guest controls could
-        // otherwise name a path the user never saw. `canonicalize` fails on a
-        // path that does not exist, which is also the right answer — trusting a
-        // directory that is not there would silently do nothing.
+        // Resolve first: a symlink under a guest-controlled directory could name a
+        // path the user never saw. `canonicalize` failing on a missing path is
+        // also correct — trusting nothing there.
         let resolved = match path.canonicalize() {
             Ok(p) => p,
             Err(e) => {
                 let reason = format!("{}: {e}", path.display());
-                self.log("trust-dir", Some(&path.display().to_string()), false, Some(&reason));
+                self.log(
+                    "trust-dir",
+                    Some(&path.display().to_string()),
+                    false,
+                    Some(&reason),
+                );
                 return Response::Denied { reason };
             }
         };
         if !resolved.is_dir() {
             let reason = format!("{} is not a directory", resolved.display());
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         }
         if !is_trustable(&resolved) {
@@ -206,20 +225,40 @@ impl BrokerState {
                  the host's copy back on top of your layer",
                 resolved.display()
             );
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         }
         let Some(id) = self.policy.trust_dir(&resolved) else {
             let reason = format!("{} cannot be trusted", resolved.display());
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         };
         if let Err(e) = self.policy.save(&self.policy_path) {
             let reason = format!("could not save the decision: {e}");
-            self.log("trust-dir", Some(&resolved.display().to_string()), false, Some(&reason));
+            self.log(
+                "trust-dir",
+                Some(&resolved.display().to_string()),
+                false,
+                Some(&reason),
+            );
             return Response::Denied { reason };
         }
-        self.log("trust-dir", Some(&resolved.display().to_string()), true, Some(&id));
+        self.log(
+            "trust-dir",
+            Some(&resolved.display().to_string()),
+            true,
+            Some(&id),
+        );
         Response::NeedsRestart {
             detail: format!(
                 "{} is trusted (capability {id}). Run `restart` to bring it into this session.",
@@ -356,12 +395,7 @@ impl BrokerState {
     }
 
     fn log(&self, request: &str, subject: Option<&str>, allowed: bool, detail: Option<&str>) {
-        let mut rec = AuditRecord::new(
-            &self.session_id,
-            self.profile.as_str(),
-            request,
-            allowed,
-        );
+        let mut rec = AuditRecord::new(&self.session_id, self.profile.as_str(), request, allowed);
         if let Some(s) = subject {
             rec = rec.about(s);
         }
@@ -419,12 +453,12 @@ impl Broker {
 
     /// Did the guest ask for a restart?
     pub fn restart_requested(&self) -> bool {
-        self.state.lock().map(|s| s.restart_requested).unwrap_or(false)
+        self.state.lock().is_ok_and(|s| s.restart_requested)
     }
 
     /// Did the guest ask for its layer to be destroyed?
     pub fn burn_requested(&self) -> bool {
-        self.state.lock().map(|s| s.burn_requested).unwrap_or(false)
+        self.state.lock().is_ok_and(|s| s.burn_requested)
     }
 
     /// Packages installed with `--one-time` that the session must undo.
@@ -444,9 +478,8 @@ impl Drop for Broker {
 
 fn restrict_socket(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    // Only the owner. The socket is the route to the policy file, and it lives
-    // in the store, which is 0700 — but a mode on the socket itself costs
-    // nothing and does not depend on the directory staying that way.
+    // Owner-only: the socket is the route to the policy file. It lives in the
+    // 0700 store already, but a mode on the socket itself costs nothing.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
@@ -524,9 +557,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         let mut s = state(dir.path());
 
-        let resp = s.handle(Request::TrustDir {
-            path: target.clone(),
-        });
+        let resp = s.handle(Request::TrustDir { path: target });
         assert!(
             matches!(resp, Response::NeedsRestart { .. }),
             "a new bind needs a new mount namespace, so the answer has to say so: {resp:?}"
@@ -548,7 +579,10 @@ mod tests {
 
         let log = s.audit.read_all();
         assert_eq!(log.len(), 1);
-        assert!(!log[0].allowed, "a refusal must be recorded, not only a grant");
+        assert!(
+            !log[0].allowed,
+            "a refusal must be recorded, not only a grant"
+        );
         assert_eq!(log[0].request, "trust-dir");
     }
 
@@ -721,7 +755,10 @@ mod tests {
             panic!("expected perms");
         };
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].scope, target.canonicalize().unwrap().display().to_string());
+        assert_eq!(
+            entries[0].scope,
+            target.canonicalize().unwrap().display().to_string()
+        );
 
         assert!(!broker.restart_requested());
         ask(&sock, &Request::Restart).unwrap();
@@ -735,7 +772,11 @@ mod tests {
         let sock = dir.path().join("broker.sock");
         let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
         let mode = std::fs::metadata(&sock).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "broker socket is reachable by other users: {mode:o}");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "broker socket is reachable by other users: {mode:o}"
+        );
         drop(broker);
         assert!(!sock.exists(), "the socket must not outlive the session");
     }

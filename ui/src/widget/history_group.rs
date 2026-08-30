@@ -1,48 +1,20 @@
 //! Turning a flood of individual changes into a small number of things a
-//! person can name, collapse and restore to.
+//! person can name, collapse and restore to. History surfaces show
+//! **groups**, expanding to individual changes on demand.
 //!
-//! A CRDT history is not a list of edits a user recognises. Typing coalesces on
-//! a one-second debounce, so an afternoon's work is several hundred rows of
-//! `+3 -0 chars`. Scrolling that is not reading it. So the surfaces that show
-//! history show **groups**, and expand to the individual changes on demand.
+//! A boundary forms when: the author changed; the clock jumped more than
+//! [`GroupingConfig::idle_gap`] (an unstamped change is not a gap —
+//! splitting on it would tear a session differently per peer); the op
+//! family changed (matching the timeline's filter chips); or the group hit
+//! [`GroupingConfig::max_changes`]. All are checked against data every
+//! change already carries, so grouping is a pure function of the change
+//! graph and every peer computes the same groups. Not used: "a burst of
+//! edits to the same region" — its boundaries would move as the document
+//! changes, so two peers could group it differently.
 //!
-//! # What forms a group when nobody named anything
-//!
-//! A boundary is inserted between two consecutive changes when any of these
-//! holds. They are checked against data every change already carries, so the
-//! grouping is a pure function of the change graph — every peer computes the
-//! same groups, which is what makes "restore to the end of this group" mean the
-//! same thing to two people.
-//!
-//! 1. **The author changed.** Attribution is the load-bearing fact in a shared
-//!    history; a block headed "Alice" that quietly contains Bob's deletion is a
-//!    lie, and no amount of expanding fixes a wrong summary.
-//! 2. **The clock jumped by more than [`GroupingConfig::idle_gap`].** This is
-//!    the boundary people actually perceive — "before lunch" and "after lunch"
-//!    are two pieces of work. Five minutes is the default. A change that carries
-//!    no clock at all is not a gap: splitting on it would tear a session at
-//!    whichever change a peer forgot to stamp, and do it differently per peer.
-//! 3. **The kind of change changed.** A capability grant that lands in the
-//!    middle of a typing run is not part of "24 edits", and the timeline's
-//!    filter chips would otherwise gut a group and leave a header claiming a
-//!    count that is no longer on screen. Families here are exactly the chip
-//!    categories, so filtering never disagrees with grouping.
-//! 4. **The group is full.** [`GroupingConfig::max_changes`] caps one group, so
-//!    a machine-generated run of ten thousand changes becomes fifty navigable
-//!    groups rather than one useless one.
-//!
-//! Deliberately *not* used: "a burst of edits to the same region". It needs a
-//! structural diff per change to compute, and — worse — its boundaries move as
-//! the document changes, so two peers looking at the same graph could group it
-//! differently.
-//!
-//! # Names
-//!
-//! A [`NamedRange`] is a user's name over a run of changes, read out of the
-//! document (see `ui::history_source::groups`). A named range is authoritative:
-//! the automatic rules never split it and never extend it. Named ranges may
-//! nest one level ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for exactly what
-//! happens when two people name overlapping runs at the same time.
+//! A [`NamedRange`] is a user's name over a run of changes, authoritative
+//! and never split or extended automatically. Named ranges nest one level
+//! ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for concurrent naming.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
@@ -51,64 +23,49 @@ use collab_types::OpClass;
 
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 
-/// Idle time that ends a working session. Five minutes is long enough to
-/// survive reading a paragraph before typing the next one, and short enough
-/// that a coffee break shows up as a break.
-pub const DEFAULT_IDLE_GAP: Duration = Duration::from_secs(5 * 60);
+/// Five minutes: long enough to survive reading a paragraph before typing
+/// the next one, short enough that a coffee break shows up as a break.
+pub const DEFAULT_IDLE_GAP: Duration = Duration::from_mins(5);
 
 /// Ceiling on how many changes one automatic group may hold.
 pub const DEFAULT_MAX_GROUP: usize = 200;
 
-/// How deep named groups nest: a named version may contain named versions, and
-/// that is where it stops. Two levels is what a reader can hold; three is a
-/// tree, and a tree of edit history is a filing system nobody asked for.
+/// Two levels is what a reader can hold; three is a tree of edit history
+/// nobody asked for.
 pub const MAX_GROUP_DEPTH: usize = 2;
 
 /// A user's name over a run of history, as stored in the document.
 ///
-/// `end` is `None` while the group is still **open** — the prospective case,
-/// where someone said what they were about to do and is still doing it. An open
-/// range absorbs every change after `start` until it is closed.
+/// `end` is `None` while the group is still **open**: someone said what they
+/// were about to do and is still doing it, so the range absorbs every change
+/// after `start` until it is closed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NamedRange {
     /// Identity of the naming record in the document. A rename addresses this.
     pub id: String,
-    /// What the user called it.
     pub label: String,
-    /// First change covered.
     pub start: HistoryEntryId,
-    /// Last change covered, or `None` while the group is still open.
     pub end: Option<HistoryEntryId>,
     /// Who wrote the name — not necessarily who authored the changes.
     pub named_by: Option<HistoryAuthor>,
-    /// When the name was written.
     pub created: SystemTime,
 }
 
 /// What a host must write when a user names, renames, or un-names a run of
-/// changes.
+/// changes. Both history surfaces emit this rather than writing to the
+/// document directly — neither widget has one, only the host does.
 ///
-/// Both history surfaces emit this — the activity pane from a band header or a
-/// row selection, the version strip from its own button — so it belongs with the
-/// model rather than inside either widget. Neither widget writes it: they have
-/// no document, and the host does.
-///
-/// An empty `label` is a request to **remove** the name. Clearing the field and
-/// pressing Enter is how a user takes a name back off, and the host maps that
+/// An empty `label` is a request to **remove** the name: the host maps that
 /// onto `ui::history_source::groups::clear_name`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupNameRequest {
     /// The naming record being replaced, when one already exists.
     pub record_id: Option<String>,
-    /// First change covered.
     pub start: HistoryEntryId,
-    /// Last change covered.
     pub end: HistoryEntryId,
-    /// What the user typed, trimmed.
     pub label: String,
 }
 
-/// Knobs for the automatic grouping. The defaults are the documented rules.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupingConfig {
     pub idle_gap: Duration,
@@ -124,9 +81,8 @@ impl Default for GroupingConfig {
     }
 }
 
-/// The chip-level family a change belongs to. Grouping never mixes two, so a
-/// filter chip can never empty a group while leaving its header claiming rows
-/// that are no longer shown.
+/// Grouping never mixes two families, so a filter chip can never empty a
+/// group while leaving its header claiming rows that are no longer shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpFamily {
     Edit,
@@ -145,7 +101,6 @@ impl OpFamily {
         }
     }
 
-    /// Plural noun for a run of this family. Singular is handled by the caller.
     fn plural(self) -> &'static str {
         match self {
             OpFamily::Edit => "edits",
@@ -163,38 +118,33 @@ impl OpFamily {
 /// `start..end` that no child covers are the group's own rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryGroup {
-    /// Stable identity, so expand/collapse survives a refresh. Derived from the
-    /// group's first change (which does not move as the group grows).
+    /// Derived from the group's first change, which does not move as the
+    /// group grows, so expand/collapse survives a refresh.
     pub key: String,
-    /// The user's name, when someone gave this range one.
     pub name: Option<String>,
     /// Record id of the naming, so a rename can address it.
     pub record_id: Option<String>,
-    /// Who wrote the name.
     pub named_by: Option<HistoryAuthor>,
     /// True while the range is still absorbing new changes.
     pub open: bool,
-    /// Half-open index range into the entry slice.
     pub start: usize,
     pub end: usize,
-    /// Named sub-ranges, at most [`MAX_GROUP_DEPTH`] deep in total.
+    /// At most [`MAX_GROUP_DEPTH`] deep in total.
     pub children: Vec<HistoryGroup>,
     /// 0 for a top-level group.
     pub depth: usize,
-    /// Distinct authors, in first-seen order.
+    /// First-seen order.
     pub authors: Vec<HistoryAuthor>,
-    /// Distinct op families present, in first-seen order.
+    /// First-seen order.
     pub families: Vec<OpFamily>,
-    /// Earliest / latest recorded change time in the range. Both are
-    /// `UNIX_EPOCH` when no change in the range carried a clock.
+    /// Both are `UNIX_EPOCH` when no change in the range carried a clock.
     pub first_time: SystemTime,
     pub last_time: SystemTime,
-    /// Characters inserted / deleted across the range, when every change in it
-    /// reported a count. `None` when at least one did not — a partial total
-    /// would read as a complete one.
+    /// `None` when at least one change in the range didn't report a count —
+    /// a partial total would read as a complete one.
     pub text_delta: Option<(usize, usize)>,
-    /// First and last change in the range. The last one is the restore target:
-    /// "restore to the end of this version".
+    /// The last one is the restore target: "restore to the end of this
+    /// version".
     pub first_entry: HistoryEntryId,
     pub last_entry: HistoryEntryId,
 }
@@ -352,25 +302,22 @@ struct Placed {
 ///
 /// # Concurrent naming
 ///
-/// Two people naming ranges at the same time is a real case and it resolves
-/// here, at read time, identically on every peer — the inputs are the document
-/// and nothing else.
+/// Two people naming ranges at the same time resolves here, at read time,
+/// identically on every peer — the inputs are the document and nothing else.
 ///
-/// * **The same range, twice.** The two writes land on the same document key
-///   (the key is derived from the range's first change), so automerge's own
-///   map-conflict rule picks one deterministically and the other name stays
-///   recoverable in the change graph. Only one arrives here.
-/// * **One range inside another.** The inner one becomes a child of the outer
-///   one, up to [`MAX_GROUP_DEPTH`]. A range that would land deeper than that
-///   is not rendered as a group; its name is still in the document, and it
-///   reappears as a group as soon as an enclosing name is removed.
-/// * **Ranges that partly overlap.** The one that starts earlier keeps its
-///   whole range; the later one is clipped to the part that is left. Clipping
-///   rather than dropping means neither user loses their name to a race. A
-///   range clipped to nothing is not rendered.
+/// * **The same range, twice.** Both writes land on the same document key
+///   (derived from the range's first change), so automerge's map-conflict
+///   rule picks one deterministically; the other stays recoverable in the
+///   change graph.
+/// * **One range inside another.** The inner one becomes a child of the
+///   outer, up to [`MAX_GROUP_DEPTH`]. Deeper than that, it is not rendered
+///   as a group but reappears once an enclosing name is removed.
+/// * **Ranges that partly overlap.** The earlier-starting range keeps its
+///   whole span; the later one is clipped to what's left — clipping rather
+///   than dropping means neither user loses their name to a race.
 ///
-/// A named range whose first change is not in `entries` is skipped: the surface
-/// cannot honestly show a band whose contents it does not have.
+/// A named range whose first change is not in `entries` is skipped: the
+/// surface cannot honestly show a band whose contents it does not have.
 pub fn group_entries(
     entries: &[HistoryEntry],
     named: &[NamedRange],
@@ -379,11 +326,8 @@ pub fn group_entries(
     if entries.is_empty() {
         return Vec::new();
     }
-    let index: HashMap<HistoryEntryId, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.id, i))
-        .collect();
+    let index: HashMap<HistoryEntryId, usize> =
+        entries.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
 
     // Resolve names to index ranges, dropping the ones this surface cannot
     // place.
@@ -397,7 +341,7 @@ pub fn group_entries(
             // An end anchor we do not hold means the range runs past the window
             // we loaded. Clamp rather than guess; it is not open, it is longer
             // than what is on screen.
-            Some(e) => (index.get(&e).map(|i| i + 1).unwrap_or(entries.len()), false),
+            Some(e) => (index.get(&e).map_or(entries.len(), |i| i + 1), false),
         };
         if end <= start {
             continue;
@@ -432,20 +376,20 @@ pub fn group_entries(
 /// Insert `r` into `nodes` (siblings sorted by start), nesting or clipping as
 /// documented on [`group_entries`]. `depth` is the depth `r` would occupy.
 fn insert_placed(nodes: &mut Vec<Placed>, mut r: Placed, depth: usize) -> bool {
-    if let Some(last) = nodes.last_mut() {
-        if r.start < last.end {
-            if r.end <= last.end {
-                // Contained: nest it, or refuse if that would be too deep.
-                if depth < MAX_GROUP_DEPTH {
-                    return insert_placed(&mut last.children, r, depth + 1);
-                }
-                return false;
+    if let Some(last) = nodes.last_mut()
+        && r.start < last.end
+    {
+        if r.end <= last.end {
+            // Contained: nest it, or refuse if that would be too deep.
+            if depth < MAX_GROUP_DEPTH {
+                return insert_placed(&mut last.children, r, depth + 1);
             }
-            // Partial overlap: the earlier range keeps what it has.
-            r.start = last.end;
-            if r.start >= r.end {
-                return false;
-            }
+            return false;
+        }
+        // Partial overlap: the earlier range keeps what it has.
+        r.start = last.end;
+        if r.start >= r.end {
+            return false;
         }
     }
     nodes.push(r);
@@ -481,16 +425,11 @@ fn build_level(
 }
 
 /// Turn a placed named range into a band, recursing into the names inside it
-/// until [`MAX_GROUP_DEPTH`] levels have been rendered.
-///
-/// Inside a named range only *named* sub-ranges become bands. The rest of it is
-/// the group's own rows: someone who named a version said where it starts and
-/// ends, and chopping the inside of it into machine-derived sub-sessions would
-/// bury their name under boundaries they did not draw.
-///
-/// The depth cut lives here and in [`insert_placed`], and both read
-/// `MAX_GROUP_DEPTH` — a rendered cap that disagreed with the constant would
-/// make the constant a lie.
+/// until [`MAX_GROUP_DEPTH`] levels have been rendered. Inside a named range
+/// only *named* sub-ranges become bands — the rest are the group's own rows,
+/// since chopping a named version into machine-derived sub-sessions would
+/// bury the name someone chose under boundaries they didn't draw. The depth
+/// cut also lives in [`insert_placed`]; both must read `MAX_GROUP_DEPTH`.
 fn named_group(entries: &[HistoryEntry], n: &Placed, depth: usize) -> HistoryGroup {
     let children: Vec<HistoryGroup> = if depth + 1 < MAX_GROUP_DEPTH {
         n.children
@@ -518,13 +457,12 @@ fn derived_groups(
         let cur = &entries[i];
         let author_changed = author_key(prev) != author_key(cur);
         let family_changed = OpFamily::of(prev.op_class) != OpFamily::of(cur.op_class);
-        // A change with no recorded clock is not evidence of a gap. Splitting on
-        // it would tear a session in half at whichever change a peer forgot to
-        // stamp — and, worse, do it differently on two peers. A clock that runs
-        // backwards (a skewed peer, merged late) likewise reads as no gap rather
-        // than as a negative one.
-        let timed = prev.timestamp != SystemTime::UNIX_EPOCH
-            && cur.timestamp != SystemTime::UNIX_EPOCH;
+        // No recorded clock is not evidence of a gap — splitting on it would
+        // tear a session differently per peer. A clock running backwards
+        // (skewed peer, merged late) likewise reads as no gap, not a
+        // negative one.
+        let timed =
+            prev.timestamp != SystemTime::UNIX_EPOCH && cur.timestamp != SystemTime::UNIX_EPOCH;
         let gap = cur
             .timestamp
             .duration_since(prev.timestamp)
@@ -546,10 +484,7 @@ fn derived_groups(
 /// hash is included so two different people who chose the same display name are
 /// still two groups.
 fn author_key(e: &HistoryEntry) -> (&str, &str) {
-    (
-        e.author.name.as_str(),
-        e.author.identity_short.as_str(),
-    )
+    (e.author.name.as_str(), e.author.identity_short.as_str())
 }
 
 fn finish_group(
@@ -608,7 +543,7 @@ fn finish_group(
         name: named.map(|n| n.label.clone()),
         record_id: named.map(|n| n.id.clone()),
         named_by: named.and_then(|n| n.named_by.clone()),
-        open: named.map(|n| n.open).unwrap_or(false),
+        open: named.is_some_and(|n| n.open),
         start,
         end,
         children,
@@ -684,7 +619,12 @@ mod tests {
             .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
             .collect();
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
-        assert_eq!(groups.len(), 1, "got {:?}", groups.iter().map(ids).collect::<Vec<_>>());
+        assert_eq!(
+            groups.len(),
+            1,
+            "got {:?}",
+            groups.iter().map(ids).collect::<Vec<_>>()
+        );
         assert_eq!(groups[0].len(), 10);
         assert_eq!(groups[0].title(&entries), "10 edits");
         assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 -0 chars");
@@ -704,7 +644,11 @@ mod tests {
         // The second group spans six minutes from the first change of the day,
         // but only its own three seconds — the label must describe the group,
         // not the document.
-        assert_eq!(groups[1].span_label(), None, "three seconds is not 'over 6 min'");
+        assert_eq!(
+            groups[1].span_label(),
+            None,
+            "three seconds is not 'over 6 min'"
+        );
     }
 
     #[test]
@@ -721,7 +665,10 @@ mod tests {
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].authors_label(), "Alice");
         assert_eq!(groups[1].authors_label(), "Bob");
-        assert!(groups[1].is_bare_change(), "one change, unnamed: renders as a row");
+        assert!(
+            groups[1].is_bare_change(),
+            "one change, unnamed: renders as a row"
+        );
     }
 
     #[test]
@@ -741,7 +688,10 @@ mod tests {
         let entries: Vec<HistoryEntry> = (0..250)
             .map(|i| entry((i % 251) as u8, "Alice", 1000 + i as u64, OpClass::Splice))
             .collect();
-        let cfg = GroupingConfig { max_changes: 100, ..Default::default() };
+        let cfg = GroupingConfig {
+            max_changes: 100,
+            ..Default::default()
+        };
         let groups = group_entries(&entries, &[], &cfg);
         assert_eq!(groups.len(), 3);
         assert!(groups.iter().all(|g| g.len() <= 100));
@@ -871,7 +821,11 @@ mod tests {
             g.walk(&mut flat);
         }
         let names: Vec<&str> = flat.iter().filter_map(|g| g.name.as_deref()).collect();
-        assert_eq!(names, vec!["outer", "middle"], "the third level is not shown");
+        assert_eq!(
+            names,
+            vec!["outer", "middle"],
+            "the third level is not shown"
+        );
         assert!(flat.iter().all(|g| g.depth < MAX_GROUP_DEPTH));
     }
 
@@ -899,12 +853,22 @@ mod tests {
             named_by: None,
             created: SystemTime::UNIX_EPOCH,
         };
-        let one = group_entries(&entries, &[alice.clone(), bob.clone()], &GroupingConfig::default());
+        let one = group_entries(
+            &entries,
+            &[alice.clone(), bob.clone()],
+            &GroupingConfig::default(),
+        );
         let other = group_entries(&entries, &[bob, alice], &GroupingConfig::default());
         let shape = |gs: &[HistoryGroup]| -> Vec<(Option<String>, usize, usize)> {
-            gs.iter().map(|g| (g.name.clone(), g.start, g.end)).collect()
+            gs.iter()
+                .map(|g| (g.name.clone(), g.start, g.end))
+                .collect()
         };
-        assert_eq!(shape(&one), shape(&other), "merge order must not change the layout");
+        assert_eq!(
+            shape(&one),
+            shape(&other),
+            "merge order must not change the layout"
+        );
         assert_eq!(
             shape(&one),
             vec![
@@ -930,7 +894,10 @@ mod tests {
         }];
         let groups = group_entries(&entries, &named, &GroupingConfig::default());
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].name.is_none(), "no band is invented for a range we cannot place");
+        assert!(
+            groups[0].name.is_none(),
+            "no band is invented for a range we cannot place"
+        );
     }
 
     #[test]

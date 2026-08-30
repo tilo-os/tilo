@@ -25,16 +25,14 @@
 //!      delta. B applies it and now fully converges with A across
 //!      *both* edits.
 
-mod common;
-
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 /// Read a string value at `key` under the document root.
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
@@ -73,7 +71,13 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let b = user.enrol("phone", DeviceCapabilities::member());
 
     // A durable host that pins workspace 7 and knows A + B are members.
-    let host = spawn_relay(&user, host_dev, &[WS], &[a.device_pubkey(), b.device_pubkey()]).await;
+    let host = spawn_relay(
+        &user,
+        host_dev,
+        &[WS],
+        &[a.device_pubkey(), b.device_pubkey()],
+    )
+    .await;
     let addr = host.relay.node_addr();
 
     // Both devices dial the host and subscribe.
@@ -100,8 +104,12 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     .await
     .expect("B connect");
 
-    a_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
-    b_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    a_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
+    b_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
     // Drain both Ready(WS, 0) acks (nothing queued yet).
     for (cli, who) in [(&a_client, "A"), (&b_client, "B")] {
         let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
@@ -109,7 +117,13 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
             .unwrap_or_else(|_| panic!("{who} Ready timeout"))
             .expect("Ready channel closed");
         assert!(
-            matches!(env, Envelope::Ready { workspace_id: WS, pending_deltas: 0 }),
+            matches!(
+                env,
+                Envelope::Ready {
+                    workspace_id: WS,
+                    pending_deltas: 0
+                }
+            ),
             "{who} expected Ready(WS,0), got {env:?}"
         );
     }
@@ -150,7 +164,9 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     // Unsubscribe was fully applied — B is no longer a subscriber, so
     // the next delta is guaranteed to be store-and-forwarded rather
     // than racing a half-torn-down live channel.
-    b_client.send(Envelope::Unsubscribe { workspace_id: WS }).unwrap();
+    b_client
+        .send(Envelope::Unsubscribe { workspace_id: WS })
+        .unwrap();
     b_client.send(Envelope::Ping).unwrap();
     let mut saw_pong = false;
     for _ in 0..10 {
@@ -189,13 +205,11 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .join("pending")
         .join(&b_hex);
     let count = |dir: &std::path::Path| {
-        std::fs::read_dir(dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                    .count()
-            })
-            .unwrap_or(0)
+        std::fs::read_dir(dir).map_or(0, |rd| {
+            rd.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                .count()
+        })
     };
     let mut queued = 0;
     for _ in 0..40 {
@@ -205,7 +219,10 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's offline edit must be store-and-forwarded to disk for B");
+    assert_eq!(
+        queued, 1,
+        "A's offline edit must be store-and-forwarded to disk for B"
+    );
 
     // ---- B reconnects and catches up. ----
     let ep_b2 = client_endpoint().await;
@@ -234,5 +251,9 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     );
 
     // Queue drains after delivery.
-    assert_eq!(count(&pending_dir), 0, "pending queue drains after B catches up");
+    assert_eq!(
+        count(&pending_dir),
+        0,
+        "pending queue drains after B catches up"
+    );
 }

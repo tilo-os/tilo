@@ -116,7 +116,9 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
 
     let pipeline = gst::Pipeline::new();
     let sink_el: gst::Element = appsink.clone().upcast();
-    pipeline.add_many([&src, &convert, &resample, &sink_el]).ok()?;
+    pipeline
+        .add_many([&src, &convert, &resample, &sink_el])
+        .ok()?;
     gst::Element::link_many([&convert, &resample, &sink_el]).ok()?;
 
     // `uridecodebin` only grows its source pads once it knows the stream, so
@@ -124,8 +126,12 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     // audio stream is taken.
     let convert_weak = convert.downgrade();
     src.connect_pad_added(move |_, pad| {
-        let Some(convert) = convert_weak.upgrade() else { return };
-        let Some(sink_pad) = convert.static_pad("sink") else { return };
+        let Some(convert) = convert_weak.upgrade() else {
+            return;
+        };
+        let Some(sink_pad) = convert.static_pad("sink") else {
+            return;
+        };
         if sink_pad.is_linked() {
             return;
         }
@@ -158,8 +164,12 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
         }
         match appsink.try_pull_sample(gst::ClockTime::from_mseconds(200)) {
             Some(sample) => {
-                let Some(buffer) = sample.buffer() else { continue };
-                let Ok(map) = buffer.map_readable() else { continue };
+                let Some(buffer) = sample.buffer() else {
+                    continue;
+                };
+                let Ok(map) = buffer.map_readable() else {
+                    continue;
+                };
                 for pair in map.as_slice().chunks_exact(2) {
                     let v = i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0;
                     let a = v.abs();
@@ -245,17 +255,19 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
         for c in 0..ch {
             let o = base + c * bytes_per;
             let v = match (fmt, bits) {
-                (1, 8) => (d[o] as f32 - 128.0) / 128.0,
-                (1, 16) => i16::from_le_bytes([d[o], d[o + 1]]) as f32 / 32768.0,
+                (1, 8) => (f32::from(d[o]) - 128.0) / 128.0,
+                (1, 16) => f32::from(i16::from_le_bytes([d[o], d[o + 1]])) / 32768.0,
                 (1, 24) => {
-                    let mut x = (d[o] as i32) | ((d[o + 1] as i32) << 8) | ((d[o + 2] as i32) << 16);
+                    let mut x =
+                        i32::from(d[o]) | (i32::from(d[o + 1]) << 8) | (i32::from(d[o + 2]) << 16);
                     if x & 0x0080_0000 != 0 {
                         x |= !0x00FF_FFFF;
                     }
                     x as f32 / 8_388_608.0
                 }
                 (1, 32) => {
-                    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f32 / 2_147_483_648.0
+                    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f32
+                        / 2_147_483_648.0
                 }
                 (3, 32) => f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]),
                 _ => return None,
@@ -379,7 +391,10 @@ impl WaveformCache {
             return;
         }
         self.map.insert(id, Slot::Pending);
-        let task = Task { id, path: source.abs_path.clone() };
+        let task = Task {
+            id,
+            path: source.abs_path.clone(),
+        };
         let (lock, cv) = &*self.work;
         let mut w = lock.lock().unwrap();
         w.queue.push_back(task);
@@ -395,7 +410,7 @@ impl WaveformCache {
 
     /// Compute `id`'s peaks synchronously (deterministic `--shots`/tests).
     pub fn warm_blocking(&mut self, id: MediaId, source: &MediaSource) {
-        if matches!(self.map.get(&id), Some(Slot::Ready(_)) | Some(Slot::Missing)) {
+        if matches!(self.map.get(&id), Some(Slot::Ready(_) | Slot::Missing)) {
             return;
         }
         let peaks = if source.is_decodable() {
@@ -532,11 +547,14 @@ mod tests {
         let peaks = peaks_from_wav_bytes(&wav, 16).expect("real WAV → peaks");
         assert_eq!(peaks.len(), 16);
         // Normalized: some bucket hits ~1.0 (the loud half).
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.98);
+        assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.98);
         // The first-half buckets are clearly louder than the second-half ones.
         let first: f32 = peaks[..8].iter().sum();
         let second: f32 = peaks[8..].iter().sum();
-        assert!(first > second * 3.0, "loud half dominates ({first} vs {second})");
+        assert!(
+            first > second * 3.0,
+            "loud half dominates ({first} vs {second})"
+        );
     }
 
     #[test]
@@ -562,7 +580,10 @@ mod tests {
         cache.warm_blocking(id, &source);
         let peaks = cache.peaks(id).expect("warmed peaks");
         assert_eq!(peaks.len(), WAVE_BUCKETS);
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.9, "a real signal is present");
+        assert!(
+            peaks.iter().copied().fold(0.0, f32::max) > 0.9,
+            "a real signal is present"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -575,7 +596,10 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         };
         cache.request(id, &source);
-        assert!(!cache.has_pending(), "an un-hydrated source never spawns a compute");
+        assert!(
+            !cache.has_pending(),
+            "an un-hydrated source never spawns a compute"
+        );
         assert!(cache.peaks(id).is_none());
         assert_eq!(
             cache.state(id),
@@ -627,7 +651,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
             cache.drain();
         }
-        assert!(!cache.has_pending(), "the worker delivered a terminal answer");
+        assert!(
+            !cache.has_pending(),
+            "the worker delivered a terminal answer"
+        );
         assert_eq!(cache.state(id), WaveformState::Ready);
         let peaks = cache.peaks(id).expect("real peaks");
         assert_eq!(peaks.len(), WAVE_BUCKETS);
@@ -641,7 +668,9 @@ mod tests {
         // synthesized fallback would give the same picture for both — that is
         // exactly what makes it indistinguishable from real data and wrong.
         let sr = 8000;
-        let rising: Vec<f32> = (0..sr).map(|i| (i as f32 / sr as f32) * (i as f32 * 0.2).sin()).collect();
+        let rising: Vec<f32> = (0..sr)
+            .map(|i| (i as f32 / sr as f32) * (i as f32 * 0.2).sin())
+            .collect();
         let falling: Vec<f32> = rising.iter().rev().copied().collect();
         let a = peaks_from_wav_bytes(&wav_16(&rising, sr as u32), 32).unwrap();
         let b = peaks_from_wav_bytes(&wav_16(&falling, sr as u32), 32).unwrap();

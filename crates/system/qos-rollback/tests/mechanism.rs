@@ -1,55 +1,29 @@
-//! Mechanism tests against an emulated TPM and a loopback-free LUKS2 image.
+//! Mechanism tests against an emulated TPM and a loopback-free LUKS2 image, driving the
+//! production `policy`/`keyslots`/`counter` code paths without root, loop devices or a VM.
+//! Mounting and `qos-rollback unlock` on a booted machine are not covered.
 //!
-//! These are the tests that decide whether bounded rollback actually bounds
-//! anything. Everything here drives the production code paths — the same
-//! `policy`, `keyslots` and `counter` functions the `qos-rollback` binary calls —
-//! against a real TPM 2.0 implementation (`swtpm`) and a real LUKS2 header.
-//!
-//! # Why a file image and not a loopback device
-//!
-//! `cryptsetup` operates on a regular file for everything that only touches the
-//! header: `luksFormat`, `luksAddKey`, `luksKillSlot`, `token import/export`, and
-//! `open --test-passphrase`, which does the full key-derivation and digest check
-//! without creating a device-mapper mapping. So the whole keyslot lifecycle is
-//! testable without root, without loop devices, and without a VM.
-//!
-//! What that does *not* cover is the boot path: mounting the mapping, and early
-//! userspace calling `qos-rollback unlock`. That needs a booted machine and is
-//! called out as unverified rather than implied by these passing.
-//!
-//! # Requirements
-//!
-//! `swtpm`, `tpm2-tools`, `cryptsetup` and `openssl`. When they are absent each
-//! test prints what is missing and returns; running them is
-//!
-//! ```text
-//! cargo test -p qos-rollback --test mechanism -- --test-threads 1
-//! ```
-//!
-//! Each test gets its own `swtpm` instance, because several of them deliberately
-//! drive the TPM into dictionary-attack lockout and a shared instance would leak
-//! that into its neighbours.
+//! Requires `swtpm`, `tpm2-tools`, `cryptsetup`, `openssl`; run with
+//! `cargo test -p qos-rollback --test mechanism -- --test-threads 1` (each test gets its own
+//! `swtpm` since several drive dictionary-attack lockout, which a shared instance would leak).
 
 use qos_rollback::{
     Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},
-    token::RollbackToken, tpm_policy,
+    token::RollbackToken,
+    tpm_policy,
 };
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-// ---------------------------------------------------------------------------
 // Harness
-// ---------------------------------------------------------------------------
 
 fn have(tool: &str) -> bool {
     Command::new("sh")
         .arg("-c")
         .arg(format!("command -v {tool} >/dev/null 2>&1"))
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 fn missing_tools() -> Vec<&'static str> {
@@ -61,13 +35,9 @@ fn missing_tools() -> Vec<&'static str> {
 
 /// A free TCP port `n` for which `n + 1` is also free.
 ///
-/// Binding to discover a port and then releasing it is inherently racy: two tests
-/// running in parallel can be handed the same pair, and the loser's `swtpm` exits
-/// with "address already in use" while the winner's answers — so the loser's test
-/// talks to another test's TPM, or to nothing, and fails somewhere unrelated. That
-/// is exactly the sporadic, misattributed failure a safety-critical suite must not
-/// have, so the caller retries with a fresh pair and this function keeps
-/// concurrent callers inside one process away from each other.
+/// Binding then releasing is racy: two tests can grab the same pair, so the loser's `swtpm`
+/// fails with "address already in use" and its test talks to the wrong TPM. Retry with a
+/// fresh pair on failure.
 fn free_port_pair() -> (u16, u16) {
     use std::sync::atomic::{AtomicU16, Ordering};
     static SKEW: AtomicU16 = AtomicU16::new(0);
@@ -95,7 +65,6 @@ fn free_port_pair() -> (u16, u16) {
     panic!("could not find an adjacent free TCP port pair for swtpm");
 }
 
-/// A private `swtpm` instance.
 struct Tpm {
     _state: tempfile::TempDir,
     port: u16,
@@ -107,15 +76,12 @@ impl Tpm {
         let missing = missing_tools();
         if !missing.is_empty() {
             eprintln!(
-                "SKIP: this test needs {:?}, which are not installed. Install swtpm, tpm2-tools, \
-                 cryptsetup and openssl to run it.",
-                missing
+                "SKIP: this test needs {missing:?}, which are not installed. Install swtpm, tpm2-tools, \
+                 cryptsetup and openssl to run it."
             );
             return None;
         }
-        // Retry on a fresh port pair: a lost race shows up as an swtpm that exits
-        // immediately, and the alternative to retrying is a test that fails for a
-        // reason that has nothing to do with what it is testing.
+        // Retry on a fresh port pair: a lost race shows up as swtpm exiting immediately.
         let mut last = String::new();
         for _ in 0..8 {
             match Self::try_start() {
@@ -128,21 +94,23 @@ impl Tpm {
 
     fn try_start() -> Result<Tpm, String> {
         let state = tempfile::tempdir().expect("tempdir");
-        // tpm2-tools' `swtpm:` TCTI takes ONE port and assumes the control
-        // channel is at `port + 1`. Allocating two unrelated free ports produces
-        // a data channel that answers and a control channel that refuses, which
-        // shows up as "Could not set locality" and looks like a broken TPM.
+        // tpm2-tools' `swtpm:` TCTI assumes the control channel is at `port + 1`; two unrelated
+        // free ports produce a data channel that answers and a control channel that looks broken.
         let (port, ctrl) = free_port_pair();
-        // No `--create-ek-cert`: minting one shells out to swtpm_localca, which
-        // wants /var/lib/swtpm-localca and fails in a test sandbox. Nothing here
-        // needs an EK certificate.
+        // No `--create-ek-cert`: minting one needs swtpm_localca, which fails in a test sandbox
+        // and is not needed here.
         let setup_log = state.path().join("setup.log");
         let _ = Command::new("swtpm_setup")
             .args(["--tpm2", "--tpmstate"])
             .arg(state.path())
-            .stdout(Stdio::from(std::fs::File::create(&setup_log).expect("setup log")))
+            .stdout(Stdio::from(
+                std::fs::File::create(&setup_log).expect("setup log"),
+            ))
             .stderr(Stdio::from(
-                std::fs::File::options().append(true).open(&setup_log).expect("setup log"),
+                std::fs::File::options()
+                    .append(true)
+                    .open(&setup_log)
+                    .expect("setup log"),
             ))
             .status();
         let log = state.path().join("swtpm.log");
@@ -156,7 +124,10 @@ impl Tpm {
             .stdin(Stdio::null())
             .stdout(Stdio::from(std::fs::File::create(&log).expect("swtpm log")))
             .stderr(Stdio::from(
-                std::fs::File::options().append(true).open(&log).expect("swtpm log"),
+                std::fs::File::options()
+                    .append(true)
+                    .open(&log)
+                    .expect("swtpm log"),
             ))
             .spawn()
             .expect("spawning swtpm");
@@ -168,12 +139,11 @@ impl Tpm {
         let mut last = String::new();
         for _ in 0..60 {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            // If it has already exited, the port pair was taken. Retrying with the
-            // same one would just lose the race again.
+            // Already-exited swtpm means the port pair was taken; retry with a new one.
             if let Ok(Some(status)) = tpm.child.try_wait() {
                 return Err(format!(
                     "swtpm on port {port} exited ({status}): {}",
-                    std::fs::read_to_string(&log).unwrap_or_default().trim().to_string()
+                    std::fs::read_to_string(&log).unwrap_or_default().trim()
                 ));
             }
             match Command::new("tpm2_getcap")
@@ -206,7 +176,6 @@ impl Drop for Tpm {
     }
 }
 
-/// Everything one test needs.
 struct Fixture {
     _tpm: Tpm,
     scratch: tempfile::TempDir,
@@ -220,8 +189,7 @@ struct Fixture {
     /// The floor authority's key Name and the NV index authPolicy it implies.
     authority_name: Vec<u8>,
     nv_auth_policy: tpm_policy::Digest256,
-    /// Counter base recorded by the last `floor()` call, so the helpers that move
-    /// the floor can turn counter values into floor generations.
+    /// Counter base from the last `floor()` call, used to convert counter values into floor generations.
     base: std::cell::Cell<i64>,
 }
 
@@ -232,8 +200,7 @@ impl Fixture {
         let runner = exec::Real::new()
             .with_tcti(Some(&tpm.tcti()))
             .with_cwd(scratch.path());
-        // A stand-in for keys/tpm2-pcr-signing.*.pem. The real private key is not
-        // in the tree (it is git-excluded), and a test must not depend on it.
+        // Stand-in for keys/tpm2-pcr-signing.*.pem — the real private key is git-excluded.
         let sign_priv = scratch.path().join("sign.priv.pem");
         let sign_pub = scratch.path().join("sign.pub.pem");
         gen_rsa(&sign_priv, &sign_pub);
@@ -241,9 +208,8 @@ impl Fixture {
         let evil_pub = scratch.path().join("evil.pub.pem");
         gen_rsa(&evil_priv, &evil_pub);
 
-        // One key stands in for both the prediction authority and the floor
-        // authority, which is the shipped default; the tests that care about the
-        // distinction use `evil_priv` as the wrong key.
+        // One key serves as both prediction and floor authority (the shipped default); tests
+        // needing the distinction use `evil_priv` as the wrong key.
         let mut cfg = Config {
             pcr_public_key: sign_pub.display().to_string(),
             floor_authority_key: sign_pub.display().to_string(),
@@ -284,7 +250,6 @@ impl Fixture {
         policy::pcr_selection(&self.cfg.pcr_bank, &self.cfg.pcrs)
     }
 
-    /// Set up the floor counter with the floor at `initial_floor`.
     fn floor(&self, initial_floor: u64) -> counter::FloorState {
         let ws = self.ws();
         counter::define(&self.runner, self.cfg.nv_index, &self.nv_auth_policy, &ws)
@@ -310,12 +275,9 @@ impl Fixture {
         PathBuf::from(&self.cfg.approval_dir)
     }
 
-    /// Issue approvals covering floor generations up to `up_to_floor`.
-    ///
-    /// `strict` applies the safe bound (never above the newest enrolled
-    /// generation). The counter-only tests have no enrolled generations at all, so
-    /// they pass `false` to move the floor as a test setup step — which is exactly
-    /// the override the CLI gates behind an explicit flag.
+    /// Issue approvals covering floor generations up to `up_to_floor`. `strict` applies the
+    /// safe bound (never above the newest enrolled generation); counter-only tests pass `false`
+    /// to move the floor as setup, the same override the CLI gates behind an explicit flag.
     fn issue_approvals(
         &self,
         floor: counter::FloorState,
@@ -350,7 +312,10 @@ impl Fixture {
         let ws = self.ws();
         let counter_value = self.counter_now();
         let base = self.current_base();
-        let floor = counter::FloorState { counter: counter_value, base };
+        let floor = counter::FloorState {
+            counter: counter_value,
+            base,
+        };
         let target = floor.floor_generation() + times;
         let approvals = self.issue_approvals(floor, &[], target, false);
         let out = counter::advance(
@@ -375,28 +340,29 @@ impl Fixture {
         assert_eq!(out.steps, times, "expected {times} steps");
     }
 
-    /// Issue exactly the approvals a confirmation of `generation` needs to reach
-    /// `target_floor`, the way a real deployment does: staging enrolls the
-    /// generation, then the authority approves up to it.
+    /// Issue exactly the approvals needed to confirm `generation` up to `target_floor`, mirroring
+    /// a real deployment: staging enrolls, then the authority approves.
     fn approve_up_to(&self, base: i64, generation: u64, target_floor: u64) {
-        let floor = counter::FloorState { counter: self.counter_now(), base };
+        let floor = counter::FloorState {
+            counter: self.counter_now(),
+            base,
+        };
         self.issue_approvals(floor, &[generation], target_floor, true);
     }
 
-    /// The base recorded by the most recent `floor()` call, recovered from the
-    /// counter — the tests always materialise before using this.
+    /// Base from the most recent `floor()` call, recovered from the counter (materialised first).
     fn current_base(&self) -> i64 {
         self.base.get()
     }
 
-    /// Sign a prediction over the machine's *current* measurements, for one
-    /// generation. `key` selects the authorised or the unauthorised signer.
+    /// Sign a prediction over the machine's current measurements for one generation;
+    /// `key` selects the authorised or unauthorised signer.
     fn predict(&self, generation: u64, key: &Path, label: &str) -> Prediction {
         let ws = self.ws();
         let approved =
             policy::approved_policy(&self.runner, &ws, &self.selection(), None).expect("approved");
-        let sig = policy::sign_prediction(&self.runner, &ws, key, &approved, generation)
-            .expect("sign");
+        let sig =
+            policy::sign_prediction(&self.runner, &ws, key, &approved, generation).expect("sign");
         Prediction {
             approved_policy: approved,
             signature: sig,
@@ -404,8 +370,7 @@ impl Fixture {
         }
     }
 
-    /// Seal a secret for one generation and wrap it in a token, without touching
-    /// any disk.
+    /// Seal a secret for one generation and wrap it in a token, without touching disk.
     fn seal_token(
         &self,
         generation: u64,
@@ -444,7 +409,11 @@ impl Fixture {
         )
     }
 
-    fn try_unseal(&self, token: &RollbackToken, pin: Option<&[u8]>) -> anyhow::Result<Option<Vec<u8>>> {
+    fn try_unseal(
+        &self,
+        token: &RollbackToken,
+        pin: Option<&[u8]>,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
         let ws = self.ws();
         keyslots::unseal(
             &self.runner,
@@ -532,9 +501,7 @@ macro_rules! fixture {
     };
 }
 
-// ---------------------------------------------------------------------------
 // The counter really is a floor that cannot move backwards
-// ---------------------------------------------------------------------------
 
 #[test]
 fn the_floor_counter_survives_undefine_and_redefine() {
@@ -544,8 +511,7 @@ fn the_floor_counter_survives_undefine_and_redefine() {
     let before = f.counter_now();
     assert!(before >= floor.counter + 5);
 
-    // The attack: an owner-authorised caller deletes the index and recreates it,
-    // hoping for a counter that starts over.
+    // Attack: an owner-authorised caller deletes and recreates the index hoping the counter resets.
     let idx = format!("0x{:08X}", f.cfg.nv_index);
     assert!(
         f.raw("tpm2_nvundefine", &[&idx, "-C", "o"]).ok(),
@@ -557,15 +523,20 @@ fn the_floor_counter_survives_undefine_and_redefine() {
         f.raw(
             "tpm2_nvdefine",
             &[
-                &idx, "-C", "o", "-a", counter::NV_ATTRS,
-                "-L", policy_file.to_str().unwrap(),
+                &idx,
+                "-C",
+                "o",
+                "-a",
+                counter::NV_ATTRS,
+                "-L",
+                policy_file.to_str().unwrap(),
             ],
         )
         .ok(),
         "could not redefine the index"
     );
-    // A redefined index is unwritten again, so the one-time materialise branch
-    // applies to it — and the counter still does not regress, which is the point.
+    // A redefined index is unwritten again, so materialise reapplies — and the counter still
+    // does not regress.
     counter::increment_first(&f.runner, &f.ws(), f.cfg.nv_index, &f.authority_name)
         .expect("materialise after redefine");
     let after = f.counter_now();
@@ -576,9 +547,7 @@ fn the_floor_counter_survives_undefine_and_redefine() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // The floor gates the unseal, at exactly the right boundary
-// ---------------------------------------------------------------------------
 
 #[test]
 fn the_floor_blocks_generations_below_it_and_admits_the_rest() {
@@ -619,17 +588,14 @@ fn the_floor_blocks_generations_below_it_and_admits_the_rest() {
         "generation 7 must still unseal when the floor is 6"
     );
 
-    // floor -> 8: above every enrolled generation. Nothing unseals — this is the
-    // state a mis-declared floor would leave a machine in, and why the confirm
-    // path refuses to create it.
+    // floor -> 8: above every enrolled generation, so nothing unseals — the state a mis-declared
+    // floor would leave a machine in, which is why confirm refuses to create it.
     f.bump_floor(2);
     assert!(f.try_unseal(&t5, None).is_err());
     assert!(f.try_unseal(&t7, None).is_err());
 }
 
-// ---------------------------------------------------------------------------
 // Signed policy: the point of it, and the trap in it
-// ---------------------------------------------------------------------------
 
 #[test]
 fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
@@ -658,9 +624,8 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
         "the old prediction must stop applying once the measurements change"
     );
 
-    // The updater ships a signature for the new expected state. The sealed blob
-    // is untouched — this is the difference between a machine that asks for a
-    // passphrase after every firmware update and one that does not.
+    // The updater ships a signature for the new expected state; the sealed blob is untouched —
+    // the difference between prompting for a passphrase on every firmware update and not.
     let after = f.predict(7, &f.sign_priv, "post-update");
     let mut updated = token.clone();
     updated.predictions = RollbackToken::new(
@@ -684,7 +649,9 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
         "the sealed blob must not have been re-created"
     );
     assert_eq!(
-        f.try_unseal(&updated, None).expect("new prediction").as_deref(),
+        f.try_unseal(&updated, None)
+            .expect("new prediction")
+            .as_deref(),
         Some(&secret[..]),
         "a freshly signed prediction must satisfy the existing seal"
     );
@@ -700,7 +667,7 @@ fn a_prediction_signed_by_another_key_is_refused() {
     assert!(f.try_unseal(&token, None).expect("sanity").is_some());
 
     let forged = f.predict(7, &f.evil_priv, "forged");
-    let mut tampered = token.clone();
+    let mut tampered = token;
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     tampered.predictions[0].signature = b64.encode(&forged.signature);
@@ -711,19 +678,17 @@ fn a_prediction_signed_by_another_key_is_refused() {
     );
 }
 
-/// The subtle one. `TPM2_PolicyAuthorize` discards the PCR-derived digest, so
-/// without the generation in `policyRef` a token would accept *any* prediction
-/// the authority ever signed — including an old image's own published one — and
-/// the floor check would then pass against the newest token's bound.
+/// `TPM2_PolicyAuthorize` discards the PCR-derived digest, so without the generation in
+/// `policyRef` a token would accept any prediction the authority ever signed — including an
+/// old image's own — letting the floor check pass against the newest token's bound.
 #[test]
 fn a_prediction_signed_for_a_different_generation_cannot_unseal_this_one() {
     let f = fixture!();
     let floor = f.floor(0);
     let secret = b"cccccccccccccccccccccccccccccccc";
 
-    // Both predictions cover the *same* measurements — the live ones. They differ
-    // only in the generation they were signed for. That is what isolates the
-    // policyRef binding from the PCR binding.
+    // Both predictions cover the same live measurements and differ only in generation,
+    // isolating the policyRef binding from the PCR binding.
     let for_7 = f.predict(7, &f.sign_priv, "gen 7");
     let for_3 = f.predict(3, &f.sign_priv, "gen 3");
     assert_eq!(
@@ -741,12 +706,13 @@ fn a_prediction_signed_for_a_different_generation_cannot_unseal_this_one() {
         "generation 7's own prediction must work"
     );
 
-    let mut swapped = token7.clone();
+    let mut swapped = token7;
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
     swapped.predictions[0].signature = b64.encode(&for_3.signature);
     assert_eq!(
-        f.try_unseal(&swapped, None).expect("cross-generation prediction"),
+        f.try_unseal(&swapped, None)
+            .expect("cross-generation prediction"),
         None,
         "a prediction signed for generation 3 must not satisfy generation 7's token — if this ever \
          passes, the generation binding is gone and the rollback floor can be satisfied by any \
@@ -754,9 +720,7 @@ fn a_prediction_signed_for_a_different_generation_cannot_unseal_this_one() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // The PIN, and the lockout that makes a short one defensible
-// ---------------------------------------------------------------------------
 
 #[test]
 fn a_wrong_pin_fails_and_counts_against_the_hardware_lockout() {
@@ -767,7 +731,9 @@ fn a_wrong_pin_fails_and_counts_against_the_hardware_lockout() {
     let token = f.seal_token(7, floor, &[pred], secret, Some(b"1234"));
 
     assert_eq!(
-        f.try_unseal(&token, Some(b"1234")).expect("right pin").as_deref(),
+        f.try_unseal(&token, Some(b"1234"))
+            .expect("right pin")
+            .as_deref(),
         Some(&secret[..]),
         "the correct PIN must unseal"
     );
@@ -839,9 +805,7 @@ fn lockout_parameters_can_be_read_tightened_and_given_a_real_reset_authorisation
     );
 }
 
-// ---------------------------------------------------------------------------
 // Keyslots: the full lifecycle, and the header-restore attack
-// ---------------------------------------------------------------------------
 
 #[test]
 fn a_generation_keyslot_round_trips_and_the_recovery_key_survives() {
@@ -900,12 +864,21 @@ fn a_slot_is_never_removed_without_a_proven_alternative() {
             .expect("enroll 7");
 
     let tokens = keyslots::list_tokens(&f.runner, &img).expect("list");
-    let t7 = &tokens.iter().find(|(_, t)| t.generation == 7).expect("token 7").1;
+    let t7 = &tokens
+        .iter()
+        .find(|(_, t)| t.generation == 7)
+        .expect("token 7")
+        .1;
     let proof7 = f.try_unseal(t7, None).expect("unseal 7").expect("applies");
 
     // A passphrase that does not open the device must not authorise a removal.
     let e = keyslots::kill_generation_slot(
-        &f.runner, &ws, &img, tok6, slot6, b"not-the-right-passphrase",
+        &f.runner,
+        &ws,
+        &img,
+        tok6,
+        slot6,
+        b"not-the-right-passphrase",
     )
     .expect_err("a bogus proof must be refused");
     assert!(
@@ -914,7 +887,11 @@ fn a_slot_is_never_removed_without_a_proven_alternative() {
     );
 
     // Nor may a slot authorise its own removal.
-    let t6 = &tokens.iter().find(|(_, t)| t.generation == 6).expect("token 6").1;
+    let t6 = &tokens
+        .iter()
+        .find(|(_, t)| t.generation == 6)
+        .expect("token 6")
+        .1;
     let proof6 = f.try_unseal(t6, None).expect("unseal 6").expect("applies");
     let e = keyslots::kill_generation_slot(&f.runner, &ws, &img, tok6, slot6, &proof6)
         .expect_err("self-authorised removal must be refused");
@@ -936,9 +913,8 @@ fn a_slot_is_never_removed_without_a_proven_alternative() {
     );
 }
 
-/// Restoring a LUKS2 header backup resurrects every pruned token and keyslot.
-/// This is why the retained-keyslot mechanism cannot stand alone, and why the
-/// floor lives in the TPM.
+/// Restoring a LUKS2 header backup resurrects every pruned token and keyslot — why the
+/// keyslot mechanism cannot stand alone and why the floor lives in the TPM.
 #[test]
 fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
     let f = fixture!();
@@ -976,8 +952,7 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
         "luksHeaderBackup failed"
     );
 
-    // Time passes. Generation 8 is confirmed, the floor moves past 5, and 5's
-    // keyslot is pruned.
+    // Time passes: generation 8 is confirmed, the floor moves past 5, and 5's keyslot is pruned.
     let p8 = vec![f.predict(8, &f.sign_priv, "g8")];
     let (_slot8, _tok8) =
         keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 8, floor, &p8, recovery, None)
@@ -992,7 +967,11 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
     keyslots::kill_generation_slot(&f.runner, &ws, &img, tok5, slot5, &proof8).expect("prune 5");
     f.bump_floor(3); // floor 5 -> 8
     assert_eq!(
-        counter::FloorState { counter: f.counter_now(), base: floor.base }.floor_generation(),
+        counter::FloorState {
+            counter: f.counter_now(),
+            base: floor.base
+        }
+        .floor_generation(),
         8
     );
 
@@ -1012,8 +991,7 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
         "luksHeaderRestore failed"
     );
 
-    // The keyslot mechanism alone has been defeated: the token and its keyslot
-    // are back, and the old passphrase opens the device again.
+    // The keyslot mechanism alone is defeated: token and keyslot are back, old passphrase works.
     let resurrected = keyslots::list_tokens(&f.runner, &img).expect("list after restore");
     assert!(
         resurrected.iter().any(|(_, t)| t.generation == 5),
@@ -1025,9 +1003,8 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
         "the resurrected keyslot should accept its old passphrase"
     );
 
-    // And the mechanism that still holds: the TPM will not release that
-    // passphrase, because the floor is in the TPM and the header restore did not
-    // touch it.
+    // What still holds: the TPM won't release that passphrase, because the floor lives in the
+    // TPM and the header restore did not touch it.
     let t5_again = resurrected
         .into_iter()
         .find(|(_, t)| t.generation == 5)
@@ -1042,13 +1019,10 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // The confirmation sequence, end to end
-// ---------------------------------------------------------------------------
 
-/// The whole point, exercised through `confirm::run` — the same function the
-/// command-line front end calls, so the ordering under test is the ordering the
-/// machine uses.
+/// Exercised through `confirm::run`, the same function the CLI calls, so the ordering under
+/// test matches the ordering the machine uses.
 #[test]
 fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floor() {
     let f = fixture!();
@@ -1067,12 +1041,26 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
 
     // First enrollment: generation 5, floor at the bottom of the window.
     let floor = f.floor(3);
-    let (slot5, _t5) =
-        keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 5, floor, &[f.predict(5, &f.sign_priv, "")], recovery, None)
-            .expect("enroll 5");
+    let (slot5, _t5) = keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        5,
+        floor,
+        &[f.predict(5, &f.sign_priv, "")],
+        recovery,
+        None,
+    )
+    .expect("enroll 5");
     confirm::save_state(
         &state,
-        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(5), foreign_keyslots: vec![0] },
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(5),
+            foreign_keyslots: vec![0],
+        },
     )
     .expect("seed state");
     assert!(slot5 != 0);
@@ -1095,16 +1083,22 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
     let counter_before = f.counter_now();
     let dry = confirm::run(&f.runner, &ws, &req(6, None, true)).expect("dry run");
     assert_eq!(dry.floor.floor_generation(), 3);
-    assert_eq!(f.counter_now(), counter_before, "a dry run must not touch the counter");
+    assert_eq!(
+        f.counter_now(),
+        counter_before,
+        "a dry run must not touch the counter"
+    );
     assert!(dry.enrolled.is_none());
     assert!(dry.dropped.is_empty());
 
-    // Confirm 6 and 7: the window (3 generations) still holds 5, 6, 7, so the
-    // floor rises to 5 and nothing is pruned. Each advance spends approvals the
-    // authority issued for it.
+    // Confirm 6 and 7: the 3-generation window still holds 5, 6, 7, so the floor rises to 5 and
+    // nothing is pruned; each advance spends approvals the authority issued for it.
     f.approve_up_to(floor.base, 6, 4);
     let o6 = confirm::run(&f.runner, &ws, &req(6, None, false)).expect("confirm 6");
-    assert!(o6.enrolled.is_some(), "generation 6 should have been enrolled");
+    assert!(
+        o6.enrolled.is_some(),
+        "generation 6 should have been enrolled"
+    );
     assert_eq!(o6.floor.floor_generation(), 4);
     assert!(o6.dropped.is_empty());
 
@@ -1113,15 +1107,13 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
     assert_eq!(o7.floor.floor_generation(), 5);
     assert!(o7.dropped.is_empty(), "5, 6 and 7 all fit the window");
 
-    // Confirm 8: 5 falls out of the window, so its keyslot goes and the floor
-    // moves to 6.
+    // Confirm 8: 5 falls out of the window, so its keyslot goes and the floor moves to 6.
     f.approve_up_to(floor.base, 8, 6);
     let o8 = confirm::run(&f.runner, &ws, &req(8, None, false)).expect("confirm 8");
     assert_eq!(o8.dropped, vec![5], "generation 5 should have been pruned");
     assert_eq!(o8.floor.floor_generation(), 6);
 
-    // The pruned generation's keyslot is gone and the window's generations are
-    // the ones that remain.
+    // The pruned generation's keyslot is gone; only the window's generations remain.
     let left: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
         .expect("list")
         .into_iter()
@@ -1155,21 +1147,39 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
     let state = f.dir().join("state.json");
     for g in [7u64, 8] {
         let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
+            .expect("write");
     }
     let floor = f.floor(5);
-    keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &[f.predict(7, &f.sign_priv, "")], recovery, None)
-        .expect("enroll 7");
+    keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        7,
+        floor,
+        &[f.predict(7, &f.sign_priv, "")],
+        recovery,
+        None,
+    )
+    .expect("enroll 7");
     confirm::save_state(
         &state,
-        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7), foreign_keyslots: vec![0] },
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(7),
+            foreign_keyslots: vec![0],
+        },
     )
     .expect("seed state");
-    let t7 = keyslots::list_tokens(&f.runner, &img).expect("list").remove(0).1;
+    let t7 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .remove(0)
+        .1;
 
-    // Generation 8 is a security fix; 7 is vulnerable. Declaring floor 8 closes
-    // the window immediately instead of leaving 7 reachable for two more updates.
-    // A jump like this is exactly what the authority approves deliberately.
+    // Generation 8 is a security fix, 7 vulnerable: declaring floor 8 closes the window
+    // immediately rather than leaving 7 reachable — a deliberate jump the authority approves.
     f.approve_up_to(floor.base, 8, 8);
     let o = confirm::run(
         &f.runner,
@@ -1189,12 +1199,14 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
         },
     )
     .expect("confirm 8 with a declared floor");
-    assert_eq!(o.plan.floor.window_floor, 6, "the window alone would have allowed 6");
+    assert_eq!(
+        o.plan.floor.window_floor, 6,
+        "the window alone would have allowed 6"
+    );
     assert_eq!(o.floor.floor_generation(), 8);
 
-    // Generation 7's keyslot is still in the header — it is inside the retention
-    // window — and the floor is what refuses it. Exactly the "both mechanisms"
-    // split: presence is not permission.
+    // Generation 7's keyslot is still in the header (inside the retention window); the floor is
+    // what refuses it — presence is not permission.
     assert!(
         keyslots::list_tokens(&f.runner, &img)
             .expect("list")
@@ -1224,7 +1236,12 @@ fn a_declared_floor_above_the_running_generation_is_refused_before_anything_move
         .expect("enroll 7");
     confirm::save_state(
         &state,
-        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7), foreign_keyslots: vec![0] },
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(7),
+            foreign_keyslots: vec![0],
+        },
     )
     .expect("seed state");
 
@@ -1258,9 +1275,7 @@ fn a_declared_floor_above_the_running_generation_is_refused_before_anything_move
     );
 }
 
-// ---------------------------------------------------------------------------
 // Attestation
-// ---------------------------------------------------------------------------
 
 #[test]
 fn the_floor_can_be_certified_with_an_attestation_key() {
@@ -1279,11 +1294,16 @@ fn the_floor_can_be_certified_with_an_attestation_key() {
 
     assert_eq!(att.counter, floor.counter);
     assert_eq!(att.floor_generation, 5);
-    assert!(!att.attestation.is_empty(), "an attestation structure should be produced");
+    assert!(
+        !att.attestation.is_empty(),
+        "an attestation structure should be produced"
+    );
     assert!(!att.signature.is_empty(), "a signature should be produced");
-    assert!(!att.key_public.is_empty(), "the attestation key's public area should be produced");
-    // The verifier's nonce has to be inside the attestation, or a captured one
-    // replays forever.
+    assert!(
+        !att.key_public.is_empty(),
+        "the attestation key's public area should be produced"
+    );
+    // The verifier's nonce must be inside the attestation, or a captured one replays forever.
     assert!(
         att.attestation.windows(nonce.len()).any(|w| w == nonce),
         "the qualifying nonce must appear in the attestation's extraData"
@@ -1304,13 +1324,10 @@ fn the_floor_can_be_certified_with_an_attestation_key() {
     assert_ne!(att.attestation, att2.attestation);
 }
 
-// ---------------------------------------------------------------------------
 // The unattended path — the one the machine actually takes after a reboot
-// ---------------------------------------------------------------------------
 
-/// After a reboot nothing on the machine knows the recovery key or the PIN. The
-/// confirmation has to work from the secret the boot itself unlocked with, and
-/// from the observation that the independent keyslots are still there.
+/// After a reboot nothing knows the recovery key or PIN; confirmation must work from the
+/// secret boot itself unlocked with, plus the independent keyslots still being present.
 #[test]
 fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
     let f = fixture!();
@@ -1321,24 +1338,43 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
     let state = f.dir().join("state.json");
     for g in [6u64, 7] {
         let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
+            .expect("write");
     }
 
     // Enrolled with a PIN, the way a real machine is.
     let pin: &[u8] = b"482913";
     let floor = f.floor(4);
     keyslots::enroll_generation(
-        &f.runner, &ws, &img, &f.cfg, 6, floor,
-        &[f.predict(6, &f.sign_priv, "")], recovery, Some(pin),
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        6,
+        floor,
+        &[f.predict(6, &f.sign_priv, "")],
+        recovery,
+        Some(pin),
     )
     .expect("enroll 6 with a PIN");
     keyslots::enroll_generation(
-        &f.runner, &ws, &img, &f.cfg, 7, floor,
-        &[f.predict(7, &f.sign_priv, "")], recovery, Some(pin),
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        7,
+        floor,
+        &[f.predict(7, &f.sign_priv, "")],
+        recovery,
+        Some(pin),
     )
     .expect("enroll 7 with a PIN");
     let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign slots");
-    assert_eq!(foreign.len(), 1, "only the recovery key's slot should be foreign: {foreign:?}");
+    assert_eq!(
+        foreign.len(),
+        1,
+        "only the recovery key's slot should be foreign: {foreign:?}"
+    );
     confirm::save_state(
         &state,
         &confirm::State {
@@ -1365,8 +1401,7 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
     // The authority has approved the advance this confirmation will make.
     f.approve_up_to(floor.base, 7, 5);
 
-    // What the confirmation service does: no recovery key, no PIN, just the
-    // secret the boot used.
+    // What confirmation does: no recovery key, no PIN, just the secret boot used.
     let o = confirm::run(
         &f.runner,
         &ws,
@@ -1399,13 +1434,21 @@ fn an_unattended_confirmation_refuses_a_proof_that_is_not_that_generations_secre
     let state = f.dir().join("state.json");
     for g in [6u64, 7] {
         let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
+            .expect("write");
     }
     let floor = f.floor(4);
     for g in [6u64, 7] {
         keyslots::enroll_generation(
-            &f.runner, &ws, &img, &f.cfg, g, floor,
-            &[f.predict(g, &f.sign_priv, "")], recovery, None,
+            &f.runner,
+            &ws,
+            &img,
+            &f.cfg,
+            g,
+            floor,
+            &[f.predict(g, &f.sign_priv, "")],
+            recovery,
+            None,
         )
         .expect("enroll");
     }
@@ -1421,9 +1464,8 @@ fn an_unattended_confirmation_refuses_a_proof_that_is_not_that_generations_secre
     )
     .expect("seed state");
 
-    // Generation 6's secret must not be accepted as proof for generation 7:
-    // otherwise a machine that booted an older image could confirm a newer one
-    // and drag the floor up past what it can actually run.
+    // Generation 6's secret must not prove generation 7: otherwise booting an older image could
+    // confirm a newer one and drag the floor past what the machine can actually run.
     let t6 = keyslots::list_tokens(&f.runner, &img)
         .expect("list")
         .into_iter()
@@ -1468,8 +1510,18 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
     let p7 = f.predict(7, &f.sign_priv, "");
     policy::write_signed_prediction(&preds, 7, &f.cfg.pcr_bank, &f.cfg.pcrs, &p7).expect("write");
     let floor = f.floor(5);
-    keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &[p7], recovery, None)
-        .expect("enroll 7");
+    keyslots::enroll_generation(
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        7,
+        floor,
+        &[p7],
+        recovery,
+        None,
+    )
+    .expect("enroll 7");
     let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign");
     assert_eq!(foreign, vec![0]);
     confirm::save_state(
@@ -1482,7 +1534,10 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
         },
     )
     .expect("seed state");
-    let t7 = keyslots::list_tokens(&f.runner, &img).expect("list").remove(0).1;
+    let t7 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .remove(0)
+        .1;
     let secret7 = f.try_unseal(&t7, None).expect("unseal").expect("applies");
 
     // Something outside this tool removes the recovery keyslot.
@@ -1492,8 +1547,12 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
         f.raw(
             "cryptsetup",
             &[
-                "luksKillSlot", "--batch-mode", "--key-file",
-                kf.to_str().unwrap(), img.to_str().unwrap(), "0",
+                "luksKillSlot",
+                "--batch-mode",
+                "--key-file",
+                kf.to_str().unwrap(),
+                img.to_str().unwrap(),
+                "0",
             ],
         )
         .ok(),
@@ -1527,14 +1586,12 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
     assert_eq!(f.counter_now(), before, "the counter must not have moved");
 }
 
-/// The staged update's keyslot must survive the confirmation of the generation
-/// that is currently running.
+/// The staged update's keyslot must survive confirming the currently-running generation.
 ///
-/// This is a regression test for a real defect: `drop_set` treated any generation
-/// newer than the running one as stale residue, which reads reasonably and is
-/// wrong — the normal state of a machine mid-update is "running N, keyslot sealed
-/// for N+1". Confirming N deleted N+1's keyslot, and the reboot into N+1 had
-/// nothing to unseal and landed on the recovery key.
+/// Regression test: `drop_set` treated any generation newer than the running one as stale
+/// residue, but a machine mid-update normally runs N with N+1's keyslot sealed. Confirming N
+/// deleted N+1's keyslot, so rebooting into N+1 had nothing to unseal and fell back to the
+/// recovery key.
 #[test]
 fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
     let f = fixture!();
@@ -1545,19 +1602,34 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
     let state = f.dir().join("state.json");
     for g in [5u64, 6] {
         let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
+            .expect("write");
     }
     let floor = f.floor(3);
 
     // Running generation 5, and generation 6 staged with its keyslot sealed.
     keyslots::enroll_generation(
-        &f.runner, &ws, &img, &f.cfg, 5, floor,
-        &[f.predict(5, &f.sign_priv, "")], recovery, None,
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        5,
+        floor,
+        &[f.predict(5, &f.sign_priv, "")],
+        recovery,
+        None,
     )
     .expect("enroll 5");
     let (slot6, _) = keyslots::enroll_generation(
-        &f.runner, &ws, &img, &f.cfg, 6, floor,
-        &[f.predict(6, &f.sign_priv, "")], recovery, None,
+        &f.runner,
+        &ws,
+        &img,
+        &f.cfg,
+        6,
+        floor,
+        &[f.predict(6, &f.sign_priv, "")],
+        recovery,
+        None,
     )
     .expect("stage 6");
     confirm::save_state(
@@ -1600,9 +1672,14 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         .into_iter()
         .map(|(_, t)| t.generation)
         .collect();
-    assert!(left.contains(&6), "generation 6's token must survive: {left:?}");
     assert!(
-        keyslots::keyslots_in_use(&f.runner, &img).expect("slots").contains(&slot6),
+        left.contains(&6),
+        "generation 6's token must survive: {left:?}"
+    );
+    assert!(
+        keyslots::keyslots_in_use(&f.runner, &img)
+            .expect("slots")
+            .contains(&slot6),
         "generation 6's keyslot must survive"
     );
 
@@ -1619,24 +1696,19 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // The floor cannot be advanced without a signed, single-use approval
-// ---------------------------------------------------------------------------
 
-/// Every policy digest this crate computes without a TPM, checked against the
-/// TPM's own trial-session arithmetic.
-///
-/// The floor authority computes approvals in software so it does not need a TPM.
-/// That is only safe while the software agrees with the hardware, so the agreement
-/// is a test rather than an assumption.
+/// Every policy digest this crate computes without a TPM, checked against the TPM's own
+/// trial-session arithmetic — the floor authority computes approvals in software, which is
+/// only safe while software and hardware agree, so that agreement is tested, not assumed.
 #[test]
 fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     let f = fixture!();
     let floor = f.floor(3);
     let nv_name = f.nv_name();
 
-    // The index's Name, computed from its public area, must match what the TPM
-    // reports — including the written bit, which flips on the first increment.
+    // The index's Name, computed from its public area, must match the TPM's — including the
+    // written bit, which flips on the first increment.
     assert_eq!(
         counter::written_name(f.cfg.nv_index, &f.nv_auth_policy),
         nv_name,
@@ -1653,7 +1725,8 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
         let sess = f.dir().join("purity.ctx");
         let _ = f.raw("tpm2_flushcontext", &["-s"]);
         assert!(
-            f.raw("tpm2_startauthsession", &["-S", sess.to_str().unwrap()]).ok(),
+            f.raw("tpm2_startauthsession", &["-S", sess.to_str().unwrap()])
+                .ok(),
             "could not start a trial session"
         );
         for step in steps {
@@ -1666,7 +1739,12 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
         assert!(
             f.raw(
                 "tpm2_getpolicydigest",
-                &["-S", sess.to_str().unwrap(), "-o", out_file.to_str().unwrap()],
+                &[
+                    "-S",
+                    sess.to_str().unwrap(),
+                    "-o",
+                    out_file.to_str().unwrap()
+                ],
             )
             .ok(),
             "could not read the trial digest"
@@ -1679,14 +1757,17 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     let sess_s = sess.to_str().unwrap().to_string();
     let idx = format!("0x{:08X}", f.cfg.nv_index);
 
-    // PolicyCommandCode
     assert_eq!(
-        trial(&[&["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"]]),
+        trial(&[&[
+            "tpm2_policycommandcode",
+            "-S",
+            &sess_s,
+            "TPM2_CC_NV_Increment"
+        ]]),
         tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT).to_vec(),
         "PolicyCommandCode"
     );
 
-    // PolicyAuthValue
     assert_eq!(
         trial(&[&["tpm2_policyauthvalue", "-S", &sess_s]]),
         tpm_policy::auth_value(tpm_policy::ZERO).to_vec(),
@@ -1710,14 +1791,39 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     std::fs::write(&operand, 7u64.to_be_bytes()).expect("write operand");
     let op_s = operand.to_str().unwrap().to_string();
     assert_eq!(
-        trial(&[&["tpm2_policynv", "-S", &sess_s, "-i", &op_s, &idx, "eq", "-C", &idx]]),
+        trial(&[&[
+            "tpm2_policynv",
+            "-S",
+            &sess_s,
+            "-i",
+            &op_s,
+            &idx,
+            "eq",
+            "-C",
+            &idx
+        ]]),
         tpm_policy::nv_counter(tpm_policy::ZERO, &nv_name, 7, tpm_policy::Operation::Eq).to_vec(),
         "PolicyNV(eq)"
     );
     assert_eq!(
-        trial(&[&["tpm2_policynv", "-S", &sess_s, "-i", &op_s, &idx, "ule", "-C", &idx]]),
-        tpm_policy::nv_counter(tpm_policy::ZERO, &nv_name, 7, tpm_policy::Operation::UnsignedLe)
-            .to_vec(),
+        trial(&[&[
+            "tpm2_policynv",
+            "-S",
+            &sess_s,
+            "-i",
+            &op_s,
+            &idx,
+            "ule",
+            "-C",
+            &idx
+        ]]),
+        tpm_policy::nv_counter(
+            tpm_policy::ZERO,
+            &nv_name,
+            7,
+            tpm_policy::Operation::UnsignedLe
+        )
+        .to_vec(),
         "PolicyNV(ule)"
     );
 
@@ -1728,9 +1834,13 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     std::fs::write(&ref_file, approval::POLICY_REF).expect("write ref");
     assert_eq!(
         trial(&[&[
-            "tpm2_policyauthorize", "-S", &sess_s,
-            "-n", name_file.to_str().unwrap(),
-            "-q", ref_file.to_str().unwrap(),
+            "tpm2_policyauthorize",
+            "-S",
+            &sess_s,
+            "-n",
+            name_file.to_str().unwrap(),
+            "-q",
+            ref_file.to_str().unwrap(),
         ]]),
         counter::signed_branch(&f.authority_name).to_vec(),
         "PolicyAuthorize with the floor policy reference"
@@ -1738,7 +1848,12 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     assert_eq!(
         trial(&[
             &["tpm2_policynvwritten", "-S", &sess_s, "c"],
-            &["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"],
+            &[
+                "tpm2_policycommandcode",
+                "-S",
+                &sess_s,
+                "TPM2_CC_NV_Increment"
+            ],
         ]),
         counter::first_write_branch().to_vec(),
         "the one-time materialise branch"
@@ -1761,10 +1876,27 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     std::fs::write(&operand, (target - 1).to_be_bytes()).expect("write operand");
     assert_eq!(
         trial(&[
-            &["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"],
-            &["tpm2_policynv", "-S", &sess_s, "-i", &op_s, &idx, "eq", "-C", &idx],
+            &[
+                "tpm2_policycommandcode",
+                "-S",
+                &sess_s,
+                "TPM2_CC_NV_Increment"
+            ],
+            &[
+                "tpm2_policynv",
+                "-S",
+                &sess_s,
+                "-i",
+                &op_s,
+                &idx,
+                "eq",
+                "-C",
+                &idx
+            ],
         ]),
-        approval::approved_policy(&nv_name, target).unwrap().to_vec(),
+        approval::approved_policy(&nv_name, target)
+            .unwrap()
+            .to_vec(),
         "the policy an approval authorises"
     );
 }
@@ -1775,8 +1907,7 @@ fn an_increment_without_an_approval_is_refused() {
     let floor = f.floor(3);
     let idx = format!("0x{:08X}", f.cfg.nv_index);
 
-    // Empty authorisation value: the index has no authwrite, so this is what a
-    // process running as root can try on its own.
+    // Empty authorisation: what a root process could try on its own (index has no authwrite).
     let out = f.raw("tpm2_nvincrement", &[&idx, "-C", &idx]);
     assert!(
         !out.ok(),
@@ -1785,8 +1916,15 @@ fn an_increment_without_an_approval_is_refused() {
     );
     // Owner authorisation must not work either.
     let out = f.raw("tpm2_nvincrement", &[&idx, "-C", "o"]);
-    assert!(!out.ok(), "owner authorisation must not increment the floor");
-    assert_eq!(f.counter_now(), floor.counter, "the counter must not have moved");
+    assert!(
+        !out.ok(),
+        "owner authorisation must not increment the floor"
+    );
+    assert_eq!(
+        f.counter_now(),
+        floor.counter,
+        "the counter must not have moved"
+    );
 }
 
 #[test]
@@ -1795,21 +1933,19 @@ fn the_materialise_escape_works_exactly_once() {
     let floor = f.floor(3); // this performs the one permitted unapproved increment
     assert_eq!(f.counter_now(), floor.counter);
 
-    // The written flag is now set, so PolicyNvWritten(clear) can never be
-    // satisfied again — the escape hatch closes itself.
-    let err = counter::increment_first(
-        &f.runner,
-        &f.ws(),
-        f.cfg.nv_index,
-        &f.authority_name,
-    )
-    .expect_err("the materialise branch must not work a second time");
+    // The written flag is now set, so PolicyNvWritten(clear) can never be satisfied again.
+    let err = counter::increment_first(&f.runner, &f.ws(), f.cfg.nv_index, &f.authority_name)
+        .expect_err("the materialise branch must not work a second time");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("never been written") || msg.contains("materialising"),
         "{msg}"
     );
-    assert_eq!(f.counter_now(), floor.counter, "the counter must not have moved");
+    assert_eq!(
+        f.counter_now(),
+        floor.counter,
+        "the counter must not have moved"
+    );
 }
 
 #[test]
@@ -1823,18 +1959,25 @@ fn a_replayed_approval_is_refused_by_the_tpm() {
 
     // First use works.
     counter::increment_approved(
-        &f.runner, &ws, f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key), &f.authority_name, approval,
+        &f.runner,
+        &ws,
+        f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key),
+        &f.authority_name,
+        approval,
     )
     .expect("the approval should work once");
     let after = f.counter_now();
     assert_eq!(after, floor.counter + 1);
 
-    // Replaying the very same approval must fail, and it must fail in the TPM —
-    // not because we deleted a file. The file is handed straight back in.
+    // Replaying the same approval must fail in the TPM itself — the file is handed straight back in.
     let err = counter::increment_approved(
-        &f.runner, &ws, f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key), &f.authority_name, approval,
+        &f.runner,
+        &ws,
+        f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key),
+        &f.authority_name,
+        approval,
     )
     .expect_err("a replayed approval must be refused");
     let msg = format!("{err:#}");
@@ -1854,16 +1997,19 @@ fn an_approval_is_bound_to_one_target_and_cannot_reach_another() {
     let approvals = f.issue_approvals(floor, &[], 5, false);
     assert_eq!(approvals.len(), 2);
 
-    // The approval for the second step cannot be used first: the counter is not
-    // yet at its target minus one. So an attacker holding a batch cannot skip
-    // ahead, and cannot use one approval to move several steps.
+    // The second step's approval cannot be used first (counter isn't at target minus one yet),
+    // so a held batch can't be used to skip ahead or move several steps at once.
     let second = approvals
         .iter()
         .find(|a| a.target_counter == floor.counter + 2)
         .expect("second-step approval");
     let err = counter::increment_approved(
-        &f.runner, &ws, f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key), &f.authority_name, second,
+        &f.runner,
+        &ws,
+        f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key),
+        &f.authority_name,
+        second,
     )
     .expect_err("an out-of-order approval must be refused");
     assert!(format!("{err:#}").contains("does not apply"), "{err:#}");
@@ -1872,8 +2018,12 @@ fn an_approval_is_bound_to_one_target_and_cannot_reach_another() {
     // In order, both work, one step each.
     for a in &approvals {
         counter::increment_approved(
-            &f.runner, &ws, f.cfg.nv_index,
-            Path::new(&f.cfg.pcr_public_key), &f.authority_name, a,
+            &f.runner,
+            &ws,
+            f.cfg.nv_index,
+            Path::new(&f.cfg.pcr_public_key),
+            &f.authority_name,
+            a,
         )
         .expect("in-order approvals should work");
     }
@@ -1896,15 +2046,23 @@ fn an_approval_signed_by_another_key_is_refused() {
     assert_eq!(forged[0].target_counter, target);
 
     let err = counter::increment_approved(
-        &f.runner, &ws, f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key), &f.authority_name, &forged[0],
+        &f.runner,
+        &ws,
+        f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key),
+        &f.authority_name,
+        &forged[0],
     )
     .expect_err("an approval from the wrong key must be refused");
     assert!(
         format!("{err:#}").contains("not signed by the configured authority"),
         "{err:#}"
     );
-    assert_eq!(f.counter_now(), floor.counter, "the counter must not have moved");
+    assert_eq!(
+        f.counter_now(),
+        floor.counter,
+        "the counter must not have moved"
+    );
 }
 
 /// The answer to "what if the authority is unavailable": the floor stops
@@ -1919,13 +2077,21 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
     let state = f.dir().join("state.json");
     for g in [5u64, 6, 7, 8] {
         let p = f.predict(g, &f.sign_priv, "");
-        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
+            .expect("write");
     }
     let floor = f.floor(3);
     for g in [5u64, 6, 7, 8] {
         keyslots::enroll_generation(
-            &f.runner, &ws, &img, &f.cfg, g, floor,
-            &[f.predict(g, &f.sign_priv, "")], recovery, None,
+            &f.runner,
+            &ws,
+            &img,
+            &f.cfg,
+            g,
+            floor,
+            &[f.predict(g, &f.sign_priv, "")],
+            recovery,
+            None,
         )
         .expect("enroll");
     }
@@ -1942,7 +2108,9 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
 
     // No approvals anywhere.
     assert!(
-        approval::load_all(&f.approval_dir()).expect("load").is_empty(),
+        approval::load_all(&f.approval_dir())
+            .expect("load")
+            .is_empty(),
         "this test needs to start with no approvals"
     );
 
@@ -1974,7 +2142,11 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
         !o.unapproved_steps.is_empty(),
         "the unapproved steps must be reported rather than passed over silently"
     );
-    assert_eq!(o.dropped, vec![5], "the keyslot window must still be pruned");
+    assert_eq!(
+        o.dropped,
+        vec![5],
+        "the keyslot window must still be pruned"
+    );
 
     // The disk still unlocks — the whole point.
     let t8 = keyslots::list_tokens(&f.runner, &img)
@@ -1990,7 +2162,10 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
     assert!(keyslots::verify_recovery(&f.runner, &ws, &img, recovery).expect("verify recovery"));
 
     // And once approvals arrive, the same confirmation advances.
-    let floor_now = counter::FloorState { counter: f.counter_now(), base: floor.base };
+    let floor_now = counter::FloorState {
+        counter: f.counter_now(),
+        base: floor.base,
+    };
     let enrolled: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
         .expect("list")
         .into_iter()
@@ -2019,9 +2194,8 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
     assert!(o2.unapproved_steps.is_empty(), "{:?}", o2.unapproved_steps);
 }
 
-/// Issuance refuses to hand a device approvals that could strand it, which is what
-/// keeps a stash of approvals from becoming a denial of service after a later
-/// compromise.
+/// Issuance refuses to hand out approvals that could strand a device — keeping a stash of
+/// approvals from becoming a denial-of-service after a later compromise.
 #[test]
 fn issuance_refuses_to_approve_past_the_newest_enrolled_generation() {
     let f = fixture!();
@@ -2029,15 +2203,17 @@ fn issuance_refuses_to_approve_past_the_newest_enrolled_generation() {
     let floor = f.floor(3);
     let nv_name = f.nv_name();
 
-    // Generations 5 and 6 have keyslots; 6 is therefore the highest floor that
-    // still leaves something able to unseal.
+    // Generations 5 and 6 have keyslots; 6 is the highest floor that still leaves something to unseal.
     let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[5, 6], 3).unwrap();
     assert_eq!(req.safe_target_floor, 6);
 
     let err = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, false)
         .expect_err("approving past the newest enrolled generation must be refused");
     let msg = format!("{err:#}");
-    assert!(msg.contains("newest generation with a sealed keyslot"), "{msg}");
+    assert!(
+        msg.contains("newest generation with a sealed keyslot"),
+        "{msg}"
+    );
 
     // Up to the bound is fine, and it is exactly enough steps to get there.
     let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
@@ -2060,13 +2236,16 @@ fn an_approval_for_another_machines_index_is_refused() {
     // Same authority, same target, but issued against a different NV Name.
     let mut other_name = f.nv_name();
     other_name[10] ^= 0xFF;
-    let req =
-        approval::build_request(f.cfg.nv_index, &other_name, floor, &[], 3).unwrap();
+    let req = approval::build_request(f.cfg.nv_index, &other_name, floor, &[], 3).unwrap();
     let foreign = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 4, true).expect("issue");
 
     let err = counter::increment_approved(
-        &f.runner, &ws, f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key), &f.authority_name, &foreign[0],
+        &f.runner,
+        &ws,
+        f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key),
+        &f.authority_name,
+        &foreign[0],
     )
     .expect_err("an approval bound to another index must be refused");
     assert!(

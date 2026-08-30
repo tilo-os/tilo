@@ -1,21 +1,19 @@
 //! The broker's audit log.
 //!
 //! Append-only JSON Lines under `audit/`, one file per day. Every request a
-//! guest makes of the broker is recorded with its outcome, whether it was
-//! allowed or refused — a log that only records grants cannot answer "what did
-//! that shell try to do".
+//! guest makes of the broker is recorded with its outcome, allowed or
+//! refused — a log that only records grants can't answer "what did that
+//! shell try to do".
 //!
-//! It is a *file*, not the compositor's in-memory ring
-//! (`shell/src/shell/collab_broker.rs`). Two reasons, and both are about what
-//! the record is for. That ring is keyed by `ArtifactId` and its entries are
-//! `SignedOp` envelopes — it records collaboration ops, and a `trust-dir`
-//! request is not one. And it does not survive a restart, which is the wrong
-//! property for the thing you consult after the fact. The vocabulary that *is*
-//! shared is the one that matters: what the broker decided, it decided with
+//! A *file*, not the compositor's in-memory ring
+//! (`shell/src/shell/collab_broker.rs`): that ring records collaboration
+//! ops keyed by `ArtifactId`, not a `trust-dir` request, and doesn't
+//! survive a restart — the wrong property for what you consult after the
+//! fact. What broker decisions share with it is only the vocabulary:
 //! `decide_capability` on a `CapOverride` (see [`crate::policy`]).
 //!
-//! The log lives in the store, which is never bound into a guest, so nothing
-//! running inside can read or rewrite its own history.
+//! The log lives in the store, never bound into a guest, so nothing inside
+//! can read or rewrite its own history.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -70,8 +68,7 @@ impl AuditRecord {
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The append-only log in a directory.
@@ -89,19 +86,16 @@ impl AuditLog {
         &self.dir
     }
 
-    /// The file a record written at `at` lands in: `audit/<day>.jsonl`, where
-    /// `day` counts whole days since the epoch. Rotating by day keeps one file
-    /// from growing without bound and makes "what happened yesterday" a `cat`.
+    /// The file a record at `at` lands in: `audit/<day>.jsonl`, `day` counting
+    /// whole days since epoch — one file per day, so "yesterday" is a `cat`.
     pub fn file_for(&self, at: u64) -> PathBuf {
         self.dir.join(format!("{}.jsonl", at / 86_400))
     }
 
-    /// Append a record.
-    ///
-    /// A failure here is logged and swallowed. The audit log is a record of
-    /// what the broker did, not a precondition for doing it — refusing a
-    /// legitimate request because the disk is full would make a full disk into
-    /// a denial of service on the user's own shell.
+    /// Append a record. A failure here is logged and swallowed: the audit log
+    /// records what the broker did, not a precondition for doing it — refusing
+    /// a legitimate request over a full disk would turn that into a denial of
+    /// service.
     pub fn append(&self, record: &AuditRecord) {
         if let Err(e) = self.try_append(record) {
             tracing::warn!(error = %e, "could not write the audit record; the decision still stands");
@@ -176,7 +170,10 @@ mod tests {
         assert!(all[0].allowed);
         assert_eq!(all[0].subject.as_deref(), Some("/var/home/you/src"));
         assert!(!all[1].allowed);
-        assert_eq!(all[1].detail.as_deref(), Some("the overlay owns this subtree"));
+        assert_eq!(
+            all[1].detail.as_deref(),
+            Some("the overlay owns this subtree")
+        );
     }
 
     /// A log that only recorded successes could not answer the question it

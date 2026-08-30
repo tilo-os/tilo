@@ -15,7 +15,6 @@
 //! "state lives in the CRDT" contract.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -40,7 +39,6 @@ use crate::media::MediaEngine;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
 use crate::permissions::ChatPermissions;
 use crate::responsive::{FlapMode, FlapState, LEFT_BREAKPOINT, RIGHT_BREAKPOINT};
-use crate::storage;
 
 // --- Fixed chrome metrics (logical px) ------------------------------------
 pub(crate) const RAIL_W: f64 = 68.0;
@@ -157,7 +155,11 @@ impl MenuAction {
     }
     /// Menu items for one of your own messages.
     pub fn for_message() -> [MenuAction; 3] {
-        [MenuAction::EditMessage, MenuAction::PinMessage, MenuAction::DeleteMessage]
+        [
+            MenuAction::EditMessage,
+            MenuAction::PinMessage,
+            MenuAction::DeleteMessage,
+        ]
     }
 }
 
@@ -190,22 +192,39 @@ pub(crate) enum Hit {
     /// Toggle a category's collapsed state.
     CategoryToggle(Id),
     /// Execute a context-menu / create action.
-    MenuAction { target: MenuTarget, action: MenuAction },
+    MenuAction {
+        target: MenuTarget,
+        action: MenuAction,
+    },
     /// The "+" create-channel button on a category header.
-    AddChannel { workspace: Id, category: Id },
+    AddChannel {
+        workspace: Id,
+        category: Id,
+    },
     /// The "+" create-category button in the sidebar header.
     AddCategory(Id),
     /// The "+" create-workspace button at the foot of the rail.
     AddWorkspace,
     /// Confirm the inline rename editor.
     RenameConfirm,
-    Reaction { msg: Id, emoji: String },
-    AddReaction { msg: Id, anchor: Point },
+    Reaction {
+        msg: Id,
+        emoji: String,
+    },
+    AddReaction {
+        msg: Id,
+        anchor: Point,
+    },
     OpenThread(Id),
-    EditHistory { msg: Id, anchor: Point },
+    EditHistory {
+        msg: Id,
+        anchor: Point,
+    },
     /// Right-click target over one of your own messages — opens the message
     /// action menu (Edit). Left-click on it is a no-op.
-    MessageMenu { msg: Id },
+    MessageMenu {
+        msg: Id,
+    },
     /// Commit the inline message editor to the CRDT.
     EditSave,
     /// Discard the inline message editor without writing.
@@ -228,7 +247,7 @@ pub(crate) enum Hit {
     CallMute,
     CallDeafen,
     CallAudioOnly,
-    /// Start/stop sharing this peer's screen (portal ScreenCast).
+    /// Start/stop sharing this peer's screen (portal `ScreenCast`).
     CallShareScreen,
     CallExpand,
     CallLeave,
@@ -312,6 +331,18 @@ pub struct ChatApp {
     // multi-participant chat attributes and de-duplicates correctly.
     pub(crate) me: LocalIdentity,
 
+    // The room's answer for who everybody is, refreshed every frame from
+    // presence (see `adopt_room`). A peer never writes its own name into
+    // this map — only what the room says about a participant lands here.
+    pub(crate) room_names: HashMap<Id, String>,
+    pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
+
+    // Ids this session authored under before the room told it which
+    // participant it is. See `adopt_own_participant`: what was already said
+    // under one of these is still this person, so their own earlier lines go
+    // on reading "You" rather than turning into a stranger mid-scroll.
+    pub(crate) former_ids: Vec<Id>,
+
     // Engines (call sounds + media transport).
     pub(crate) sound: SoundEngine,
     pub(crate) media: MediaEngine,
@@ -374,7 +405,7 @@ pub struct ChatApp {
     pub(crate) remote_screens: HashMap<String, vello::peniko::ImageData>,
 
     /// The screen-capture source seam. Consulted before a share starts so the
-    /// real xdg-desktop-portal ScreenCast flow (behind `live-media`) can be
+    /// real xdg-desktop-portal `ScreenCast` flow (behind `live-media`) can be
     /// swapped for an injected fake in tests. The default [`SystemPortal`]
     /// returns `None` in the default build — honest gating, never a faked share.
     pub(crate) portal: Box<dyn crate::call::ScreenPortal>,
@@ -421,7 +452,7 @@ impl ChatApp {
     /// The live instance: resolves this peer's real identity. The document
     /// itself is loaded and written by `app-state` (see `main`), so nothing
     /// here touches disk. The resolved identity is what makes two running
-    /// instances genuinely different participants rather than two "u_me"s
+    /// instances genuinely different participants rather than two "`u_me"s`
     /// colliding.
     pub fn new() -> Self {
         let mut app = Self::bare();
@@ -485,6 +516,9 @@ impl ChatApp {
             left_mode: FlapMode::Docked,
             right_mode: FlapMode::Docked,
             me: LocalIdentity::demo(),
+            room_names: HashMap::new(),
+            room_colors: HashMap::new(),
+            former_ids: Vec::new(),
             sound: SoundEngine::new(),
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
@@ -533,14 +567,14 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.perms.allows(&self.active_ws, action)
+        self.perms.allows(action)
     }
 
     /// Whether the local peer may post / react / start a call in the active
     /// workspace (an Edit grant). The permissive default allows; a restricted
     /// context gates writes while still letting the peer read.
     pub(crate) fn can_participate(&self) -> bool {
-        self.perms.can_participate(&self.active_ws)
+        self.perms.can_participate()
     }
 
     /// Whether the local peer may hydrate + render the bytes behind an
@@ -560,7 +594,8 @@ impl ChatApp {
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
     pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: ChatAction) {
-        self.actions.dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -582,8 +617,11 @@ impl ChatApp {
             .find(|w| w.id == self.active_ws)
             .map(|w| w.name.clone())
             .unwrap_or_default();
-        let mut channels: Vec<&Channel> =
-            self.channels.iter().filter(|c| c.workspace == self.active_ws).collect();
+        let mut channels: Vec<&Channel> = self
+            .channels
+            .iter()
+            .filter(|c| c.workspace == self.active_ws)
+            .collect();
         channels.sort_by_key(|c| c.order);
         let channels = channels
             .into_iter()
@@ -610,6 +648,7 @@ impl ChatApp {
             channels,
             active_channel: self.active_channel.clone(),
             messages,
+            participants: self.participants(),
         }
     }
 
@@ -619,10 +658,11 @@ impl ChatApp {
     /// idempotent add or remove — the single source of truth both the reaction
     /// chip and the emoji picker resolve to.
     pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
-        let reacting = self
-            .message(msg)
-            .map(|m| m.reactions.iter().any(|r| r.emoji == emoji && r.reacted_by(&self.me.id)))
-            .unwrap_or(false);
+        let reacting = self.message(msg).is_some_and(|m| {
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
+        });
         if reacting {
             actions::remove_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
         } else {
@@ -637,8 +677,7 @@ impl ChatApp {
         let snippet: String = if m.text.trim().is_empty() {
             m.attachment
                 .as_ref()
-                .map(|a| a.name().to_string())
-                .unwrap_or_else(|| "(no text)".to_string())
+                .map_or_else(|| "(no text)".to_string(), |a| a.name().to_string())
         } else {
             m.text.trim().chars().take(40).collect()
         };
@@ -804,14 +843,17 @@ impl ChatApp {
         let me = self.me.id.clone();
 
         // --- Microphone → Opus → publish (only while transmitting) ---
-        let transmit = !self.call.muted
-            && !self.call.deafened
-            && self.call_allows(CallAction::Speak);
+        let transmit =
+            !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
         if transmit {
             if self.mic.is_none() {
                 self.mic = crate::audio::MicCapture::new();
             }
-            let packets = self.mic.as_mut().map(|m| m.poll()).unwrap_or_default();
+            let packets = self
+                .mic
+                .as_mut()
+                .map(super::audio::MicCapture::poll)
+                .unwrap_or_default();
             for pkt in packets {
                 let seq = self.next_media_seq();
                 self.media.transport_mut().send(MediaObject {
@@ -830,8 +872,10 @@ impl ChatApp {
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
         if camera_on {
             if self.camera.is_none() {
-                self.camera =
-                    crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
+                self.camera = crate::video::CameraCapture::new(
+                    crate::video::DEFAULT_W,
+                    crate::video::DEFAULT_H,
+                );
                 // Camera encode reuses the shared stack's H.264 encoder.
                 self.cam_encoder = qos_callstream::H264Encoder::new(
                     crate::video::DEFAULT_W,
@@ -846,20 +890,20 @@ impl ChatApp {
                 }
                 _ => None,
             };
-            if let Some(nalus) = nalus {
-                if !nalus.is_empty() {
-                    // Feed the host tile's VideoPlayer so this peer sees its own
-                    // camera (the surface yields its placeholder to a real frame).
-                    self.video.feed_frame(&nalus);
-                    let seq = self.next_media_seq();
-                    self.media.transport_mut().send(MediaObject {
-                        sender: me.clone(),
-                        kind: TrackKind::Video,
-                        seq,
-                        pts: Duration::from_millis(seq * 33),
-                        payload: nalus,
-                    });
-                }
+            if let Some(nalus) = nalus
+                && !nalus.is_empty()
+            {
+                // Feed the host tile's VideoPlayer so this peer sees its own
+                // camera (the surface yields its placeholder to a real frame).
+                self.video.feed_frame(&nalus);
+                let seq = self.next_media_seq();
+                self.media.transport_mut().send(MediaObject {
+                    sender: me.clone(),
+                    kind: TrackKind::Video,
+                    seq,
+                    pts: Duration::from_millis(seq * 33),
+                    payload: nalus,
+                });
             }
         } else {
             self.camera = None;
@@ -944,15 +988,15 @@ impl ChatApp {
 
     /// Acquire a screen-share source through the portal seam: check the
     /// `ShareScreen` permission, then ask [`self.portal`](Self) for a source
-    /// (the real xdg-desktop-portal ScreenCast picker behind `live-media`; an
+    /// (the real xdg-desktop-portal `ScreenCast` picker behind `live-media`; an
     /// honest `None` in the default build; an injected fake in tests). On a
-    /// grant, open the PipeWire capture + a shared-stack video sender and
+    /// grant, open the `PipeWire` capture + a shared-stack video sender and
     /// publish the screen track (behind `live-media`) and return `true`.
     /// Returns `false` — never fabricating a share — when permission is denied
     /// or the portal grants nothing. The caller flips `call.sharing` + the
     /// shared voice membership.
     ///
-    /// The source selection stays the xdg-desktop-portal ScreenCast picker;
+    /// The source selection stays the xdg-desktop-portal `ScreenCast` picker;
     /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
@@ -973,7 +1017,9 @@ impl ChatApp {
                     crate::video::DEFAULT_FPS,
                 )
                 .ok();
-                self.media.transport_mut().publish(crate::media::TrackKind::Screen);
+                self.media
+                    .transport_mut()
+                    .publish(crate::media::TrackKind::Screen);
             }
         }
         let _ = src;
@@ -994,7 +1040,9 @@ impl ChatApp {
         {
             self.screen = None;
             self.screen_session = None;
-            self.media.transport_mut().unpublish(crate::media::TrackKind::Screen);
+            self.media
+                .transport_mut()
+                .unpublish(crate::media::TrackKind::Screen);
         }
     }
 
@@ -1002,9 +1050,207 @@ impl ChatApp {
     pub(crate) fn user(&self, id: &str) -> Option<&User> {
         self.users.iter().find(|u| u.id == id)
     }
-    pub(crate) fn user_name(&self, id: &str) -> String {
-        self.user(id).map(|u| u.name.clone()).unwrap_or_else(|| id.to_string())
+
+    /// Take the room's view of the participants off the presence store.
+    ///
+    /// Called once per frame from `draw_with_presence`. The presence store is
+    /// seeded from `CollabEvent::Context` — the broker's roster snapshot — so a
+    /// name here is the room's answer, arrived over the same transport as the
+    /// messages. Nothing a peer says about itself reaches this map.
+    ///
+    /// The room's answer **replaces** what was held rather than merging into
+    /// it. Merging is how a peer who has gone keeps a name and a colour on
+    /// everyone else's screen for the rest of the session: presence forgets
+    /// them on leave, and anything downstream that only ever learned would go
+    /// on offering a departed participant in the `@` picker and painting their
+    /// colour behind a mention.
+    pub fn adopt_room(&mut self, presence: &PresenceCtx) {
+        self.adopt_own_participant(presence);
+        self.room_names.retain(|id, _| {
+            presence
+                .names
+                .contains_key(&ui::permissions::UserId(id.clone()))
+        });
+        self.room_colors.retain(|id, _| {
+            presence
+                .names
+                .contains_key(&ui::permissions::UserId(id.clone()))
+        });
+        for (id, name) in &presence.names {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            self.room_names.insert(id.0.clone(), name.to_string());
+            // A colour is the same kind of answer: assigned per room so two
+            // people never collide, and shared with the caret pill and cursor.
+            self.room_colors
+                .insert(id.0.clone(), presence.color_for(id));
+        }
     }
+
+    /// Take the room's answer to "which of these participants am I".
+    ///
+    /// A chat author has to live in the id space the roster is keyed by,
+    /// because resolving an author's name *is* a lookup in that roster.
+    /// [`LocalIdentity::resolve`](crate::identity::LocalIdentity::resolve)
+    /// mints an id from the signing key, while every other machine addresses
+    /// this participant however the broker's roster spells it — the only
+    /// spelling that appears in a roster. Authoring under the local mint
+    /// alone means every remote message resolves to nobody and renders
+    /// unnamed, permanently, on every screen but the sender's.
+    ///
+    /// A session with no room has neither an id nor a name to adopt, and
+    /// keeps what it resolved for itself: there is no room-wide address to
+    /// be had, and nobody else is looking.
+    fn adopt_own_participant(&mut self, presence: &PresenceCtx) {
+        if let Some(room_id) = presence.self_id()
+            && room_id.0 != self.me.id
+        {
+            let former = std::mem::replace(&mut self.me.id, room_id.0.clone());
+            // The colour is derived from the id, so it moves with it —
+            // otherwise this peer's caret and its avatar disagree.
+            self.me.color_idx = crate::identity::color_index_for(room_id.0.as_bytes());
+            // What was already said under the old id is still this person: a
+            // message records who spoke, and rewriting authorship after the
+            // fact to tidy an id would be editing history. Remembering the id
+            // instead keeps "You" beside their own earlier lines.
+            if !self.former_ids.contains(&former) {
+                self.former_ids.push(former);
+            }
+        }
+        if let Some(name) = presence.self_name()
+            && name != self.me.name
+        {
+            self.me.name = name.to_string();
+            self.me.initials = crate::identity::initials_for(name);
+        }
+    }
+
+    /// Whether `id` is this session's own participant, including any id it
+    /// authored under before the room named it.
+    pub(crate) fn is_me(&self, id: &str) -> bool {
+        id == self.me.id || self.former_ids.iter().any(|f| f == id)
+    }
+
+    /// What to call `id`: the room's answer first, the document's stored name
+    /// as an offline fallback, and the raw id last so a label is never blank.
+    ///
+    /// The precedence is the point. A client that could name itself would be
+    /// telling every other peer what to call it, and two peers disagreeing
+    /// about a third's name is a difference nobody can settle. So the room
+    /// answers, and a peer only ever supplies its id.
+    pub fn display_name(&self, id: &str) -> String {
+        if let Some(n) = self.room_names.get(id)
+            && !n.trim().is_empty()
+        {
+            return n.clone();
+        }
+        if let Some(u) = self.users.iter().find(|u| u.id == id)
+            && !u.name.trim().is_empty()
+        {
+            return u.name.clone();
+        }
+        // Your own name, which this had no way to reach until the room named
+        // it: `me` is not necessarily a row in `users`, which is built from
+        // the room document, and a room this peer has not spoken in has
+        // never heard of it.
+        if self.is_me(id) && !self.me.name.trim().is_empty() {
+            return self.me.name.clone();
+        }
+        id.to_string()
+    }
+
+    /// What to call `id` on screen, with "You" for this session's own
+    /// participant and an honest placeholder for someone the room has not
+    /// named yet — nobody is ever shown their raw routing id.
+    pub(crate) fn user_name(&self, id: &str) -> String {
+        // `is_me` rather than a bare comparison: a peer that has adopted the
+        // room's address for itself still wrote its earlier lines under the
+        // id it resolved at startup, and those are still its own.
+        if self.is_me(id) {
+            return "You".to_string();
+        }
+        let named = self.display_name(id);
+        if named != id && !named.trim().is_empty() {
+            return named;
+        }
+        format!("Someone ({})", Self::unnamed_tag(id))
+    }
+
+    /// Enough of an unresolved id to tell two unnamed people apart.
+    ///
+    /// The tail rather than the head: these ids share a `peer@` prefix and
+    /// differ in their digits, so the first characters are the ones that
+    /// carry no information.
+    fn unnamed_tag(id: &str) -> String {
+        let body = id.rsplit(['@', ':']).next().unwrap_or(id);
+        let tail: String = body
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if tail.is_empty() {
+            id.to_string()
+        } else {
+            tail
+        }
+    }
+
+    /// The avatar monogram for `id`, derived from whatever the room calls them
+    /// so the letter never disagrees with the name beside it.
+    pub fn initials_for(&self, id: &str) -> String {
+        let name = self.display_name(id);
+        let s = ui::widget::Avatar::initials_for_name(&name);
+        if s.is_empty() {
+            name.chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_default()
+        } else {
+            s
+        }
+    }
+
+    /// The participant's own colour, in the shared presence vocabulary: the
+    /// room's assignment when it made one, otherwise the system-wide
+    /// per-user colour every other surface derives the same way.
+    pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
+        self.room_colors
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| ui::presence::user_color(id))
+    }
+
+    /// Everyone the `@` picker can offer: the document's own users, plus
+    /// anyone the room is talking about who has not yet written themselves
+    /// into it.
+    pub fn participants(&self) -> Vec<crate::mention::Participant> {
+        let mut out: Vec<crate::mention::Participant> = self
+            .users
+            .iter()
+            .map(|u| crate::mention::Participant {
+                id: u.id.clone(),
+                name: self.display_name(&u.id),
+                is_agent: u.is_agent,
+            })
+            .collect();
+        for id in self.room_names.keys() {
+            if !out.iter().any(|p| &p.id == id) {
+                out.push(crate::mention::Participant {
+                    id: id.clone(),
+                    name: self.display_name(id),
+                    is_agent: false,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
     }
@@ -1026,8 +1272,11 @@ impl ChatApp {
 
     /// Categories in the active workspace, ordered.
     pub(crate) fn ws_categories(&self) -> Vec<&crate::model::Category> {
-        let mut v: Vec<&crate::model::Category> =
-            self.categories.iter().filter(|c| c.workspace == self.active_ws).collect();
+        let mut v: Vec<&crate::model::Category> = self
+            .categories
+            .iter()
+            .filter(|c| c.workspace == self.active_ws)
+            .collect();
         v.sort_by_key(|c| c.order);
         v
     }
@@ -1038,7 +1287,10 @@ impl ChatApp {
 
     /// Cached voice members of `channel` (empty when nobody is connected).
     pub(crate) fn voice_in(&self, channel: &str) -> &[crate::model::VoiceMember] {
-        self.voice_members.get(channel).map(|v| v.as_slice()).unwrap_or(&[])
+        self.voice_members
+            .get(channel)
+            .map(std::vec::Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The media routing for the current call, chosen from the live participant
@@ -1093,8 +1345,7 @@ impl ChatApp {
     pub(crate) fn set_composer_focus(&mut self) {
         let editing = self.editing.is_some() || self.rename.is_some();
         let main = matches!(self.focus, Focus::Main) && !editing;
-        let thread =
-            matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
+        let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
     }
@@ -1113,17 +1364,17 @@ impl ChatApp {
         self.categories = ChatDoc::list_categories(doc);
         self.users = ChatDoc::list_users(doc);
         // Keep the active channel valid (e.g. after a workspace switch).
-        if self.channel(&self.active_channel).map(|c| c.workspace.clone())
+        if self
+            .channel(&self.active_channel)
+            .map(|c| c.workspace.clone())
             != Some(self.active_ws.clone())
-        {
-            if let Some(first) = self
+            && let Some(first) = self
                 .ws_channels()
                 .into_iter()
                 .find(|c| c.kind == model::ChannelKind::Text)
                 .map(|c| c.id.clone())
-            {
-                self.active_channel = first;
-            }
+        {
+            self.active_channel = first;
         }
         // Unread is per-peer derived state, not stored: the channel in view is
         // always read (0); every other channel shows its top-level messages
@@ -1139,7 +1390,11 @@ impl ChatApp {
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
         // Cache voice membership for every voice channel in this workspace.
         self.voice_members.clear();
-        for ch in self.channels.iter().filter(|c| c.kind == model::ChannelKind::Voice) {
+        for ch in self
+            .channels
+            .iter()
+            .filter(|c| c.kind == model::ChannelKind::Voice)
+        {
             let members = ChatDoc::list_voice_members(doc, &ch.id);
             if !members.is_empty() {
                 self.voice_members.insert(ch.id.clone(), members);
@@ -1152,17 +1407,22 @@ impl ChatApp {
         // changed (a channel/thread switch), where a caret reset is correct.
         self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
         self.composer_main.set_text(&self.draft_main);
-        let ch_name =
-            self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
-        self.composer_main.set_placeholder(&format!("Message #{ch_name}"));
-        self.composer_main.set_local_author(Some(self.me.id.clone()));
+        let ch_name = self
+            .channel(&self.active_channel)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        self.composer_main
+            .set_placeholder(&format!("Message #{ch_name}"));
+        self.composer_main
+            .set_local_author(Some(self.me.id.clone()));
         self.draft_thread = match self.thread_draft_key() {
             Some(k) => ChatDoc::draft_text(doc, &k),
             None => String::new(),
         };
         self.composer_thread.set_text(&self.draft_thread);
         self.composer_thread.set_placeholder("Reply…");
-        self.composer_thread.set_local_author(Some(self.me.id.clone()));
+        self.composer_thread
+            .set_local_author(Some(self.me.id.clone()));
         // `--shots` only: stage a mid-compose draft into the main composer so a
         // screenshot shows real text + caret. Never set in a live/interactive
         // run, so this is inert in production.
@@ -1202,8 +1462,9 @@ impl ChatApp {
         // user id → the name of the voice channel they're connected to.
         let mut in_voice: HashMap<&str, String> = HashMap::new();
         for (ch_id, members) in &self.voice_members {
-            let ch_name =
-                self.channel(ch_id).map(|c| c.name.clone()).unwrap_or_else(|| ch_id.clone());
+            let ch_name = self
+                .channel(ch_id)
+                .map_or_else(|| ch_id.clone(), |c| c.name.clone());
             for m in members {
                 in_voice.insert(m.user.as_str(), ch_name.clone());
             }
@@ -1230,7 +1491,9 @@ impl ChatApp {
             }
         };
         rows.sort_by(|a, b| {
-            rank(&a.0, &a.1).cmp(&rank(&b.0, &b.1)).then_with(|| a.0.name.cmp(&b.0.name))
+            rank(&a.0, &a.1)
+                .cmp(&rank(&b.0, &b.1))
+                .then_with(|| a.0.name.cmp(&b.0.name))
         });
         rows
     }
@@ -1303,12 +1566,17 @@ impl ChatApp {
         }
     }
     pub(crate) fn header_rect(&self) -> Rect {
-        Rect::new(self.center_left(), self.rect.y0, self.center_right(), self.rect.y0 + HEADER_H)
+        Rect::new(
+            self.center_left(),
+            self.rect.y0,
+            self.center_right(),
+            self.rect.y0 + HEADER_H,
+        )
     }
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let w = (self.center_right() - self.center_left() - 48.0).max(40.0) as f32;
         let (_, h) = tr.measure(self.draft_main.as_str(), 15.0, Some(w));
-        (COMPOSER_MIN_H + (h as f64 - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H)
+        (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -1321,7 +1589,12 @@ impl ChatApp {
     }
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
         let composer = self.composer_rect(tr);
-        Rect::new(self.center_left(), self.rect.y0 + HEADER_H, self.center_right(), composer.y0 - 6.0)
+        Rect::new(
+            self.center_left(),
+            self.rect.y0 + HEADER_H,
+            self.center_right(),
+            composer.y0 - 6.0,
+        )
     }
     pub(crate) fn thread_rect(&self) -> Rect {
         let x0 = self.right_pane_x0();
@@ -1357,20 +1630,20 @@ impl ChatApp {
     /// channel + message lists refresh).
     pub(crate) fn ensure_selection(&mut self) -> bool {
         let mut ws_changed = false;
-        if !self.workspaces.iter().any(|w| w.id == self.active_ws) {
-            if let Some(first) = self.workspaces.first() {
-                self.active_ws = first.id.clone();
-                self.active_channel.clear();
-                ws_changed = true;
-            }
+        if !self.workspaces.iter().any(|w| w.id == self.active_ws)
+            && let Some(first) = self.workspaces.first()
+        {
+            self.active_ws = first.id.clone();
+            self.active_channel.clear();
+            ws_changed = true;
         }
         // Drop a stale open thread whose parent isn't in this workspace.
-        if let Some(t) = self.thread_open.clone() {
-            if self.message(&t).is_none() {
-                self.thread_open = None;
-                if self.focus == Focus::Thread {
-                    self.focus = Focus::Main;
-                }
+        if let Some(t) = self.thread_open.clone()
+            && self.message(&t).is_none()
+        {
+            self.thread_open = None;
+            if self.focus == Focus::Thread {
+                self.focus = Focus::Main;
             }
         }
         ws_changed
@@ -1396,12 +1669,13 @@ impl ChatApp {
         for e in &self.attach_entries {
             let _ = self.images.get(&e.key());
         }
-        self.images.block_until_idle(std::time::Duration::from_secs(3));
+        self.images
+            .block_until_idle(std::time::Duration::from_secs(3));
     }
 
     /// The host-tile video rect for the current call mode, including the
     /// dragged overlay offset (docked huddle only — the expanded grid is
-    /// anchored). The single source of truth for both the VideoPlayer node
+    /// anchored). The single source of truth for both the `VideoPlayer` node
     /// placement and the surrounding call chrome.
     pub(crate) fn call_video_rect(&self) -> Rect {
         if self.call.expanded {
@@ -1452,8 +1726,7 @@ impl Widget for ChatApp {
                 &self.me.initials,
                 self.me.color_idx,
                 model::Presence::Online,
-            ) {
-            }
+            ) {}
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
@@ -1532,24 +1805,30 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size { width: percent(f.2 as f32), height: percent(f.3 as f32) },
+                size: Size {
+                    width: percent(f.2 as f32),
+                    height: percent(f.3 as f32),
+                },
                 ..Default::default()
             }
         };
         let video_node = taffy.new_leaf(video_style).unwrap();
-        node_map.insert(video_node, &mut self.video as *mut VideoPlayer as *mut dyn Widget);
+        node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
         self.video_node = Some(video_node);
 
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size { width: percent(1.0), height: percent(1.0) },
+                    size: Size {
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
+                    },
                     ..Default::default()
                 },
                 &[video_node],
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         self.root_node = Some(root);
         root
     }
@@ -1557,10 +1836,10 @@ impl Widget for ChatApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if let Some(vn) = self.video_node {
             // Shift the video by the dragged overlay offset (huddle only; the
@@ -1569,7 +1848,10 @@ impl Widget for ChatApp {
             let off = if self.call.expanded {
                 Point::new(self.rect.x0, self.rect.y0)
             } else {
-                Point::new(self.rect.x0 + self.call.overlay_offset.x, self.rect.y0 + self.call.overlay_offset.y)
+                Point::new(
+                    self.rect.x0 + self.call.overlay_offset.x,
+                    self.rect.y0 + self.call.overlay_offset.y,
+                )
             };
             self.video.apply_layout(taffy, vn, off);
         }
@@ -1604,7 +1886,12 @@ impl Widget for ChatApp {
         // content behind the floating panel.
         if self.right_mode == FlapMode::Overlay && self.right_flap.reveal() > 0.001 {
             let a = (self.right_flap.reveal() * 0.55) as f32;
-            crate::paint::fill_rect(scene, tf, self.rect, c.surfaces.overlay.with_alpha_factor(a));
+            crate::paint::fill_rect(
+                scene,
+                tf,
+                self.rect,
+                c.surfaces.overlay.with_alpha_factor(a),
+            );
             ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
         }
         if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
@@ -1621,7 +1908,12 @@ impl Widget for ChatApp {
         // Left flap (rail + channel sidebar). Overlay scrim first.
         if self.left_mode == FlapMode::Overlay && self.left_flap.reveal() > 0.001 {
             let a = (self.left_flap.reveal() * 0.55) as f32;
-            crate::paint::fill_rect(scene, tf, self.rect, c.surfaces.overlay.with_alpha_factor(a));
+            crate::paint::fill_rect(
+                scene,
+                tf,
+                self.rect,
+                c.surfaces.overlay.with_alpha_factor(a),
+            );
             ChatApp::push_hit(&mut hits, self.rect, Hit::Dismiss);
         }
         if self.left_flap_open() || self.left_flap.reveal() > 0.001 {
@@ -1689,6 +1981,12 @@ impl Widget for ChatApp {
         // file-embed hydration are gated by the real grant policy (the
         // compositor hands each app its context here every frame).
         self.perms = ChatPermissions::from_context(permissions.clone());
+        // Adopt the room's answer for who everybody is. Names and colours are
+        // the room's to give: they arrive on the collaboration context stream
+        // and land in the presence store, and this is the one door an app has
+        // onto that store. Taken before `draw` so the same frame that learns a
+        // name paints it.
+        self.adopt_room(presence);
         // Root spans the whole window — always paint.
         self.draw(scene, tf, tr, theme, presence);
     }
@@ -1729,10 +2027,9 @@ impl Widget for ChatApp {
     /// makes every text channel findable there by name or topic, alongside the
     /// actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::ChannelSearchProvider::new(
-            &self.channels,
-            &self.workspaces,
-        ))]
+        vec![Box::new(
+            crate::search_provider::ChannelSearchProvider::new(&self.channels, &self.workspaces),
+        )]
     }
 
     /// Open the conversation a chosen palette row identifies: switch to its
@@ -1740,19 +2037,19 @@ impl Widget for ChatApp {
     /// messages). View state is per-peer presentation, so the doc args are
     /// unused — the same fields the sidebar's own channel click sets.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id) {
-            if let Some(ws) = self.channel(&id).map(|c| c.workspace.clone()) {
-                self.active_ws = ws;
-                self.active_channel = id;
-                self.thread_open = None;
-                self.scroll = 0.0;
-                self.focus = Focus::Main;
-                self.caret = 0;
-            }
+        if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id)
+            && let Some(ws) = self.channel(&id).map(|c| c.workspace.clone())
+        {
+            self.active_ws = ws;
+            self.active_channel = id;
+            self.thread_open = None;
+            self.scroll = 0.0;
+            self.focus = Focus::Main;
+            self.caret = 0;
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ChatApp"
     }
 
@@ -1876,5 +2173,69 @@ mod screenshare_reuse_tests {
             (W, H),
             "featured-tile image carries the decoded frame's dimensions"
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_on_screen {
+    use super::*;
+
+    /// Nobody is ever shown the token the system uses to route to them.
+    ///
+    /// A participant id is `peer@9007495404254172154` — a hash of a public
+    /// key. It appeared beside messages and in the roster whenever the room
+    /// had not named somebody yet, which is most of the time a peer has just
+    /// arrived. It is not a name; it is the thing a name resolves from.
+    #[test]
+    fn an_unnamed_participant_is_not_shown_their_routing_token() {
+        let app = ChatApp::new_ephemeral();
+        let stranger = "peer@9007495404254172154";
+        let shown = app.user_name(stranger);
+        assert!(
+            !shown.contains("9007495404254172154"),
+            "the id leaked onto the screen as `{shown}`"
+        );
+        assert!(
+            shown.starts_with("Someone"),
+            "an unnamed peer should read as somebody unnamed, got `{shown}`"
+        );
+        assert!(
+            shown.contains("2154"),
+            "two unnamed peers have to be distinguishable, got `{shown}`"
+        );
+    }
+
+    /// You have a name, and this process knows it.
+    ///
+    /// `LocalIdentity::resolve` derives one at startup and puts it on
+    /// `me`. `display_name` consulted the room document and the roster
+    /// and neither knows you until you have spoken, so the one name that
+    /// was certain was the one it fell through on — and a person saw
+    /// their own routing hash in the roster and in the `@` picker.
+    ///
+    /// This is what "referred to as You" rests on: second-person is a
+    /// rendering choice, not a substitute for having a name.
+    #[test]
+    fn your_own_name_is_known_before_the_room_has_heard_of_you() {
+        let mut app = ChatApp::new_ephemeral();
+        app.me.name = "ada".to_string();
+        app.users.clear();
+        app.room_names.clear();
+        assert_eq!(
+            app.display_name(&app.me.id.clone()),
+            "ada",
+            "the name this process worked out for itself must be reachable",
+        );
+    }
+
+    /// And you are "You".
+    ///
+    /// Reading your own id — or your own name — back at you is how a chat
+    /// tells you it does not know who you are.
+    #[test]
+    fn the_person_reading_the_screen_is_you() {
+        let app = ChatApp::new_ephemeral();
+        let me = app.me.id.clone();
+        assert_eq!(app.user_name(&me), "You");
     }
 }

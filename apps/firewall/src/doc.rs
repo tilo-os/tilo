@@ -108,7 +108,10 @@ mod tests {
             FirewallDoc::store(&mut doc, &cfg);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-storing the same config grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same config grew the document {a} -> {b}"
+        );
     }
 
     #[test]

@@ -70,9 +70,6 @@ mod tests {
     #[test]
     fn select_reports_a_known_backend_name() {
         let (_s, name) = select_speaker();
-        assert!(matches!(
-            name,
-            "speech-dispatcher" | "espeak-ng" | "null"
-        ));
+        assert!(matches!(name, "speech-dispatcher" | "espeak-ng" | "null"));
     }
 }

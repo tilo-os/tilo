@@ -1,23 +1,14 @@
-//! `RichTextLine` — a single editable line of text wrapping a
-//! local-mode [`TextInput`].
+//! A single editable line of text wrapping a local-mode [`TextInput`], the
+//! leaf cell of a block editor. The inner `TextInput` handles cursor
+//! placement, selection, IME, copy/paste; `RichTextLine` adds:
 //!
-//! Designed as the leaf cell of a block editor. The inner `TextInput`
-//! handles cursor placement, selection, IME, copy/paste — everything
-//! that's "edit a string". `RichTextLine` adds the block-editor-shaped
-//! affordances around it:
-//!
-//! * Intercepts **Enter**, **Backspace at byte 0**, **Up arrow at the
-//!   start**, and **Down arrow at the end** before they reach the
-//!   underlying input. These keystrokes don't insert / delete / move
-//!   the cursor — they're queued as [`LineSignal`]s the parent
-//!   ([`crate::widget::block_editor::BlockEditor`]) consumes.
-//! * Exposes the cursor position so the parent can split the line at
-//!   the right byte offset.
-//! * Carries a per-line font size so a block editor can render
-//!   headings at H1/H2/H3 sizes without forking the widget.
-//! * **Phase 4**: tracks a [`MarkSpan`] list — inline bold / italic /
-//!   code / link marks — and ships rendering + Ctrl-B/I/E toggling
-//!   built on top of the inner `TextInput`'s selection range.
+//! * Intercepts Enter, Backspace at byte 0, Up at the start, and Down at the
+//!   end before the inner input sees them, queuing [`LineSignal`]s the
+//!   parent ([`crate::widget::block_editor::BlockEditor`]) consumes instead.
+//! * A per-line font size so a block editor can render H1/H2/H3 headings
+//!   without forking the widget.
+//! * A [`MarkSpan`] list (inline bold/italic/code/link) with rendering and
+//!   Ctrl-B/I/E toggling built on the inner `TextInput`'s selection range.
 
 use std::collections::HashMap;
 
@@ -32,91 +23,72 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
 use crate::widget::{TextInput, Widget};
 
-/// Signals emitted by a `RichTextLine` when a key would carry the
-/// edit out of the line itself. The parent (a `BlockEditor`) drains
-/// these via [`RichTextLine::take_signal`] after every handled event.
+/// Emitted when a key would carry the edit out of the line itself; the
+/// parent (a `BlockEditor`) drains these via [`RichTextLine::take_signal`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineSignal {
-    /// User pressed Enter while focused. `split_at` is the byte index
-    /// of the caret *inside the line's current value at the moment
-    /// Enter was pressed* — the parent splits the line there, drops
-    /// the suffix into a new block, and re-focuses.
-    Enter { split_at: usize },
-    /// User pressed Shift+Enter while focused. Same split point as
-    /// `Enter`, but the parent flags the new block as a soft-break
-    /// continuation of the current paragraph — rendered with no
-    /// top spacing so the two lines visually read as one paragraph.
-    SoftNewline { split_at: usize },
-    /// User pressed Backspace while the caret was at byte 0 with no
-    /// active selection. Parent decides whether to merge with the
-    /// previous block, delete an empty block, or no-op.
+    /// Parent splits the line at `split_at`, drops the suffix into a new
+    /// block, and re-focuses.
+    Enter {
+        split_at: usize,
+    },
+    /// Same as `Enter`, but the new block is flagged a soft-break
+    /// continuation (no top spacing, reads as one paragraph).
+    SoftNewline {
+        split_at: usize,
+    },
+    /// Caret was at byte 0 with no selection; parent decides whether to
+    /// merge with the previous block, delete an empty block, or no-op.
     BackspaceAtStart,
-    /// User pressed Up while the caret was on the first visual line
-    /// (single-line for now, so always). Parent moves focus up.
     ArrowUp,
-    /// User pressed Down while the caret was on the last visual line.
-    /// Parent moves focus down.
     ArrowDown,
-    /// User pressed Ctrl+Shift+Up. `caret` is the caret byte at the
-    /// moment the key was pressed. Instead of moving focus, the parent
-    /// extends the selection up across the block boundary, covering the
-    /// text between the selection anchor and the previous block.
-    SelectBlockUp { caret: usize },
-    /// User pressed Ctrl+Shift+Down. Mirror of [`SelectBlockUp`] — the
-    /// parent extends the selection down into the next block.
-    SelectBlockDown { caret: usize },
-    /// User typed `[[` while focused. Parent opens a [`LinkPopover`]
-    /// anchored at the caret. The `[[` characters DO fall through to
-    /// the inner input — the parent's commit-link logic strips them
-    /// when the user picks a page from the popover.
-    LinkOpen { open_at: usize },
+    /// Ctrl+Shift+Up: parent extends the selection up across the block
+    /// boundary from `caret`, instead of moving focus.
+    SelectBlockUp {
+        caret: usize,
+    },
+    /// Mirror of [`SelectBlockUp`] extending down.
+    SelectBlockDown {
+        caret: usize,
+    },
+    /// User typed `[[`; parent opens a [`LinkPopover`] anchored at
+    /// `open_at`. Brackets fall through to the inner input — the popover's
+    /// commit-link logic strips them.
+    LinkOpen {
+        open_at: usize,
+    },
 }
 
-/// Default font size when [`RichTextLine::with_size`] hasn't been
-/// called. Matches the body baseline the rest of the UI uses for
-/// `TextInput`.
+/// Matches the body baseline the rest of the UI uses for `TextInput`.
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 pub struct RichTextLine {
     inner: TextInput,
-    /// Pending signal from the most-recent `handle_event`. At most one
-    /// signal is in flight per frame; new signals overwrite the slot.
-    /// Drained by [`take_signal`].
+    /// At most one signal in flight per frame; new signals overwrite the slot.
     signal: Option<LineSignal>,
-    /// Per-line font size in CSS-like pixels. Drives both the rendered
-    /// glyph height and the leaf's intrinsic taffy height.
     font_size: f32,
-    /// Inline marks active on this line. Kept sorted by `range.start`.
+    /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
-    /// "Next typed character will be marked." Each entry pushes the
-    /// mark onto the inserted char(s) when the next `handle_event`
-    /// observes a text-input edit. Drained after applying.
+    /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
-    /// Previous text snapshot used to detect splice direction +
-    /// length so we can keep [`marks`] aligned across user edits.
-    /// Updated after every `handle_event`.
+    /// Snapshot used to detect splice direction + length so `marks` stays
+    /// aligned across user edits.
     prev_text: String,
-    /// Previous cursor position before the most-recent edit. Used
-    /// alongside `prev_text` to figure out where the splice landed.
+    /// Cursor position before the most-recent edit; used with `prev_text` to
+    /// figure out where the splice landed.
     prev_cursor: usize,
-    /// Cached authorship runs `(byte_start, byte_end, author_id)` read
-    /// from the bound Text's Automerge marks during `sync`. Drives the
-    /// authorship highlight in `BlockEditor::draw`; empty when unbound or
-    /// unmarked.
+    /// `(byte_start, byte_end, author_id)` read from the bound Text's marks
+    /// during `sync`; drives the authorship highlight in `BlockEditor::draw`.
     author_runs: Vec<(usize, usize, String)>,
 }
 
 impl RichTextLine {
-    /// Empty, unfocused line ready to be filled by [`with_text`] or
-    /// [`set_text`].
     pub fn new() -> Self {
-        // Block-editor cells render as document copy, not as form
-        // fields — so we suppress the inner input's rounded
-        // background. Font size lands via `with_font_size` from the
-        // outer builder chain.
+        // Block-editor cells render as document copy, not a form field.
         let inner = TextInput::local()
             .with_plain_chrome()
             .with_font_size(DEFAULT_FONT_SIZE);
@@ -132,8 +104,7 @@ impl RichTextLine {
         }
     }
 
-    /// Builder-style: seed the line's text. Cursor parked at the end.
-    /// The dirty flag stays false — this is a programmatic seed.
+    /// Dirty flag stays false — this is a programmatic seed.
     pub fn with_text(mut self, s: &str) -> Self {
         self.inner = self.inner.with_initial_value(s);
         self.prev_text = s.to_string();
@@ -141,181 +112,131 @@ impl RichTextLine {
         self
     }
 
-    /// Builder-style: set the per-line font size (in CSS-like pixels).
-    /// Used by `BlockEditor` to render heading blocks (H1=28, H2=22,
-    /// H3=18) larger than paragraph blocks.
+    /// For `BlockEditor` heading blocks (H1=28, H2=22, H3=18).
     pub fn with_size(mut self, size: f32) -> Self {
         self.font_size = size;
         self.inner.set_font_size(size);
         self
     }
 
-    /// Builder-style: render + measure this line in the monospace face.
-    /// Used by `BlockEditor` code-block cells so code reads as code.
     pub fn with_mono(mut self) -> Self {
         self.inner.set_mono(true);
         self
     }
 
-    /// Mutate the monospace flag after construction.
     pub fn set_mono(&mut self, mono: bool) {
         self.inner.set_mono(mono);
     }
 
-    /// Current text content.
     pub fn value(&self) -> &str {
         self.inner.value()
     }
 
-    /// Bind this line to an Automerge `Text` object so its content syncs
-    /// from the shared CRDT document and every edit splices back into
-    /// it. Used by `BlockEditor` to back each block with the per-block
-    /// `Text` at `pages[id].blocks[i].text`. After binding, [`sync`]
-    /// pulls the latest text on each frame.
+    /// Used by `BlockEditor` to back each block with the per-block `Text` at
+    /// `pages[id].blocks[i].text`.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.inner.bind_text(obj);
     }
 
-    /// The Automerge `Text` this line is bound to, if any.
     pub fn bound_obj(&self) -> Option<ObjId> {
         self.inner.bound_obj().cloned()
     }
 
-    /// Set the local user's id for authorship stamping on edits.
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.inner.set_local_author(author);
     }
 
-    /// Authorship runs `(byte_start, byte_end, author_id)` cached from
-    /// the bound Text's Automerge marks during the last `sync`. Used by
-    /// `BlockEditor::draw` to paint the authorship highlight.
     pub fn author_runs(&self) -> &[(usize, usize, String)] {
         &self.author_runs
     }
 
-    /// Replace the text programmatically. Does NOT mark the line as
-    /// dirty (programmatic writes are not user edits). Cursor lands
-    /// at the end after clamping to a char boundary.
+    /// Does NOT mark the line dirty — programmatic writes are not user edits.
     pub fn set_text(&mut self, s: &str) {
         self.inner.set_text(s);
-        // After a programmatic set_text the cursor needs to be a
-        // valid offset; TextInput::set_text just runs clamp, so
-        // park the caret at the end of the new value (matches what
-        // `with_initial_value` does at construction time).
         self.inner.set_cursor_pos(s.len());
-        // Reset mark tracking — programmatic writes don't preserve
-        // the prior marks (parents are responsible for re-seeding
-        // marks via `set_marks` after a programmatic text rewrite).
+        // Doesn't preserve prior marks; parents re-seed via `set_marks`.
         self.marks.clear();
         self.pending_marks.clear();
         self.prev_text = s.to_string();
         self.prev_cursor = s.len();
     }
 
-    /// One-shot read of user edits. Returns `Some(text)` if the user
-    /// has typed/deleted since the last call. Clears the dirty flag.
     pub fn take_dirty(&mut self) -> Option<String> {
         self.inner.take_dirty()
     }
 
-    /// True if the inner input currently holds focus.
     pub fn is_focused(&self) -> bool {
         self.inner.is_focused()
     }
 
-    /// Set focus on the underlying input. When losing focus we don't
-    /// touch the cursor — it stays wherever the user last left it.
+    /// When losing focus the cursor isn't touched — it stays wherever
+    /// the user last left it.
     pub fn set_focus(&mut self, focused: bool) {
         self.inner.set_focus(focused);
     }
 
-    /// True iff the cursor is at byte 0 (the start of the line).
     pub fn cursor_at_start(&self) -> bool {
         self.inner.cursor_pos() == 0
     }
 
-    /// True iff the cursor is at `value().len()` (the end of the line).
     pub fn cursor_at_end(&self) -> bool {
         self.inner.cursor_pos() == self.inner.value().len()
     }
 
-    /// Current cursor position as a byte index into [`value`]. Always
-    /// on a UTF-8 char boundary.
     pub fn cursor_pos(&self) -> usize {
         self.inner.cursor_pos()
     }
 
-    /// Active selection as `(start, end)` byte offsets, or `None` when
-    /// there's no selection. Used to broadcast the local selection as
-    /// presence so peers can highlight it.
+    /// Used to broadcast the local selection as presence so peers can
+    /// highlight it.
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         self.inner.selection_range_public()
     }
 
-    /// Move the caret to the given byte index. Clamped + char-boundary
-    /// safe. Used by `BlockEditor` after a split to land the caret at
-    /// position 0 of the new block, or after a merge to land it at
-    /// the join point.
     pub fn set_cursor_pos(&mut self, pos: usize) {
         self.inner.set_cursor_pos(pos);
         self.prev_cursor = self.inner.cursor_pos();
     }
 
-    /// Drain the pending signal (if any). At most one signal is in
-    /// flight per frame.
     pub fn take_signal(&mut self) -> Option<LineSignal> {
         self.signal.take()
     }
 
-    /// Apply layout directly. Used by `BlockEditor` which owns its
-    /// children's rects and lays them out manually rather than via
-    /// taffy nesting (one taffy leaf per block keeps the focus
-    /// machinery simple).
+    /// `BlockEditor` owns its children's rects and lays them out manually
+    /// rather than via taffy nesting.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.inner.apply_layout_external(rect);
     }
 
-    /// Font size in CSS-like pixels. Read by `BlockEditor` to lay out
-    /// each block at the right height before delegating to
-    /// [`apply_layout_external`].
     pub fn font_size(&self) -> f32 {
         self.font_size
     }
 
-    // ------------ marks API (Phase 4) ------------------------------
-
-    /// Inline marks attached to this line, sorted by start byte.
     pub fn marks(&self) -> &[MarkSpan] {
         &self.marks
     }
 
-    /// Replace the entire mark list (e.g. from a markdown parse).
     pub fn set_marks(&mut self, marks: Vec<MarkSpan>) {
         self.marks = marks;
         self.marks.sort_by_key(|s| s.range.start);
     }
 
-    /// Push a single mark span. Used by the page-link insertion path.
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
         self.marks.sort_by_key(|s| s.range.start);
     }
 
-    /// Pending-marks slot (test/inspection accessor).
     pub fn pending_marks(&self) -> &[Mark] {
         &self.pending_marks
     }
 
-    /// Toggle `mark` over the current selection. If no selection is
-    /// active, push the mark onto the pending list — the next typed
-    /// character will inherit it.
+    /// With no active selection, pushes the mark onto the pending list so
+    /// the next typed character inherits it.
     pub fn toggle_mark(&mut self, mark: Mark) {
         if let Some((s, e)) = self.inner.selection_range_public() {
             marks::toggle_mark_range(&mut self.marks, s..e, mark);
         } else {
-            // Toggle pending state: pushing the same mark twice
-            // cancels it (matches Notion's "press Ctrl-B twice with
-            // no selection clears the pending bold").
+            // Pushing the same mark twice cancels it (Notion-style).
             if let Some(idx) = self.pending_marks.iter().position(|m| m.same_kind(&mark)) {
                 self.pending_marks.remove(idx);
             } else {
@@ -324,9 +245,7 @@ impl RichTextLine {
         }
     }
 
-    /// Pixel x coordinate of byte offset `byte` inside the rendered
-    /// line. Computed from the inner `TextInput`'s most-recent
-    /// per-char layout. Returns 0.0 before the first draw.
+    /// Returns 0.0 before the first draw.
     pub fn pixel_x_for_byte(&self, theme: &Theme, byte: usize) -> f64 {
         let xs = self.inner.char_x_positions();
         if xs.is_empty() {
@@ -337,22 +256,16 @@ impl RichTextLine {
         self.inner.get_rect().x0 + pad + xs[idx] - self.inner.scroll_x()
     }
 
-    /// Exact caret rect for byte `byte`, in local coords — delegates to
-    /// the inner `TextInput` so a peer caret on this line is pixel-
-    /// identical to the line's own focused caret.
+    /// So a peer caret on this line is pixel-identical to the line's own focused caret.
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
         self.inner.caret_rect(theme, byte)
     }
 
-    /// Selection rect for `[start, end)` in local coords (delegates).
     pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
         self.inner.selection_rect(theme, start, end)
     }
 
-    /// Inverse of [`pixel_x_for_byte`] — clamps `x` to the nearest
-    /// char boundary. Used by the click-on-link hit-test in the host
-    /// app: caller passes a click x coordinate, gets back the byte
-    /// offset to look up against the mark list.
+    /// Inverse of [`pixel_x_for_byte`]; for the click-on-link hit-test.
     pub fn byte_for_pixel_x(&self, theme: &Theme, x: f64) -> usize {
         let xs = self.inner.char_x_positions();
         if xs.is_empty() {
@@ -372,10 +285,8 @@ impl RichTextLine {
         best
     }
 
-    /// Look up the [`Mark`] at byte offset `byte`, preferring
-    /// [`Mark::Link`] over other kinds (so link hit-tests still find
-    /// the link even if the text is also bold). Returns `None` if no
-    /// marks cover that byte.
+    /// Prefers [`Mark::Link`] over other kinds so link hit-tests still
+    /// find the link even if the text is also bold.
     pub fn mark_at_byte(&self, byte: usize) -> Option<&Mark> {
         let mut link_hit: Option<&Mark> = None;
         let mut any_hit: Option<&Mark> = None;
@@ -392,15 +303,12 @@ impl RichTextLine {
         link_hit.or(any_hit)
     }
 
-    /// Test-only access to the inner [`TextInput`] (for unit tests).
     #[doc(hidden)]
     pub fn inner_mut(&mut self) -> &mut TextInput {
         &mut self.inner
     }
 
-    /// Read-only access to the inner [`TextInput`]. Used by the
-    /// cross-block drag coordinator on `BlockEditor` to check the
-    /// drag state of each line without taking `&mut self`.
+    /// For `BlockEditor`'s cross-block drag coordinator, to check drag state without `&mut self`.
     #[doc(hidden)]
     pub fn inner(&self) -> &TextInput {
         &self.inner
@@ -415,18 +323,13 @@ impl Default for RichTextLine {
 
 impl Widget for RichTextLine {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // When bound to a Text object the inner input pulls the latest
-        // content from the shared CRDT here; when unbound this is a
-        // no-op (local mode). Either way, realign the mark-diff snapshot
-        // so a remotely-synced edit isn't misread as a local splice on
-        // the next keystroke.
+        // Realigning the mark-diff snapshot here keeps a remotely-synced edit
+        // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
         self.prev_text = self.inner.value().to_string();
         self.prev_cursor = self.inner.cursor_pos();
 
-        // Refresh the cached authorship runs from the bound Text's marks.
-        // Marks are char-indexed; convert to byte ranges so the draw pass
-        // can place them with `pixel_x_for_byte`.
+        // Marks are char-indexed; convert to byte ranges for `pixel_x_for_byte`.
         self.author_runs.clear();
         if let Some(obj) = self.inner.bound_obj().cloned() {
             let text = self.inner.value().to_string();
@@ -454,30 +357,26 @@ impl Widget for RichTextLine {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Single leaf sized by `font_size * 1.5` (line height plus a
-        // small breathing room) so headings end up taller than
-        // paragraph rows without needing a measure pass.
+        // font_size * 1.5 so headings end up taller than paragraph rows without a measure pass.
         let height = (self.font_size * 1.5).max(20.0);
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(height),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.inner.apply_layout_external(rect);
     }
@@ -490,13 +389,8 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Always delegate to the inner TextInput first — it lays out
-        // its caret + selection box + per-char positions and writes
-        // text into `scene`. We then overpaint mark-styled segments
-        // on top of the plain text. The overlap is intentional: most
-        // segments are plain text where the inner pass already drew
-        // the correct glyphs, and the overpaint only matters for
-        // segments where bold/italic/code/link styling differs.
+        // The inner TextInput draws the plain text first; mark-styled
+        // segments are then overpainted on top only where styling differs.
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
 
@@ -511,24 +405,20 @@ impl Widget for RichTextLine {
         }
 
         let text_size = self.font_size;
-        let line_height = (text_size as f64) * 1.25;
+        let line_height = f64::from(text_size) * 1.25;
         let rect = self.inner.get_rect();
         let pad = self.inner.text_padding_x(theme);
         let scroll_x = self.inner.scroll_x();
         let text_y = rect.y0 + (rect.height() - line_height) / 2.0;
         let xs = self.inner.char_x_positions();
         if xs.is_empty() {
-            // No layout yet (first frame) — bail; next frame the inner
-            // input's `draw` will have populated char_x_positions.
+            // First frame — inner input hasn't populated char_x_positions yet.
             return;
         }
 
-        // Clip overpaint to the input rect so a scrolled long line
-        // doesn't bleed glyphs past the column.
-        let clip_shape = vello::kurbo::RoundedRect::from_rect(
-            rect,
-            theme.tokens.radii.md as f64,
-        );
+        // Clips overpaint so a scrolled long line doesn't bleed glyphs past the column.
+        let clip_shape =
+            vello::kurbo::RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -553,11 +443,7 @@ impl Widget for RichTextLine {
                 || seg.strikethrough
                 || seg.link.is_some();
 
-            // x for this segment.
-            let x_offset = xs
-                .get(seg.range.start)
-                .copied()
-                .unwrap_or(0.0);
+            let x_offset = xs.get(seg.range.start).copied().unwrap_or(0.0);
             let x = rect.x0 + pad + x_offset - scroll_x;
             let sans_end_x_offset = xs
                 .get(seg.range.end.min(xs.len().saturating_sub(1)))
@@ -565,25 +451,10 @@ impl Widget for RichTextLine {
                 .unwrap_or(x_offset);
             let sans_end_x = rect.x0 + pad + sans_end_x_offset - scroll_x;
 
-            // Background chip for inline code.
-            //
-            // Width choice — measure the *monospace* advance for the
-            // slice and use the wider of (sans, mono) so the chip
-            // covers the sans-serif glyphs the inner TextInput already
-            // drew underneath. Using only the sans-serif extent (the
-            // original implementation) leaves the chip too wide when
-            // monospace is narrower than sans, producing the visible
-            // "chip overflows past the code text" artifact reported in
-            // the v0.1 critique. Using only the mono extent the other
-            // way around would leak the sans `code` tail past the
-            // chip's right edge. `max(sans, mono)` handles both.
             if seg.code {
-                // Inline code is drawn in the document font (see the
-                // `mono = false` below), so its extent matches the
-                // sans layout slot exactly. Sizing the chip to the sans
-                // extent keeps it from bleeding over the following text —
-                // a monospace face would be wider than its measured slot
-                // and overlap the next characters.
+                // Inline code renders in the document font (`mono = false`
+                // below) so its extent matches the sans layout slot exactly;
+                // a wider monospace measurement would overlap the next chars.
                 let chip_right = sans_end_x;
                 let bg_rect = Rect::new(
                     x - 2.0,
@@ -601,7 +472,6 @@ impl Widget for RichTextLine {
                 );
             }
 
-            // Underline for links.
             if seg.link.is_some() {
                 let underline = Rect::new(
                     x,
@@ -618,8 +488,7 @@ impl Widget for RichTextLine {
                 );
             }
 
-            // Underline mark — a rule near the baseline, in the text
-            // colour (distinct from the accent-coloured link underline).
+            // In text colour, distinct from the accent-coloured link underline above.
             if seg.underline {
                 let rule = Rect::new(
                     x,
@@ -636,7 +505,6 @@ impl Widget for RichTextLine {
                 );
             }
 
-            // Strikethrough mark — a rule through the text mid-line.
             if seg.strikethrough {
                 let mid = text_y + line_height * 0.5;
                 let rule = Rect::new(x, mid - 0.5, sans_end_x, mid + 0.5);
@@ -653,22 +521,18 @@ impl Widget for RichTextLine {
                 continue;
             }
 
-            // Pick the colour for this segment.
-            let color = if seg.link.is_some() {
-                tokens.colors.accent[5]
-            } else if seg.code {
+            let color = if seg.link.is_some() || seg.code {
                 tokens.colors.accent[5]
             } else {
                 tokens.colors.text_primary
             };
 
-            let weight = if seg.bold { TextWeight::Bold } else { TextWeight::Regular };
+            let weight = if seg.bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            };
             let italic = seg.italic;
-            // Render inline code in the document font, not a separate
-            // monospace face: char_x_positions (and thus every segment's
-            // x) are measured in that font, so a wider mono glyph run
-            // would overflow its slot and overlap the following text. The
-            // chip background + accent colour keep code visually distinct.
             let mono = false;
 
             text_renderer.draw_text_styled(
@@ -699,14 +563,9 @@ impl Widget for RichTextLine {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // Intercept the four "carry the edit out of the line" keys
-        // BEFORE the inner TextInput sees them — otherwise Enter would
-        // be filtered as a control char (no-op), and Backspace at
-        // byte 0 would silently do nothing (TextInput already guards
-        // `if cursor_pos > 0` so we can't piggy-back on the same
-        // event). Up / Down arrows would just walk into the next /
-        // previous visual line within the input (currently a no-op
-        // since it's single-line, but we still want to claim them).
+        // Intercepted before the inner TextInput sees them — otherwise Enter
+        // would be filtered as a control char, and Backspace at byte 0 would
+        // silently no-op (TextInput already guards `cursor_pos > 0`).
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -716,94 +575,83 @@ impl Widget for RichTextLine {
                 },
             ..
         } = event
+            && self.inner.is_focused()
         {
-            if self.inner.is_focused() {
-                // Phase 4: Ctrl-B / Ctrl-I / Ctrl-E toggle inline marks.
-                // Intercept BEFORE the inner TextInput sees them so the
-                // 'b'/'i'/'e' character doesn't get inserted via the
-                // text branch (TextInput's own Ctrl-handler skips them
-                // because they don't match its a/c/v/x rotation).
-                if modifiers.state().control_key() {
-                    if let Key::Character(c) = logical_key {
-                        match c.to_lowercase().as_str() {
-                            "b" => {
-                                self.toggle_mark(Mark::Bold);
-                                *handled = true;
-                                return;
-                            }
-                            "i" => {
-                                self.toggle_mark(Mark::Italic);
-                                *handled = true;
-                                return;
-                            }
-                            "e" => {
-                                self.toggle_mark(Mark::Code);
-                                *handled = true;
-                                return;
-                            }
-                            "u" => {
-                                self.toggle_mark(Mark::Underline);
-                                *handled = true;
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                match logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        // Shift+Enter is a soft-break inside a
-                        // paragraph (a second visual line, no
-                        // paragraph gap); plain Enter is a true
-                        // paragraph split.
-                        let split_at = self.inner.cursor_pos();
-                        self.signal = if modifiers.state().shift_key() {
-                            Some(LineSignal::SoftNewline { split_at })
-                        } else {
-                            Some(LineSignal::Enter { split_at })
-                        };
+            // Intercepted so the character doesn't get inserted via the
+            // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
+            if (modifiers.state().control_key() || modifiers.state().super_key())
+                && let Key::Character(c) = logical_key
+            {
+                match c.to_lowercase().as_str() {
+                    "b" => {
+                        self.toggle_mark(Mark::Bold);
                         *handled = true;
                         return;
                     }
-                    Key::Named(NamedKey::Backspace) => {
-                        // Only intercept when the caret is at byte 0
-                        // *and* there's nothing selected — otherwise
-                        // the inner input should handle the delete.
-                        if self.inner.cursor_pos() == 0 {
-                            self.signal = Some(LineSignal::BackspaceAtStart);
-                            *handled = true;
-                            return;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let m = modifiers.state();
-                        // Ctrl+Shift+Up extends the selection across the
-                        // block boundary rather than moving the caret.
-                        self.signal = if m.control_key() && m.shift_key() {
-                            Some(LineSignal::SelectBlockUp {
-                                caret: self.inner.cursor_pos(),
-                            })
-                        } else {
-                            Some(LineSignal::ArrowUp)
-                        };
+                    "i" => {
+                        self.toggle_mark(Mark::Italic);
                         *handled = true;
                         return;
                     }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let m = modifiers.state();
-                        self.signal = if m.control_key() && m.shift_key() {
-                            Some(LineSignal::SelectBlockDown {
-                                caret: self.inner.cursor_pos(),
-                            })
-                        } else {
-                            Some(LineSignal::ArrowDown)
-                        };
+                    "e" => {
+                        self.toggle_mark(Mark::Code);
+                        *handled = true;
+                        return;
+                    }
+                    "u" => {
+                        self.toggle_mark(Mark::Underline);
                         *handled = true;
                         return;
                     }
                     _ => {}
                 }
+            }
+
+            match logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    // Shift+Enter is a soft-break; plain Enter splits.
+                    let split_at = self.inner.cursor_pos();
+                    self.signal = if modifiers.state().shift_key() {
+                        Some(LineSignal::SoftNewline { split_at })
+                    } else {
+                        Some(LineSignal::Enter { split_at })
+                    };
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    // Otherwise the inner input handles the delete.
+                    if self.inner.cursor_pos() == 0 {
+                        self.signal = Some(LineSignal::BackspaceAtStart);
+                        *handled = true;
+                        return;
+                    }
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    let m = modifiers.state();
+                    self.signal = if (m.control_key() || m.super_key()) && m.shift_key() {
+                        Some(LineSignal::SelectBlockUp {
+                            caret: self.inner.cursor_pos(),
+                        })
+                    } else {
+                        Some(LineSignal::ArrowUp)
+                    };
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    let m = modifiers.state();
+                    self.signal = if (m.control_key() || m.super_key()) && m.shift_key() {
+                        Some(LineSignal::SelectBlockDown {
+                            caret: self.inner.cursor_pos(),
+                        })
+                    } else {
+                        Some(LineSignal::ArrowDown)
+                    };
+                    *handled = true;
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -819,15 +667,13 @@ impl Widget for RichTextLine {
             taffy,
         );
 
-        // After the inner handled the event, reconcile marks against
-        // any text edit. Mark shifts use byte-deltas relative to the
-        // previous text snapshot.
+        // Reconcile marks against any text edit using byte-deltas from the previous snapshot.
         let new_text = self.inner.value();
         if new_text != self.prev_text {
             let (at, inserted, removed) = diff_splice(&self.prev_text, new_text);
             marks::shift_after_edit(&mut self.marks, at, inserted, removed);
 
-            // Phase 4: drain pending marks onto the inserted bytes.
+            // Drain pending marks onto the inserted bytes.
             if inserted > 0 && !self.pending_marks.is_empty() {
                 let range = at..(at + inserted);
                 let pending = std::mem::take(&mut self.pending_marks);
@@ -836,14 +682,12 @@ impl Widget for RichTextLine {
                 }
             }
 
-            // Detect `[[` → emit LinkOpen signal so the parent can
-            // pop the LinkPopover. The signal fires when the two
-            // most recently typed characters are `[[` AND the caret
-            // lands right after them. We do NOT strip the brackets;
-            // the popover commit path takes care of that.
+            // `[[` right before the caret emits LinkOpen; brackets are
+            // stripped later by the popover commit path, not here.
             if inserted > 0 {
                 let caret = self.inner.cursor_pos();
-                if caret >= 2 && new_text.as_bytes()[caret - 1] == b'['
+                if caret >= 2
+                    && new_text.as_bytes()[caret - 1] == b'['
                     && new_text.as_bytes()[caret - 2] == b'['
                 {
                     self.signal = Some(LineSignal::LinkOpen { open_at: caret - 2 });
@@ -855,7 +699,7 @@ impl Widget for RichTextLine {
         self.prev_cursor = self.inner.cursor_pos();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RichTextLine"
     }
 
@@ -863,8 +707,6 @@ impl Widget for RichTextLine {
         self.inner.get_rect()
     }
 
-    /// Forward to the wrapped [`TextInput`] so the editable line shows the
-    /// I-beam over its text area.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.inner.cursor_shape(point)
     }
@@ -881,42 +723,42 @@ impl Widget for RichTextLine {
         self.inner.is_focused()
     }
 
-    /// An editable single line of rich text reports [`Role::TextInput`]
-    /// with `multiline` cleared (a block editor stacks many of these to
-    /// form a document). The line's plain text is the accessible value;
-    /// it is never a secret field, so the value is always surfaced.
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.inner)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::TextInput)
-                .with_value(self.value().to_string())
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: false,
-                    ..Default::default()
-                }),
-        )
+        Widget::accessibility(&self.inner)
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let handled = Widget::perform_action(&mut self.inner, action, state, path);
+        if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
+            self.marks.clear();
+            self.pending_marks.clear();
+            self.prev_text = self.inner.value().to_string();
+            self.prev_cursor = self.inner.cursor_pos();
+        }
+        handled
     }
 }
 
-/// Diff `old` and `new` and return `(at, inserted, removed)` where
-/// `at` is the first differing byte, `inserted` is the number of
-/// bytes in `new` after `at` that aren't in `old`, and `removed` is
-/// the number of bytes in `old` after `at` that were removed. The
-/// simple LCP / LCS-prefix algorithm is fine for the single-line
-/// edits this widget sees (a TextInput splices at the caret, so the
-/// diff is always a single insertion or deletion).
-/// Convert a char index into a byte index within `text`, clamping to the
-/// end. Used to map Automerge marks (char-indexed) to the byte offsets
-/// the layout/`pixel_x_for_byte` path uses.
+/// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
+/// offsets `pixel_x_for_byte` uses.
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
     text.char_indices()
         .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(b, _)| b)
 }
 
+/// Returns `(at, inserted, removed)`. The simple LCP/LCS-prefix algorithm is
+/// fine because a `TextInput` always splices at the caret, so the diff is a
+/// single insertion or deletion.
 pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let oa = old.as_bytes();
     let na = new.as_bytes();
@@ -939,44 +781,28 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     (prefix, inserted, removed)
 }
 
-/// Helper used by the host app to materialise the partition of marks
-/// into segments for a given byte length. Re-exported so callers
-/// don't have to depend on the `marks` module directly.
+/// Re-exported so callers don't have to depend on the `marks` module
+/// directly.
 pub fn segments_of(text_len: usize, marks: &[MarkSpan]) -> Vec<MarkSegment> {
     marks::segments_for(text_len, marks)
 }
 
-/// Width (in CSS-like px) of `slice` when rendered in the monospace
-/// face the inline-code chip uses. Pulled out as a free function so
-/// the chip-sizing math is unit-testable independent of the full draw
-/// path (which requires a populated Scene + Theme). The matching
-/// rendering call uses `text_renderer.draw_text_styled(..., monospace
-/// = true)` — see `RichTextLine::draw`.
-pub fn chip_mono_width(
-    text_renderer: &mut TextRenderer,
-    slice: &str,
-    size: f32,
-) -> f64 {
-    let (w, _) = text_renderer.measure_styled(
-        slice,
-        size,
-        None,
-        TextWeight::Regular,
-        false,
-        true,
-    );
-    w as f64
+/// Pulled out as a free function so the chip-sizing math is
+/// unit-testable independent of the full draw path.
+pub fn chip_mono_width(text_renderer: &mut TextRenderer, slice: &str, size: f32) -> f64 {
+    let (w, _) = text_renderer.measure_styled(slice, size, None, TextWeight::Regular, false, true);
+    f64::from(w)
 }
 
-/// Conveniently look up a page-link mark covering `byte`, returning
-/// the `PageId` if present. Used by `MainPanel::handle_event` to
-/// route clicks on link spans to the page-navigation handler.
+/// Used by `MainPanel::handle_event` to route clicks on link spans to
+/// the page-navigation handler.
 pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
     for s in marks_list {
-        if let Mark::Link(id) = &s.mark {
-            if s.range.start <= byte && byte < s.range.end {
-                return Some(*id);
-            }
+        if let Mark::Link(id) = &s.mark
+            && s.range.start <= byte
+            && byte < s.range.end
+        {
+            return Some(*id);
         }
     }
     None
@@ -986,18 +812,16 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 mod tests {
     use super::*;
     use winit::event::KeyEvent;
-    use winit::keyboard::{Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+    use winit::keyboard::{
+        Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr,
+    };
 
-    /// `KeyEventExtra` is `pub(crate)` in winit 0.30, so we can't
-    /// construct a `KeyEvent` via struct-literal — same workaround as
-    /// `command_palette::tests::key_press`. The all-zero bit pattern
-    /// is safe for every pub field this widget reads.
+    /// `KeyEventExtra` is `pub(crate)` in winit 0.30, so this zero-constructs
+    /// rather than using a struct literal.
     fn key_press(named: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1012,9 +836,7 @@ mod tests {
     fn char_press(c: &str) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1024,14 +846,6 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
-    }
-
-    fn ctrl_modifiers() -> Modifiers {
-        // Modifiers fields are pub(crate) in winit 0.30, so we zero-
-        // construct (every flag false) then update via reflection-y
-        // hacks would be a nightmare. Instead, we test toggle_mark
-        // through the public API rather than the keyboard path.
-        Modifiers::default()
     }
 
     fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
@@ -1058,8 +872,6 @@ mod tests {
         );
     }
 
-    // ---- CRDT binding (re-enabled CRDT path) -------------------------
-
     #[test]
     fn bound_line_reads_text_from_doc() {
         use automerge::{ObjType, ROOT, transaction::Transactable};
@@ -1069,7 +881,7 @@ mod tests {
 
         let mut line = RichTextLine::new();
         line.bind_text(tid.clone());
-        // Widget::sync; the root arg is unused once a Text is bound.
+        // The root arg is unused once a Text is bound.
         line.sync(&mut doc, &ROOT);
         assert_eq!(line.value(), "hello");
     }
@@ -1084,8 +896,7 @@ mod tests {
         line.bind_text(tid.clone());
         line.set_focus(true);
 
-        // Type "hi" against OUR doc (not the throwaway doc `dispatch`
-        // would make) so we can observe the splice land in the CRDT.
+        // Type against OUR doc, not the throwaway one `dispatch` would make.
         let taffy: TaffyTree<()> = TaffyTree::new();
         for c in ["h", "i"] {
             let ev = char_press(c);
@@ -1105,7 +916,11 @@ mod tests {
         }
 
         assert_eq!(line.value(), "hi");
-        assert_eq!(doc.text(&tid).unwrap(), "hi", "edits must splice into the bound Text");
+        assert_eq!(
+            doc.text(&tid).unwrap(),
+            "hi",
+            "edits must splice into the bound Text"
+        );
     }
 
     #[test]
@@ -1138,14 +953,12 @@ mod tests {
         }
         assert_eq!(doc.text(&tid).unwrap(), "hi");
 
-        // An author mark covers the inserted run.
         let marks = doc.marks(&tid).unwrap();
         assert!(
             marks.iter().any(|m| m.name.as_str() == "author"),
             "expected an author mark, got {marks:?}"
         );
 
-        // sync caches it as a byte-range run attributed to alice.
         line.sync(&mut doc, &ROOT);
         assert!(
             line.author_runs().iter().any(|(_, _, a)| a == "alice"),
@@ -1153,8 +966,7 @@ mod tests {
             line.author_runs()
         );
 
-        // The mark rides the CRDT: it survives a save/load round-trip,
-        // which is how authorship reaches a peer.
+        // Survives a save/load round-trip, which is how authorship reaches a peer.
         let reloaded = automerge::AutoCommit::load(&doc.save()).unwrap();
         let marks2 = reloaded.marks(&tid).unwrap();
         assert!(
@@ -1205,7 +1017,10 @@ mod tests {
     fn set_text_does_not_mark_dirty() {
         let mut l = RichTextLine::new();
         l.set_text("seeded");
-        assert!(l.take_dirty().is_none(), "programmatic set_text is not dirty");
+        assert!(
+            l.take_dirty().is_none(),
+            "programmatic set_text is not dirty"
+        );
         assert_eq!(l.value(), "seeded");
         assert!(l.cursor_at_end());
     }
@@ -1296,35 +1111,15 @@ mod tests {
         assert_eq!(l.value(), "abc");
     }
 
-    // ---- Phase 4: marks ----------------------------------------------
-
     #[test]
     fn toggle_mark_on_selection_wraps_it() {
         let mut l = RichTextLine::new().with_text("hello");
         l.set_focus(true);
-        // Manually set a selection on the inner TextInput.
         l.inner_mut().set_cursor_pos(0);
-        // Use the inner public selection setters indirectly: ctrl+A.
-        // The test path is simpler — set anchor + cursor manually
-        // via the public selection range path. But TextInput doesn't
-        // expose mutators, so call ctrl-a equivalent by setting via
-        // private state. We instead drive `toggle_mark` directly with
-        // a fake selection by reaching into the inner through tests.
-        //
-        // Cheaper: hand-build a selection using cursor + click path.
-        // Easiest: do it through the public select_all / Ctrl-A handler.
-        //
-        // For unit purposes here, we just call toggle_mark after
-        // priming a selection through the inner.
-        // NOTE: TextInput doesn't expose a public select_all, so we
-        // bypass selection and assert pending-mark behaviour instead
-        // for the unit. The full select-and-toggle path is covered in
-        // the integration test below.
-
+        // TextInput doesn't expose a public select_all, so this asserts
+        // pending-mark behaviour; select-and-toggle is covered below.
         l.toggle_mark(Mark::Bold);
-        // No selection → pending mark.
         assert_eq!(l.pending_marks(), &[Mark::Bold]);
-        // Toggling again clears pending.
         l.toggle_mark(Mark::Bold);
         assert!(l.pending_marks().is_empty());
     }
@@ -1335,7 +1130,6 @@ mod tests {
         l.set_focus(true);
         l.toggle_mark(Mark::Bold);
         assert_eq!(l.pending_marks().len(), 1);
-        // Type one character.
         dispatch(&mut l, &char_press("x"));
         assert_eq!(l.value(), "x");
         // Pending was drained onto the inserted byte.
@@ -1352,7 +1146,6 @@ mod tests {
         l.set_focus(true);
         l.set_cursor_pos(0);
         dispatch(&mut l, &char_press("X"));
-        // Now text is "Xhello", mark should have shifted to 3..5.
         assert_eq!(l.value(), "Xhello");
         assert_eq!(l.marks()[0].range, 3..5);
     }
@@ -1402,32 +1195,16 @@ mod tests {
 
     #[test]
     fn chip_mono_width_uses_monospace_face_not_sans() {
-        // Anchor for the inline-code chip-width fix (v0.1 critique A1).
-        // The chip BG width must be measured in the same face the
-        // *visible* code text uses (monospace), not the underlying
-        // sans-serif width the inner TextInput's `char_x_positions`
-        // reports. Otherwise the chip's right edge sits in the gap
-        // between the (sans) layout end and the (mono) glyph end —
-        // visible as "chip overflows past the code text".
-        //
-        // We pin two properties:
-        // 1. `chip_mono_width` returns a non-zero value for non-empty
-        //    input.
-        // 2. The mono advance differs from the sans-serif advance for
-        //    a typical lowercase string. Without this differentiation
-        //    the bug couldn't exist in the first place, so the test
-        //    has to observe both.
+        // Also checks the mono advance differs from sans — without that, a
+        // face mismatch couldn't be detected at all.
         let mut tr = crate::text_render::TextRenderer::new();
         let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
-        let (sans_w, _) = tr.measure_styled(
-            "inline code",
-            16.0,
-            None,
-            TextWeight::Regular,
-            false,
-            false,
+        let (sans_w, _) =
+            tr.measure_styled("inline code", 16.0, None, TextWeight::Regular, false, false);
+        assert!(
+            mono > 0.0,
+            "mono width must be non-zero for non-empty input"
         );
-        assert!(mono > 0.0, "mono width must be non-zero for non-empty input");
         assert!(
             (mono - sans_w as f64).abs() > 0.5,
             "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
@@ -1435,18 +1212,13 @@ mod tests {
         );
     }
 
-    /// Unused helper kept for symmetry with future ModifiersState test
-    /// constructors. winit 0.30 keeps `ModifiersState` fully `pub(crate)`
-    /// so we can't synthesise a Ctrl-down modifier in unit tests; the
-    /// Ctrl-B / Ctrl-I / Ctrl-E paths are exercised through
-    /// `toggle_mark` directly above.
+    /// `ModifiersState` is fully `pub(crate)` in winit 0.30, so a Ctrl-down
+    /// modifier can't be synthesised in unit tests; Ctrl-B/I/E is exercised
+    /// through `toggle_mark` above instead.
     fn _placeholder_for_modifiers_state() -> ModifiersState {
         ModifiersState::default()
     }
     fn _placeholder_for_modifiers_key_state() -> ModifiersKeyState {
         ModifiersKeyState::Unknown
-    }
-    fn _placeholder_for_ctrl_modifiers() -> Modifiers {
-        ctrl_modifiers()
     }
 }

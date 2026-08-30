@@ -19,7 +19,7 @@ impl OfflineBackend {
 }
 
 impl MusicBackend for OfflineBackend {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "offline (bundled library)"
     }
 

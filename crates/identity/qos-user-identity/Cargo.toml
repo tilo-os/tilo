@@ -66,7 +66,6 @@ thiserror.workspace = true
 # Best-effort zeroize for the root secret key on drop. dalek's
 # SigningKey already implements `ZeroizeOnDrop`; we add the derive
 # feature so the newtype wrappers we own participate too.
-zeroize = { workspace = true, features = ["derive"] }
 
 # Base32 for the enrollment-token wire form. Crockford variant
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token
@@ -74,10 +73,10 @@ zeroize = { workspace = true, features = ["derive"] }
 base32.workspace = true
 
 [dev-dependencies]
-# Deterministic RNG for reproducible signing-vector fixtures.
-rand_chacha.workspace = true
-rand_core.workspace = true
 hex.workspace = true
 # Isolated on-disk fixtures for the persistence-round-trip tests
 # so we do not touch /var/lib/qos on the developer's machine.
 tempfile.workspace = true
+
+[lints]
+workspace = true

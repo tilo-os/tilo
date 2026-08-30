@@ -3,8 +3,7 @@
 //! The canonical manifest crate (`qos-pkg`) is being built in parallel.
 //! This module defines just enough of the shape `qos-launcher` needs
 //! today so we can iterate without blocking on the other agent. When
-//! `qos-pkg` lands, replace [`MinimalManifest`] with the published type
-//! (and pin it as a path dep here).
+//! `qos-pkg` lands, replace [`MinimalManifest`] with the published type.
 //!
 //! ### Assumed manifest shape (TOML)
 //!
@@ -27,89 +26,67 @@
 //!
 //! A manifest used to name the paths it wanted, and the launcher bound
 //! them — so the sandbox enforced a policy written by the thing it was
-//! sandboxing. `write = ["~"]`, `write = ["/"]` and
-//! `write = ["~/.local/share/dev.qos.totp"]` were all accepted and all
-//! faithfully bound read-write. Signing did not help: it proves who
-//! wrote the manifest, not that what it asks for is reasonable.
+//! sandboxing. `write = ["~"]`, `write = ["/"]` and similarly broad
+//! entries were all accepted and faithfully bound read-write. Signing
+//! didn't help: it proves who wrote the manifest, not that what it asks
+//! for is reasonable.
 //!
 //! So the field is gone, and a manifest that still carries one is
 //! refused rather than ignored — see [`enforce_fs_policy`]. Ignoring it
-//! would leave the app running with less access than it expected, which
-//! surfaces as a mysterious bug instead of a policy.
+//! would leave the app running with less access than expected, a
+//! mysterious bug instead of a policy.
 //!
-//! What replaces it:
-//!
-//! - **Writes** — [`crate::appdir`]. The launcher gives the app one
-//!   directory, per room, and points `HOME`/`XDG_*` at it.
-//! - **Reads** — [`crate::profile`]. One fixed system list, identical for
-//!   every package.
-//! - **Anything else** — [`crate::capabilities`], a grant the user
-//!   consented to. One route, not two.
+//! What replaces it: **writes** via [`crate::appdir`] (one directory per
+//! room), **reads** via [`crate::profile`] (one fixed system list), and
+//! **anything else** via [`crate::capabilities`] (a grant the user
+//! consented to) — one route, not two.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Minimal manifest needed by the launcher. Lives in-tree pending
-/// full `qos-pkg` integration.
-///
-/// Accepts both the top-level `package_id = "..."` form (this crate's
-/// original shim) and the qos-pkg canonical form (`[package] id = "..."`
-/// nested table). Whichever shows up is normalised into
-/// `MinimalManifest::package_id`. Same story for `version`.
+/// Minimal manifest needed by the launcher, lives in-tree pending full
+/// `qos-pkg` integration. Accepts both the top-level `package_id =
+/// "..."` form and qos-pkg's canonical `[package] id = "..."` nested
+/// table, normalised into `MinimalManifest::package_id` (same for
+/// `version`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(from = "RawManifest")]
 pub struct MinimalManifest {
     pub package_id: String,
-    /// `[package].name` — the publisher's human-facing name. `None`
-    /// when the manifest omits it; callers fall back to deriving one
-    /// from the package id.
+    /// `[package].name` — the publisher's human-facing name. `None` falls
+    /// back to deriving one from the package id.
     pub name: Option<String>,
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
-    /// `[package].icon` — payload-relative path to the app's icon image
-    /// (a raster file: PNG/JPEG/WebP). The launcher resolves it to the
-    /// in-sandbox payload mount and exports it as `QOS_APP_ICON`, which
-    /// the toolkit loads into the window icon. `None` when the manifest
-    /// ships no icon art — the toolkit then draws a generated default.
+    /// `[package].icon` — payload-relative icon path, resolved to the
+    /// in-sandbox payload mount and exported as `QOS_APP_ICON`. `None`
+    /// draws a generated default.
     pub icon: Option<String>,
     pub version: String,
-    /// `[package].kind` — what the package *is*, as distinct from how it
-    /// starts. `app` is something a user opens; `service`, `plugin`,
-    /// `format-provider` and `runtime` are things the system uses.
-    ///
-    /// This is separate from [`Entrypoint::entry_type`] on purpose. A
-    /// package can draw and still not belong in a launcher: the
-    /// on-screen keyboard is a real GUI surface the shell places itself,
-    /// and offering "Open On-Screen Keyboard" as a tiled window is not
-    /// what anyone meant by it. Defaults to `app` so a manifest that
-    /// omits the field keeps its current behaviour.
+    /// `[package].kind` — what the package *is*: `app` is something a user
+    /// opens; `service`/`plugin`/`format-provider`/`runtime` are
+    /// system-used. Separate from [`Entrypoint::entry_type`] since a
+    /// package can draw and still not belong in a launcher (the on-screen
+    /// keyboard). Defaults to `app`.
     pub kind: String,
-    /// Optional `[package].runtime` reference from the manifest, of
-    /// the form `qos-runtime/<version>`. When present, the launcher
-    /// looks up the corresponding bundle and mounts it (see
-    /// [`crate::run::RunOptions::runtime_root`]) — apps declaring
-    /// a runtime don't need `--minimal-libs`.
+    /// Optional `[package].runtime` reference (`qos-runtime/<version>`);
+    /// when present the launcher mounts the bundle so the app doesn't need
+    /// `--minimal-libs`.
     pub runtime: Option<String>,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
-    /// `[cli].commands` — PATH-visible command names the package
-    /// declares. Empty when the package doesn't ship a CLI.
+    /// `[cli].commands` — PATH-visible command names the package declares.
     pub cli_commands: Vec<String>,
-    /// `[providers].ext` — file extensions this package declares it can
-    /// open, lowercased and without the leading dot. This is how the
-    /// desktop learns which installed app owns a document type: the
-    /// format registry knows `.odt` is an editable document, the
-    /// manifest is what says *this* package opens it. Empty for a
-    /// package that opens no files.
+    /// `[providers].ext` — file extensions this package can open, how the
+    /// desktop learns which app owns a document type.
     pub opens_ext: Vec<String>,
 }
 
 impl MinimalManifest {
-    /// Split `runtime = "qos-runtime/<v>"` into `(name, version)`.
-    /// Returns `None` if `runtime` is unset or doesn't have the
-    /// `<name>/<version>` shape.
+    /// Split `runtime = "qos-runtime/<v>"` into `(name, version)`; `None`
+    /// if unset or shaped wrong.
     pub fn runtime_ref(&self) -> Option<(&str, &str)> {
         let raw = self.runtime.as_deref()?;
         raw.split_once('/')
@@ -134,23 +111,20 @@ struct RawManifest {
     providers: Option<ProvidersBlock>,
 }
 
-/// `[providers]` block — the file kinds a package declares it opens.
-/// Mirrors [`pkg::manifest::Providers`]; decoded here so the launcher
-/// stays independent of the full pkg crate.
+/// `[providers]` block, mirrors [`pkg::manifest::Providers`], decoded
+/// here to keep the launcher independent of the full pkg crate.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ProvidersBlock {
     #[serde(default)]
     ext: Vec<String>,
-    /// Accepted so a manifest carrying `mime = [...]` still decodes.
-    /// Nothing routes on MIME yet — extension is the only resolver.
+    /// Accepted so a manifest carrying `mime = [...]` still decodes; nothing routes on MIME yet.
     #[serde(default)]
     #[allow(dead_code)]
     mime: Vec<String>,
 }
 
-/// `[cli]` block — mirrors [`pkg::manifest::Cli`] but decoded
-/// inside this crate to keep the launcher independent of the
-/// full pkg crate.
+/// `[cli]` block, mirrors [`pkg::manifest::Cli`], decoded independently
+/// of the pkg crate.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct CliBlock {
     #[serde(default)]
@@ -197,10 +171,8 @@ impl From<RawManifest> for MinimalManifest {
             .filter(|k| !k.is_empty())
             .unwrap_or_else(|| KIND_APP.to_string());
         let cli_commands = raw.cli.map(|c| c.commands).unwrap_or_default();
-        // Normalised on decode so every consumer compares the same
-        // shape: lowercase, no leading dot, no blanks. A manifest that
-        // writes `".ODT"` and one that writes `"odt"` mean the same
-        // thing and must not resolve differently.
+        // Normalised on decode: lowercase, no leading dot, no blanks — a
+        // manifest writing `".ODT"` and one writing `"odt"` must resolve the same.
         let opens_ext = raw
             .providers
             .map(|p| p.ext)
@@ -236,30 +208,25 @@ impl From<RawManifest> for MinimalManifest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Entrypoint {
-    /// Path of the entrypoint binary, relative to the payload root.
-    /// Joined with the in-sandbox payload mount to form the absolute
-    /// path used for `exec`. Used verbatim when `r#type = "gui"`
-    /// or `"cli"`; falls back for `"both"` when neither split
-    /// path is set.
+    /// Path of the entrypoint binary, relative to the payload root. Used
+    /// verbatim for `"gui"`/`"cli"`; falls back for `"both"`.
     #[serde(default)]
     pub bin: String,
-    /// Which flavour of entrypoint this is. Mirrors
-    /// [`pkg::manifest::EntrypointType`]; kept here so the launcher
-    /// stays independent of the full pkg crate.
+    /// Which flavour of entrypoint. Mirrors [`pkg::manifest::EntrypointType`].
     #[serde(default, rename = "type")]
     pub r#type: EntrypointType,
-    /// GUI-flavour binary path inside the payload. Only meaningful
-    /// when `r#type = "both"`.
+    /// GUI-flavour binary path inside the payload. Only meaningful when
+    /// `r#type = "both"`.
     #[serde(default, rename = "gui-bin")]
     pub gui_bin: Option<String>,
-    /// CLI-flavour binary path inside the payload. Only meaningful
-    /// when `r#type = "both"`.
+    /// CLI-flavour binary path inside the payload. Only meaningful when
+    /// `r#type = "both"`.
     #[serde(default, rename = "cli-bin")]
     pub cli_bin: Option<String>,
 }
 
-/// Which flavour of entrypoint the package exposes. Wire form is
-/// lowercase — `type = "gui"` / `"cli"` / `"both"`.
+/// Which flavour of entrypoint the package exposes: `type = "gui"` /
+/// `"cli"` / `"both"`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntrypointType {
@@ -270,9 +237,8 @@ pub enum EntrypointType {
 }
 
 impl Entrypoint {
-    /// Binary the *GUI* launcher path should exec. `None` for a
-    /// pure-CLI package (the launcher's `run` subcommand refuses
-    /// to launch it directly).
+    /// Binary the *GUI* launcher path should exec. `None` for a pure-CLI
+    /// package (the `run` subcommand refuses to launch it directly).
     pub fn gui_bin(&self) -> Option<&str> {
         match self.r#type {
             EntrypointType::Gui => Some(self.bin.as_str()),
@@ -284,8 +250,7 @@ impl Entrypoint {
         }
     }
 
-    /// Binary a CLI command should exec. `None` for a pure-GUI
-    /// package.
+    /// Binary a CLI command should exec. `None` for a pure-GUI package.
     pub fn cli_bin(&self) -> Option<&str> {
         match self.r#type {
             EntrypointType::Gui => None,
@@ -300,13 +265,14 @@ impl Entrypoint {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Sandbox {
-    /// `[sandbox] seccomp = "…"` — the named syscall profile the package
-    /// declares. `qos-default` is the baseline and enforces write-xor-execute;
-    /// `qos-jit` is the same policy without that rule, for a program that
-    /// genuinely compiles code at run time. Resolved through
-    /// [`Sandbox::seccomp_profile`], which treats every unrecognised name as
-    /// the strict one — a manifest typo must not be a route to a weaker
-    /// sandbox.
+    /// `[sandbox] seccomp = "…"` — the named syscall profile requested.
+    /// `qos-default` enforces write-xor-execute; `qos-jit` is the same
+    /// policy without that rule, for code genuinely compiled at run time.
+    ///
+    /// A **request**, not a setting: [`Sandbox::seccomp_profile`] treats an
+    /// unrecognised name as strict, and checks the weaker name against the
+    /// image's entitlement list — a package writing a string about itself
+    /// is not authority to lift a protection off itself.
     #[serde(default = "default_seccomp_profile")]
     pub seccomp: String,
     #[serde(default)]
@@ -314,15 +280,12 @@ pub struct Sandbox {
     #[serde(default)]
     pub fs: Fs,
     /// Map of service-name -> requirement string ("required@1",
-    /// "optional@2", …). Parsed in [`ServiceReq::parse`].
+    /// "optional@2", …), parsed in [`ServiceReq::parse`].
     #[serde(default)]
     pub services: BTreeMap<String, String>,
-    /// XDG portal policy per portal name — `file-chooser`,
-    /// `screencast`, `notifications`, `secret-service`, `open-uri`.
-    /// When at least one portal is `ViaHost` the launcher bind-mounts
-    /// the host session D-Bus socket into the sandbox and sets
-    /// `DBUS_SESSION_BUS_ADDRESS`. Absent / empty == the bus is NOT
-    /// exposed (so apps that didn't declare a portal can't reach it).
+    /// XDG portal policy per portal name. When at least one is `ViaHost`
+    /// the launcher bind-mounts the host session D-Bus socket and sets
+    /// `DBUS_SESSION_BUS_ADDRESS`; absent/empty means the bus is NOT exposed.
     #[serde(default)]
     pub portals: BTreeMap<String, PortalPolicy>,
 }
@@ -333,9 +296,8 @@ fn default_seccomp_profile() -> String {
         .to_string()
 }
 
-/// Hand-written rather than derived so the default profile is the named strict
-/// one and not an empty string — a `Sandbox` built in code confines the same
-/// way as one decoded from a manifest that omitted the key.
+/// Hand-written rather than derived so the default profile is the
+/// named strict one, not an empty string.
 impl Default for Sandbox {
     fn default() -> Self {
         Self {
@@ -349,19 +311,19 @@ impl Default for Sandbox {
 }
 
 impl Sandbox {
-    /// The syscall profile this manifest asked for, resolved fail-closed.
-    pub fn seccomp_profile(&self) -> crate::seccomp::SeccompProfile {
-        crate::seccomp::SeccompProfile::parse(&self.seccomp)
+    /// The syscall profile this launch gets, resolved fail-closed against
+    /// the image's entitlement policy — takes the package id since the
+    /// manifest's own answer isn't sufficient: whether a package may run
+    /// without write-xor-execute is the image's decision, not the
+    /// packager's.
+    pub fn seccomp_profile(&self, package_id: &str) -> crate::seccomp::SeccompProfile {
+        crate::seccomp::resolve_profile(&self.seccomp, package_id).applied
     }
 }
 
-/// How the launcher should route a portal request. Kebab-case wire
-/// form: `"via-host"` / `"deny"`.
-///
-/// This is `pkg`'s type, re-exported — not a copy. The launcher and
-/// the packager decide the same question from the same manifest
-/// field, so they must not be able to disagree about what the string
-/// means.
+/// How the launcher should route a portal request. `pkg`'s type,
+/// re-exported not copied, so the launcher and packager can't disagree
+/// about what the field means.
 pub use pkg::manifest::PortalPolicy;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -372,13 +334,10 @@ pub struct Net {
     /// - anything else → the host network is shared in.
     #[serde(default = "default_net_mode")]
     pub mode: String,
-    /// Endpoints the package declared for `mode = "allowlist"`.
-    ///
-    /// This field was previously not decoded at all, so a manifest that
-    /// enumerated its endpoints was read as "not off" and got
-    /// unrestricted access — the packager's allowlist reached nothing.
-    /// [`crate::netgate::EgressDecision::resolve`] now makes it the
-    /// ceiling for the app, and the gate enforces it.
+    /// Endpoints declared for `mode = "allowlist"`. Previously not
+    /// decoded, so an enumerating manifest was read as "not off" and got
+    /// unrestricted access. [`crate::netgate::EgressDecision::resolve`]
+    /// now makes it the ceiling.
     #[serde(default)]
     pub hosts: Vec<String>,
 }
@@ -396,12 +355,8 @@ fn default_net_mode() -> String {
     "off".to_string()
 }
 
-/// `[sandbox.fs]` — **retired**. Decoded only so that a manifest still
-/// carrying it can be named in a refusal.
-///
-/// Nothing reads these fields to build a sandbox. They exist so
-/// [`enforce_fs_policy`] can tell the user *which* entry in *which*
-/// package is the problem, which a serde "unknown field" error cannot.
+/// `[sandbox.fs]` — **retired**. Decoded only so a manifest still
+/// carrying it can be named in a refusal by [`enforce_fs_policy`].
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Fs {
     #[serde(default)]
@@ -410,11 +365,9 @@ pub struct Fs {
     pub write: Vec<String>,
 }
 
-/// A manifest asking for filesystem access it is not allowed to ask for.
-///
-/// One variant per field so the message can say what to do instead —
-/// the two cases have different answers, and "declare fewer paths" is
-/// not one of them.
+/// A manifest asking for filesystem access it is not allowed to ask
+/// for. One variant per field so the message can say what to do
+/// instead — the two cases have different answers.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FsPolicyViolation {
     #[error(
@@ -427,7 +380,11 @@ pub enum FsPolicyViolation {
          Access to a path outside it is a capability the user grants at runtime, not a line \
          in a manifest."
     )]
-    Write { package: String, entry: String, app_dir: &'static str },
+    Write {
+        package: String,
+        entry: String,
+        app_dir: &'static str,
+    },
     #[error(
         "package `{package}` declares `sandbox.fs.read = [{entry:?}]`, and an app does not \
          choose what it reads.\n  \
@@ -441,16 +398,14 @@ pub enum FsPolicyViolation {
 
 /// Refuse a manifest that names filesystem paths.
 ///
-/// Called at launch (`crate::run`) and at install (`pkg::validate`), on
-/// purpose: an install-time check alone would be bypassed by anything
-/// that hands the launcher a manifest path directly — which is exactly
-/// what `qos-launcher run --manifest` does, and what a package that was
-/// installed before this rule existed still has on disk.
+/// Called at launch and at install: an install-time check alone would
+/// be bypassed by `qos-launcher run --manifest` or a package installed
+/// before this rule existed.
 ///
-/// **No first-party exception.** Every manifest in the tree is ours and
-/// every one of them asked for something plausible; that is how the
-/// original hole stayed invisible. A rule with a bypass for the packages
-/// that ship with the OS is a rule about strangers, not a boundary.
+/// **No first-party exception.** Every manifest in the tree asked for
+/// something plausible — that is how the original hole stayed
+/// invisible. A bypass for OS-shipped packages would make this a rule
+/// about strangers, not a boundary.
 pub fn enforce_fs_policy(manifest: &MinimalManifest) -> Result<(), FsPolicyViolation> {
     // Writes first: a package asking for `/` is the more alarming of the
     // two and should be the line the user reads.
@@ -470,9 +425,8 @@ pub fn enforce_fs_policy(manifest: &MinimalManifest) -> Result<(), FsPolicyViola
     Ok(())
 }
 
-/// Required/optional service version requirement. We treat the version
-/// integer as opaque here — strict version negotiation is the broker's
-/// job. The launcher only needs to know whether absence is fatal.
+/// Required/optional service version requirement. The version integer
+/// is opaque here; the launcher only needs to know if absence is fatal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceReq {
     Required(u32),
@@ -539,26 +493,17 @@ pub enum ManifestError {
     Parse(String),
 }
 
-// `expand_path` used to live here. It turned a manifest string into a
-// host path — `~/` against `$HOME`, `$XDG_*` against the environment,
-// `<scope=current>` against the launcher's CWD — with no `..` handling,
-// no canonicalisation and no allowlist, and unknown placeholders passed
-// through unchanged. Whatever came out was bound, source and
-// destination, read-write for every `fs.write` entry.
-//
-// It is deleted rather than hardened because there is nothing left to
-// call it: no manifest field feeds a path into the sandbox any more. A
-// hardened expander would still be a mechanism for turning package text
-// into a mount, waiting for the next field that wants one.
+// `expand_path` (host path expansion for manifest fs paths) is deleted,
+// not hardened, because no manifest field feeds a path into the
+// sandbox any more — a hardened expander would just be a mechanism
+// waiting for the next field that wants one.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The shipped manifests are the source of truth for which app opens
-    /// which file type, so the parse has to survive a *real* one — the
-    /// full `qos-app.toml` shape with `[publisher]`, `[[trust.*]]`,
-    /// `[sandbox.*]` and the rest — not just a hand-written minimum.
+    /// which file type, so the parse must survive a *real* one.
     #[test]
     fn a_shipped_manifest_yields_its_declared_extensions() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -568,8 +513,8 @@ mod tests {
         let path = repo.join("apps/word-processor/qos-app.toml");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        let m: MinimalManifest = toml::from_str(&text)
-            .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+        let m: MinimalManifest =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
         assert_eq!(m.package_id, "dev.qos.word-processor");
         for ext in ["odt", "docx", "md", "rtf"] {
             assert!(
@@ -579,16 +524,16 @@ mod tests {
             );
         }
         assert!(
-            m.opens_ext.iter().all(|e| !e.starts_with('.')
-                && e.chars().all(|c| !c.is_ascii_uppercase())),
+            m.opens_ext
+                .iter()
+                .all(|e| !e.starts_with('.') && e.chars().all(|c| !c.is_ascii_uppercase())),
             "extensions are normalised on decode: {:?}",
             m.opens_ext
         );
     }
 
-    /// A package that opens nothing must say so as an empty list, not as
-    /// a parse failure — most manifests have no `[providers]` block at
-    /// all, and every one of them still has to load.
+    /// A package that opens nothing must say so as an empty list, not a
+    /// parse failure — most manifests have no `[providers]` block at all.
     #[test]
     fn a_manifest_without_a_providers_block_opens_nothing() {
         let m: MinimalManifest = toml::from_str(
@@ -635,10 +580,7 @@ collab = "required@1"
         assert_eq!(m.entrypoint.bin, "bin/notes");
         assert_eq!(m.entrypoint.r#type, EntrypointType::Gui);
         assert_eq!(m.sandbox.net.mode, "off");
-        assert_eq!(
-            m.sandbox.fs.read,
-            vec!["/usr/share/fonts".to_string()]
-        );
+        assert_eq!(m.sandbox.fs.read, vec!["/usr/share/fonts".to_string()]);
         assert!(m.runtime.is_none());
         let req = ServiceReq::parse(m.sandbox.services.get("collab").unwrap()).unwrap();
         assert!(req.is_required());
@@ -666,7 +608,10 @@ commands = ["notes", "notes-import"]
         assert_eq!(m.entrypoint.r#type, EntrypointType::Cli);
         assert_eq!(m.entrypoint.cli_bin(), Some("bin/notes"));
         assert_eq!(m.entrypoint.gui_bin(), None);
-        assert_eq!(m.cli_commands, vec!["notes".to_string(), "notes-import".to_string()]);
+        assert_eq!(
+            m.cli_commands,
+            vec!["notes".to_string(), "notes-import".to_string()]
+        );
     }
 
     #[test]
@@ -695,11 +640,8 @@ commands = ["notes"]
 
     #[test]
     fn package_kind_decodes_and_defaults_to_app() {
-        // A GUI entrypoint on a `service` is legal and meaningful: the
-        // on-screen keyboard draws, but the shell decides when to show
-        // it. Callers distinguish the two by `kind`, so it has to
-        // survive decoding rather than being inferred from the
-        // entrypoint.
+        // A GUI entrypoint on a `service` is legal (the on-screen keyboard
+        // draws, but the shell decides when to show it), so it survives decoding.
         let service = r#"
 [package]
 id      = "dev.qos.osk"
@@ -718,12 +660,15 @@ type = "gui"
             "a service can still have a GUI entrypoint",
         );
 
-        // Omitted, blank, and oddly-cased all mean the ordinary case.
+        // Omitted, blank, or oddly-cased all mean the ordinary case.
         for (src, why) in [
             ("", "a manifest with no kind is an app"),
             ("kind = \"\"\n", "a blank kind is an app"),
             ("kind = \"App\"\n", "kind is compared case-insensitively"),
-            ("kind = \" app \"\n", "surrounding space is not part of the kind"),
+            (
+                "kind = \" app \"\n",
+                "surrounding space is not part of the kind",
+            ),
         ] {
             let toml_text = format!(
                 "[package]\nid = \"dev.qos.x\"\nversion = \"0.1.0\"\n{src}\n\
@@ -736,12 +681,10 @@ type = "gui"
 
     #[test]
     fn every_shipped_manifest_declares_a_kind_the_launcher_understands() {
-        // A typo'd kind is not a parse error — it just silently stops
-        // being an app, which shows up as an icon missing from the
-        // launcher and nowhere else.
+        // A typo'd kind is not a parse error — it just silently stops being an
+        // app, invisible except as a missing icon.
         let known = ["app", "service", "plugin", "format-provider", "runtime"];
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../apps");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         let mut checked = 0;
         for entry in std::fs::read_dir(&root).expect("apps/ readable") {
             let path = entry.expect("dir entry").path().join("qos-app.toml");
@@ -764,9 +707,8 @@ type = "gui"
 
     #[test]
     fn parses_name_and_icon_from_package_block() {
-        // The human name and the icon path both come off `[package]`;
-        // the launcher forwards them to the app as QOS_APP_NAME /
-        // QOS_APP_ICON.
+        // The human name and icon path both come off `[package]`, forwarded as
+        // QOS_APP_NAME / QOS_APP_ICON.
         let toml_text = r#"
 [package]
 id      = "dev.qos.notes"
@@ -784,8 +726,8 @@ bin = "bin/notes"
 
     #[test]
     fn icon_is_none_when_absent_or_blank() {
-        // Omitted or whitespace-only means "no icon" — the toolkit then
-        // draws its generated default rather than pointing at nothing.
+        // Omitted or whitespace-only means "no icon" — the toolkit draws its
+        // generated default.
         let without = r#"
 [package]
 id      = "dev.qos.notes"
@@ -896,9 +838,8 @@ bin = "bin/notes"
         toml::from_str(&src).expect("a manifest declaring fs paths still decodes")
     }
 
-    /// The six shapes the original hole made possible. Each is refused,
-    /// and the refusal names the package and the entry — a message that
-    /// says only "invalid manifest" leaves a packager guessing.
+    /// The six shapes the original hole made possible, each refused by
+    /// naming the package and entry.
     #[test]
     fn every_path_a_package_could_name_is_refused() {
         for entry in [
@@ -921,10 +862,8 @@ bin = "bin/notes"
         }
     }
 
-    /// A read is refused on the same terms. The read profile is not a
-    /// filter a manifest gets to add to — an entry the profile already
-    /// covers is refused too, because the point is that the field is
-    /// gone, not that its contents are checked.
+    /// A read is refused on the same terms — the read profile isn't a
+    /// filter to add to, an entry it already covers is refused too.
     #[test]
     fn a_declared_read_is_refused_whether_or_not_the_profile_covers_it() {
         for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
@@ -939,8 +878,8 @@ bin = "bin/notes"
         }
     }
 
-    /// A manifest with no `[sandbox.fs]` block is the normal case and
-    /// must stay silent — an empty list is not a declaration.
+    /// A manifest with no `[sandbox.fs]` block is the normal case and must
+    /// stay silent — an empty list is not a declaration.
     #[test]
     fn a_manifest_that_names_no_path_passes() {
         let m = manifest_with("[sandbox.net]\nmode = \"off\"\n");
@@ -953,8 +892,7 @@ bin = "bin/notes"
     }
 
     /// Every manifest the OS ships goes through the same check as a
-    /// stranger's. The moment one of ours is exempt, the rule is about
-    /// strangers rather than about apps.
+    /// stranger's — no exemption.
     #[test]
     fn no_shipped_manifest_names_a_path() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -969,8 +907,8 @@ bin = "bin/notes"
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("manifest readable");
-            let m: MinimalManifest = toml::from_str(&text)
-                .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+            let m: MinimalManifest =
+                toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
             enforce_fs_policy(&m)
                 .unwrap_or_else(|e| panic!("{} is refused by its own OS: {e}", path.display()));
             checked += 1;

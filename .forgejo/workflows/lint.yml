@@ -1,0 +1,53 @@
+name: Fast lint and dependency audit
+
+# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
+# This path stays intentionally cheap so it can run on every change.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: runner
+    container:
+      image: code.sandbox.example/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: CI selector unit tests
+        run: python3 -m unittest tools/tests/test_ci_select.py
+
+  audit:
+    runs-on: runner
+    container:
+      image: code.sandbox.example/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: cargo deny
+        run: cargo deny --workspace check
+
+      - name: cargo machete
+        run: cargo machete --with-metadata

@@ -1,50 +1,21 @@
-//! Track D1 — the compositor-owned `org.freedesktop.Notifications` D-Bus
-//! service.
+//! The compositor-owned `org.freedesktop.Notifications` D-Bus service.
 //!
-//! In qOS the desktop *chrome* is owned by the compositor (top bar, the
-//! inline permission-prompt bar, presence, theming), and notifications
-//! are chrome too. Sandboxed apps that use `libnotify` / the standard
-//! freedesktop notification API talk to whatever process owns the
-//! `org.freedesktop.Notifications` bus name; this module makes the
-//! compositor that owner so notifications render as OS-drawn, OS-themed
-//! toasts (see [`crate::shell::notification::NotificationStack`]) instead
-//! of app-drawn windows.
+//! In qOS the desktop *chrome* is owned by the compositor, and
+//! notifications are chrome too: this module makes the compositor own
+//! `org.freedesktop.Notifications` so `libnotify`/freedesktop-API calls
+//! render as OS-drawn, OS-themed toasts (see
+//! [`crate::shell::notification::NotificationStack`]) instead of app-drawn windows.
 //!
-//! ## Why a thread-safe bridge
-//!
-//! The zbus service runs async on a tokio runtime (a background thread
-//! pool — same shape as the [`crate::portal`] backend). The toast queue
-//! lives on [`crate::shell::chrome_state::ChromeState`], an
-//! `Rc<RefCell<…>>` pinned to the compositor's main/winit thread (it is
-//! **not** `Send`). The two cannot share a handle directly, so they
-//! communicate through [`NotificationBridge`] — a `Send + Sync`
-//! `Arc<Mutex<…>>` mailbox, exactly mirroring how
-//! [`crate::portal::PromptQueueHandle`] hands prompts from the async
-//! portal to the synchronous chrome pump.
-//!
-//! Data flows both ways across the bridge:
-//!
-//! * **app → compositor**: `Notify` pushes an [`IncomingNotification`];
-//!   `CloseNotification` pushes a close request. The compositor's
-//!   per-frame pump ([`ChromeState::pump_dbus_notifications`]) drains
-//!   them into the live toast stack.
-//! * **compositor → app**: when a toast expires, is dismissed, or is
-//!   closed, the chrome records a closed/action event on the bridge; the
-//!   [`spawn_signal_emitter`] task drains those and emits the
-//!   `NotificationClosed` / `ActionInvoked` D-Bus signals back to the
-//!   originating app.
-//!
-//! ## Caller attribution
+//! The zbus service runs async on a tokio runtime; the toast queue lives
+//! on [`crate::shell::chrome_state::ChromeState`], an `Rc<RefCell<…>>`
+//! pinned to the compositor's main/winit thread (**not** `Send`). The
+//! two communicate through [`NotificationBridge`], a `Send + Sync`
+//! `Arc<Mutex<…>>` mailbox — the same shape
+//! [`crate::portal::PromptQueueHandle`] uses to hand prompts from the async portal to the synchronous chrome pump.
 //!
 //! Each `Notify` call is attributed to the sending app's workspace via
-//! the same [`crate::portal::CallerMap`] the portal backend uses: the
-//! per-workspace D-Bus bridge tags the connection's unique-name → a
-//! [`crate::portal::PortalCaller`] (`workspace_id` + `app_id`). The
-//! resolved caller rides along on [`IncomingNotification::caller`] so the
-//! toast can be attributed to the right workspace/app.
-//!
-//! [`ChromeState`]: crate::shell::chrome_state::ChromeState
-//! [`ChromeState::pump_dbus_notifications`]: crate::shell::chrome_state::ChromeState::pump_dbus_notifications
+//! the same [`crate::portal::CallerMap`] the portal backend uses, riding
+//! along on [`IncomingNotification::caller`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -58,15 +29,13 @@ use zbus::zvariant::OwnedValue;
 use crate::portal::{CallerMap, PortalCaller};
 
 /// Bus name the freedesktop notification spec reserves for the
-/// notification daemon. Apps using `libnotify` send `Notify` to this
-/// name; owning it makes the compositor the system notification server.
+/// notification daemon; owning it makes the compositor the system notification server.
 pub const BUS_NAME: &str = "org.freedesktop.Notifications";
 
 /// Object path the spec hard-codes for the notification interface.
 pub const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
 
-/// Reason a notification was closed, per the freedesktop spec's
-/// `NotificationClosed` signal `reason` field.
+/// Reason a notification was closed, per the freedesktop spec's `NotificationClosed` signal `reason` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseReason {
     /// 1 — the notification expired (its timeout elapsed).
@@ -89,12 +58,10 @@ impl CloseReason {
 }
 
 /// One notification that crossed the bridge from a `Notify` call, before
-/// it is mapped into a [`crate::shell::notification::Notification`] toast
-/// by the chrome pump.
+/// it is mapped into a [`crate::shell::notification::Notification`] toast by the chrome pump.
 #[derive(Clone, Debug)]
 pub struct IncomingNotification {
-    /// The notification id — either freshly allocated (when the app
-    /// passed `replaces_id == 0`) or the app-supplied id it is replacing.
+    /// The notification id — either freshly allocated (`replaces_id == 0`) or the app-supplied id it is replacing.
     pub dbus_id: u32,
     /// Sending application's human-readable name (the `app_name` arg).
     pub app_name: String,
@@ -102,16 +69,13 @@ pub struct IncomingNotification {
     pub summary: String,
     /// Optional multi-line body (becomes the toast body).
     pub body: String,
-    /// `(action_key, action_label)` pairs, un-flattened from the spec's
-    /// `[key1, label1, key2, label2, …]` array.
+    /// `(action_key, action_label)` pairs, un-flattened from the spec's `[key1, label1, key2, label2, …]` array.
     pub actions: Vec<(String, String)>,
-    /// Raw spec `expire_timeout`: `-1` = server default, `0` = never
-    /// expire, `> 0` = milliseconds.
+    /// Raw spec `expire_timeout`: `-1` = server default, `0` = never expire, `> 0` = milliseconds.
     pub expire_timeout: i32,
     /// `urgency` hint: `0` low, `1` normal, `2` critical.
     pub urgency: u8,
-    /// Workspace/app the call was attributed to (`None` if the sender
-    /// could not be mapped — e.g. an unsandboxed caller).
+    /// Workspace/app the call was attributed to (`None` if the sender couldn't be mapped — e.g. an unsandboxed caller).
     pub caller: Option<PortalCaller>,
 }
 
@@ -128,14 +92,12 @@ struct BridgeInner {
 }
 
 /// Thread-safe mailbox between the async D-Bus service and the
-/// synchronous chrome pump. Cloneable (an `Arc` bump) so the service,
-/// the chrome, and the signal-emitter task each hold their own handle.
+/// synchronous chrome pump; cloneable (`Arc` bump) so each side holds its own handle.
 #[derive(Clone, Debug)]
 pub struct NotificationBridge {
     inner: Arc<Mutex<BridgeInner>>,
-    /// Monotonic id source. The spec requires ids be non-zero and unique
-    /// for the lifetime of the server; `0` is reserved to mean "allocate
-    /// a fresh id" in `Notify`.
+    /// Monotonic id source. The spec requires ids be non-zero and unique for
+    /// the server's lifetime; `0` is reserved to mean "allocate a fresh id" in `Notify`.
     next_id: Arc<AtomicU32>,
 }
 
@@ -157,8 +119,7 @@ impl NotificationBridge {
     pub fn alloc_id(&self) -> u32 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if id == 0 {
-            // Wrapped around (after 4 billion notifications) — skip 0,
-            // which the spec reserves.
+            // Wrapped around (after 4 billion notifications) — skip 0, which the spec reserves.
             self.next_id.fetch_add(1, Ordering::Relaxed)
         } else {
             id
@@ -195,16 +156,14 @@ impl NotificationBridge {
             .unwrap_or_default()
     }
 
-    /// compositor → app: record that a toast was closed, to be emitted as
-    /// `NotificationClosed`.
+    /// compositor → app: record that a toast was closed, to be emitted as `NotificationClosed`.
     pub fn note_closed(&self, id: u32, reason: CloseReason) {
         if let Ok(mut g) = self.inner.lock() {
             g.closed_events.push((id, reason));
         }
     }
 
-    /// compositor → app: record that a toast action was activated, to be
-    /// emitted as `ActionInvoked`.
+    /// compositor → app: record that a toast action was activated, to be emitted as `ActionInvoked`.
     pub fn note_action(&self, id: u32, action_key: impl Into<String>) {
         if let Ok(mut g) = self.inner.lock() {
             g.action_events.push((id, action_key.into()));
@@ -227,15 +186,13 @@ impl NotificationBridge {
             .unwrap_or_default()
     }
 
-    /// Test/observability: number of incoming notifications buffered but
-    /// not yet drained by the chrome pump.
+    /// Test/observability: number of incoming notifications buffered but not yet drained by the chrome pump.
     pub fn pending_incoming_len(&self) -> usize {
-        self.inner.lock().map(|g| g.incoming.len()).unwrap_or(0)
+        self.inner.lock().map_or(0, |g| g.incoming.len())
     }
 }
 
-/// Parse the `urgency` hint (a `y`/byte). Defaults to `1` (normal) when
-/// absent or the wrong type — never refuse a notification over a bad hint.
+/// Parse the `urgency` hint (a `y`/byte); defaults to `1` (normal) when absent or the wrong type — never refuse a notification over a bad hint.
 fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
     hints
         .get("urgency")
@@ -244,8 +201,7 @@ fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
         .unwrap_or(1)
 }
 
-/// Un-flatten the spec's `[key1, label1, key2, label2, …]` actions array
-/// into `(key, label)` pairs, dropping a dangling trailing key.
+/// Un-flatten the spec's `[key1, label1, key2, label2, …]` actions array into `(key, label)` pairs, dropping a dangling trailing key.
 fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
     actions
         .chunks_exact(2)
@@ -254,8 +210,7 @@ fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
 }
 
 /// The `org.freedesktop.Notifications` D-Bus interface. One instance per
-/// [`serve_notifications`] call; held by the zbus `ObjectServer` for the
-/// life of the connection.
+/// [`serve_notifications`] call, held by the zbus `ObjectServer` for the connection's life.
 pub struct NotificationService {
     bridge: NotificationBridge,
     callers: CallerMap,
@@ -267,9 +222,7 @@ impl NotificationService {
     }
 
     /// Resolve the D-Bus sender to a workspace/app caller via the shared
-    /// [`CallerMap`]. `None` when no mapping exists (unsandboxed or
-    /// pre-bridge caller) — the notification still shows, just without
-    /// workspace attribution.
+    /// [`CallerMap`]. `None` when no mapping exists — the notification still shows, just without workspace attribution.
     fn resolve_caller(&self, sender: Option<&OwnedUniqueName>) -> Option<PortalCaller> {
         let key = sender.map(|n| n.as_str().to_string()).unwrap_or_default();
         self.callers.lookup(&key)
@@ -280,9 +233,8 @@ impl NotificationService {
 impl NotificationService {
     /// `Notify` — the core method. Queues a toast and returns its id.
     ///
-    /// Args (freedesktop spec): `app_name s`, `replaces_id u`,
-    /// `app_icon s`, `summary s`, `body s`, `actions as`, `hints a{sv}`,
-    /// `expire_timeout i`. Returns the assigned id `u`.
+    /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
+    /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
     #[allow(clippy::too_many_arguments)]
     async fn notify(
         &self,
@@ -321,16 +273,13 @@ impl NotificationService {
     }
 
     /// `CloseNotification` — ask the server to close a notification by id.
-    /// The compositor pump removes the toast and the signal emitter fires
-    /// `NotificationClosed(id, 3)`.
+    /// The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
     async fn close_notification(&self, id: u32) {
         self.bridge.request_close(id);
     }
 
-    /// `GetCapabilities` — advertise the optional features we honour.
-    /// `body` (multi-line body text), `actions` (the default-action
-    /// activate path), and `persistence` (critical / never-expire
-    /// notifications stay up until closed).
+    /// `GetCapabilities` — advertise the optional features we honour:
+    /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
     async fn get_capabilities(&self) -> Vec<String> {
         vec![
             "body".to_string(),
@@ -357,8 +306,7 @@ impl NotificationService {
         reason: u32,
     ) -> zbus::Result<()>;
 
-    /// `ActionInvoked(id, action_key)` — emitted when the user activates
-    /// an action on a toast.
+    /// `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
     #[zbus(signal)]
     async fn action_invoked(
         ctxt: &SignalContext<'_>,
@@ -367,8 +315,7 @@ impl NotificationService {
     ) -> zbus::Result<()>;
 }
 
-/// RAII handle keeping the notification D-Bus connection alive. Dropping
-/// it releases the bus name and tears down the object server.
+/// RAII handle keeping the notification D-Bus connection alive; dropping it releases the bus name and tears down the object server.
 pub struct ServerHandle {
     connection: zbus::Connection,
 }
@@ -382,10 +329,8 @@ impl ServerHandle {
 /// Register [`NotificationService`] at [`OBJECT_PATH`] on `connection`
 /// and request [`BUS_NAME`].
 ///
-/// **Production** passes a `zbus::Connection::session()`. **Tests** pass
-/// an in-process p2p connection so no real session bus is touched (see
-/// the module test fixture); `request_name` is best-effort — p2p
-/// connections have no broker, so a failure there is downgraded to a log.
+/// **Production** passes `zbus::Connection::session()`. **Tests** pass an
+/// in-process p2p connection; `request_name` is best-effort there since p2p connections have no broker.
 pub async fn serve_notifications(
     connection: zbus::Connection,
     service: NotificationService,
@@ -397,10 +342,8 @@ pub async fn serve_notifications(
     Ok(ServerHandle { connection })
 }
 
-/// Spawn the reverse-direction signal pump: a tokio task that drains the
-/// bridge's closed/action event queues and emits the corresponding D-Bus
-/// signals. Must be called from within a tokio runtime context (the
-/// service's runtime). The task lives until the connection drops.
+/// Spawn the reverse-direction signal pump: a tokio task draining the
+/// bridge's closed/action queues into D-Bus signals; must run inside a tokio runtime, lives until the connection drops.
 pub fn spawn_signal_emitter(
     connection: zbus::Connection,
     bridge: NotificationBridge,
@@ -516,19 +459,13 @@ mod tests {
     #[test]
     fn parse_urgency_reads_critical_byte() {
         let mut hints: HashMap<String, OwnedValue> = HashMap::new();
-        hints.insert(
-            "urgency".to_string(),
-            OwnedValue::try_from(2u8).expect("byte value"),
-        );
+        hints.insert("urgency".to_string(), OwnedValue::from(2u8));
         assert_eq!(parse_urgency(&hints), 2);
     }
 
-    // ---- D-Bus round-trip over an in-process p2p connection ----------
-    //
-    // Mirrors `tests/portal_test.rs`'s hermetic p2p fixture: a
-    // `UnixStream::pair()` carries a server (the NotificationService) and
-    // a client (a raw Proxy). No real session bus, no broker — so this
-    // runs under `cargo test -p shell --lib` with no display or D-Bus.
+    // D-Bus round-trip over an in-process p2p connection, mirroring
+    // `tests/portal_test.rs`'s hermetic fixture: a `UnixStream::pair()`
+    // carries a server and a raw-proxy client — no real session bus or broker needed.
 
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -571,9 +508,7 @@ mod tests {
     async fn notify_round_trips_with_caller_attribution() {
         let bridge = NotificationBridge::new();
         let callers = CallerMap::new();
-        // The p2p transport doesn't surface a unique-name on the header,
-        // so force the caller the same way the portal tests do — this is
-        // the production attribution shape (unique-name → PortalCaller).
+        // The p2p transport doesn't surface a unique-name, so force the caller the same way the portal tests do — the production attribution shape.
         callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(7), "org.example.app"));
 
         let (_server, client) = bring_up_pair(bridge.clone(), callers).await;
@@ -586,7 +521,7 @@ mod tests {
         let body = "All 524 tests passed";
         let actions: Vec<String> = vec!["default".into(), "Open".into()];
         let mut hints: HashMap<String, OwnedValue> = HashMap::new();
-        hints.insert("urgency".into(), OwnedValue::try_from(2u8).unwrap());
+        hints.insert("urgency".into(), OwnedValue::from(2u8));
         let expire_timeout: i32 = -1;
 
         let id: u32 = proxy

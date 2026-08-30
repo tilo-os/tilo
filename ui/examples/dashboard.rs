@@ -2,30 +2,30 @@
 //! to eyeball the incremental-rendering work from the 2026-05-23
 //! perf plan. Opens a single window with:
 //!
-//!   - 11 animating widgets in the header (3 ProgressBars +
+//!   - 11 animating widgets in the header (3 `ProgressBars` +
 //!     8 Spinners) — exercises `needs_animation_frame` + the
 //!     gate.
 //!   - 8 panels × 20 rows = ~160 cached leaves (Text + Button
 //!     + Avatar + Badge in rotation) — exercises the per-widget
-//!     `Scene::append` path.
-//!   - A footer with extra Avatars / Badges + a ToggleGroup so
+//!       `Scene::append` path.
+//!   - A footer with extra Avatars / Badges + a `ToggleGroup` so
 //!     a click target is always within reach.
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --release --example dashboard
+//! cargo run -p ui --release --example ui-lab -- dashboard
 //! ```
 //!
 //! Set `QUICK_UI_PERF=1` to see per-frame phase timings printed
 //! to stderr (the App's redraw cycle is instrumented in `app.rs`).
 
-use ui::{App, State};
 use ui::i18n::I18nManager;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup, Widget,
 };
+use ui::{App, State};
 
 fn leak_label(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
@@ -50,34 +50,37 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
         let row_idx = idx * ROWS_PER_PANEL + i;
         let label_key = leak_label(&format!("dash_lbl_{row_idx}"));
         match i % 3 {
-            0 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Button::new(
-                        leak_label(&format!("dash_btn_{row_idx}")),
-                        leak_label(&format!("dash_btnlbl_{row_idx}")),
-                        None,
-                    ))),
-            )),
-            1 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Badge::count((i as u32) * 3))),
-            )),
-            _ => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Avatar::from_initials(
-                        &format!("U{i}"),
-                        24.0,
-                    ))),
-            )),
+            0 => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Button::new(
+                            leak_label(&format!("dash_btn_{row_idx}")),
+                            leak_label(&format!("dash_btnlbl_{row_idx}")),
+                            None,
+                        ))),
+                ));
+            }
+            1 => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Badge::count((i as u32) * 3))),
+                ));
+            }
+            _ => {
+                col = col.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(label_key)))
+                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                ));
+            }
         }
     }
     Box::new(col)
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     let mut ftl = String::new();
     ftl.push_str("dash_title = QuickDesktop Dashboard\n");
@@ -116,8 +119,7 @@ fn main() {
         .push(Box::new(Spinner::with_size(24.0)));
 
     let titles = [
-        "dash_p0", "dash_p1", "dash_p2", "dash_p3",
-        "dash_p4", "dash_p5", "dash_p6", "dash_p7",
+        "dash_p0", "dash_p1", "dash_p2", "dash_p3", "dash_p4", "dash_p5", "dash_p6", "dash_p7",
     ];
     let mut panels = Row::new();
     for (i, t) in titles.iter().enumerate() {

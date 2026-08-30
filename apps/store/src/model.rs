@@ -62,7 +62,9 @@ impl InstalledState {
     pub fn update_available(&self) -> bool {
         match self {
             InstalledState::Not => false,
-            InstalledState::Installed { version, available, .. } => version != available,
+            InstalledState::Installed {
+                version, available, ..
+            } => version != available,
         }
     }
 
@@ -98,6 +100,8 @@ pub enum ActionKind {
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
     FlatpakInstall,
+    /// Flatpak, installed with a newer catalogue version → **Update**.
+    FlatpakUpdate,
     /// Flatpak, installed → **Open**.
     ///
     /// Installing an app and then having no way to start it is not a
@@ -126,6 +130,7 @@ impl ActionKind {
             ActionKind::MarkInstalled => "Mark installed",
             ActionKind::Unmark => "Installed",
             ActionKind::FlatpakInstall => "Install",
+            ActionKind::FlatpakUpdate => "Update",
             ActionKind::FlatpakOpen => "Open",
             ActionKind::FlatpakRemove => "Remove",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
@@ -171,6 +176,14 @@ pub struct StoreItem {
     /// Source-code URL, if the item exposes it. qOS entries do; most
     /// Flathub apps don't via the v2 API.
     pub source_url: Option<String>,
+    /// Original local `.flatpakref` selected through file-open integration.
+    ///
+    /// Catalogue Flatpaks leave this empty and install by app id from
+    /// Flathub. A populated value keeps the file-open flow on the same card
+    /// and action path while ensuring Flatpak receives the exact reference
+    /// the user chose.
+    #[serde(default)]
+    pub install_ref_path: Option<String>,
     /// Where this came from.
     pub source: StoreSource,
     /// Newest → oldest.
@@ -185,10 +198,7 @@ impl StoreItem {
     /// The version the UI advertises as "latest" — the first entry, or
     /// an empty string when the source didn't ship any versions.
     pub fn latest_version(&self) -> &str {
-        self.versions
-            .first()
-            .map(|v| v.version.as_str())
-            .unwrap_or("")
+        self.versions.first().map_or("", |v| v.version.as_str())
     }
 
     /// Which primary action the card should offer this frame.
@@ -210,6 +220,11 @@ impl StoreItem {
             }
             (StoreSource::Flathub, _, false) => ActionKind::NeedsFlatpakHost,
             (StoreSource::Flathub, InstalledState::Not, true) => ActionKind::FlatpakInstall,
+            (StoreSource::Flathub, InstalledState::Installed { .. }, true)
+                if !self.latest_version().is_empty() && self.installed.update_available() =>
+            {
+                ActionKind::FlatpakUpdate
+            }
             (StoreSource::Flathub, InstalledState::Installed { .. }, true) => {
                 ActionKind::FlatpakOpen
             }
@@ -240,9 +255,7 @@ impl StoreItem {
     /// re-derive which is which is a caller that can get it wrong.
     pub fn remove_action(&self) -> Option<ActionKind> {
         match (&self.source, &self.installed) {
-            (StoreSource::Qos { .. }, InstalledState::Installed { .. }) => {
-                Some(ActionKind::Remove)
-            }
+            (StoreSource::Qos { .. }, InstalledState::Installed { .. }) => Some(ActionKind::Remove),
             (StoreSource::Flathub, InstalledState::Installed { .. }) => {
                 Some(ActionKind::FlatpakRemove)
             }
@@ -261,10 +274,8 @@ impl StoreItem {
     pub fn install_rank(&self) -> u8 {
         if self.installed.is_pinned() {
             2
-        } else if self.installed.is_installed() {
-            1
         } else {
-            0
+            u8::from(self.installed.is_installed())
         }
     }
 
@@ -352,12 +363,15 @@ mod tests {
         StoreItem {
             id: format!("dev.qos.{}", name.to_ascii_lowercase()),
             name: name.into(),
-            description: format!("Some {} app", name),
+            description: format!("Some {name} app"),
             categories: vec!["Productivity".into()],
             icon_url: None,
             homepage_url: None,
             source_url: None,
-            source: StoreSource::Qos { registry_name: "qOS main".into() },
+            install_ref_path: None,
+            source: StoreSource::Qos {
+                registry_name: "qOS main".into(),
+            },
             versions: vec![StoreItemVersion {
                 version: latest.into(),
                 released_at_unix: 0,
@@ -372,13 +386,14 @@ mod tests {
 
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
-            id: format!("org.example.{}", name),
+            id: format!("org.example.{name}"),
             name: name.into(),
-            description: format!("{} on Flathub", name),
+            description: format!("{name} on Flathub"),
             categories: vec!["Games".into()],
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source: StoreSource::Flathub,
             versions: vec![StoreItemVersion {
                 version: "1.0".into(),
@@ -435,6 +450,9 @@ mod tests {
              that can install a Flatpak and then not start it is not \
              finished"
         );
+
+        let update = flatpak_item("Chess", qinstalled("0.9", "1.0", false));
+        assert_eq!(update.action_kind(true), ActionKind::FlatpakUpdate);
         assert_eq!(
             e.remove_action(),
             Some(ActionKind::FlatpakRemove),
@@ -453,8 +471,14 @@ mod tests {
         let f = flatpak_item("Chess", qinstalled("1", "1", false));
         assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
         // Nothing to remove until something is installed.
-        assert_eq!(qos_item("Notes", InstalledState::Not, "1").remove_action(), None);
-        assert_eq!(flatpak_item("Chess", InstalledState::Not).remove_action(), None);
+        assert_eq!(
+            qos_item("Notes", InstalledState::Not, "1").remove_action(),
+            None
+        );
+        assert_eq!(
+            flatpak_item("Chess", InstalledState::Not).remove_action(),
+            None
+        );
     }
 
     #[test]
@@ -483,8 +507,14 @@ mod tests {
         let prefix = n.fuzzy_score("no");
         let mid = n.fuzzy_score("les");
         let desc = n.fuzzy_score("little");
-        assert!(prefix > mid, "prefix ({prefix}) should outrank mid-name ({mid})");
-        assert!(prefix > desc, "prefix ({prefix}) should outrank description ({desc})");
+        assert!(
+            prefix > mid,
+            "prefix ({prefix}) should outrank mid-name ({mid})"
+        );
+        assert!(
+            prefix > desc,
+            "prefix ({prefix}) should outrank description ({desc})"
+        );
     }
 
     #[test]

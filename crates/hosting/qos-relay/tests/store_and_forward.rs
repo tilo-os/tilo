@@ -9,17 +9,15 @@
 //!   3. Peer A publishes delta D1. B is offline → D1 gets queued.
 //!   4. Peer A disconnects, publishes nothing more.
 //!   5. Peer B connects + subscribes.
-//!   6. The relay's Ready reports pending_deltas=1 and immediately
+//!   6. The relay's Ready reports `pending_deltas=1` and immediately
 //!      delivers D1 to B.
-
-mod common;
 
 use std::time::Duration;
 
 use qos_relay::Envelope;
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_peer_gets_queued_deltas_on_reconnect() {
@@ -129,11 +127,18 @@ async fn offline_peer_gets_queued_deltas_on_reconnect() {
             .expect("timeout")
             .expect("channel closed");
         match env {
-            Envelope::Delta { workspace_id, delta, .. } => {
+            Envelope::Delta {
+                workspace_id,
+                delta,
+                ..
+            } => {
                 assert_eq!(workspace_id, 5);
                 got_payloads.push(delta);
             }
-            Envelope::Ready { workspace_id, pending_deltas } => {
+            Envelope::Ready {
+                workspace_id,
+                pending_deltas,
+            } => {
                 assert_eq!(workspace_id, 5);
                 assert_eq!(pending_deltas, 2);
                 got_ready = true;

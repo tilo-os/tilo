@@ -102,7 +102,9 @@ impl ContactsDoc {
         };
         let mut out = Vec::new();
         for key in doc.keys(&contacts) {
-            let Ok(id) = key.parse::<ContactId>() else { continue };
+            let Ok(id) = key.parse::<ContactId>() else {
+                continue;
+            };
             let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&contacts, key.as_str())
             else {
                 continue;
@@ -198,10 +200,10 @@ fn read_str_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<String> {
     };
     let mut out = Vec::new();
     for i in 0..doc.length(&list) {
-        if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-            if let ScalarValue::Str(s) = v.as_ref() {
-                out.push(s.to_string());
-            }
+        if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+            && let ScalarValue::Str(s) = v.as_ref()
+        {
+            out.push(s.to_string());
         }
     }
     out
@@ -395,6 +397,9 @@ mod tests {
             ContactsDoc::upsert_contact(&mut doc, &c);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-upserting an unchanged contact grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-upserting an unchanged contact grew the document {a} -> {b}"
+        );
     }
 }

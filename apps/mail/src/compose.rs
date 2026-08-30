@@ -42,7 +42,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::TextInput;
 
-use crate::model::{attachment_display_name, ComposeFormat, Draft};
+use crate::model::{ComposeFormat, Draft, attachment_display_name};
 use crate::wysiwyg::{BlockKind, InlineMark, Wysiwyg};
 
 const TITLE_H: f64 = 38.0;
@@ -139,8 +139,14 @@ pub enum ComposeAction {
 /// A drag in progress on the window itself (move or resize).
 #[derive(Clone, Copy)]
 enum Drag {
-    Move { grab: Point },
-    Resize { edge: Edge, start: Rect, from: Point },
+    Move {
+        grab: Point,
+    },
+    Resize {
+        edge: Edge,
+        start: Rect,
+        from: Point,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -213,7 +219,9 @@ impl ComposeWindow {
             format,
             editor: Wysiwyg::new(),
             plain_body: {
-                let mut b = TextInput::local().multiline(true).with_placeholder("Write your message…");
+                let mut b = TextInput::local()
+                    .multiline(true)
+                    .with_placeholder("Write your message…");
                 b.set_plain_chrome(true); // the body area draws its own card
                 b
             },
@@ -327,13 +335,21 @@ impl ComposeWindow {
         self.open_blank();
         self.format = ComposeFormat::Html;
         self.to.set_text("Ada Lovelace <ada@analytical.example>");
-        self.subject.set_text("Re: Launch plan for the spatial shell");
+        self.subject
+            .set_text("Re: Launch plan for the spatial shell");
         self.title_hint = "New message".to_string();
-        let bold = Style { bold: true, ..Default::default() };
-        let italic = Style { italic: true, ..Default::default() };
+        let bold = Style {
+            bold: true,
+            ..Default::default()
+        };
+        let italic = Style {
+            italic: true,
+            ..Default::default()
+        };
         let plain = Style::default();
         self.editor = Wysiwyg::new();
-        self.editor.push_styled_block(BlockKind::Heading(2), &[("Launch sequencing", plain)]);
+        self.editor
+            .push_styled_block(BlockKind::Heading(2), &[("Launch sequencing", plain)]);
         self.editor.push_styled_block(
             BlockKind::Paragraph,
             &[
@@ -342,9 +358,18 @@ impl ComposeWindow {
                 (".", plain),
             ],
         );
-        self.editor.push_styled_block(BlockKind::Bullet, &[("Tiling engine skeleton by Wednesday", plain)]);
-        self.editor.push_styled_block(BlockKind::Bullet, &[("Bubblewrap sandbox policy review", plain)]);
-        self.editor.push_styled_block(BlockKind::Bullet, &[("Collaboration buffer streaming last", plain)]);
+        self.editor.push_styled_block(
+            BlockKind::Bullet,
+            &[("Tiling engine skeleton by Wednesday", plain)],
+        );
+        self.editor.push_styled_block(
+            BlockKind::Bullet,
+            &[("Bubblewrap sandbox policy review", plain)],
+        );
+        self.editor.push_styled_block(
+            BlockKind::Bullet,
+            &[("Collaboration buffer streaming last", plain)],
+        );
         self.editor.push_styled_block(
             BlockKind::Quote,
             &[("Don't ship streaming before the policy is solid.", italic)],
@@ -439,8 +464,10 @@ impl ComposeWindow {
         self.cc.set_focus(matches!(field, Field::Cc));
         self.bcc.set_focus(matches!(field, Field::Bcc));
         self.subject.set_focus(matches!(field, Field::Subject));
-        self.editor.set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Html));
-        self.plain_body.set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Text));
+        self.editor
+            .set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Html));
+        self.plain_body
+            .set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Text));
         self.dirty = true;
     }
 
@@ -467,7 +494,7 @@ impl ComposeWindow {
             );
             self.rect = match self.dock {
                 DockState::Docked => {
-                    let cx = (bounds.x0 + bounds.x1) / 2.0;
+                    let cx = f64::midpoint(bounds.x0, bounds.x1);
                     let y0 = bounds.y0 + (bounds.height() - h) / 2.0;
                     Rect::new(cx - w / 2.0, y0.max(bounds.y0 + 8.0), cx + w / 2.0, y0 + h)
                 }
@@ -503,11 +530,19 @@ impl ComposeWindow {
         self.hits.clear();
         let r = self.rect;
         // Title bar (drag handle) + window buttons.
-        self.hits.push((Rect::new(r.x0, r.y0, r.x1, r.y0 + TITLE_H), ComposeHit::TitleBar));
+        self.hits.push((
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + TITLE_H),
+            ComposeHit::TitleBar,
+        ));
         let btn = 28.0;
         let close = Rect::new(r.x1 - btn - 8.0, r.y0 + 6.0, r.x1 - 8.0, r.y0 + 6.0 + btn);
         self.hits.push((close, ComposeHit::Close));
-        let popout = Rect::new(close.x0 - btn - 4.0, r.y0 + 6.0, close.x0 - 4.0, r.y0 + 6.0 + btn);
+        let popout = Rect::new(
+            close.x0 - btn - 4.0,
+            r.y0 + 6.0,
+            close.x0 - 4.0,
+            r.y0 + 6.0 + btn,
+        );
         self.hits.push((popout, ComposeHit::PopOut));
 
         let lx = r.x0 + PAD;
@@ -516,23 +551,53 @@ impl ComposeWindow {
 
         // To row + Cc/Bcc toggle on the right.
         let cc_toggle_w = 64.0;
-        self.to.apply_layout_external(Rect::new(lx + LABEL_W, y, rx - cc_toggle_w - 8.0, y + FIELD_H));
-        self.hits.push((Rect::new(lx + LABEL_W, y, rx - cc_toggle_w - 8.0, y + FIELD_H), ComposeHit::FieldTo));
-        self.hits.push((Rect::new(rx - cc_toggle_w, y, rx, y + FIELD_H), ComposeHit::ToggleCcBcc));
+        self.to.apply_layout_external(Rect::new(
+            lx + LABEL_W,
+            y,
+            rx - cc_toggle_w - 8.0,
+            y + FIELD_H,
+        ));
+        self.hits.push((
+            Rect::new(lx + LABEL_W, y, rx - cc_toggle_w - 8.0, y + FIELD_H),
+            ComposeHit::FieldTo,
+        ));
+        self.hits.push((
+            Rect::new(rx - cc_toggle_w, y, rx, y + FIELD_H),
+            ComposeHit::ToggleCcBcc,
+        ));
         y += FIELD_H + 6.0;
         if self.show_cc_bcc {
-            self.cc.apply_layout_external(Rect::new(lx + LABEL_W, y, rx, y + FIELD_H));
-            self.hits.push((Rect::new(lx + LABEL_W, y, rx, y + FIELD_H), ComposeHit::FieldCc));
+            self.cc
+                .apply_layout_external(Rect::new(lx + LABEL_W, y, rx, y + FIELD_H));
+            self.hits.push((
+                Rect::new(lx + LABEL_W, y, rx, y + FIELD_H),
+                ComposeHit::FieldCc,
+            ));
             y += FIELD_H + 6.0;
-            self.bcc.apply_layout_external(Rect::new(lx + LABEL_W, y, rx, y + FIELD_H));
-            self.hits.push((Rect::new(lx + LABEL_W, y, rx, y + FIELD_H), ComposeHit::FieldBcc));
+            self.bcc
+                .apply_layout_external(Rect::new(lx + LABEL_W, y, rx, y + FIELD_H));
+            self.hits.push((
+                Rect::new(lx + LABEL_W, y, rx, y + FIELD_H),
+                ComposeHit::FieldBcc,
+            ));
             y += FIELD_H + 6.0;
         }
         // Subject + Attach button.
         let attach_w = 84.0;
-        self.subject.apply_layout_external(Rect::new(lx + LABEL_W, y, rx - attach_w - 8.0, y + FIELD_H));
-        self.hits.push((Rect::new(lx + LABEL_W, y, rx - attach_w - 8.0, y + FIELD_H), ComposeHit::FieldSubject));
-        self.hits.push((Rect::new(rx - attach_w, y, rx, y + FIELD_H), ComposeHit::Attach));
+        self.subject.apply_layout_external(Rect::new(
+            lx + LABEL_W,
+            y,
+            rx - attach_w - 8.0,
+            y + FIELD_H,
+        ));
+        self.hits.push((
+            Rect::new(lx + LABEL_W, y, rx - attach_w - 8.0, y + FIELD_H),
+            ComposeHit::FieldSubject,
+        ));
+        self.hits.push((
+            Rect::new(rx - attach_w, y, rx, y + FIELD_H),
+            ComposeHit::Attach,
+        ));
         y += FIELD_H + 10.0;
 
         // Formatting toolbar (HTML mode) + format toggle (always).
@@ -551,7 +616,10 @@ impl ComposeWindow {
                 ComposeHit::Quote,
                 ComposeHit::Link,
             ] {
-                self.hits.push((Rect::new(tx, toolbar_y, tx + tw, toolbar_y + TOOLBAR_H - 6.0), hit));
+                self.hits.push((
+                    Rect::new(tx, toolbar_y, tx + tw, toolbar_y + TOOLBAR_H - 6.0),
+                    hit,
+                ));
                 tx += tw + 2.0;
                 // small gap after the inline-marks group
                 if matches!(hit, ComposeHit::Underline) {
@@ -561,12 +629,19 @@ impl ComposeWindow {
         }
         // Format toggle on the right of the toolbar row.
         let ftw = 96.0;
-        self.hits.push((Rect::new(rx - ftw, toolbar_y, rx, toolbar_y + TOOLBAR_H - 6.0), ComposeHit::FormatToggle));
+        self.hits.push((
+            Rect::new(rx - ftw, toolbar_y, rx, toolbar_y + TOOLBAR_H - 6.0),
+            ComposeHit::FormatToggle,
+        ));
         y += TOOLBAR_H;
 
         // Body region — fills down to the button bar.
         let buttons_h = 52.0;
-        let chips_h = if self.attachments.is_empty() { 0.0 } else { 30.0 };
+        let chips_h = if self.attachments.is_empty() {
+            0.0
+        } else {
+            30.0
+        };
         let body = Rect::new(lx, y, rx, r.y1 - buttons_h - chips_h - PAD);
         self.hits.push((body, ComposeHit::Body));
         match self.format {
@@ -576,9 +651,14 @@ impl ComposeWindow {
 
         // Buttons.
         let by = r.y1 - buttons_h + 8.0;
-        self.hits.push((Rect::new(lx, by, lx + 96.0, by + 36.0), ComposeHit::Send));
-        self.hits.push((Rect::new(lx + 104.0, by, lx + 104.0 + 110.0, by + 36.0), ComposeHit::SaveDraft));
-        self.hits.push((Rect::new(rx - 96.0, by, rx, by + 36.0), ComposeHit::Discard));
+        self.hits
+            .push((Rect::new(lx, by, lx + 96.0, by + 36.0), ComposeHit::Send));
+        self.hits.push((
+            Rect::new(lx + 104.0, by, lx + 104.0 + 110.0, by + 36.0),
+            ComposeHit::SaveDraft,
+        ));
+        self.hits
+            .push((Rect::new(rx - 96.0, by, rx, by + 36.0), ComposeHit::Discard));
 
         // Inline prompt bar (Attach path / Link URL), sitting just above the
         // button row when open.
@@ -587,13 +667,22 @@ impl ComposeWindow {
             let field = Rect::new(lx + 92.0, py, rx - 150.0, py + 30.0);
             p.input.apply_layout_external(field);
             self.hits.push((field, ComposeHit::PromptField));
-            self.hits.push((Rect::new(rx - 146.0, py, rx - 80.0, py + 30.0), ComposeHit::PromptConfirm));
-            self.hits.push((Rect::new(rx - 72.0, py, rx, py + 30.0), ComposeHit::PromptCancel));
+            self.hits.push((
+                Rect::new(rx - 146.0, py, rx - 80.0, py + 30.0),
+                ComposeHit::PromptConfirm,
+            ));
+            self.hits.push((
+                Rect::new(rx - 72.0, py, rx, py + 30.0),
+                ComposeHit::PromptCancel,
+            ));
         }
     }
 
     fn body_rect(&self) -> Rect {
-        self.hits.iter().find(|(_, h)| *h == ComposeHit::Body).map(|(r, _)| *r).unwrap_or(Rect::ZERO)
+        self.hits
+            .iter()
+            .find(|(_, h)| *h == ComposeHit::Body)
+            .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
     // ---- event handling ----
@@ -634,22 +723,56 @@ impl ComposeWindow {
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
                 for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
-                    inp.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    inp.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        &mut h,
+                        &mut ft,
+                        node_id,
+                        taffy,
+                    );
                 }
                 // Forward to the plain body too so its hover / drag-selection
                 // tracks (Text mode).
                 if matches!(self.format, ComposeFormat::Text) {
-                    self.plain_body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    self.plain_body.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        &mut h,
+                        &mut ft,
+                        node_id,
+                        taffy,
+                    );
                 }
                 if let Some(p) = self.prompt.as_mut() {
-                    p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    p.input.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        &mut h,
+                        &mut ft,
+                        node_id,
+                        taffy,
+                    );
                 }
                 self.editor.on_cursor_moved(pt, false);
                 // Consume only if inside the window (so hover outside still
                 // works for the app, but we stay modal for clicks/keys).
                 (self.rect.contains(pt), ComposeAction::None)
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let pt = self.last_mouse;
                 if !self.rect.contains(pt) {
                     // Click outside the window: stay modal. Swallow it (do not
@@ -659,16 +782,41 @@ impl ComposeWindow {
                 }
                 // Resize edge?
                 if let Some(edge) = self.resize_edge_at(pt) {
-                    self.drag = Some(Drag::Resize { edge, start: self.rect, from: pt });
+                    self.drag = Some(Drag::Resize {
+                        edge,
+                        start: self.rect,
+                        from: pt,
+                    });
                     return (true, ComposeAction::None);
                 }
-                let hit = self.hits.iter().rev().find(|(r, _)| r.contains(pt)).map(|(_, h)| *h);
+                let hit = self
+                    .hits
+                    .iter()
+                    .rev()
+                    .find(|(r, _)| r.contains(pt))
+                    .map(|(_, h)| *h);
                 if let Some(hit) = hit {
-                    return (true, self.dispatch_hit(hit, event, pt, scale_factor, modifiers, state, path, node_id, taffy));
+                    return (
+                        true,
+                        self.dispatch_hit(
+                            hit,
+                            event,
+                            pt,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            node_id,
+                            taffy,
+                        ),
+                    );
                 }
                 (true, ComposeAction::None)
             }
-            WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
                 if self.drag.is_some() {
                     self.drag = None;
                     return (true, ComposeAction::None);
@@ -681,7 +829,16 @@ impl ComposeWindow {
                 // The inline prompt captures keys while open: Esc cancels it (not
                 // the window), Enter confirms, everything else edits the field.
                 if self.prompt.is_some() {
-                    if let WindowEvent::KeyboardInput { event: WKeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } = event {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            WKeyEvent {
+                                logical_key,
+                                state: ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
                         match logical_key {
                             WKey::Named(WNamedKey::Escape) => {
                                 self.prompt = None;
@@ -698,14 +855,30 @@ impl ComposeWindow {
                     let mut h = false;
                     let mut ft: Option<taffy::NodeId> = None;
                     if let Some(p) = self.prompt.as_mut() {
-                        p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                        p.input.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            &mut h,
+                            &mut ft,
+                            node_id,
+                            taffy,
+                        );
                     }
                     self.dirty = true;
                     return (true, ComposeAction::None);
                 }
                 // Escape closes.
                 if let WindowEvent::KeyboardInput {
-                    event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape), state: ElementState::Pressed, .. },
+                    event:
+                        winit::event::KeyEvent {
+                            logical_key:
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                            state: ElementState::Pressed,
+                            ..
+                        },
                     ..
                 } = event
                 {
@@ -721,7 +894,17 @@ impl ComposeWindow {
                         ComposeFormat::Text => {
                             let mut h = false;
                             let mut ft: Option<taffy::NodeId> = None;
-                            self.plain_body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                            self.plain_body.handle_event(
+                                event,
+                                scale_factor,
+                                modifiers,
+                                state,
+                                path,
+                                &mut h,
+                                &mut ft,
+                                node_id,
+                                taffy,
+                            );
                         }
                     }
                     self.dirty = true;
@@ -731,7 +914,17 @@ impl ComposeWindow {
                 let mut h = false;
                 let mut ft: Option<taffy::NodeId> = None;
                 if let Some(inp) = self.focused_input() {
-                    inp.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    inp.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        &mut h,
+                        &mut ft,
+                        node_id,
+                        taffy,
+                    );
                 }
                 self.dirty = true;
                 // Always consume keyboard while open (modal).
@@ -756,7 +949,9 @@ impl ComposeWindow {
     ) -> ComposeAction {
         match hit {
             ComposeHit::TitleBar => {
-                self.drag = Some(Drag::Move { grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0) });
+                self.drag = Some(Drag::Move {
+                    grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
+                });
             }
             ComposeHit::Close | ComposeHit::Discard => {
                 self.close();
@@ -771,10 +966,46 @@ impl ComposeWindow {
             }
             ComposeHit::Attach => self.open_prompt(PromptKind::Attach),
             ComposeHit::FormatToggle => self.toggle_format(),
-            ComposeHit::FieldTo => self.focus_and_forward(Field::To, event, scale_factor, modifiers, state, path, node_id, taffy),
-            ComposeHit::FieldCc => self.focus_and_forward(Field::Cc, event, scale_factor, modifiers, state, path, node_id, taffy),
-            ComposeHit::FieldBcc => self.focus_and_forward(Field::Bcc, event, scale_factor, modifiers, state, path, node_id, taffy),
-            ComposeHit::FieldSubject => self.focus_and_forward(Field::Subject, event, scale_factor, modifiers, state, path, node_id, taffy),
+            ComposeHit::FieldTo => self.focus_and_forward(
+                Field::To,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+            ),
+            ComposeHit::FieldCc => self.focus_and_forward(
+                Field::Cc,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+            ),
+            ComposeHit::FieldBcc => self.focus_and_forward(
+                Field::Bcc,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+            ),
+            ComposeHit::FieldSubject => self.focus_and_forward(
+                Field::Subject,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+            ),
             ComposeHit::Body => {
                 self.set_focus(Field::Body);
                 match self.format {
@@ -786,7 +1017,17 @@ impl ComposeWindow {
                         // the click point (the preceding CursorMoved set hover).
                         let mut h = false;
                         let mut ft: Option<taffy::NodeId> = None;
-                        self.plain_body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                        self.plain_body.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            &mut h,
+                            &mut ft,
+                            node_id,
+                            taffy,
+                        );
                     }
                 }
             }
@@ -806,7 +1047,17 @@ impl ComposeWindow {
                     p.input.set_focus(true);
                     let mut h = false;
                     let mut ft: Option<taffy::NodeId> = None;
-                    p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    p.input.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        &mut h,
+                        &mut ft,
+                        node_id,
+                        taffy,
+                    );
                 }
             }
         }
@@ -824,7 +1075,11 @@ impl ComposeWindow {
         }
         input.set_focus(true);
         self.set_focus(Field::None);
-        self.prompt = Some(ComposePrompt { kind, input, error: None });
+        self.prompt = Some(ComposePrompt {
+            kind,
+            input,
+            error: None,
+        });
         self.relayout_regions();
         self.dirty = true;
     }
@@ -890,7 +1145,17 @@ impl ComposeWindow {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
-            inp.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+            inp.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut h,
+                &mut ft,
+                node_id,
+                taffy,
+            );
         }
     }
 
@@ -947,7 +1212,14 @@ impl ComposeWindow {
 
     // ---- drawing ----
 
-    pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         if !self.open {
             return;
         }
@@ -959,48 +1231,147 @@ impl ComposeWindow {
         let r = self.rect;
         // Drop shadow.
         let shadow = Rect::new(r.x0 + 2.0, r.y0 + 4.0, r.x1 + 2.0, r.y1 + 6.0);
-        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 90), None, &RoundedRect::from_rect(shadow, 14.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            Color::from_rgba8(0, 0, 0, 90),
+            None,
+            &RoundedRect::from_rect(shadow, 14.0),
+        );
         // Window body.
         fill_round(scene, t, r, 14.0, c.surfaces.raised);
         stroke_round(scene, t, r, 14.0, 1.0, c.border_white_10);
 
         // Title bar.
         let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + TITLE_H);
-        fill_round(scene, t, Rect::new(title.x0, title.y0, title.x1, title.y0 + 24.0), 14.0, c.surfaces.base);
-        fill(scene, t, Rect::new(title.x0, title.y0 + 12.0, title.x1, title.y1), c.surfaces.base);
-        fill(scene, t, Rect::new(title.x0, title.y1 - 1.0, title.x1, title.y1), c.border_standard);
+        fill_round(
+            scene,
+            t,
+            Rect::new(title.x0, title.y0, title.x1, title.y0 + 24.0),
+            14.0,
+            c.surfaces.base,
+        );
+        fill(
+            scene,
+            t,
+            Rect::new(title.x0, title.y0 + 12.0, title.x1, title.y1),
+            c.surfaces.base,
+        );
+        fill(
+            scene,
+            t,
+            Rect::new(title.x0, title.y1 - 1.0, title.x1, title.y1),
+            c.border_standard,
+        );
         let heading = if self.title_hint.is_empty() {
             "New message".to_string()
         } else {
             self.title_hint.clone()
         };
         let heading = tr.elide_to_width(&heading, 14.0, (r.width() - 100.0) as f32);
-        tr.draw_text_weighted(scene, &heading, 14.0, c.text_primary, t * Affine::translate((r.x0 + PAD, r.y0 + 11.0)), None, TextWeight::Semibold);
+        tr.draw_text_weighted(
+            scene,
+            &heading,
+            14.0,
+            c.text_primary,
+            t * Affine::translate((r.x0 + PAD, r.y0 + 11.0)),
+            None,
+            TextWeight::Semibold,
+        );
         // Window buttons.
         for (rect, hit) in &self.hits {
             let glyph = match hit {
                 ComposeHit::Close => "\u{2715}",
-                ComposeHit::PopOut => if matches!(self.dock, DockState::Detached) { "\u{2750}" } else { "\u{2197}" },
+                ComposeHit::PopOut => {
+                    if matches!(self.dock, DockState::Detached) {
+                        "\u{2750}"
+                    } else {
+                        "\u{2197}"
+                    }
+                }
                 _ => continue,
             };
             let hov = rect.contains(self.last_mouse);
             if hov {
                 fill_round(scene, t, *rect, 7.0, c.surface_white_10);
             }
-            tr.draw_text(scene, glyph, 13.0, c.neutral[8], t * Affine::translate((rect.x0 + 8.0, rect.y0 + 6.0)), None);
+            tr.draw_text(
+                scene,
+                glyph,
+                13.0,
+                c.neutral[8],
+                t * Affine::translate((rect.x0 + 8.0, rect.y0 + 6.0)),
+                None,
+            );
         }
 
         // Header field labels + underlines.
-        self.draw_field(scene, t, tr, theme, "To", &self.to_rect_for(ComposeHit::FieldTo), matches!(self.focus, Field::To), self.to.value().is_empty(), "recipients");
+        self.draw_field(
+            scene,
+            t,
+            tr,
+            theme,
+            "To",
+            &self.to_rect_for(ComposeHit::FieldTo),
+            matches!(self.focus, Field::To),
+            self.to.value().is_empty(),
+            "recipients",
+        );
         if self.show_cc_bcc {
-            self.draw_field(scene, t, tr, theme, "Cc", &self.to_rect_for(ComposeHit::FieldCc), matches!(self.focus, Field::Cc), self.cc.value().is_empty(), "");
-            self.draw_field(scene, t, tr, theme, "Bcc", &self.to_rect_for(ComposeHit::FieldBcc), matches!(self.focus, Field::Bcc), self.bcc.value().is_empty(), "");
+            self.draw_field(
+                scene,
+                t,
+                tr,
+                theme,
+                "Cc",
+                &self.to_rect_for(ComposeHit::FieldCc),
+                matches!(self.focus, Field::Cc),
+                self.cc.value().is_empty(),
+                "",
+            );
+            self.draw_field(
+                scene,
+                t,
+                tr,
+                theme,
+                "Bcc",
+                &self.to_rect_for(ComposeHit::FieldBcc),
+                matches!(self.focus, Field::Bcc),
+                self.bcc.value().is_empty(),
+                "",
+            );
         }
-        self.draw_field(scene, t, tr, theme, "Subject", &self.to_rect_for(ComposeHit::FieldSubject), matches!(self.focus, Field::Subject), self.subject.value().is_empty(), "");
+        self.draw_field(
+            scene,
+            t,
+            tr,
+            theme,
+            "Subject",
+            &self.to_rect_for(ComposeHit::FieldSubject),
+            matches!(self.focus, Field::Subject),
+            self.subject.value().is_empty(),
+            "",
+        );
 
         // Cc/Bcc toggle + Attach buttons. The active highlight reflects on/off.
-        self.draw_chip_button(scene, t, tr, theme, ComposeHit::ToggleCcBcc, "Cc/Bcc", self.show_cc_bcc);
-        self.draw_chip_button(scene, t, tr, theme, ComposeHit::Attach, "\u{1F4CE} Attach", false);
+        self.draw_chip_button(
+            scene,
+            t,
+            tr,
+            theme,
+            ComposeHit::ToggleCcBcc,
+            "Cc/Bcc",
+            self.show_cc_bcc,
+        );
+        self.draw_chip_button(
+            scene,
+            t,
+            tr,
+            theme,
+            ComposeHit::Attach,
+            "\u{1F4CE} Attach",
+            false,
+        );
 
         // Toolbar.
         if matches!(self.format, ComposeFormat::Html) {
@@ -1011,10 +1382,27 @@ impl ComposeWindow {
         // Body.
         let body = self.body_rect();
         fill_round(scene, t, body, 8.0, c.surfaces.base);
-        stroke_round(scene, t, body, 8.0, 1.0, if matches!(self.focus, Field::Body) { c.border_focus } else { c.border_standard });
+        stroke_round(
+            scene,
+            t,
+            body,
+            8.0,
+            1.0,
+            if matches!(self.focus, Field::Body) {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+        );
         match self.format {
             ComposeFormat::Html => {
-                scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &body);
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    t,
+                    &body,
+                );
                 self.editor.draw(scene, t, tr, theme);
                 scene.pop_layer();
             }
@@ -1032,10 +1420,24 @@ impl ComposeWindow {
             for path in &self.attachments {
                 let name = attachment_display_name(path);
                 let (lw, _) = tr.measure(name, 11.5, None);
-                let chip = Rect::new(ax, ay, ax + lw as f64 + 34.0, ay + 24.0);
+                let chip = Rect::new(ax, ay, ax + f64::from(lw) + 34.0, ay + 24.0);
                 fill_round(scene, t, chip, 7.0, c.surface_white_10);
-                tr.draw_text(scene, "\u{1F4CE}", 12.0, c.text_dim, t * Affine::translate((chip.x0 + 7.0, chip.y0 + 4.0)), None);
-                tr.draw_text(scene, name, 11.5, c.text_primary, t * Affine::translate((chip.x0 + 26.0, chip.y0 + 4.0)), None);
+                tr.draw_text(
+                    scene,
+                    "\u{1F4CE}",
+                    12.0,
+                    c.text_dim,
+                    t * Affine::translate((chip.x0 + 7.0, chip.y0 + 4.0)),
+                    None,
+                );
+                tr.draw_text(
+                    scene,
+                    name,
+                    11.5,
+                    c.text_primary,
+                    t * Affine::translate((chip.x0 + 26.0, chip.y0 + 4.0)),
+                    None,
+                );
                 ax = chip.x1 + 8.0;
             }
         }
@@ -1045,7 +1447,15 @@ impl ComposeWindow {
 
         // Buttons.
         self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "Send", true);
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::SaveDraft, "Save draft", false);
+        self.draw_action_button(
+            scene,
+            t,
+            tr,
+            theme,
+            ComposeHit::SaveDraft,
+            "Save draft",
+            false,
+        );
         self.draw_action_button(scene, t, tr, theme, ComposeHit::Discard, "Discard", false);
 
         // Resize affordance (bottom-right grip dots).
@@ -1056,27 +1466,91 @@ impl ComposeWindow {
     }
 
     fn to_rect_for(&self, hit: ComposeHit) -> Rect {
-        self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r).unwrap_or(Rect::ZERO)
+        self.hits
+            .iter()
+            .find(|(_, h)| *h == hit)
+            .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_field(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, label: &str, fr: &Rect, focused: bool, empty: bool, placeholder: &str) {
+    fn draw_field(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        label: &str,
+        fr: &Rect,
+        focused: bool,
+        empty: bool,
+        placeholder: &str,
+    ) {
         let c = &theme.tokens.colors;
-        tr.draw_text(scene, label, 12.0, c.text_dim, t * Affine::translate((self.rect.x0 + PAD, fr.y0 + 8.0)), None);
-        fill(scene, t, Rect::new(fr.x0, fr.y1 - 1.0, fr.x1, fr.y1), if focused { c.border_focus } else { c.border_standard });
+        tr.draw_text(
+            scene,
+            label,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((self.rect.x0 + PAD, fr.y0 + 8.0)),
+            None,
+        );
+        fill(
+            scene,
+            t,
+            Rect::new(fr.x0, fr.y1 - 1.0, fr.x1, fr.y1),
+            if focused {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+        );
         if empty && !focused && !placeholder.is_empty() {
-            tr.draw_text(scene, placeholder, 12.5, c.neutral[4], t * Affine::translate((fr.x0 + 2.0, fr.y0 + 7.0)), None);
+            tr.draw_text(
+                scene,
+                placeholder,
+                12.5,
+                c.neutral[4],
+                t * Affine::translate((fr.x0 + 2.0, fr.y0 + 7.0)),
+                None,
+            );
         }
     }
 
-    fn draw_chip_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, hit: ComposeHit, label: &str, active: bool) {
+    fn draw_chip_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hit: ComposeHit,
+        label: &str,
+        active: bool,
+    ) {
         let c = &theme.tokens.colors;
-        let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else { return };
+        let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else {
+            return;
+        };
         let hov = rect.contains(self.last_mouse);
-        let bg = if active { c.accent[5].with_alpha_factor(0.22) } else if hov { c.surface_white_10 } else { c.surface_white_5 };
+        let bg = if active {
+            c.accent[5].with_alpha_factor(0.22)
+        } else if hov {
+            c.surface_white_10
+        } else {
+            c.surface_white_5
+        };
         fill_round(scene, t, rect, 7.0, bg);
         let (lw, _) = tr.measure(label, 11.5, None);
-        tr.draw_text(scene, label, 11.5, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - lw as f64 / 2.0, rect.y0 + 8.0)), None);
+        tr.draw_text(
+            scene,
+            label,
+            11.5,
+            c.neutral[8],
+            t * Affine::translate((
+                f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0,
+                rect.y0 + 8.0,
+            )),
+            None,
+        );
     }
 
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1088,42 +1562,136 @@ impl ComposeWindow {
                 ComposeHit::Bold => ("B", marks.bold, TextWeight::Bold, false),
                 ComposeHit::Italic => ("I", marks.italic, TextWeight::Regular, true),
                 ComposeHit::Underline => ("U", marks.underline, TextWeight::Regular, false),
-                ComposeHit::H1 => ("H1", matches!(bk, BlockKind::Heading(1)), TextWeight::Bold, false),
-                ComposeHit::H2 => ("H2", matches!(bk, BlockKind::Heading(2)), TextWeight::Bold, false),
-                ComposeHit::Bullet => ("\u{2022}", matches!(bk, BlockKind::Bullet), TextWeight::Regular, false),
-                ComposeHit::Numbered => ("1.", matches!(bk, BlockKind::Numbered), TextWeight::Regular, false),
-                ComposeHit::Quote => ("\u{201C}", matches!(bk, BlockKind::Quote), TextWeight::Regular, false),
+                ComposeHit::H1 => (
+                    "H1",
+                    matches!(bk, BlockKind::Heading(1)),
+                    TextWeight::Bold,
+                    false,
+                ),
+                ComposeHit::H2 => (
+                    "H2",
+                    matches!(bk, BlockKind::Heading(2)),
+                    TextWeight::Bold,
+                    false,
+                ),
+                ComposeHit::Bullet => (
+                    "\u{2022}",
+                    matches!(bk, BlockKind::Bullet),
+                    TextWeight::Regular,
+                    false,
+                ),
+                ComposeHit::Numbered => (
+                    "1.",
+                    matches!(bk, BlockKind::Numbered),
+                    TextWeight::Regular,
+                    false,
+                ),
+                ComposeHit::Quote => (
+                    "\u{201C}",
+                    matches!(bk, BlockKind::Quote),
+                    TextWeight::Regular,
+                    false,
+                ),
                 ComposeHit::Link => ("\u{1F517}", false, TextWeight::Regular, false),
                 _ => continue,
             };
             let hov = rect.contains(self.last_mouse);
-            let bg = if active { c.accent[5].with_alpha_factor(0.28) } else if hov { c.surface_white_10 } else { c.surface_white_5 };
+            let bg = if active {
+                c.accent[5].with_alpha_factor(0.28)
+            } else if hov {
+                c.surface_white_10
+            } else {
+                c.surface_white_5
+            };
             fill_round(scene, t, *rect, 6.0, bg);
             let col = if active { c.text_primary } else { c.neutral[8] };
             let (gw, _) = tr.measure_weighted(glyph, 13.0, None, weight);
-            tr.draw_text_styled(scene, glyph, 13.0, col, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - gw as f64 / 2.0, rect.y0 + 7.0)), None, weight, italic, false);
+            tr.draw_text_styled(
+                scene,
+                glyph,
+                13.0,
+                col,
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0,
+                    rect.y0 + 7.0,
+                )),
+                None,
+                weight,
+                italic,
+                false,
+            );
             if matches!(hit, ComposeHit::Underline) {
                 let uy = rect.y0 + 7.0 + 13.0;
-                fill(scene, t, Rect::new((rect.x0 + rect.x1) / 2.0 - gw as f64 / 2.0, uy, (rect.x0 + rect.x1) / 2.0 + gw as f64 / 2.0, uy + 1.0), col);
+                fill(
+                    scene,
+                    t,
+                    Rect::new(
+                        f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0,
+                        uy,
+                        f64::midpoint(rect.x0, rect.x1) + f64::from(gw) / 2.0,
+                        uy + 1.0,
+                    ),
+                    col,
+                );
             }
         }
     }
 
-    fn draw_format_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_format_toggle(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
-        let Some(rect) = self.hits.iter().find(|(_, h)| *h == ComposeHit::FormatToggle).map(|(r, _)| *r) else { return };
+        let Some(rect) = self
+            .hits
+            .iter()
+            .find(|(_, h)| *h == ComposeHit::FormatToggle)
+            .map(|(r, _)| *r)
+        else {
+            return;
+        };
         let hov = rect.contains(self.last_mouse);
-        fill_round(scene, t, rect, 7.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
+        fill_round(
+            scene,
+            t,
+            rect,
+            7.0,
+            if hov {
+                c.surface_white_10
+            } else {
+                c.surface_white_5
+            },
+        );
         stroke_round(scene, t, rect, 7.0, 1.0, c.border_white_10);
         let label = match self.format {
             ComposeFormat::Html => "\u{25CF} HTML",
             ComposeFormat::Text => "\u{25CB} Text",
         };
         let (lw, _) = tr.measure(label, 11.5, None);
-        tr.draw_text(scene, label, 11.5, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - lw as f64 / 2.0, rect.y0 + 8.0)), None);
+        tr.draw_text(
+            scene,
+            label,
+            11.5,
+            c.neutral[8],
+            t * Affine::translate((
+                f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0,
+                rect.y0 + 8.0,
+            )),
+            None,
+        );
     }
 
-    fn draw_prompt(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+    fn draw_prompt(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         let Some((kind, error)) = self.prompt.as_ref().map(|p| (p.kind, p.error.clone())) else {
             return;
         };
@@ -1134,53 +1702,198 @@ impl ComposeWindow {
             return;
         }
         let c = &theme.tokens.colors;
-        let panel = Rect::new(self.rect.x0 + PAD - 6.0, field.y0 - 8.0, self.rect.x1 - PAD + 6.0, field.y1 + 8.0);
+        let panel = Rect::new(
+            self.rect.x0 + PAD - 6.0,
+            field.y0 - 8.0,
+            self.rect.x1 - PAD + 6.0,
+            field.y1 + 8.0,
+        );
         fill_round(scene, t, panel, 9.0, c.surfaces.raised);
-        stroke_round(scene, t, panel, 9.0, 1.0, if error.is_some() { c.semantic.danger } else { c.border_white_10 });
+        stroke_round(
+            scene,
+            t,
+            panel,
+            9.0,
+            1.0,
+            if error.is_some() {
+                c.semantic.danger
+            } else {
+                c.border_white_10
+            },
+        );
         let label = match kind {
             PromptKind::Attach => "Attach",
             PromptKind::Link => "Link",
         };
-        tr.draw_text(scene, label, 12.0, c.text_dim, t * Affine::translate((panel.x0 + 10.0, field.y0 + 8.0)), None);
+        tr.draw_text(
+            scene,
+            label,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((panel.x0 + 10.0, field.y0 + 8.0)),
+            None,
+        );
         // Input chrome.
-        fill_round(scene, t, Rect::new(field.x0 - 2.0, field.y0 - 1.0, field.x1 + 2.0, field.y1 + 1.0), 6.0, c.surfaces.base);
-        stroke_round(scene, t, Rect::new(field.x0 - 2.0, field.y0 - 1.0, field.x1 + 2.0, field.y1 + 1.0), 6.0, 1.0, c.border_focus);
+        fill_round(
+            scene,
+            t,
+            Rect::new(
+                field.x0 - 2.0,
+                field.y0 - 1.0,
+                field.x1 + 2.0,
+                field.y1 + 1.0,
+            ),
+            6.0,
+            c.surfaces.base,
+        );
+        stroke_round(
+            scene,
+            t,
+            Rect::new(
+                field.x0 - 2.0,
+                field.y0 - 1.0,
+                field.x1 + 2.0,
+                field.y1 + 1.0,
+            ),
+            6.0,
+            1.0,
+            c.border_focus,
+        );
         // Buttons.
         let hov_c = confirm.contains(self.last_mouse);
-        fill_round(scene, t, confirm, 7.0, if hov_c { c.accent[4] } else { c.accent[5] });
+        fill_round(
+            scene,
+            t,
+            confirm,
+            7.0,
+            if hov_c { c.accent[4] } else { c.accent[5] },
+        );
         let (aw, _) = tr.measure_weighted("Add", 12.5, None, TextWeight::Semibold);
-        tr.draw_text_weighted(scene, "Add", 12.5, Color::WHITE, t * Affine::translate(((confirm.x0 + confirm.x1) / 2.0 - aw as f64 / 2.0, confirm.y0 + 7.0)), None, TextWeight::Semibold);
+        tr.draw_text_weighted(
+            scene,
+            "Add",
+            12.5,
+            Color::WHITE,
+            t * Affine::translate((
+                f64::midpoint(confirm.x0, confirm.x1) - f64::from(aw) / 2.0,
+                confirm.y0 + 7.0,
+            )),
+            None,
+            TextWeight::Semibold,
+        );
         let hov_x = cancel.contains(self.last_mouse);
-        fill_round(scene, t, cancel, 7.0, if hov_x { c.surface_white_10 } else { c.surface_white_5 });
+        fill_round(
+            scene,
+            t,
+            cancel,
+            7.0,
+            if hov_x {
+                c.surface_white_10
+            } else {
+                c.surface_white_5
+            },
+        );
         let (cw, _) = tr.measure("Cancel", 12.0, None);
-        tr.draw_text(scene, "Cancel", 12.0, c.neutral[8], t * Affine::translate(((cancel.x0 + cancel.x1) / 2.0 - cw as f64 / 2.0, cancel.y0 + 7.0)), None);
+        tr.draw_text(
+            scene,
+            "Cancel",
+            12.0,
+            c.neutral[8],
+            t * Affine::translate((
+                f64::midpoint(cancel.x0, cancel.x1) - f64::from(cw) / 2.0,
+                cancel.y0 + 7.0,
+            )),
+            None,
+        );
         if let Some(e) = &error {
-            tr.draw_text(scene, e, 10.5, c.semantic.danger, t * Affine::translate((panel.x0 + 10.0, panel.y1 - 2.0)), None);
+            tr.draw_text(
+                scene,
+                e,
+                10.5,
+                c.semantic.danger,
+                t * Affine::translate((panel.x0 + 10.0, panel.y1 - 2.0)),
+                None,
+            );
         }
         if let Some(p) = self.prompt.as_mut() {
             p.input.draw(scene, t, tr, theme, presence);
         }
     }
 
-    fn draw_action_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, hit: ComposeHit, label: &str, primary: bool) {
+    fn draw_action_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hit: ComposeHit,
+        label: &str,
+        primary: bool,
+    ) {
         let c = &theme.tokens.colors;
-        let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else { return };
+        let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else {
+            return;
+        };
         let hov = rect.contains(self.last_mouse);
         if primary {
-            fill_round(scene, t, rect, 9.0, if hov { c.accent[4] } else { c.accent[5] });
+            fill_round(
+                scene,
+                t,
+                rect,
+                9.0,
+                if hov { c.accent[4] } else { c.accent[5] },
+            );
             let (w, _) = tr.measure_weighted(label, 13.5, None, TextWeight::Semibold);
-            tr.draw_text_weighted(scene, label, 13.5, Color::WHITE, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None, TextWeight::Semibold);
+            tr.draw_text_weighted(
+                scene,
+                label,
+                13.5,
+                Color::WHITE,
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
+                    rect.y0 + 10.0,
+                )),
+                None,
+                TextWeight::Semibold,
+            );
         } else {
-            fill_round(scene, t, rect, 9.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
+            fill_round(
+                scene,
+                t,
+                rect,
+                9.0,
+                if hov {
+                    c.surface_white_10
+                } else {
+                    c.surface_white_5
+                },
+            );
             stroke_round(scene, t, rect, 9.0, 1.0, c.border_white_10);
             let (w, _) = tr.measure(label, 13.0, None);
-            tr.draw_text(scene, label, 13.0, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None);
+            tr.draw_text(
+                scene,
+                label,
+                13.0,
+                c.neutral[8],
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
+                    rect.y0 + 10.0,
+                )),
+                None,
+            );
         }
     }
 
     /// Draw the embedded header inputs (their text + caret). Called by the host
     /// after `draw` so they paint on top of the field chrome.
-    pub fn draw_inputs(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+    pub fn draw_inputs(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         if !self.open {
             return;
         }
@@ -1199,10 +1912,22 @@ fn fill(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
 }
 fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(rect, r));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
 }
 fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
-    scene.stroke(&Stroke::new(w), t, color, None, &RoundedRect::from_rect(rect, r));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
 }
 
 #[cfg(test)]
@@ -1295,7 +2020,11 @@ mod tests {
         send(&key(Key::Character(SmolStr::new("w")), Some("w")));
         send(&key(Key::Character(SmolStr::new("o")), Some("o")));
 
-        assert_eq!(w.to_draft().body, "Hi\ntwo", "Enter split the body across two lines");
+        assert_eq!(
+            w.to_draft().body,
+            "Hi\ntwo",
+            "Enter split the body across two lines"
+        );
     }
 
     #[test]
@@ -1303,7 +2032,9 @@ mod tests {
         let mut w = win();
         let before = w.window_rect();
         // Drag the title far past the right edge; clamp must keep it reachable.
-        w.drag = Some(Drag::Move { grab: Point::new(10.0, 10.0) });
+        w.drag = Some(Drag::Move {
+            grab: Point::new(10.0, 10.0),
+        });
         w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
         let r = w.window_rect();
         assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
@@ -1315,7 +2046,14 @@ mod tests {
     fn resize_respects_minimum() {
         let mut w = win();
         let start = w.window_rect();
-        w.apply_drag(Drag::Resize { edge: Edge::BottomRight, start, from: Point::new(start.x1, start.y1) }, Point::new(start.x0, start.y0));
+        w.apply_drag(
+            Drag::Resize {
+                edge: Edge::BottomRight,
+                start,
+                from: Point::new(start.x1, start.y1),
+            },
+            Point::new(start.x0, start.y0),
+        );
         let r = w.window_rect();
         assert!(r.width() >= MIN_W - 0.5);
         assert!(r.height() >= MIN_H - 0.5);
@@ -1334,14 +2072,25 @@ mod tests {
         let mut doc = automerge::AutoCommit::new();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
-        let mv = WindowEvent::CursorMoved { device_id: winit::event::DeviceId::dummy(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) };
+        let mv = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
         w.handle_event(&mv, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
-        let pr = WindowEvent::MouseInput { device_id: winit::event::DeviceId::dummy(), state: ElementState::Pressed, button: MouseButton::Left };
+        let pr = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
         w.handle_event(&pr, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy)
     }
 
     fn hit_rect(w: &ComposeWindow, hit: ComposeHit) -> Rect {
-        w.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r).expect("hit present")
+        w.hits
+            .iter()
+            .find(|(_, h)| *h == hit)
+            .map(|(r, _)| *r)
+            .expect("hit present")
     }
 
     #[test]
@@ -1360,11 +2109,18 @@ mod tests {
         assert!(w.attachments.is_empty(), "no fabricated attachment staged");
 
         // Type the real path and confirm → the real file is staged.
-        w.prompt.as_mut().unwrap().input.set_text(&path.to_string_lossy());
+        w.prompt
+            .as_mut()
+            .unwrap()
+            .input
+            .set_text(&path.to_string_lossy());
         w.confirm_prompt();
         assert!(w.prompt.is_none(), "a valid path closes the prompt");
         assert_eq!(w.attachments.len(), 1);
-        assert_eq!(w.to_draft().attachments, vec![path.to_string_lossy().to_string()]);
+        assert_eq!(
+            w.to_draft().attachments,
+            vec![path.to_string_lossy().to_string()]
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -1373,11 +2129,15 @@ mod tests {
     fn attach_prompt_rejects_missing_path() {
         let mut w = win();
         w.open_prompt(PromptKind::Attach);
-        w.prompt.as_mut().unwrap().input.set_text("/no/such/mail/file-xyz");
+        w.prompt
+            .as_mut()
+            .unwrap()
+            .input
+            .set_text("/no/such/mail/file-xyz");
         w.confirm_prompt();
         assert!(w.attachments.is_empty(), "a missing path stages nothing");
         assert!(
-            w.prompt.as_ref().map(|p| p.error.is_some()).unwrap_or(false),
+            w.prompt.as_ref().is_some_and(|p| p.error.is_some()),
             "the prompt stays open showing an error"
         );
     }
@@ -1389,11 +2149,21 @@ mod tests {
         w.open_prompt(PromptKind::Link);
         // Seeded with a scheme the user edits — never a hardcoded final target.
         assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
-        w.prompt.as_mut().unwrap().input.set_text("https://qos.example/docs");
+        w.prompt
+            .as_mut()
+            .unwrap()
+            .input
+            .set_text("https://qos.example/docs");
         w.confirm_prompt();
         let html = w.editor.to_html();
-        assert!(html.contains("href=\"https://qos.example/docs\""), "got: {html}");
-        assert!(!html.contains("href=\"https://\""), "must not link the bare scheme");
+        assert!(
+            html.contains("href=\"https://qos.example/docs\""),
+            "got: {html}"
+        );
+        assert!(
+            !html.contains("href=\"https://\""),
+            "must not link the bare scheme"
+        );
     }
 
     #[test]
@@ -1403,10 +2173,29 @@ mod tests {
         let modifiers = winit::event::Modifiers::default();
         let mut doc = automerge::AutoCommit::new();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let press = WindowEvent::MouseInput { device_id: winit::event::DeviceId::dummy(), state: ElementState::Pressed, button: MouseButton::Left };
-        let (consumed, action) = w.handle_event(&press, 1.0, &modifiers, &mut doc, &automerge::ROOT, taffy::NodeId::new(0), &taffy);
-        assert!(consumed, "clicks outside the modal window must be swallowed, not fall through");
-        assert_eq!(action, ComposeAction::None, "outside click does not close (explicit Discard only)");
+        let press = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let (consumed, action) = w.handle_event(
+            &press,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            taffy::NodeId::new(0),
+            &taffy,
+        );
+        assert!(
+            consumed,
+            "clicks outside the modal window must be swallowed, not fall through"
+        );
+        assert_eq!(
+            action,
+            ComposeAction::None,
+            "outside click does not close (explicit Discard only)"
+        );
         assert!(w.open, "window stays open");
     }
 }

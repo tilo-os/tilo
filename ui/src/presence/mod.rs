@@ -1,58 +1,48 @@
-use std::collections::HashMap;
-use std::time::Instant;
 use crate::permissions::UserId;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
+mod geom;
 mod key;
 mod render;
-mod geom;
-pub use key::{PresenceKey, PathSegment, SelectionRange};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
-// `render::draw_remote_cursors` is a free function — re-export so
-// downstream apps (terminal, settings, file-explorer) can call it from
-// their per-frame draw without depending on the shell.
+pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use render::{
-    PeerCursor, PillPlacement, PillRequest, draw_peer_cursors, draw_remote_cursors,
+    PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_remote_cursors,
     draw_remote_presence, layout_peer_pills,
 };
 
-/// How long a peer's "just typed" highlight lingers before it has fully
-/// faded away. A textmarker swipe that decays over this window so a busy
-/// document doesn't accumulate permanent smears of colour — you see where
-/// a peer is *currently* working, then it quietly clears.
+/// How long a "just typed" highlight lingers before fading out.
 pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(2500);
 
-/// Stable RGB color for a collaborator, used by every widget that paints a
-/// per-peer affordance (tab presence dots, remote cursor, per-folder
-/// presence dots, etc.).
-///
-/// The concept pins a fixed palette for four canonical ids — `me`,
-/// `alice`, `bob`, `charlie` — matching the reference mockup's
-/// `cursorColor` table. Any other id hashes onto [`PEER_PALETTE`], a
-/// closed ring whose members are far enough apart to tell apart at a
-/// glance.
-///
-/// The colour is a pure function of the id and nothing else. That is
-/// what lets two machines agree: each host paints the peers it can see,
-/// and the sets differ (everyone sees everyone but themselves), so a
-/// colour chosen from "who is here" would give the same person a
-/// different colour on every screen.
+/// Longest forward caret jump still read as "this peer just wrote that"
+/// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
+/// Generous on purpose: a caret key is per *block*, so a stray mark is
+/// bounded to one paragraph, while too tight a cap would drop the marker
+/// on the edit most worth seeing (an agent replacing a line with a sentence).
+const TYPING_DERIVE_MAX_RUN: usize = 512;
+
+/// How long after a remote text edit an advancing caret may still be read as
+/// that peer having written what it crossed — one network hop, no more, or a
+/// real edit would license markers for every caret that moves afterward.
+const EDIT_PULSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Stable RGB colour for a collaborator. `me`/`alice`/`bob`/`charlie` are
+/// pinned; everything else hashes onto [`PEER_PALETTE`]. A pure function of
+/// the id alone: two hosts painting the same room see different peer sets
+/// (everyone but themselves), so a colour derived from who's present
+/// couldn't agree across machines.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
-    // Concept-pinned palette. Matches `nirios-concept/src/data.ts`
-    // USERS[*].cursorColor so the Rust render is pixel-identical to the
-    // reference mockup for these names. Each is also a member of
-    // `PEER_PALETTE`, so a pin and a hash never land near-but-not-quite
-    // on the same colour.
     match user_id {
         "me" => (0x63, 0x66, 0xf1),      // indigo-500
         "alice" => (0xec, 0x48, 0x99),   // pink-500
         "bob" => (0xf9, 0x73, 0x16),     // orange-500
         "charlie" => (0x10, 0xb9, 0x81), // emerald-500
         _ => {
-            // FNV-1a 64-bit — cheap, deterministic, no RNG state, and
-            // same distribution profile as the old per-widget hashes.
+            // FNV-1a 64-bit: cheap, deterministic, no RNG state.
             let mut h: u64 = 0xcbf29ce484222325;
             for b in user_id.as_bytes() {
-                h ^= *b as u64;
+                h ^= u64::from(*b);
                 h = h.wrapping_mul(0x100000001b3);
             }
             PEER_PALETTE[(h % PEER_PALETTE.len() as u64) as usize]
@@ -60,22 +50,11 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     }
 }
 
-/// Every colour a peer can be drawn in.
-///
-/// The hash used to pick a hue out of all 360, which sounds like more
-/// choice and is in practice worse: uniform sampling puts two peers a
-/// couple of degrees apart often enough to see it. `dave`, `erin` and
-/// `sara` landed on hues 87, 89 and 88 — three different people in one
-/// indistinguishable green, which reads as a rendering fault rather
-/// than as three people.
-///
-/// A closed ring trades that for an honest failure: two ids either get
-/// clearly different colours or exactly the same one, and the name on
-/// the pill is what settles an exact tie. Twelve hues spaced no closer
-/// than 26°, then twelve more offset half a step and lifted in
-/// lightness, so neighbours differ in brightness as well as hue and
-/// nothing is dark enough to sink into the desktop or pale enough to
-/// wash out on a white page.
+/// Every colour a peer can be drawn in: a closed ring of 24, not a hash over
+/// all 360 hues — uniform sampling once put `dave`, `erin` and `sara` at
+/// hues 87/89/88, three people in one indistinguishable green. Twelve hues
+/// spaced ≥26° apart, plus twelve more offset and lifted in lightness so
+/// neighbours differ in brightness too.
 pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
     (0xf9, 0x73, 0x16), // orange-500 — pinned for "bob"
     (0xdf, 0xdc, 0x3a),
@@ -105,24 +84,11 @@ pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
 
 /// Give everyone in a room a colour nobody else in it is wearing.
 ///
-/// [`user_color`] alone cannot promise this. It is a hash, so two ids
-/// land on the same ring entry roughly one time in
-/// [`PEER_PALETTE`]`.len()`, and `carol` lands exactly on `alice`'s
-/// pink. One time in twenty-four sounds rare until four people are in a
-/// room, where it is closer to one time in four.
-///
-/// So the room resolves it. Everyone keeps the colour their id gives
-/// them when it is free, and whoever collides steps to the next free
-/// entry. Ids are walked in sorted order, which is what makes this
-/// agree across machines: every host in a room ends up seeing the same
-/// membership (each sees the others plus itself), so each computes the
-/// same assignment, and a person is the same colour on every screen.
-/// Sorted order also bounds the churn — a new arrival can only move
-/// someone it actually collides with, and only someone whose id sorts
-/// after its own.
-///
-/// `reserved` are colours already spoken for by an explicit roster
-/// choice; they are held back so a computed colour never lands on one.
+/// [`user_color`] alone can't promise this — it's a hash, so `carol` lands
+/// on `alice`'s pink. Whoever collides steps to the next free ring entry,
+/// walking ids in sorted order so every host agrees despite seeing a
+/// different membership (everyone but itself). `reserved` colours are
+/// already spoken for by an explicit roster choice.
 pub fn assign_peer_colors(
     ids: &[&str],
     reserved: &[(u8, u8, u8)],
@@ -144,9 +110,7 @@ pub fn assign_peer_colors(
         let start = PEER_PALETTE
             .iter()
             .position(|p| *p == natural)
-            // Every colour `user_color` returns is a ring member, so this
-            // cannot fire; falling back to 0 keeps the loop total rather
-            // than panicking in a draw path if that ever stops holding.
+            // Always a ring member; 0 just keeps a draw path total rather than panicking.
             .unwrap_or(0);
         let mut slot = start;
         for step in 0..PEER_PALETTE.len() {
@@ -155,9 +119,7 @@ pub fn assign_peer_colors(
                 slot = i;
                 break;
             }
-            // More people than colours: everyone past the ring's size
-            // keeps their natural entry and shares it. A name still says
-            // who is who.
+            // More people than colours: share the natural entry; the name still says who is who.
             slot = start;
         }
         taken[slot] = true;
@@ -166,14 +128,13 @@ pub fn assign_peer_colors(
     out
 }
 
-/// How far apart two colours are, weighted the way an eye weights them
-/// (the "redmean" approximation). Used to state, as a test rather than
-/// as a hope, that no two peers can be painted in confusable colours.
+/// How far apart two colours are, weighted the way an eye weights them (the
+/// "redmean" approximation).
 pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
-    let rm = (a.0 as f32 + b.0 as f32) / 2.0;
-    let dr = a.0 as f32 - b.0 as f32;
-    let dg = a.1 as f32 - b.1 as f32;
-    let db = a.2 as f32 - b.2 as f32;
+    let rm = f32::midpoint(f32::from(a.0), f32::from(b.0));
+    let dr = f32::from(a.0) - f32::from(b.0);
+    let dg = f32::from(a.1) - f32::from(b.1);
+    let db = f32::from(a.2) - f32::from(b.2);
     ((2.0 + rm / 256.0) * dr * dr + 4.0 * dg * dg + (2.0 + (255.0 - rm) / 256.0) * db * db).sqrt()
 }
 
@@ -198,14 +159,10 @@ mod color_tests {
         assert_ne!(a, c, "different ids should map to different colors");
     }
 
-    /// Two people in the same room must never be painted in two colours
-    /// that only a colour-picker can tell apart. Enumerated over the
-    /// whole closed set `user_color` can return, so the guarantee holds
-    /// for every id rather than for the handful anyone thought to try.
-    ///
-    /// The bar is a redmean distance of 60. For scale: the scheme this
-    /// replaced put `dave` and `sara` 4.8 apart, and `host` and `peer3`
-    /// 4.4 apart — different people rendered in the same colour.
+    /// Enumerated over the whole closed set `user_color` can return, so the
+    /// guarantee holds for every id. Bar is a redmean distance of 60; the old
+    /// hash-to-hue scheme put `dave`/`sara` 4.8 apart and `host`/`peer3` 4.4
+    /// apart — different people in the same colour.
     #[test]
     fn no_two_peer_colours_are_confusable() {
         for (i, a) in PEER_PALETTE.iter().enumerate() {
@@ -226,9 +183,8 @@ mod color_tests {
         }
     }
 
-    /// Every colour the pins hand out is also a ring member, so a pinned
-    /// peer and a hashed one can collide outright but never land
-    /// near-but-not-quite together — which is the case that looks broken.
+    /// Pins are also ring members, so a pinned peer and a hashed one can
+    /// only collide outright, never land near-but-not-quite together.
     #[test]
     fn pinned_colours_are_ring_members() {
         for id in ["me", "alice", "bob", "charlie"] {
@@ -243,11 +199,11 @@ mod color_tests {
         }
     }
 
-    /// A hashed id is drawn from the same closed set, so the distance
-    /// guarantee above covers real peers and not just the table.
     #[test]
     fn hashed_ids_land_on_the_ring() {
-        for id in ["carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade"] {
+        for id in [
+            "carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade",
+        ] {
             let c = user_color(id);
             assert!(
                 PEER_PALETTE.contains(&c),
@@ -257,7 +213,6 @@ mod color_tests {
                 c.2,
             );
         }
-        // The pairs that used to be indistinguishable now are not.
         for (a, b) in [("dave", "sara"), ("dave", "erin"), ("ada", "ade")] {
             let (ca, cb) = (user_color(a), user_color(b));
             assert!(
@@ -268,9 +223,8 @@ mod color_tests {
         }
     }
 
-    /// The case the ring alone cannot fix: `carol` hashes onto exactly
-    /// the pink `alice` is pinned to. In a room with both, one of them
-    /// has to move.
+    /// The case the ring alone can't fix: `carol` hashes onto exactly the
+    /// pink `alice` is pinned to, so one of them has to move.
     #[test]
     fn a_room_never_puts_two_people_in_one_colour() {
         assert_eq!(
@@ -295,19 +249,13 @@ mod color_tests {
                 );
             }
         }
-        // Whoever does not collide keeps the colour their id gives them.
         assert_eq!(assigned["alice"], user_color("alice"));
         assert_eq!(assigned["bob"], user_color("bob"));
     }
 
-    /// Two machines in one room compute the same assignment, because
-    /// each sees the same membership: the other people plus itself.
-    /// Without that a person would be pink on one screen and orange on
-    /// the next.
     #[test]
     fn every_machine_in_a_room_agrees_on_who_is_what_colour() {
         let room = ["alice", "bob", "carol"];
-        // What each host has: everyone else, plus itself.
         for me in room {
             let mut mine: Vec<&str> = room.iter().copied().filter(|u| *u != me).collect();
             mine.push(me);
@@ -343,24 +291,11 @@ mod color_tests {
 
     #[test]
     fn pinned_ids_differ_from_hash_fallback() {
-        // Regression guard: the pinned palette must not accidentally
-        // agree with what FNV→HSL would have produced, or we'd be
-        // unable to tell override from fallback in a failure mode.
         let (r, g, b) = user_color("me");
         assert!(!(r == 0 && g == 0 && b == 0));
     }
 }
 
-/// A collaborator's identity for presence rendering: who they are and the
-/// stable colour every affordance paints them in. This is the single
-/// value a widget needs to draw a peer — id for attribution, name for the
-/// chip label, colour for the caret / pointer / mist / typing tint.
-///
-/// The colour is derived deterministically from `id` via [`user_color`],
-/// so the same peer is the same hue on every screen without any shared
-/// state — two peers who never exchange a palette still agree on who is
-/// pink and who is orange. A friendlier `name` (from the roster) can
-/// differ from `id` without perturbing the colour.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresenceUser {
     pub id: String,
@@ -369,43 +304,63 @@ pub struct PresenceUser {
 }
 
 impl PresenceUser {
-    /// Build a user whose colour is the deterministic [`user_color`] of
-    /// `id`, with a display name (falls back to `id` when the roster has
-    /// no friendlier name yet).
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
         let color = user_color(&id);
-        Self { id, name: name.into(), color }
+        Self {
+            id,
+            name: name.into(),
+            color,
+        }
     }
 
-    /// Build a user from just an id, using the id itself as the display
-    /// name until a roster entry supplies a nicer one.
+    /// Uses the id itself as the display name until a roster entry supplies a nicer one.
     pub fn from_id(id: impl Into<String>) -> Self {
         let id = id.into();
         let name = id.clone();
         Self::new(id, name)
     }
 
-    /// This user's colour as premultiplied-friendly RGBA floats at
-    /// `alpha` — the shape every renderer wants.
     pub fn color_rgba(&self, alpha: f32) -> [f32; 4] {
         [
-            self.color.0 as f32 / 255.0,
-            self.color.1 as f32 / 255.0,
-            self.color.2 as f32 / 255.0,
+            f32::from(self.color.0) / 255.0,
+            f32::from(self.color.1) / 255.0,
+            f32::from(self.color.2) / 255.0,
             alpha,
         ]
     }
 }
 
-/// One "just typed" highlight span: the run of text a peer inserted and
-/// when. Rendered as a fading textmarker swipe in the peer's colour;
-/// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes
-/// it once past [`TYPING_FADE`].
+/// One "just typed" highlight span: the run a peer inserted and when.
+/// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes it
+/// once past [`TYPING_FADE`].
 #[derive(Debug, Clone)]
 struct TypingMark {
     range: SelectionRange,
     born: Instant,
+}
+
+/// Which layer paints a peer's pointer — a **screen** position, so only one
+/// layer may place it correctly (an app painting a desktop coordinate into
+/// its own window space is right only at the origin). The compositor owns
+/// desktop-scoped pointers, since it alone spans the strip, chrome and gaps
+/// between windows continuously; an app owns presence *inside* its own
+/// content (caret, selection, typing swipe), since the compositor has no
+/// access to the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerOwner {
+    /// No desktop scope, so no compositor overlay claims it: the SDK/relay
+    /// dialect, shot fixtures, and the hosted backend's interpolated cursors.
+    #[default]
+    Window,
+    /// The compositor overlay paints it, from [`PresenceCtx::pointers`]. Still
+    /// kept here so "follow that peer" can read it via [`PresenceCtx::peer_pointer`].
+    Desktop,
+    /// In some other surface's content coordinates — the frame arrived (the
+    /// broker fans presence to every app in the room) but is not this
+    /// process's to place. Makes the fan-out safe: exactly one of N apps
+    /// answers "mine", the rest land here without consulting each other.
+    OtherSurface,
 }
 
 #[derive(Debug, Clone)]
@@ -414,80 +369,92 @@ pub struct RemoteCursor {
     pub color: [f32; 4],
     pub position: [f32; 2], // scene-space coords
     pub label: String,
+    /// See [`PointerOwner`]; `Window` unless the pointer arrived under a desktop scope.
+    pub owner: PointerOwner,
+}
+
+impl RemoteCursor {
+    /// The single predicate every app-side painter consults, so "who draws this" has one answer.
+    pub fn painted_by_window(&self) -> bool {
+        matches!(self.owner, PointerOwner::Window)
+    }
 }
 
 /// What a subscriber still has to do after
-/// [`PresenceCtx::apply_remote_presence`] has folded a frame in.
-///
-/// The presence stores are updated either way; these name the two
-/// consequences that reach past them — moving the local viewport, and
-/// answering a joiner with document state. A subscriber that holds no
-/// document (the compositor) ignores both.
+/// [`PresenceCtx::apply_remote_presence`] folds a frame in, beyond the
+/// presence stores. A subscriber with no document (the compositor) ignores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemotePresenceEffect {
-    /// Nothing beyond the presence stores changed.
     None,
-    /// The peer broadcast a new view subset. A follower should
-    /// re-bind its viewport to them.
+    /// The peer broadcast a new view subset; a follower should re-bind its viewport to them.
     PeerViewChanged,
-    /// A peer arrived on a non-tab scope — possibly a late joiner, so
-    /// a document holder should reply with its full state.
+    /// A peer arrived on a non-tab scope — possibly a late joiner needing full state.
     PeerArrived,
 }
+
+/// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
+pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
 
 #[derive(Debug, Default, Clone)]
 pub struct PresenceCtx {
     pub here: HashMap<PresenceKey, Vec<UserId>>,
-    pub pointers: HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>,
+    pub pointers: PointerPositions,
+    /// When each pointer in [`Self::pointers`] was last heard about, so
+    /// [`Self::prune_pointers`] can retire one gone quiet — without it a
+    /// crashed peer's cursor stays painted for the rest of the session.
+    pointer_seen: HashMap<(PresenceKey, UserId), Instant>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     pub remote_cursors: Vec<RemoteCursor>,
-    /// Optional per-user RGB override. Seeded by the shell from
-    /// [`Collaborator::cursor_color`] so widgets don't have to thread
-    /// `Collaborator` refs to honour a non-palette colour. Read through
-    /// [`PresenceCtx::color_for`] which falls through to [`user_color`]
-    /// when a user has no override.
+    /// Seeded by the shell from [`Collaborator::cursor_color`]; falls
+    /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
     pub color_overrides: HashMap<UserId, (u8, u8, u8)>,
     /// Friendly display names per user, seeded from the collab roster
-    /// (`CollabEvent::Context`). Read through [`PresenceCtx::display_name`]
-    /// / [`PresenceCtx::user`]; a peer with no roster entry falls back to
-    /// their raw id, so a caret chip is never blank.
+    /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
+    /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
     pub names: HashMap<UserId, String>,
-    /// Per-user "just typed" highlight spans, keyed by presence scope.
-    /// A peer types → their inserted run is recorded here with a birth
-    /// instant; [`PresenceCtx::active_typing`] fades it out over
-    /// [`TYPING_FADE`]. Not serialised — purely a local render effect
-    /// driven by the inbound presence stream.
+    /// Per-user "just typed" highlight spans, keyed by presence scope and
+    /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
+    /// Not serialised — purely a local render effect.
     typing: HashMap<(UserId, PresenceKey), Vec<TypingMark>>,
-    /// Current draw-time visibility window in scene-space pixels.
-    /// Threaded through the draw recursion so widgets can early-out
-    /// when their `get_rect()` doesn't intersect the active viewport
-    /// — spatial culling. `Cell` so containers (Scrollable in
-    /// particular) can scope-push a tighter inner viewport without
-    /// needing `&mut PresenceCtx` everywhere; `Rect` is `Copy` so
-    /// the Cell access is cheap.
+    /// When a remote *document* change (not just a caret move) was last
+    /// applied, fed by [`Self::note_remote_text_edit`]; the `Caret` arm of
+    /// [`Self::apply_remote_presence`] only paints a typing mark when this
+    /// is also recent. Joined by time, not by author — `CollabEvent::
+    /// CRDTIncremental` carries no user id, so another peer's caret can be
+    /// mis-attributed while one person is genuinely editing.
+    last_remote_text_edit: Option<Instant>,
+    /// Draw-time visibility window in scene-space pixels, for spatial culling.
+    /// `Cell` so containers (Scrollable) can scope-push a tighter inner
+    /// viewport without needing `&mut PresenceCtx` everywhere.
     pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
     /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
-    /// the region and resource they are looking at (scroll / open resource /
-    /// viewport / view mode), distinct from the point their cursor sits on.
-    /// Seeded from the presence stream by
-    /// [`Self::set_peer_view`]; read by a renderer that wants to show *where*
-    /// a peer is working, and by the App's **attach/follow** to bind the
-    /// local viewport to a chosen peer. Cleared for a peer on
-    /// [`Self::unregister_peer`].
+    /// where they're looking, distinct from their cursor. Read by
+    /// **attach/follow** to bind the local viewport to a chosen peer.
     views: HashMap<UserId, crate::view::ViewSubset>,
+    /// Identities this session publishes its own presence under — what a
+    /// frame it sent comes back stamped with. Empty means "unknown", which
+    /// suppresses nobody. See [`Self::set_own_identity`].
+    own: std::collections::HashSet<UserId>,
+    /// Which participant in the room this session *is* — the `is_self` row
+    /// of `CollabEvent::Context`. Deliberately not in [`Self::names`]/
+    /// [`Self::here`]/the pointer-caret stores, which describe *other*
+    /// people (a row for yourself there is a pill over your own document).
+    /// `None` until the room has said.
+    self_participant: Option<(UserId, String)>,
+    /// The surface this process draws, spelled as [`crate::local_surface_id`]
+    /// spells it, compared against a pointer's claimed surface to decide
+    /// whether a content-space position is this process's to place. `None`
+    /// fails closed — a pointer in the wrong window should stay invisible,
+    /// not get placed wrong.
+    surface: Option<String>,
 }
 
 impl PresenceCtx {
-    /// True when the draw recursion has an active viewport and the
-    /// supplied rect doesn't intersect it — i.e., the widget's
-    /// pixels would land entirely outside the visible window.
-    /// Widgets short-circuit on this at the top of
-    /// `draw_with_presence` to skip their `Scene::append` /
-    /// glyph-emit work entirely. Off-viewport widgets MUST NOT
-    /// clear their `dirty` flag (so they redraw when they scroll
-    /// back in); the App's `mark_drawn` walks the live tree and
-    /// only visits widgets whose draw actually ran.
+    /// True when the supplied rect falls entirely outside the active
+    /// viewport, so a widget can skip its draw. Off-viewport widgets MUST
+    /// NOT clear their `dirty` flag, or `mark_drawn` (which only visits
+    /// widgets whose draw ran) leaves them stuck dirty when scrolled back in.
     pub fn should_cull(&self, rect: vello::kurbo::Rect) -> bool {
         match self.viewport.get() {
             Some(vp) => rect.intersect(vp).is_zero_area(),
@@ -495,21 +462,118 @@ impl PresenceCtx {
         }
     }
 
-    /// Replace the active viewport, returning the previous value
-    /// so the caller can restore it (e.g. a Scrollable pushes its
-    /// inner rect for its child recursion, then pops it back).
+    /// Replace the active viewport, returning the previous value so the caller can restore it.
     pub fn push_viewport(&self, vp: vello::kurbo::Rect) -> Option<vello::kurbo::Rect> {
         self.viewport.replace(Some(vp))
     }
 
-    /// Restore the previous viewport. Pair with `push_viewport`.
     pub fn pop_viewport(&self, prev: Option<vello::kurbo::Rect>) {
         self.viewport.set(prev);
     }
 }
 
 impl PresenceCtx {
-    pub fn empty() -> Self { Self::default() }
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Declare the identities a frame *this* session published comes back
+    /// stamped with, so its own presence is never painted as somebody else's.
+    ///
+    /// Discriminator is the participant, not the process or app: two windows
+    /// of one app are one person, but an agent editing the same document
+    /// joins under its own identity and stays a peer. Blank entries are
+    /// dropped — an unset forwarded env var produces `""`, and taking it
+    /// literally would make every unnamed participant "me".
+    pub fn set_own_identity<I, S>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.own = ids
+            .into_iter()
+            .filter(|s| !s.as_ref().trim().is_empty())
+            .map(|s| UserId(s.as_ref().to_string()))
+            .collect();
+    }
+
+    /// Add one more spelling of "me" without disturbing the others —
+    /// [`Self::set_own_identity`] replaces its whole set instead. Returns
+    /// whether anything was new. Blank is ignored, as in `set_own_identity`.
+    pub fn add_own_identity(&mut self, id: impl AsRef<str>) -> bool {
+        let id = id.as_ref().trim();
+        if id.is_empty() {
+            return false;
+        }
+        self.own.insert(UserId(id.to_string()))
+    }
+
+    /// Set from [`crate::local_surface_id`] — the same value the publishing
+    /// side scopes its pointer with, so the two spellings cannot drift.
+    pub fn set_surface_id(&mut self, surface: impl Into<String>) {
+        let surface = surface.into();
+        self.surface = (!surface.trim().is_empty()).then_some(surface);
+    }
+
+    /// A pointer is in exactly one space, so a frame fanned to every app in
+    /// a room still has at most one willing to draw it.
+    pub fn pointer_owner_for(&self, key: &PresenceKey) -> PointerOwner {
+        match key.pointer_space() {
+            None => PointerOwner::Window,
+            Some(PointerSpace::Desktop { .. }) => PointerOwner::Desktop,
+            Some(PointerSpace::Surface { surface }) => match self.surface.as_deref() {
+                Some(mine) if mine == surface => PointerOwner::Window,
+                _ => PointerOwner::OtherSurface,
+            },
+        }
+    }
+
+    /// Fed only from the `is_self` row of `CollabEvent::Context` — a
+    /// machine cannot mint this for itself. Blank id is dropped, as in
+    /// `set_own_identity`.
+    pub fn set_self_participant(&mut self, id: UserId, name: impl Into<String>) {
+        if id.0.trim().is_empty() {
+            return;
+        }
+        self.self_participant = Some((id, name.into()));
+    }
+
+    /// Which participant in the room this session is, if the room has said.
+    pub fn self_id(&self) -> Option<&UserId> {
+        self.self_participant.as_ref().map(|(id, _)| id)
+    }
+
+    /// What the room calls this session's own participant. `None` for a
+    /// participant the room knows only as an address.
+    pub fn self_name(&self) -> Option<&str> {
+        self.self_participant
+            .as_ref()
+            .map(|(_, n)| n.trim())
+            .filter(|n| !n.is_empty())
+    }
+
+    /// Whether `user_id` is this session's own participant. Checks
+    /// `self_participant` before the declared list (which
+    /// [`Self::set_own_identity`] replaces wholesale), and also matches the
+    /// room's *name* for this session — a locally-sent frame is stamped
+    /// `bob`, the announced row is `ada`; safe because a remote id is
+    /// always `peer@<handle>`, never a bare name.
+    pub fn is_own_identity(&self, user_id: &str) -> bool {
+        if user_id.trim().is_empty() {
+            return false;
+        }
+        if self
+            .self_participant
+            .as_ref()
+            .is_some_and(|(id, name)| id.0 == user_id || name.trim() == user_id.trim())
+        {
+            return true;
+        }
+        if self.own.is_empty() {
+            return false;
+        }
+        self.own.contains(&UserId(user_id.to_string()))
+    }
 
     pub fn register_presence(&mut self, key: &PresenceKey, user: UserId) {
         let list = self.here.entry(key.clone()).or_default();
@@ -524,20 +588,15 @@ impl PresenceCtx {
         }
     }
 
-    /// Re-attribute `user` so they are listed on exactly one `PresenceKey::Tab`
-    /// at a time: removes them from every other `Tab` key's presence list,
-    /// then registers them on `target`. Matches the single-active-tab-per-user
-    /// model so a peer switching tabs mid-session moves their dot rather than
-    /// leaving a trail behind on the previously-focused pill.
-    ///
-    /// No-op if `target` isn't a `Tab` key — callers fall back to
-    /// `register_presence` in that case.
+    /// Re-attribute `user` to exactly one `PresenceKey::Tab` at a time, so a
+    /// peer switching tabs moves their dot rather than leaving a trail. No-op
+    /// (falls back to `register_presence`) if `target` isn't a `Tab` key.
     pub fn set_tab_focus(&mut self, target: &PresenceKey, user: UserId) {
         if !matches!(target, PresenceKey::Tab { .. }) {
             self.register_presence(target, user);
             return;
         }
-        for (k, list) in self.here.iter_mut() {
+        for (k, list) in &mut self.here {
             if matches!(k, PresenceKey::Tab { .. }) && k != target {
                 list.retain(|u| u != &user);
             }
@@ -546,19 +605,86 @@ impl PresenceCtx {
     }
 
     pub fn set_pointer(&mut self, key: &PresenceKey, user: UserId, pos: (f32, f32)) {
+        self.set_pointer_at(key, user, pos, Instant::now());
+    }
+
+    /// [`Self::set_pointer`] with the clock supplied, so retirement can be
+    /// exercised without sleeping. Records the peer as *present* as well as
+    /// pointing — deliberately a separate record, since the pointer expires
+    /// but being here does not. Single-location like `set_caret`/
+    /// `set_selection`: a person has one pointer, so this moves it rather
+    /// than adding a new entry under a different scope.
+    pub fn set_pointer_at(
+        &mut self,
+        key: &PresenceKey,
+        user: UserId,
+        pos: (f32, f32),
+        now: Instant,
+    ) {
+        // Off every other scope first, so a pointer that changed scope leaves
+        // nothing painted where it used to be.
+        for (k, list) in &mut self.pointers {
+            if k != key {
+                list.retain(|(u, _)| u != &user);
+            }
+        }
+        self.pointers.retain(|_, list| !list.is_empty());
+        self.pointer_seen.retain(|(k, u), _| k == key || u != &user);
+
         let list = self.pointers.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
             entry.1 = pos;
         } else {
-            list.push((user, pos));
+            list.push((user.clone(), pos));
         }
+        self.pointer_seen.insert((key.clone(), user.clone()), now);
+        // Desktop scopes only: a pointer inside a surface's content is a
+        // position in a document, not a presence dot on the desktop. (Not
+        // `scopes_a_desktop_pointer`, which also answers yes for a routing
+        // artefact that is nobody's presence.)
+        if matches!(
+            key,
+            PresenceKey::Workspace { .. }
+                | PresenceKey::Pointer {
+                    space: PointerSpace::Desktop { .. }
+                }
+        ) {
+            self.register_presence(key, user);
+        }
+    }
+
+    /// Retire every pointer nobody has restated within `horizon`. Returns
+    /// whether anything was retired — a reason to repaint. `horizon` must
+    /// comfortably exceed the ~1s restate interval, so this notices a peer
+    /// gone quiet rather than blinking one whose keepalive was briefly
+    /// delayed. Only the pointer goes — the peer stays in [`Self::here`],
+    /// since going quiet about pointing is not leaving.
+    pub fn prune_pointers(&mut self, now: Instant, horizon: Duration) -> bool {
+        let seen = &mut self.pointer_seen;
+        let mut retired = false;
+        self.pointers.retain(|key, list| {
+            list.retain(|(user, _)| {
+                let fresh = seen
+                    .get(&(key.clone(), user.clone()))
+                    .is_some_and(|t| now.saturating_duration_since(*t) < horizon);
+                if !fresh {
+                    retired = true;
+                }
+                fresh
+            });
+            !list.is_empty()
+        });
+        if retired {
+            seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
+        }
+        retired
     }
 
     pub fn set_caret(&mut self, key: &PresenceKey, user: UserId, pos: usize) {
         // A caret is single-location: a peer has at most one. Clear them
         // from every OTHER key first so moving the caret (and the
         // caret-driven focus outline) doesn't leave a stale one behind.
-        for (k, list) in self.carets.iter_mut() {
+        for (k, list) in &mut self.carets {
             if k != key {
                 list.retain(|(u, _)| u != &user);
             }
@@ -574,7 +700,7 @@ impl PresenceCtx {
     pub fn set_selection(&mut self, key: &PresenceKey, user: UserId, range: SelectionRange) {
         // Single-location, same as the caret: drop this peer's selection
         // from every other key so a moved selection doesn't persist.
-        for (k, list) in self.selections.iter_mut() {
+        for (k, list) in &mut self.selections {
             if k != key {
                 list.retain(|(u, _)| u != &user);
             }
@@ -592,31 +718,43 @@ impl PresenceCtx {
     }
 
     pub fn pointer_for(&self, key: &PresenceKey, user: &UserId) -> Option<(f32, f32)> {
-        self.pointers.get(key)?.iter().find(|(u, _)| u == user).map(|(_, p)| *p)
+        self.pointers
+            .get(key)?
+            .iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, p)| *p)
     }
 
     pub fn selection_for(&self, key: &PresenceKey, user: &UserId) -> Option<SelectionRange> {
-        self.selections.get(key)?.iter().find(|(u, _)| u == user).map(|(_, r)| *r)
+        self.selections
+            .get(key)?
+            .iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, r)| *r)
     }
 
     pub fn caret_for(&self, key: &PresenceKey, user: &UserId) -> Option<usize> {
-        self.carets.get(key)?.iter().find(|(u, _)| u == user).map(|(_, c)| *c)
+        self.carets
+            .get(key)?
+            .iter()
+            .find(|(u, _)| u == user)
+            .map(|(_, c)| *c)
     }
 
-    /// Seed or replace this user's colour override. Accepts `#rgb`,
-    /// `#rrggbb`, and `#rrggbbaa` (alpha ignored — presence renderers
-    /// apply their own alpha). Malformed hex silently clears the override
-    /// so the caller falls back to [`user_color`].
+    /// Seed or replace this user's colour override (see [`parse_hex_color`]
+    /// for the accepted formats). Malformed input silently clears the
+    /// override, falling back to [`user_color`].
     pub fn set_color_override(&mut self, user: UserId, hex: &str) {
         match parse_hex_color(hex) {
-            Some(rgb) => { self.color_overrides.insert(user, rgb); }
-            None => { self.color_overrides.remove(&user); }
+            Some(rgb) => {
+                self.color_overrides.insert(user, rgb);
+            }
+            None => {
+                self.color_overrides.remove(&user);
+            }
         }
     }
 
-    /// Colour this user should render as. Checks the override map first,
-    /// then falls through to the palette-pinned [`user_color`] so peers
-    /// with no seed still behave exactly as before.
     pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
         if let Some(rgb) = self.color_overrides.get(user) {
             return *rgb;
@@ -624,10 +762,16 @@ impl PresenceCtx {
         user_color(&user.0)
     }
 
-    /// Record (or update) a peer's friendly display name — seeded from the
-    /// collab roster. Overwrites any prior name.
+    /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
-        self.names.insert(user, name.into());
+        let name = name.into();
+        // Relabel any already-drawn pill too, in case the pointer arrived first.
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                cursor.label = name.clone();
+            }
+        }
+        self.names.insert(user, name);
     }
 
     /// The friendly name to show for `user`, falling back to the raw id
@@ -639,8 +783,6 @@ impl PresenceCtx {
             .unwrap_or_else(|| user.0.clone())
     }
 
-    /// Resolve a peer into a [`PresenceUser`] — id, friendly name, and the
-    /// override-aware stable colour — ready to hand to any renderer.
     pub fn user(&self, user: &UserId) -> PresenceUser {
         PresenceUser {
             id: user.0.clone(),
@@ -649,12 +791,20 @@ impl PresenceCtx {
         }
     }
 
-    /// Record a peer's freshly-typed run under `key`, born `now`. Adjacent
-    /// / overlapping marks from the same peer under the same key coalesce
-    /// into one growing span with a refreshed birth instant, so a burst of
-    /// keystrokes reads as a single moving highlighter rather than a stack
-    /// of overlapping tints. Pass `Instant::now()` in production; tests
-    /// pass an explicit base instant so the fade is deterministic.
+    /// Called by the `App` after it diffs the document, not on every delta
+    /// — a metadata-only delta isn't an edit.
+    pub fn note_remote_text_edit(&mut self, now: Instant) {
+        self.last_remote_text_edit = Some(now);
+    }
+
+    fn edit_landed_recently(&self, now: Instant) -> bool {
+        self.last_remote_text_edit
+            .is_some_and(|t| now.saturating_duration_since(t) <= EDIT_PULSE_WINDOW)
+    }
+
+    /// Adjacent/overlapping marks from the same peer under the same key
+    /// coalesce into one growing span with a refreshed birth instant, so a
+    /// keystroke burst reads as one moving highlighter, not a stack of tints.
     pub fn record_peer_typing(
         &mut self,
         user: UserId,
@@ -679,9 +829,8 @@ impl PresenceCtx {
 
     /// The peer's still-visible typing spans under `key` at time `now`,
     /// each paired with a fade alpha in `0.0..=1.0` (1.0 = just typed,
-    /// tapering linearly to 0 at [`TYPING_FADE`]). Fully-faded marks are
-    /// filtered out. This is a read: call [`Self::prune_typing`] once a
-    /// frame to actually reclaim expired entries.
+    /// tapering linearly to 0 at [`TYPING_FADE`]). This is a read only:
+    /// call [`Self::prune_typing`] separately to reclaim expired entries.
     pub fn active_typing(
         &self,
         user: &UserId,
@@ -705,11 +854,7 @@ impl PresenceCtx {
             .collect()
     }
 
-    /// Every peer's still-visible typing spans under `key` at `now`, as
-    /// `(user, range, alpha)`. The shape a text widget wants: it walks the
-    /// list, maps each `range` to glyph rects, and paints
-    /// [`Self::draw_peer_typing`]. Skips the local user is the caller's
-    /// job — the store only ever holds *peers'* marks.
+    /// Every peer's typing spans under `key` at `now`, as `(user, range, alpha)`.
     pub fn typing_marks_for_key(
         &self,
         key: &PresenceKey,
@@ -733,18 +878,16 @@ impl PresenceCtx {
         out
     }
 
-    /// Whether any peer still has an un-faded typing mark at `now`. The
-    /// App polls this to keep requesting animation frames while a
-    /// highlighter is still decaying.
+    /// The App polls this to keep requesting animation frames while a highlighter is still decaying.
     pub fn has_active_typing(&self, now: Instant) -> bool {
         let fade = TYPING_FADE;
-        self.typing.values().flatten().any(|m| {
-            now.saturating_duration_since(m.born) < fade
-        })
+        self.typing
+            .values()
+            .flatten()
+            .any(|m| now.saturating_duration_since(m.born) < fade)
     }
 
-    /// Drop every typing mark that has fully faded by `now`, and any
-    /// scope whose mark list became empty. Call once a frame.
+    /// Call once a frame.
     pub fn prune_typing(&mut self, now: Instant) {
         let fade = TYPING_FADE;
         self.typing.retain(|_, marks| {
@@ -753,23 +896,17 @@ impl PresenceCtx {
         });
     }
 
-    /// Record (replace) a peer's broadcast [`ViewSubset`](crate::view::ViewSubset)
-    /// — the region and resource they are looking at. Fed from the presence
-    /// stream; the View is never merged, only replaced with the peer's
-    /// latest, so a peer's entry is always exactly what they last published.
+    /// Never merged, only replaced, so a peer's entry is always exactly what they last published.
     pub fn set_peer_view(&mut self, user: UserId, view: crate::view::ViewSubset) {
         self.views.insert(user, view);
     }
 
-    /// A peer's last broadcast [`ViewSubset`](crate::view::ViewSubset), if we
-    /// have one. `None` before the peer has published a View, or after they
-    /// leave. This is what **attach/follow** binds the local viewport to.
+    /// What **attach/follow** binds the local viewport to.
     pub fn peer_view(&self, user: &UserId) -> Option<&crate::view::ViewSubset> {
         self.views.get(user)
     }
 
-    /// A peer's last-known pointer position in scene space, if we have one
-    /// — the target a "follow" action scrolls toward. Reads the same
+    /// The target a "follow" action scrolls toward — reads the same
     /// `remote_cursors` overlay the pointer is drawn from, so following a
     /// peer lands exactly where their cursor shows.
     pub fn peer_pointer(&self, user_id: &str) -> Option<[f32; 2]> {
@@ -779,20 +916,22 @@ impl PresenceCtx {
             .map(|c| c.position)
     }
 
-    /// Hit-test a click against the off-screen mist bands for the current
-    /// `viewport`: returns the id of the peer whose edge band contains
-    /// `point`, so clicking a peer's mist selects them to follow. Bands
-    /// are the fixed-thickness strips [`draw_remote_presence`] paints, so
-    /// this stays in sync with what the user sees.
+    /// Returns the id of the peer whose off-screen mist band (the strips
+    /// [`draw_remote_presence`] paints) contains `point`, so clicking a
+    /// peer's mist selects them to follow.
     pub fn hit_test_offscreen_mist(
         &self,
         viewport: vello::kurbo::Rect,
         point: vello::kurbo::Point,
     ) -> Option<String> {
         for cursor in &self.remote_cursors {
+            // Exactly the peers draw_remote_presence paints a band for: never itself.
+            if self.is_own_identity(&cursor.user_id) || !cursor.painted_by_window() {
+                continue;
+            }
             let target = vello::kurbo::Point::new(
-                cursor.position[0] as f64,
-                cursor.position[1] as f64,
+                f64::from(cursor.position[0]),
+                f64::from(cursor.position[1]),
             );
             let Some(mist) = edge_mist_for(viewport, target) else {
                 continue;
@@ -805,12 +944,8 @@ impl PresenceCtx {
         None
     }
 
-    /// Upsert a remote peer's cursor into `remote_cursors`. The color is
-    /// resolved via `color_for(&UserId)` so pinned palette ids (alice/bob/
-    /// charlie/me) keep their reference colors and unknown ids fall through
-    /// to the FNV→HSL fallback. The label defaults to `user_id` when
-    /// `display_name` is None (peers can announce a friendlier name via
-    /// `CollabEvent::Context`).
+    /// Upsert a remote peer's cursor into `remote_cursors`. Label defaults to
+    /// `user_id` when `display_name` is `None`.
     pub fn upsert_remote_cursor(
         &mut self,
         user_id: String,
@@ -820,11 +955,8 @@ impl PresenceCtx {
         self.upsert_remote_cursor_faded(user_id, position, display_name, 1.0);
     }
 
-    /// [`Self::upsert_remote_cursor`] with an explicit opacity, so a
-    /// caller that ages remote cursors out (rather than waiting for an
-    /// explicit `Left`) can fade one rather than popping it. `alpha` is
-    /// clamped to `0.0..=1.0` and lands in the cursor colour's alpha
-    /// channel; `1.0` is exactly the plain upsert.
+    /// [`Self::upsert_remote_cursor`] with an explicit opacity, so a caller
+    /// that ages cursors out can fade one rather than popping it. Clamped to `0.0..=1.0`.
     pub fn upsert_remote_cursor_faded(
         &mut self,
         user_id: String,
@@ -832,17 +964,41 @@ impl PresenceCtx {
         display_name: Option<&str>,
         alpha: f32,
     ) {
+        self.upsert_remote_cursor_owned(
+            user_id,
+            position,
+            display_name,
+            alpha,
+            PointerOwner::Window,
+        );
+    }
+
+    /// [`Self::upsert_remote_cursor_faded`] naming which layer paints the
+    /// result — see [`PointerOwner`]. An upsert re-states the owner, so a
+    /// peer whose pointer changes transport changes hands too.
+    pub fn upsert_remote_cursor_owned(
+        &mut self,
+        user_id: String,
+        position: [f32; 2],
+        display_name: Option<&str>,
+        alpha: f32,
+        owner: PointerOwner,
+    ) {
+        // Second door into the same pill (`RemoteCursorMoved` bypasses
+        // `apply_remote_presence`); guarding only one door leaves the bug reachable.
+        if self.is_own_identity(&user_id) {
+            return;
+        }
         let uid = UserId(user_id.clone());
         let (r, g, b) = self.color_for(&uid);
         let color = [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
             alpha.clamp(0.0, 1.0),
         ];
-        let label = display_name
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| user_id.clone());
+        let label =
+            display_name.map_or_else(|| self.display_name(&uid), std::string::ToString::to_string);
         if let Some(existing) = self
             .remote_cursors
             .iter_mut()
@@ -850,6 +1006,7 @@ impl PresenceCtx {
         {
             existing.position = position;
             existing.color = color;
+            existing.owner = owner;
             // Don't overwrite an existing friendly label with the raw id.
             if display_name.is_some() {
                 existing.label = label;
@@ -860,6 +1017,7 @@ impl PresenceCtx {
                 color,
                 position,
                 label,
+                owner,
             });
         }
     }
@@ -868,30 +1026,14 @@ impl PresenceCtx {
         self.remote_cursors.retain(|c| c.user_id != user_id);
     }
 
-    // -----------------------------------------------------------------
-    // String-id wrappers used by the App's collab-event pump.
-    //
-    // The wire protocol (`CollabEvent::RemotePresenceUpdate`) carries
-    // peer ids as `String`s; the rest of `PresenceCtx` is keyed by
-    // [`UserId`] (a newtype around `String`). The wrappers below let
-    // the pump forward straight from the event payload without paying
-    // for a manual `UserId(...)` wrap on every call, and ensure that
-    // peer arrivals / departures / caret moves / selection changes
-    // all touch the SAME fields the widget render passes already read
-    // from (`here`, `carets`, `selections`, `remote_cursors`).
-    // -----------------------------------------------------------------
+    // String-id wrappers for the App's collab-event pump: the wire protocol
+    // carries peer ids as `String`, the rest of `PresenceCtx` is keyed by
+    // [`UserId`]. Let the pump forward straight from the event payload.
 
-    /// Record `user_id`'s caret position under `key`. Mirrors the
-    /// `Caret` payload of [`crate::collaboration::PresencePayload`] and
-    /// stores into the existing [`Self::carets`] map so widgets that
-    /// already call [`Self::caret_for`] light up without a second lookup.
     pub fn set_remote_caret(&mut self, user_id: String, key: PresenceKey, pos: usize) {
         self.set_caret(&key, UserId(user_id), pos);
     }
 
-    /// Record `user_id`'s selection range under `key`. Mirrors the
-    /// `Selection` payload of [`crate::collaboration::PresencePayload`]
-    /// and stores into the existing [`Self::selections`] map.
     pub fn set_remote_selection(
         &mut self,
         user_id: String,
@@ -902,11 +1044,6 @@ impl PresenceCtx {
         self.set_selection(&key, UserId(user_id), SelectionRange { start, end });
     }
 
-    /// Attribute `user_id` to `key` (peer "arrived"). Routes through
-    /// [`Self::set_tab_focus`] for `Tab` keys so a peer switching tabs
-    /// moves their dot rather than accumulating attribution on every
-    /// tab they've ever visited; other keys fall through to
-    /// [`Self::register_presence`].
     pub fn register_peer_at(&mut self, user_id: String, key: PresenceKey) {
         let uid = UserId(user_id);
         if matches!(key, PresenceKey::Tab { .. }) {
@@ -916,34 +1053,47 @@ impl PresenceCtx {
         }
     }
 
-    /// Fold one inbound presence frame into this context.
-    ///
-    /// This is the whole decode of a `RemotePresenceUpdate` — which
-    /// store a payload lands in, and under which scope. It lives on
-    /// `PresenceCtx` rather than on `App` because an app is not the
-    /// only thing that subscribes to presence: the compositor draws
-    /// peers over its own windows and reads the identical stream. Two
-    /// decoders would drift, and a peer painted by one and not the
-    /// other is indistinguishable on screen from a peer who is not
-    /// there.
-    ///
-    /// The returned [`RemotePresenceEffect`] names the part a bare
-    /// presence store cannot do for itself: following a peer's
-    /// viewport, and answering a late joiner with document state. A
-    /// subscriber that holds no document ignores it.
+    /// Fold one inbound presence frame into this context — the whole decode
+    /// of a `RemotePresenceUpdate`. Lives on `PresenceCtx` rather than `App`
+    /// because the compositor also subscribes to the identical stream, and
+    /// two decoders would drift. The returned [`RemotePresenceEffect`] names
+    /// what a bare presence store can't do for itself.
     pub fn apply_remote_presence(
         &mut self,
         user_id: String,
         key: PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
-        use crate::collaboration::PresencePayload::*;
+        use crate::collaboration::PresencePayload::{
+            Arrived, Caret, Left, Pointer, Selection, Typing,
+        };
+
+        // A frame this session published, handed back: another app the same
+        // person has open. Nothing about it is painted, but `Arrived` still
+        // needs answering — it's a joiner's request for the document.
+        if self.is_own_identity(&user_id) {
+            // Following yourself is not a thing.
+            if key.as_view().is_some() {
+                return RemotePresenceEffect::None;
+            }
+            return match payload {
+                // A Tab-keyed arrival moves a focus dot; only a scope
+                // arrival is a join asking to be sent the document.
+                Arrived if !matches!(key, PresenceKey::Tab { .. }) => {
+                    // `eprintln!`, not `tracing`: an app installs no
+                    // subscriber, so a `debug!` here would reach nobody.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] own participant {user_id}: not painting it as a peer");
+                    }
+                    RemotePresenceEffect::PeerArrived
+                }
+                _ => RemotePresenceEffect::None,
+            };
+        }
 
         // A View broadcast rides inside the routing key, not the payload
-        // (the subset has no `PresencePayload` variant). Recognise it here,
-        // store the peer's region/resource, and let the caller decide
-        // whether it is following them. The paired payload is inert and
-        // deliberately never reaches the match below.
+        // (the subset has no `PresencePayload` variant); the paired payload
+        // is inert and never reaches the match below.
         if let Some(subset) = key.as_view() {
             self.set_peer_view(UserId(user_id), subset);
             return RemotePresenceEffect::PeerViewChanged;
@@ -951,19 +1101,41 @@ impl PresenceCtx {
 
         match payload {
             Pointer { x, y } => {
-                // Populate BOTH presence stores: `pointers` (keyed by
-                // scope, read by the shell's per-workspace overlay and by
-                // `pointer_for`) and the screen-space `remote_cursors` vec
-                // the shared `draw_remote_cursors` helper renders.
+                // Populate BOTH stores: `pointers` (scope-keyed, read by the
+                // shell overlay and `pointer_for`) and screen-space
+                // `remote_cursors`. Which gets *painted* is `owner`, decided
+                // by the frame's coordinate space — see `pointer_owner_for`.
                 let uid = UserId(user_id.clone());
+                let owner = self.pointer_owner_for(&key);
                 self.set_pointer(&key, uid, (x, y));
-                self.upsert_remote_cursor(user_id, [x, y], None);
+                self.upsert_remote_cursor_owned(user_id, [x, y], None, 1.0, owner);
             }
             Caret { pos } => {
-                // Feed BOTH presence stores: the in-app BlockEditor reads
-                // `carets` (set_caret); the cross-process overlay reads
-                // the `remote_caret` map (set_remote_caret).
+                // Feed BOTH stores: in-app BlockEditor reads `carets`
+                // (set_caret); the cross-process overlay reads `remote_caret`.
                 let uid = UserId(user_id.clone());
+                let now = Instant::now();
+                // Derive a typing mark from a caret that advanced under the
+                // same scope, not only from an explicit `Typing` payload —
+                // an agent/SDK peer publishing bare caret moves has no
+                // other way to show what it wrote. Gated on a document
+                // change having actually landed, so a caret merely reading
+                // paints nothing.
+                if let Some(prev) = self.caret_for(&key, &uid)
+                    && pos > prev
+                    && pos - prev <= TYPING_DERIVE_MAX_RUN
+                    && self.edit_landed_recently(now)
+                {
+                    self.record_peer_typing(
+                        uid.clone(),
+                        key.clone(),
+                        SelectionRange {
+                            start: prev,
+                            end: pos,
+                        },
+                        now,
+                    );
+                }
                 self.set_caret(&key, uid, pos);
                 self.set_remote_caret(user_id, key, pos);
             }
@@ -973,10 +1145,6 @@ impl PresenceCtx {
                 self.set_remote_selection(user_id, key, start, end);
             }
             Typing { start, end } => {
-                // A peer inserted `start..end` under `key`: record a fading
-                // textmarker swipe in their colour. `Instant::now()` births
-                // the mark; the render fades it over `TYPING_FADE`, and the
-                // per-frame `prune_typing` reclaims it.
                 self.record_peer_typing(
                     UserId(user_id),
                     key,
@@ -986,12 +1154,9 @@ impl PresenceCtx {
             }
             Arrived => {
                 let uid = UserId(user_id.clone());
-                // Register in the cross-process peer registry too.
                 self.register_peer_at(user_id, key.clone());
-                // Tab keys move the peer's dot between tabs/pages; non-Tab
-                // (app/workspace) arrivals are (possibly late) joiners, so
-                // the caller should reply with its full state to converge.
-                // (Page switches use Tab keys, never this.)
+                // Tab keys move the peer's dot; non-Tab arrivals are (possibly
+                // late) joiners, so the caller should reply with full state.
                 if matches!(key, PresenceKey::Tab { .. }) {
                     self.set_tab_focus(&key, uid);
                 } else {
@@ -1000,21 +1165,11 @@ impl PresenceCtx {
                 }
             }
             Left => {
-                // `Left` is broadcast on `WindowEvent::CursorLeft` —
-                // the peer's mouse pointer left their window viewport,
-                // not the peer themselves. Their caret + selection
-                // should KEEP rendering because they're still editing,
-                // they've just moved their mouse elsewhere. Wiping
-                // them via `unregister_peer` here was the
-                // "remote caret disappears a few seconds after it was
-                // placed" bug — any mouse-leave on the publisher side
-                // tore down the entire presence record on every
-                // subscriber.
-                //
-                // True peer disconnect arrives via the socket close
-                // path (broker drops the peer from its fan-out
-                // table); subscribers only need to clear pointer-
-                // related state here.
+                // `Left` fires on mouse leaving the window viewport, not the
+                // peer leaving — caret/selection must keep rendering. Do not
+                // call `unregister_peer` here: that tears down the whole
+                // presence record on every mouse-leave. True disconnect
+                // arrives via the socket close path instead.
                 let uid = UserId(user_id.clone());
                 for list in self.pointers.values_mut() {
                     list.retain(|(u, _)| u != &uid);
@@ -1026,53 +1181,43 @@ impl PresenceCtx {
         RemotePresenceEffect::None
     }
 
-    /// Drop every trace of `user_id`: remove them from every
-    /// [`Self::here`] list, every [`Self::pointers`] / [`Self::carets`]
-    /// / [`Self::selections`] list, and drop their entry from
-    /// [`Self::remote_cursors`]. Called on the `Left` payload of
-    /// [`crate::collaboration::PresencePayload`] and whenever a peer
-    /// disconnects.
+    /// Drop every trace of `user_id`, on an actual disconnect (not `Left`,
+    /// which is just the pointer leaving the viewport — see the arm above).
     pub fn unregister_peer(&mut self, user_id: String) {
         let uid = UserId(user_id.clone());
-        // here
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }
-        // pointers
         for list in self.pointers.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
-        // carets
+        self.pointer_seen.retain(|(_, u), _| u != &uid);
         for list in self.carets.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
-        // selections
         for list in self.selections.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
-        // typing highlighter marks scoped to this peer
         self.typing.retain(|(u, _), _| u != &uid);
-        // broadcast View (region/resource they were looking at)
         self.views.remove(&uid);
-        // roster name
         self.names.remove(&uid);
-        // remote cursor stamp
         self.remove_remote_cursor(&user_id);
     }
 }
 
 /// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple.
-/// Alpha, when present, is discarded — presence affordances manage alpha
-/// at render time. Leading `#` is optional. Returns `None` for anything
-/// unparseable so callers can silently fall through to the palette.
+/// Alpha is discarded; leading `#` is optional; `None` for anything unparseable.
 pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     let s = hex.trim_start_matches('#');
     let bytes = s.as_bytes();
     match bytes.len() {
         3 => {
-            let r = u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
-            let g = u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
-            let b = u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
+            let r =
+                u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
+            let g =
+                u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
+            let b =
+                u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
             Some((r, g, b))
         }
         6 | 8 => {
@@ -1097,7 +1242,7 @@ mod tab_focus_tests {
         let b = PresenceKey::Tab { id: "bbb".into() };
 
         ctx.set_tab_focus(&a, alice.clone());
-        assert_eq!(ctx.peers_on(&a), &[alice.clone()]);
+        assert_eq!(ctx.peers_on(&a), std::slice::from_ref(&alice));
         assert!(ctx.peers_on(&b).is_empty());
 
         ctx.set_tab_focus(&b, alice.clone());
@@ -1136,7 +1281,7 @@ mod tab_focus_tests {
 
         assert_eq!(
             ctx.peers_on(&tab),
-            &[alice.clone()],
+            std::slice::from_ref(&alice),
             "workspace registration must not evict the tab attribution"
         );
         assert_eq!(ctx.peers_on(&ws), &[alice]);
@@ -1152,7 +1297,6 @@ mod color_override_tests {
         assert_eq!(parse_hex_color("#ff0000"), Some((0xff, 0x00, 0x00)));
         assert_eq!(parse_hex_color("00ff00"), Some((0x00, 0xff, 0x00)));
         assert_eq!(parse_hex_color("#0000ffee"), Some((0x00, 0x00, 0xff)));
-        // #rgb short form expands to #rrggbb.
         assert_eq!(parse_hex_color("#f0a"), Some((0xff, 0x00, 0xaa)));
     }
 
@@ -1174,11 +1318,7 @@ mod color_override_tests {
     fn color_for_honours_override_when_set() {
         let mut ctx = PresenceCtx::empty();
         ctx.set_color_override(UserId("alice".into()), "#abcdef");
-        assert_eq!(
-            ctx.color_for(&UserId("alice".into())),
-            (0xab, 0xcd, 0xef)
-        );
-        // A different user is unaffected and still uses the palette.
+        assert_eq!(ctx.color_for(&UserId("alice".into())), (0xab, 0xcd, 0xef));
         assert_eq!(ctx.color_for(&UserId("bob".into())), user_color("bob"));
     }
 
@@ -1203,9 +1343,7 @@ mod remote_cursor_tests {
         let c = &ctx.remote_cursors[0];
         assert_eq!(c.user_id, "alice");
         assert_eq!(c.position, [42.0, 17.0]);
-        // display_name=None falls through to the raw user_id as label.
         assert_eq!(c.label, "alice");
-        // Color should come from the pinned palette for "alice".
         let (r, g, b) = user_color("alice");
         assert!((c.color[0] - r as f32 / 255.0).abs() < 1e-3);
         assert!((c.color[1] - g as f32 / 255.0).abs() < 1e-3);
@@ -1229,11 +1367,9 @@ mod remote_cursor_tests {
     #[test]
     fn upsert_remote_cursor_preserves_friendly_label_when_display_name_is_none() {
         let mut ctx = PresenceCtx::empty();
-        // Seed with a friendly name (e.g. from CollabEvent::Context).
         ctx.upsert_remote_cursor("alice".into(), [0.0, 0.0], Some("Alice Smith"));
         assert_eq!(ctx.remote_cursors[0].label, "Alice Smith");
 
-        // A later cursor move with None must not clobber the friendly label.
         ctx.upsert_remote_cursor("alice".into(), [50.0, 50.0], None);
         assert_eq!(ctx.remote_cursors.len(), 1);
         assert_eq!(ctx.remote_cursors[0].position, [50.0, 50.0]);
@@ -1252,7 +1388,6 @@ mod remote_cursor_tests {
         ctx.remove_remote_cursor("alice");
         assert_eq!(ctx.remote_cursors.len(), 1);
         assert_eq!(ctx.remote_cursors[0].user_id, "bob");
-        // Removing an unknown id is a no-op.
         ctx.remove_remote_cursor("nobody");
         assert_eq!(ctx.remote_cursors.len(), 1);
     }
@@ -1275,7 +1410,9 @@ mod string_id_wrapper_tests {
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Workspace { id: "home".into() };
         ctx.set_remote_selection("bob".into(), key.clone(), 3, 9);
-        let r = ctx.selection_for(&key, &UserId("bob".into())).expect("selection");
+        let r = ctx
+            .selection_for(&key, &UserId("bob".into()))
+            .expect("selection");
         assert_eq!((r.start, r.end), (3, 9));
     }
 
@@ -1297,8 +1434,10 @@ mod string_id_wrapper_tests {
         let b = PresenceKey::Tab { id: "bbb".into() };
         ctx.register_peer_at("alice".into(), a.clone());
         ctx.register_peer_at("alice".into(), b.clone());
-        assert!(ctx.peers_on(&a).is_empty(),
-            "peer must have been evicted from previous tab");
+        assert!(
+            ctx.peers_on(&a).is_empty(),
+            "peer must have been evicted from previous tab"
+        );
         assert_eq!(ctx.peers_on(&b), &[UserId("alice".into())]);
     }
 
@@ -1351,7 +1490,11 @@ mod string_id_wrapper_tests {
 
     #[test]
     fn presence_user_rgba_is_normalised() {
-        let u = PresenceUser { id: "x".into(), name: "x".into(), color: (255, 128, 0) };
+        let u = PresenceUser {
+            id: "x".into(),
+            name: "x".into(),
+            color: (255, 128, 0),
+        };
         let c = u.color_rgba(0.5);
         assert!((c[0] - 1.0).abs() < 1e-6);
         assert!((c[1] - 128.0 / 255.0).abs() < 1e-6);
@@ -1373,14 +1516,242 @@ mod string_id_wrapper_tests {
         assert_eq!(pu.color, user_color("alice"));
     }
 
+    /// Labelled with the raw id, never blank and never a stand-in name — a
+    /// blank chip reads as a rendering fault, a stand-in reads as a real person.
+    #[test]
+    fn an_unnamed_peer_is_labelled_with_its_id_and_never_with_a_stand_in() {
+        let ctx = PresenceCtx::empty();
+        let peer = UserId("peer@5537458103208628978".into());
+
+        let label = ctx.display_name(&peer);
+        assert_eq!(label, "peer@5537458103208628978");
+        assert!(!label.trim().is_empty(), "a caret chip must never be blank");
+        assert_eq!(
+            ctx.user(&peer).name,
+            "peer@5537458103208628978",
+            "every renderer resolves the same way, so none of them invents a name",
+        );
+    }
+
+    /// Colour is keyed on the id; gaining a name must not perturb it.
+    #[test]
+    fn a_peer_that_gains_a_name_keeps_its_colour() {
+        let mut ctx = PresenceCtx::empty();
+        let peer = UserId("peer@5537458103208628978".into());
+        let before = ctx.color_for(&peer);
+
+        ctx.set_display_name(peer.clone(), "bob");
+
+        assert_eq!(ctx.display_name(&peer), "bob");
+        assert_eq!(
+            ctx.color_for(&peer),
+            before,
+            "a peer must not change colour in front of the people watching it",
+        );
+    }
+
+    /// A name can arrive after the pointer it belongs to. The pill has to
+    /// pick it up, or a peer stays a number on screen until they happen
+    /// to move again.
+    #[test]
+    fn a_name_that_arrives_after_the_pointer_relabels_it() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+        assert_eq!(ctx.remote_cursors[0].label, "peer@77");
+
+        ctx.set_display_name(UserId("peer@77".into()), "bob");
+
+        assert_eq!(
+            ctx.remote_cursors.len(),
+            1,
+            "naming a peer adds no second pointer"
+        );
+        assert_eq!(ctx.remote_cursors[0].label, "bob");
+        assert_eq!(
+            ctx.remote_cursors[0].position,
+            [10.0, 20.0],
+            "and moves none"
+        );
+    }
+
+    /// And the other order: a name learned from the roster before the
+    /// peer's first move labels that move when it lands.
+    #[test]
+    fn a_pointer_that_arrives_after_the_name_is_labelled_with_it() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_display_name(UserId("peer@77".into()), "bob");
+
+        ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+
+        assert_eq!(ctx.remote_cursors[0].label, "bob");
+    }
+
+    /// One person is one pointer: a workspace-scoped arrival lands in *both*
+    /// stores — `pointers` (compositor paints) and `remote_cursors` ("follow"
+    /// reads) — but only one of them may paint it.
+    #[test]
+    fn a_desktop_pointer_is_the_compositors_to_paint_and_not_this_layers() {
+        let mut ctx = PresenceCtx::empty();
+        let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+        let key = PresenceKey::Workspace { id: room.into() };
+
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            key.clone(),
+            crate::collaboration::PresencePayload::Pointer { x: 120.0, y: 90.0 },
+        );
+
+        // The compositor's store has them: this is not "the peer never
+        // arrived" passing for "the peer is not drawn twice".
+        assert_eq!(
+            ctx.pointer_for(&key, &UserId("peer@77".into())),
+            Some((120.0, 90.0)),
+            "the overlay must still have a desktop pointer to paint",
+        );
+        assert_eq!(ctx.peer_pointer("peer@77"), Some([120.0, 90.0]));
+
+        assert_eq!(ctx.remote_cursors.len(), 1, "one arrival is one record");
+        assert!(
+            !ctx.remote_cursors[0].painted_by_window(),
+            "a desktop pointer painted here as well is the same person twice",
+        );
+    }
+
+    /// The other half: a pointer with no desktop scope has no overlay
+    /// claiming it, so this layer stays the one that draws it.
+    #[test]
+    fn a_pointer_no_overlay_claims_is_still_this_layers_to_paint() {
+        let mut ctx = PresenceCtx::empty();
+
+        // The relay/SDK path: a cursor with no scope at all.
+        ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "dropping this one would leave the relay dialect with no pointer at all",
+        );
+
+        let widget = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
+        ctx.apply_remote_presence(
+            "peer@88".into(),
+            widget,
+            crate::collaboration::PresencePayload::Pointer { x: 5.0, y: 6.0 },
+        );
+        let scoped = ctx
+            .remote_cursors
+            .iter()
+            .find(|c| c.user_id == "peer@88")
+            .expect("the pointer landed");
+        assert!(
+            scoped.painted_by_window(),
+            "only a desktop scope hands a pointer to the compositor",
+        );
+    }
+
+    /// The same frame, handed to two surfaces, is placeable by one of them —
+    /// each asks the same question of the same carried fact, without
+    /// consulting the other.
+    #[test]
+    fn one_content_pointer_reaches_two_surfaces_and_one_places_it() {
+        let frame = PresenceKey::surface_pointer("dev.qos.word-processor");
+
+        let mut word_processor = PresenceCtx::empty();
+        word_processor.set_surface_id("dev.qos.word-processor");
+        let mut file_manager = PresenceCtx::empty();
+        file_manager.set_surface_id("dev.qos.files");
+
+        for ctx in [&mut word_processor, &mut file_manager] {
+            ctx.apply_remote_presence(
+                "peer@77".into(),
+                frame.clone(),
+                crate::collaboration::PresencePayload::Pointer { x: 214.0, y: 34.0 },
+            );
+        }
+
+        let drawn = |ctx: &PresenceCtx| {
+            ctx.remote_cursors
+                .iter()
+                .filter(|c| c.painted_by_window())
+                .count()
+        };
+        assert_eq!(
+            drawn(&word_processor),
+            1,
+            "the surface those pixels were measured in draws them",
+        );
+        assert_eq!(
+            drawn(&file_manager),
+            0,
+            "the same offset into a file list is not the place a word \
+             processor's (214, 34) describes",
+        );
+        assert_eq!(
+            file_manager.pointer_owner_for(&frame),
+            PointerOwner::OtherSurface,
+            "and it can say so from the frame alone",
+        );
+    }
+
+    /// A session that has not said which surface it draws places no content
+    /// pointer at all.
+    ///
+    /// Fail closed. The alternative is to place it anyway and be right only
+    /// when the guess happens to hold — and a pointer in the wrong window
+    /// looks exactly like a pointer in the right one, so nothing would ever
+    /// report the guess as wrong.
+    #[test]
+    fn a_session_that_has_not_named_its_surface_places_no_content_pointer() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::surface_pointer("dev.qos.word-processor");
+        assert_eq!(ctx.pointer_owner_for(&key), PointerOwner::OtherSurface);
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            key,
+            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert!(
+            ctx.remote_cursors.iter().all(|c| !c.painted_by_window()),
+            "an unnamed surface must not claim somebody else's coordinates",
+        );
+    }
+
+    /// A peer moving transport changes hands rather than keeping its first owner.
+    #[test]
+    fn a_pointer_that_changes_transport_changes_hands() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "room".into() };
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            key,
+            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert!(!ctx.remote_cursors[0].painted_by_window());
+
+        ctx.upsert_remote_cursor("peer@77".into(), [3.0, 4.0], None);
+
+        assert_eq!(ctx.remote_cursors.len(), 1, "still one person");
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "a peer nobody else is painting must come back to this layer",
+        );
+    }
+
     #[test]
     fn typing_mark_fades_linearly_and_prunes() {
         use std::time::Duration;
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
-        let key = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let key = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
         let t0 = Instant::now();
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 3, end: 8 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 3, end: 8 },
+            t0,
+        );
 
         // Fresh: alpha ~1.0, the full range present.
         let fresh = ctx.active_typing(&bob, &key, t0);
@@ -1392,7 +1763,11 @@ mod string_id_wrapper_tests {
         let mid = t0 + TYPING_FADE / 2;
         let half = ctx.active_typing(&bob, &key, mid);
         assert_eq!(half.len(), 1);
-        assert!((half[0].1 - 0.5).abs() < 0.05, "alpha halves at mid-life, got {}", half[0].1);
+        assert!(
+            (half[0].1 - 0.5).abs() < 0.05,
+            "alpha halves at mid-life, got {}",
+            half[0].1
+        );
         assert!(ctx.has_active_typing(mid));
 
         // Past the window: gone from the read, and prune reclaims it.
@@ -1408,17 +1783,34 @@ mod string_id_wrapper_tests {
     fn typing_marks_coalesce_when_contiguous() {
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
-        let key = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+        let key = PresenceKey::Widget {
+            path: vec![PathSegment::Index(1)],
+        };
         let t0 = Instant::now();
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 0, end: 3 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 0, end: 3 },
+            t0,
+        );
         // A contiguous continuation (abuts the previous end) extends the span.
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 3, end: 6 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 3, end: 6 },
+            t0,
+        );
         let marks = ctx.active_typing(&bob, &key, t0);
         assert_eq!(marks.len(), 1, "contiguous typing coalesces into one span");
         assert_eq!((marks[0].0.start, marks[0].0.end), (0, 6));
 
         // A disjoint edit elsewhere in the same block stays separate.
-        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 40, end: 44 }, t0);
+        ctx.record_peer_typing(
+            bob.clone(),
+            key.clone(),
+            SelectionRange { start: 40, end: 44 },
+            t0,
+        );
         let marks = ctx.active_typing(&bob, &key, t0);
         assert_eq!(marks.len(), 2, "a far-away edit is its own span");
     }
@@ -1429,11 +1821,20 @@ mod string_id_wrapper_tests {
         let alice = UserId("alice".into());
         let key = PresenceKey::Tab { id: "t".into() };
         ctx.set_display_name(alice.clone(), "Alice");
-        ctx.record_peer_typing(alice.clone(), key.clone(), SelectionRange { start: 0, end: 2 }, Instant::now());
+        ctx.record_peer_typing(
+            alice.clone(),
+            key.clone(),
+            SelectionRange { start: 0, end: 2 },
+            Instant::now(),
+        );
         assert!(!ctx.active_typing(&alice, &key, Instant::now()).is_empty());
         ctx.unregister_peer("alice".into());
         assert!(ctx.active_typing(&alice, &key, Instant::now()).is_empty());
-        assert_eq!(ctx.display_name(&alice), "alice", "name reverts to id fallback");
+        assert_eq!(
+            ctx.display_name(&alice),
+            "alice",
+            "name reverts to id fallback"
+        );
     }
 
     #[test]
@@ -1460,5 +1861,441 @@ mod string_id_wrapper_tests {
         assert_eq!(ctx.caret_for(&key, &UserId("bob".into())), Some(7));
         assert_eq!(ctx.remote_cursors.len(), 1);
         assert_eq!(ctx.remote_cursors[0].user_id, "bob");
+    }
+}
+
+/// A session must not paint its own participant, and must go on
+/// painting everybody else. Both halves are asserted here: the second
+/// is the one that keeps a fix in this area from hiding the room.
+#[cfg(test)]
+mod own_identity_tests {
+    use super::*;
+    use crate::collaboration::PresencePayload;
+
+    fn room() -> PresenceKey {
+        PresenceKey::Workspace {
+            id: "room-1".into(),
+        }
+    }
+
+    fn mine() -> PresenceCtx {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["ada"]);
+        ctx
+    }
+
+    #[test]
+    fn a_session_does_not_paint_a_pill_for_itself() {
+        let mut ctx = mine();
+        ctx.apply_remote_presence(
+            "ada".into(),
+            room(),
+            PresencePayload::Pointer { x: 120.0, y: 90.0 },
+        );
+        ctx.apply_remote_presence("ada".into(), room(), PresencePayload::Caret { pos: 7 });
+
+        assert!(
+            ctx.remote_cursors.is_empty(),
+            "painted a cursor pill for this session's own identity: {:?}",
+            ctx.remote_cursors,
+        );
+        assert_eq!(ctx.pointer_for(&room(), &UserId("ada".into())), None);
+        assert_eq!(ctx.caret_for(&room(), &UserId("ada".into())), None);
+        assert!(ctx.peers_on(&room()).is_empty());
+    }
+
+    /// The control. A second *person* is a second participant, and the
+    /// self-rule may not touch them — hiding a real collaborator is the
+    /// worse of the two failures by a distance.
+    #[test]
+    fn another_person_is_still_painted() {
+        let mut ctx = mine();
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            room(),
+            PresencePayload::Pointer { x: 12.0, y: 34.0 },
+        );
+        ctx.apply_remote_presence("peer@77".into(), room(), PresencePayload::Caret { pos: 3 });
+
+        assert_eq!(
+            ctx.pointer_for(&room(), &UserId("peer@77".into())),
+            Some((12.0, 34.0))
+        );
+        assert_eq!(ctx.caret_for(&room(), &UserId("peer@77".into())), Some(3));
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert_eq!(ctx.remote_cursors[0].user_id, "peer@77");
+    }
+
+    /// A document legitimately has more than one app participant: the
+    /// agent joins as one and publishes a caret as it edits, with no
+    /// window anywhere. It announces an identity of its own, so the
+    /// rule leaves it alone — the test is the participant, not the
+    /// process and not the presence of a window.
+    #[test]
+    fn an_agent_in_the_same_document_is_still_painted() {
+        let mut ctx = mine();
+        ctx.apply_remote_presence("agent".into(), room(), PresencePayload::Caret { pos: 11 });
+        assert_eq!(ctx.caret_for(&room(), &UserId("agent".into())), Some(11));
+    }
+
+    /// `Arrived` is not only a thing to draw — it is how a joiner asks
+    /// the room for the document, and a second window of the same app
+    /// depends on the answer. Suppressing the pill must not suppress
+    /// the handshake.
+    #[test]
+    fn a_sibling_arriving_still_gets_the_document() {
+        let mut ctx = mine();
+        assert_eq!(
+            ctx.apply_remote_presence("ada".into(), room(), PresencePayload::Arrived),
+            RemotePresenceEffect::PeerArrived,
+            "a sibling that arrived must still be answered with state",
+        );
+        assert!(
+            ctx.peers_on(&room()).is_empty(),
+            "answering a sibling must not also list it as somebody else",
+        );
+    }
+
+    /// A session that does not know what it is called suppresses
+    /// nobody. The rule fails open on purpose.
+    #[test]
+    fn an_unnamed_session_suppresses_nobody() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.apply_remote_presence(
+            "ada".into(),
+            room(),
+            PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+
+    #[test]
+    fn a_blank_identity_is_not_an_identity() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["", "   "]);
+        assert!(!ctx.is_own_identity(""));
+        ctx.apply_remote_presence(
+            "".into(),
+            room(),
+            PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+
+    /// The cursor stream reaches the same pill without passing through
+    /// `apply_remote_presence`. A guard on one door and not the other
+    /// leaves the bug reachable.
+    #[test]
+    fn the_cursor_stream_honours_the_same_rule() {
+        let mut ctx = mine();
+        ctx.upsert_remote_cursor("ada".into(), [5.0, 5.0], None);
+        assert!(ctx.remote_cursors.is_empty());
+        ctx.upsert_remote_cursor("peer@77".into(), [5.0, 5.0], None);
+        assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+
+    /// Following yourself is not a thing. A `View` broadcast stamped
+    /// with this session's own identity is neither stored nor reported
+    /// as a reason to move the viewport.
+    #[test]
+    fn a_session_does_not_follow_its_own_view() {
+        let mut ctx = mine();
+        let subset = crate::view::ViewSubset {
+            scroll: vec![10.0],
+            open_resource: None,
+            viewport: crate::view::ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            view_mode: None,
+        };
+        assert_eq!(
+            ctx.apply_remote_presence(
+                "ada".into(),
+                PresenceKey::view(&subset),
+                PresencePayload::Arrived,
+            ),
+            RemotePresenceEffect::None,
+        );
+        assert!(ctx.peer_view(&UserId("ada".into())).is_none());
+    }
+
+    /// The room's answer to "which participant am I" arrives without making
+    /// this session a participant of its own presence store — a `names` entry
+    /// for it would paint a pill over its own document.
+    #[test]
+    fn knowing_which_participant_you_are_does_not_make_you_a_peer() {
+        let mut ctx = PresenceCtx::empty();
+        let me = UserId("peer@9007495404254172154".into());
+        ctx.set_self_participant(me.clone(), "bob");
+
+        assert_eq!(ctx.self_id(), Some(&me));
+        assert_eq!(ctx.self_name(), Some("bob"));
+        assert!(
+            !ctx.names.contains_key(&me),
+            "the row became a display name, which is what the roster, the \
+             caret chips and the mention colours all read"
+        );
+
+        // And a frame stamped with that address is this session's own, so the
+        // pill and the cursor stay suppressed.
+        assert!(ctx.is_own_identity(&me.0));
+        assert_eq!(
+            ctx.apply_remote_presence(me.0.clone(), room(), PresencePayload::Caret { pos: 4 }),
+            RemotePresenceEffect::None,
+        );
+        assert!(
+            ctx.peers_on(&room()).is_empty(),
+            "this session was listed as somebody else in its own room"
+        );
+    }
+
+    /// A participant the room has admitted but not named has an address and no
+    /// name. Handing the address back as a name is how a routing hash ends up
+    /// rendered where a name belongs.
+    #[test]
+    fn an_unnamed_own_participant_reports_no_name() {
+        let mut ctx = PresenceCtx::empty();
+        let me = UserId("peer@42".into());
+        ctx.set_self_participant(me.clone(), "   ");
+        assert_eq!(ctx.self_id(), Some(&me));
+        assert_eq!(ctx.self_name(), None);
+    }
+
+    #[test]
+    fn a_blank_own_participant_is_refused() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_self_participant(UserId("  ".into()), "bob");
+        assert_eq!(ctx.self_id(), None);
+        assert!(!ctx.is_own_identity(""));
+        assert!(!ctx.is_own_identity("  "));
+    }
+
+    #[test]
+    fn restating_the_published_identities_keeps_the_room_address() {
+        let mut ctx = PresenceCtx::empty();
+        let me = UserId("peer@42".into());
+        ctx.set_self_participant(me.clone(), "bob");
+        ctx.set_own_identity(["dev.qos.chat"]);
+        assert!(ctx.is_own_identity(&me.0));
+        assert!(ctx.is_own_identity("dev.qos.chat"));
+    }
+
+    #[test]
+    fn a_frame_stamped_with_the_rooms_name_for_this_session_is_still_its_own() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["ada"]);
+        ctx.set_self_participant(UserId("peer@42".into()), "bob");
+        assert!(ctx.is_own_identity("bob"));
+        assert!(
+            !ctx.is_own_identity("Claude"),
+            "a peer the room happens to have named must stay a peer",
+        );
+    }
+
+    /// A pointer nobody restates is retired; everything else about that peer
+    /// stays — retiring a cursor is not evicting a peer, or a participant
+    /// would vanish from the roster whenever it stops moving.
+    #[test]
+    fn a_pointer_nobody_restates_is_retired_and_nothing_else_is() {
+        let t0 = Instant::now();
+        let horizon = Duration::from_secs(4);
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let block = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
+        let claude = UserId("peer@7".into());
+        let bob = UserId("peer@8".into());
+
+        let mut ctx = PresenceCtx::default();
+        ctx.set_display_name(claude.clone(), "Claude");
+        ctx.set_pointer_at(&room, claude.clone(), (1178.31, 582.0), t0);
+        ctx.set_caret(&block, claude.clone(), 12);
+
+        assert_eq!(ctx.pointer_for(&room, &claude), Some((1178.31, 582.0)));
+        assert!(
+            !ctx.prune_pointers(t0 + Duration::from_secs(1), horizon),
+            "a peer heard from a moment ago is not stale",
+        );
+        assert_eq!(
+            ctx.pointer_for(&room, &claude),
+            Some((1178.31, 582.0)),
+            "and is still painted",
+        );
+
+        // Somebody else keeps talking; the first one stops.
+        let t1 = t0 + horizon + Duration::from_secs(1);
+        ctx.set_pointer_at(&room, bob.clone(), (300.0, 200.0), t1);
+        assert!(
+            ctx.prune_pointers(t1, horizon),
+            "the one that went quiet is retired, which is a reason to repaint",
+        );
+        assert_eq!(
+            ctx.pointer_for(&room, &claude),
+            None,
+            "no cursor for a peer that has stopped saying where it is pointing",
+        );
+        assert_eq!(
+            ctx.pointer_for(&room, &bob),
+            Some((300.0, 200.0)),
+            "and the peer still talking is untouched - this retires one \
+             pointer, not the scope",
+        );
+
+        // The peer did not leave.
+        assert!(
+            ctx.peers_on(&room).contains(&claude),
+            "a peer that has gone quiet about pointing is still in the room",
+        );
+        assert_eq!(
+            ctx.caret_for(&block, &claude),
+            Some(12),
+            "and its caret in the document is untouched",
+        );
+        assert_eq!(
+            ctx.display_name(&claude),
+            "Claude",
+            "and the room still knows what to call it",
+        );
+
+        // And it comes back the instant it says something again.
+        ctx.set_pointer_at(&room, claude.clone(), (10.0, 20.0), t1);
+        assert_eq!(ctx.pointer_for(&room, &claude), Some((10.0, 20.0)));
+    }
+
+    /// A workspace-scoped pointer registers its peer as present; a
+    /// widget-scoped one (a position in a document, not on the desktop) does not.
+    #[test]
+    fn a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not() {
+        let t0 = Instant::now();
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let block = PresenceKey::Widget {
+            path: vec![PathSegment::Index(0)],
+        };
+        let alice = UserId("peer@1".into());
+        let bob = UserId("peer@2".into());
+
+        let mut ctx = PresenceCtx::default();
+        ctx.set_pointer_at(&room, alice.clone(), (5.0, 6.0), t0);
+        ctx.set_pointer_at(&block, bob.clone(), (7.0, 8.0), t0);
+
+        assert!(ctx.peers_on(&room).contains(&alice));
+        assert!(
+            !ctx.peers_on(&block).contains(&bob),
+            "a pointer over a widget must not put a presence dot on it",
+        );
+    }
+}
+
+/// A person has one pointer, and the screen has to agree.
+///
+/// Two halves: which layer is entitled to paint a given arrival, and how many
+/// rows one person may occupy in the store behind it.
+#[cfg(test)]
+mod one_person_one_pointer_tests {
+    use super::*;
+    use crate::collaboration::PresencePayload;
+
+    /// A pointer arriving with no scope of its own is on the *desktop* —
+    /// the capnp presence surface has no keyed cursor call, so it goes out as
+    /// `publishCursor(x, y)` and loses the room scope on the wire. Reading
+    /// that back as a *widget* scope told every window the pointer was
+    /// theirs, so one person came out once per open window.
+    #[test]
+    fn a_pointer_published_without_a_scope_belongs_to_the_desktop() {
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence(
+            "peer@7".into(),
+            PresenceKey::pointer_default(),
+            PresencePayload::Pointer { x: 319.0, y: 484.0 },
+        );
+
+        assert!(
+            !ctx.remote_cursors[0].painted_by_window(),
+            "an unscoped pointer is the compositor's to paint; a window \
+             painting it as well is the same person once per window",
+        );
+    }
+
+    /// The room scope keeps the answer it always had, so the rule above cannot
+    /// be satisfied by making *nothing* the window's to paint.
+    #[test]
+    fn a_room_scoped_pointer_still_belongs_to_the_desktop() {
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence(
+            "peer@7".into(),
+            PresenceKey::Workspace { id: "room".into() },
+            PresencePayload::Pointer { x: 10.0, y: 20.0 },
+        );
+        assert!(!ctx.remote_cursors[0].painted_by_window());
+    }
+
+    /// A pointer genuinely inside a window's content is still that window's
+    /// to paint — the relay dialect and hosted backend have no overlay above
+    /// them, so swallowing every scope would leave those peers invisible.
+    #[test]
+    fn a_pointer_inside_a_window_is_still_the_windows_to_paint() {
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence(
+            "peer@7".into(),
+            PresenceKey::Widget {
+                path: vec![PathSegment::Index(3)],
+            },
+            PresencePayload::Pointer { x: 10.0, y: 20.0 },
+        );
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "nothing else paints this one",
+        );
+    }
+
+    /// A person's pointer *moves*; it does not accumulate — a peer heard
+    /// from under two scopes must produce one row, not two, or anything
+    /// reading across scopes sees them twice.
+    #[test]
+    fn a_persons_pointer_moves_between_scopes_rather_than_multiplying() {
+        let mut ctx = PresenceCtx::default();
+        let who = UserId("peer@7".into());
+        let first = PresenceKey::Workspace { id: "room".into() };
+        let second = PresenceKey::pointer_default();
+
+        ctx.set_pointer(&first, who.clone(), (100.0, 200.0));
+        ctx.set_pointer(&second, who.clone(), (640.0, 480.0));
+
+        let rows: Vec<_> = ctx
+            .pointers
+            .iter()
+            .flat_map(|(k, v)| v.iter().map(move |(u, p)| (k.clone(), u.clone(), *p)))
+            .collect();
+        assert_eq!(rows.len(), 1, "one person is one pointer, got {rows:?}");
+        assert_eq!(rows[0].1, who);
+        assert_eq!(rows[0].2, (640.0, 480.0), "and it is where they are now");
+        assert_eq!(
+            ctx.pointer_for(&first, &who),
+            None,
+            "the scope they left must not keep a copy",
+        );
+    }
+
+    /// Moving one person's pointer must not take anybody else's with it.
+    #[test]
+    fn moving_one_persons_pointer_leaves_everybody_elses_alone() {
+        let mut ctx = PresenceCtx::default();
+        let room = PresenceKey::Workspace { id: "room".into() };
+        let alice = UserId("peer@1".into());
+        let bob = UserId("peer@2".into());
+
+        ctx.set_pointer(&room, alice.clone(), (10.0, 10.0));
+        ctx.set_pointer(&room, bob.clone(), (20.0, 20.0));
+        ctx.set_pointer(&PresenceKey::pointer_default(), alice.clone(), (30.0, 30.0));
+
+        assert_eq!(ctx.pointer_for(&room, &bob), Some((20.0, 20.0)));
+        assert_eq!(
+            ctx.pointer_for(&PresenceKey::pointer_default(), &alice),
+            Some((30.0, 30.0))
+        );
+        assert_eq!(ctx.pointer_for(&room, &alice), None);
     }
 }

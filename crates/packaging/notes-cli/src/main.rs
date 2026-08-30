@@ -42,7 +42,11 @@ extern crate runtime_dylib;
 
 /// `notes` — CLI notes for qOS.
 #[derive(Debug, Parser)]
-#[command(name = "notes", version, about = "Write a note into the qOS workspace.")]
+#[command(
+    name = "notes",
+    version,
+    about = "Write a note into the qOS workspace."
+)]
 struct Cli {
     /// Words to append as a single note line. If no words are
     /// given, expects `list` / `path` / a stdin pipe.
@@ -61,8 +65,7 @@ fn main() -> ExitCode {
 }
 
 fn note_path() -> Result<std::path::PathBuf> {
-    cli::resolve_workspace_path("notes/inbox.md")
-        .context("resolving workspace path notes/inbox.md")
+    cli::resolve_workspace_path("notes/inbox.md").context("resolving workspace path notes/inbox.md")
 }
 
 fn append(words: &[String]) -> Result<()> {
@@ -80,8 +83,7 @@ fn append(words: &[String]) -> Result<()> {
         .open(&target)
         .with_context(|| format!("opening {}", target.display()))?;
     let line = words.join(" ");
-    writeln!(f, "- {line}")
-        .with_context(|| format!("appending to {}", target.display()))?;
+    writeln!(f, "- {line}").with_context(|| format!("appending to {}", target.display()))?;
     let out = cli::output();
     let _ = out.hyperlink_path("wrote note →", &target);
     Ok(())

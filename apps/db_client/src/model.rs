@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Which database engine a connection targets. SQLite is fully local and
-/// always available; Postgres and MySQL are network engines whose live
+/// Which database engine a connection targets. `SQLite` is fully local and
+/// always available; Postgres and `MySQL` are network engines whose live
 /// drivers are gated behind a sandbox grant (see [`ConnectionProfile`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Engine {
@@ -58,7 +58,7 @@ impl Engine {
     }
 
     /// Parse an engine back from its [`as_key`](Self::as_key) form, defaulting
-    /// to PostgreSQL for an unknown key so a forward-compatible document still
+    /// to `PostgreSQL` for an unknown key so a forward-compatible document still
     /// renders something sensible.
     pub fn from_key(key: &str) -> Engine {
         match key {
@@ -69,14 +69,14 @@ impl Engine {
     }
 }
 
-/// A saved connection. Network engines carry host/port/user; SQLite carries
+/// A saved connection. Network engines carry host/port/user; `SQLite` carries
 /// a file path. `connected` reflects whether a live handle is currently open.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub id: Uuid,
     pub name: String,
     pub engine: Engine,
-    /// Network engines: TCP host. SQLite: ignored.
+    /// Network engines: TCP host. `SQLite`: ignored.
     pub host: String,
     pub port: u16,
     pub database: String,
@@ -86,7 +86,7 @@ pub struct ConnectionProfile {
     /// secrets are never persisted; the user re-enters it per session.
     #[serde(skip, default)]
     pub password: String,
-    /// SQLite file path (or `:memory:` for the bundled sample).
+    /// `SQLite` file path (or `:memory:` for the bundled sample).
     pub file_path: String,
     /// Whether a live handle is currently open for this profile.
     #[serde(default)]
@@ -168,7 +168,7 @@ pub enum TypeClass {
 }
 
 impl TypeClass {
-    /// Classify a raw SQL type declaration the way SQLite's loose typing
+    /// Classify a raw SQL type declaration the way `SQLite`'s loose typing
     /// does — substring match against the declared type string.
     pub fn classify(decl: &str) -> TypeClass {
         let d = decl.to_ascii_uppercase();
@@ -265,7 +265,7 @@ impl TableInfo {
     }
 }
 
-/// A logical schema namespace. SQLite has a single implicit "main" schema;
+/// A logical schema namespace. `SQLite` has a single implicit "main" schema;
 /// Postgres/MySQL expose several. The tree renders database → schema →
 /// tables → columns.
 #[derive(Clone, Debug)]

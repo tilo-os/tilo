@@ -1,36 +1,22 @@
-//! Per-output display scale.
+//! Per-output display scale, derived from the panel's physical size (which
+//! DRM reports per connector in millimetres) against its resolution — the
+//! only signal that separates a 1080p 24" desktop monitor (≈92 dpi, wants
+//! 1.0) from a 1080p 14" laptop panel (≈157 dpi, wants 1.5). A user setting
+//! overrides the derivation outright.
 //!
-//! Every output used to be handed `scale: 1.0`, which is wrong the moment
-//! a laptop has a HiDPI panel: the toolkit already renders at whatever
-//! fractional factor it is told (`ui::scale`, `wp_fractional_scale_v1`),
-//! so a hard-coded 1.0 makes a 14" 4K panel draw 7 pt text.
-//!
-//! The factor is derived from the panel's *physical* size, which DRM
-//! reports per connector in millimetres, against its resolution. That is
-//! the only signal that distinguishes a 1080p 24" desktop monitor (≈92
-//! dpi, wants 1.0) from a 1080p 14" laptop panel (≈157 dpi, wants 1.5) —
-//! resolution alone cannot.
-//!
-//! A user setting overrides the derivation outright. Auto-detection is a
-//! good default and a bad mandate: someone who has decided their display
-//! should be at 125 % is not asking for a second opinion.
-//!
-//! Everything here is pure arithmetic over plain numbers, so the policy is
-//! unit-tested without a connector.
+//! Pure arithmetic over plain numbers, so the policy is unit-tested without
+//! a connector.
 
 /// Physical dots-per-inch a scale factor of 1.0 is meant to look right at.
-///
-/// Calibrated against the two anchors that matter: a 24" 1080p desktop
-/// monitor (≈92 dpi) must stay at 1.0, and a 13.3" 1080p laptop panel
-/// (≈166 dpi) must land on 1.5. 110 is the value that puts both on the
-/// correct quarter step with margin on either side.
+/// Calibrated so a 24" 1080p desktop monitor (≈92 dpi) stays at 1.0 and a
+/// 13.3" 1080p laptop panel (≈166 dpi) lands on 1.5 — 110 puts both on the
+/// correct quarter step with margin either side.
 pub const REFERENCE_DPI: f64 = 110.0;
 
-/// Scale factors are snapped to quarter steps. `wp_fractional_scale_v1`
-/// transports 1/120 units so finer steps would survive the wire, but a
-/// continuum of scales is a continuum of slightly-different text
-/// rasterisations across monitors; quarters are what every other
-/// compositor's UI offers and what the Settings control writes.
+/// Scale factors snap to quarter steps. `wp_fractional_scale_v1` transports
+/// 1/120 units so finer steps would survive the wire, but a continuum of
+/// scales is a continuum of slightly-different text rasterisations across
+/// monitors.
 pub const SCALE_STEP: f64 = 0.25;
 
 /// Lowest scale the derivation will produce. Below 1.0 the compositor
@@ -41,22 +27,21 @@ pub const MIN_SCALE: f64 = 1.0;
 /// Settings app's display-scale control offers (100 %–200 %).
 pub const MAX_SCALE: f64 = 2.0;
 
-/// The desktop stops being usable below this logical width, so the
-/// derived scale is reduced until the output is at least this wide in
-/// logical pixels. Guards the pathological case of a small, very dense
-/// panel (a 4K 10" tablet screen) scaling itself down to a phone.
+/// Derived scale is reduced until the output is at least this wide in
+/// logical pixels — guards a small, very dense panel (a 4K 10" tablet
+/// screen) from scaling itself down to a phone.
 pub const MIN_LOGICAL_WIDTH: f64 = 1024.0;
 
-/// Diagonal dots-per-inch of a panel `px` pixels across whose physical
-/// size is `mm`. `None` when the connector reports no usable physical
-/// size — which is the normal case for virtual connectors (virtio-gpu
-/// reports 0×0 mm) and for some projectors.
+/// Diagonal dots-per-inch of a panel `px` pixels across whose physical size
+/// is `mm`. `None` when the connector reports no usable physical size —
+/// normal for virtual connectors (virtio-gpu reports 0×0 mm) and some
+/// projectors.
 pub fn dpi_from_physical(px: (u32, u32), mm: (u32, u32)) -> Option<f64> {
     if px.0 == 0 || px.1 == 0 || mm.0 == 0 || mm.1 == 0 {
         return None;
     }
-    let diag_px = ((px.0 as f64).powi(2) + (px.1 as f64).powi(2)).sqrt();
-    let diag_mm = ((mm.0 as f64).powi(2) + (mm.1 as f64).powi(2)).sqrt();
+    let diag_px = (f64::from(px.0).powi(2) + f64::from(px.1).powi(2)).sqrt();
+    let diag_mm = (f64::from(mm.0).powi(2) + f64::from(mm.1).powi(2)).sqrt();
     let diag_in = diag_mm / 25.4;
     if diag_in <= 0.0 {
         return None;
@@ -71,10 +56,9 @@ pub fn snap_scale(raw: f64) -> f64 {
     stepped.clamp(MIN_SCALE, MAX_SCALE)
 }
 
-/// The scale this output should run at, given its resolution and physical
-/// size. Returns [`MIN_SCALE`] when the physical size is unknown — a
-/// connector that will not say how big it is gets the safe answer, not a
-/// guess derived from resolution alone.
+/// The scale this output should run at. [`MIN_SCALE`] when the physical
+/// size is unknown — a connector that will not say how big it is gets the
+/// safe answer, not a guess from resolution alone.
 pub fn derive_scale(px: (u32, u32), mm: Option<(u32, u32)>) -> f64 {
     let Some(mm) = mm else {
         return MIN_SCALE;
@@ -86,17 +70,15 @@ pub fn derive_scale(px: (u32, u32), mm: Option<(u32, u32)>) -> f64 {
     // Back off while the logical desktop would be narrower than a usable
     // window. One step at a time so a panel that only marginally trips the
     // guard keeps most of its density.
-    while scale > MIN_SCALE && (px.0 as f64 / scale) < MIN_LOGICAL_WIDTH {
+    while scale > MIN_SCALE && (f64::from(px.0) / scale) < MIN_LOGICAL_WIDTH {
         scale -= SCALE_STEP;
     }
     scale.max(MIN_SCALE)
 }
 
-/// The scale for one output: the user's setting when they have expressed
-/// one, otherwise the derivation.
-///
-/// `override_scale` is the `display.scale` value from the shared settings
-/// store, already validated by the caller; `None` means "not configured".
+/// The scale for one output: the user's setting when expressed, otherwise
+/// the derivation. `override_scale` is the `display.scale` value from the
+/// shared settings store, already validated; `None` means not configured.
 pub fn resolve_scale(px: (u32, u32), mm: Option<(u32, u32)>, override_scale: Option<f64>) -> f64 {
     match override_scale {
         Some(s) if s > 0.0 => s,
@@ -104,18 +86,15 @@ pub fn resolve_scale(px: (u32, u32), mm: Option<(u32, u32)>, override_scale: Opt
     }
 }
 
-/// The scale a surface at global point `(x, y)` should render at.
-///
-/// Outputs are `(position, size, scale)` triples in the compositor's
-/// combined coordinate space. A surface sitting on a given output gets
-/// that output's scale; one that lands in a gap between mismatched
-/// monitors — or before any output is known — gets the *largest* scale in
-/// play, because rendering too sharp costs bandwidth while rendering too
-/// soft is visible.
+/// The scale a surface at global point `(x, y)` should render at, from
+/// `(position, size, scale)` triples in combined coordinate space. A surface
+/// in a gap between mismatched monitors — or before any output is known —
+/// gets the *largest* scale in play: rendering too sharp costs bandwidth,
+/// rendering too soft is visible.
 pub fn preferred_scale_at(outputs: &[((i32, i32), (u32, u32), f64)], x: f64, y: f64) -> f64 {
     for &((ox, oy), (ow, oh), scale) in outputs {
-        let (ox, oy) = (ox as f64, oy as f64);
-        if x >= ox && x < ox + ow as f64 && y >= oy && y < oy + oh as f64 {
+        let (ox, oy) = (f64::from(ox), f64::from(oy));
+        if x >= ox && x < ox + f64::from(ow) && y >= oy && y < oy + f64::from(oh) {
             return scale;
         }
     }
@@ -207,16 +186,13 @@ mod tests {
 
     #[test]
     fn the_scale_never_leaves_a_desktop_narrower_than_a_window() {
-        // A very dense small panel: 2560x1600 in a 10.5" tablet screen is
-        // ~287 dpi, which would snap to 2.5 (clamped 2.0) and leave a
-        // 1280-wide logical desktop. That is still above the floor, so it
-        // stands. Shrink the panel further and the guard has to bite.
-        let tiny_dense = ((1600, 1200), (120u32, 90u32)); // ~423 dpi, 5in
+        // A very dense small panel must still clear the logical-width floor.
+        let tiny_dense = ((1600, 1200), (120u32, 90u32)); // ~339 dpi, 5.9in
         let scale = derive_scale(tiny_dense.0, Some(tiny_dense.1));
         assert!(
-            (tiny_dense.0.0 as f64 / scale) >= MIN_LOGICAL_WIDTH,
+            (f64::from(tiny_dense.0.0) / scale) >= MIN_LOGICAL_WIDTH,
             "scale {scale} leaves a {}px logical desktop, below the floor",
-            tiny_dense.0.0 as f64 / scale
+            f64::from(tiny_dense.0.0) / scale
         );
     }
 

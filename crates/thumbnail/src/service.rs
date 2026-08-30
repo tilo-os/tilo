@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::cache::{ThumbCache, ThumbKey};
 use crate::category::FileCategory;
-use crate::generate::{self, RgbaThumb, Source, DEFAULT_EDGE};
+use crate::generate::{self, DEFAULT_EDGE, RgbaThumb, Source};
 
 /// What a client should paint for a given request right now.
 #[derive(Clone)]
@@ -56,8 +56,13 @@ enum Slot {
 }
 
 enum JobKind {
-    File { path: PathBuf, category: FileCategory },
-    Encoded { png: Vec<u8> },
+    File {
+        path: PathBuf,
+        category: FileCategory,
+    },
+    Encoded {
+        png: Vec<u8>,
+    },
 }
 
 struct Job {
@@ -85,7 +90,11 @@ impl ThumbnailService {
     /// Open a service backed by a cache at `cache_dir`, with `workers` decode
     /// threads and the default [`DEFAULT_EDGE`] target size.
     pub fn open(cache_dir: impl AsRef<std::path::Path>, workers: usize) -> std::io::Result<Self> {
-        Ok(Self::new(ThumbCache::open(cache_dir)?, workers, DEFAULT_EDGE))
+        Ok(Self::new(
+            ThumbCache::open(cache_dir)?,
+            workers,
+            DEFAULT_EDGE,
+        ))
     }
 
     /// Build a service over an existing cache with an explicit worker count and
@@ -123,12 +132,7 @@ impl ThumbnailService {
     /// [`ThumbState::Badge`] immediately with no work. Otherwise the first call
     /// schedules generation and returns [`ThumbState::Loading`]; a later call
     /// returns [`ThumbState::Ready`] (or `Badge` if it could not be decoded).
-    pub fn request_file(
-        &self,
-        key: ThumbKey,
-        category: FileCategory,
-        path: PathBuf,
-    ) -> ThumbState {
+    pub fn request_file(&self, key: ThumbKey, category: FileCategory, path: PathBuf) -> ThumbState {
         if !category.has_preview() {
             return ThumbState::Badge(category);
         }
@@ -174,7 +178,12 @@ impl ThumbnailService {
             slots.insert(key, Slot::Loading);
         }
         self.shared.pending.fetch_add(1, Ordering::SeqCst);
-        let job = Job { key, kind: make_kind(), edge: self.edge, category };
+        let job = Job {
+            key,
+            kind: make_kind(),
+            edge: self.edge,
+            category,
+        };
         if self.tx.send(job).is_err() {
             // Workers gone: undo the pending bump and settle as a badge.
             self.shared.pending.fetch_sub(1, Ordering::SeqCst);
@@ -236,10 +245,10 @@ fn worker_loop(rx: Arc<Mutex<Receiver<Job>>>, shared: Arc<Shared>) {
 
 fn run_job(cache: &ThumbCache, job: &Job) -> Slot {
     // A prior session (or a peer, via content-addressing) may already hold it.
-    if let Some(png) = cache.get(&job.key) {
-        if let Some(thumb) = generate::decode_png(&png) {
-            return Slot::Ready(Arc::new(thumb));
-        }
+    if let Some(png) = cache.get(&job.key)
+        && let Some(thumb) = generate::decode_png(&png)
+    {
+        return Slot::Ready(Arc::new(thumb));
     }
     match &job.kind {
         JobKind::File { path, category } => {
@@ -277,8 +286,11 @@ mod tests {
     fn image_file_loads_then_ready_and_second_request_hits() {
         let (_dir, svc) = service();
         let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
-        std::fs::write(src.path(), crate::testutil::solid_png(300, 200, [40, 90, 200]))
-            .unwrap();
+        std::fs::write(
+            src.path(),
+            crate::testutil::solid_png(300, 200, [40, 90, 200]),
+        )
+        .unwrap();
         let key = ThumbKey::of_bytes(b"img-key", 128);
 
         // First look: placeholder + a load is scheduled.
@@ -338,12 +350,15 @@ mod tests {
         )
         .unwrap();
         let key = ThumbKey::of_hash([7u8; 32], 128);
-        let png2 = png.clone();
+        let png2 = png;
         svc.request_encoded(key, FileCategory::Image, move || Some(png2));
         svc.block_until_idle(Duration::from_secs(5));
         let state = svc.request_encoded(key, FileCategory::Image, || {
             panic!("must not re-read a warm slot")
         });
-        assert!(state.ready().is_some(), "host-provided thumbnail is adopted");
+        assert!(
+            state.ready().is_some(),
+            "host-provided thumbnail is adopted"
+        );
     }
 }

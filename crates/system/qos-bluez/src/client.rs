@@ -1,23 +1,21 @@
-//! The BlueZ client: adapter control, discovery, pairing, trust, removal.
+//! The `BlueZ` client: adapter control, discovery, pairing, trust, removal.
 //!
-//! Everything goes through `org.bluez` on the **system** bus. The default
-//! D-Bus policy Fedora ships (`/usr/share/dbus-1/system.d/bluetooth.conf`)
-//! grants `send_destination="org.bluez"` to every user, and grants
-//! `send_interface="org.bluez.Agent1"` to root — which is `bluetoothd` itself
-//! calling back into our agent. So the whole flow runs in the user's session
-//! with no privileged helper.
+//! Everything goes through `org.bluez` on the **system** bus. Fedora's default D-Bus policy
+//! (`/usr/share/dbus-1/system.d/bluetooth.conf`) grants `send_destination="org.bluez"` to
+//! every user and `send_interface="org.bluez.Agent1"` to root (`bluetoothd` calling back into
+//! our agent), so the whole flow runs in the user's session with no privileged helper.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use tracing::{debug, warn};
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 use zbus::Connection;
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 
 use crate::agent::DeviceNames;
 use crate::model::{
-    adapter_from_interfaces, device_from_interfaces, sort_devices, AdapterInfo, DeviceInfo,
+    AdapterInfo, DeviceInfo, adapter_from_interfaces, device_from_interfaces, sort_devices,
 };
 
 const DEST: &str = "org.bluez";
@@ -29,12 +27,9 @@ const OBJECT_MANAGER_IFACE: &str = "org.freedesktop.DBus.ObjectManager";
 /// The `a{oa{sa{sv}}}` shape `GetManagedObjects` returns.
 type ManagedObjects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
-/// A connected BlueZ handle.
-///
-/// Hold this for as long as discovery should run: BlueZ ties a discovery
-/// session to the D-Bus connection that started it and stops scanning the
-/// moment that connection goes away. A fire-and-forget `StartDiscovery` — the
-/// shape a CLI wrapper is stuck with — therefore scans for microseconds.
+/// A connected `BlueZ` handle. Hold this for as long as discovery should run: `BlueZ` ties a
+/// discovery session to the D-Bus connection that started it and stops scanning the moment
+/// that connection goes away — a fire-and-forget `StartDiscovery` scans for microseconds.
 #[derive(Clone)]
 pub struct BluezClient {
     connection: Connection,
@@ -48,8 +43,8 @@ impl BluezClient {
         Ok(Self::with_connection(connection, DeviceNames::new()))
     }
 
-    /// Build on an existing connection — used when the agent and the client
-    /// must share one connection so BlueZ sees a single client.
+    /// Build on an existing connection — used when the agent and the client must share one
+    /// connection so `BlueZ` sees a single client.
     pub fn with_connection(connection: Connection, names: DeviceNames) -> Self {
         Self { connection, names }
     }
@@ -69,7 +64,7 @@ impl BluezClient {
         reply.body().deserialize()
     }
 
-    /// Every adapter BlueZ knows about, in path order.
+    /// Every adapter `BlueZ` knows about, in path order.
     pub async fn adapters(&self) -> zbus::Result<Vec<AdapterInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<AdapterInfo> = objects
@@ -80,15 +75,15 @@ impl BluezClient {
         Ok(out)
     }
 
-    /// The adapter to drive. Almost every machine has exactly one; we take
-    /// the lowest-numbered so the choice is stable across boots.
+    /// The adapter to drive. Almost every machine has exactly one; we take the lowest-numbered
+    /// so the choice is stable across boots.
     pub async fn default_adapter(&self) -> zbus::Result<Option<AdapterInfo>> {
         Ok(self.adapters().await?.into_iter().next())
     }
 
-    /// Every device on every adapter, sorted for display, with the name cache
-    /// refreshed as a side effect so the pairing agent can title its prompts
-    /// without calling back into a daemon that is waiting on it.
+    /// Every device on every adapter, sorted for display, with the name cache refreshed as a
+    /// side effect so the pairing agent can title its prompts without calling back into a
+    /// waiting daemon.
     pub async fn devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<DeviceInfo> = objects
@@ -104,7 +99,12 @@ impl BluezClient {
 
     /// Only the devices that have completed pairing.
     pub async fn paired_devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
-        Ok(self.devices().await?.into_iter().filter(|d| d.paired).collect())
+        Ok(self
+            .devices()
+            .await?
+            .into_iter()
+            .filter(|d| d.paired)
+            .collect())
     }
 
     async fn adapter_prop<T>(&self, path: &str, name: &str) -> zbus::Result<T>
@@ -112,14 +112,18 @@ impl BluezClient {
         T: TryFrom<OwnedValue>,
         T::Error: Into<zbus::Error>,
     {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, path.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, path.to_string(), ADAPTER_IFACE).await?;
         proxy.get_property(name).await
     }
 
     async fn set_adapter_prop(&self, path: &str, name: &str, value: bool) -> zbus::Result<()> {
         let proxy = zbus::Proxy::new(&self.connection, DEST, path.to_string(), PROPS_IFACE).await?;
         proxy
-            .call_method("Set", &(ADAPTER_IFACE, name, zbus::zvariant::Value::from(value)))
+            .call_method(
+                "Set",
+                &(ADAPTER_IFACE, name, zbus::zvariant::Value::from(value)),
+            )
             .await?;
         Ok(())
     }
@@ -132,8 +136,8 @@ impl BluezClient {
         self.adapter_prop(adapter, "Powered").await
     }
 
-    /// Make this machine visible to others. Off by default and never left on:
-    /// a permanently discoverable adapter is a standing invitation.
+    /// Make this machine visible to others. Off by default and never left on — a permanently
+    /// discoverable adapter is a standing invitation.
     pub async fn set_discoverable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Discoverable", on).await
     }
@@ -142,20 +146,19 @@ impl BluezClient {
         self.set_adapter_prop(adapter, "Pairable", on).await
     }
 
-    /// Begin scanning. The scan runs until [`Self::stop_discovery`] or until
-    /// this client's connection closes.
+    /// Begin scanning. The scan runs until [`Self::stop_discovery`] or until this client's
+    /// connection closes.
     pub async fn start_discovery(&self, adapter: &str) -> zbus::Result<()> {
-        // Powering on first: StartDiscovery on a powered-off adapter fails
-        // with `org.bluez.Error.NotReady`, which reads to a user as "scanning
-        // is broken" rather than "Bluetooth is off".
+        // Powering on first: StartDiscovery on a powered-off adapter fails with
+        // `org.bluez.Error.NotReady`, which reads as "scanning is broken" rather than "Bluetooth is off".
         if !self.is_powered(adapter).await.unwrap_or(true) {
             self.set_powered(adapter, true).await?;
         }
-        let proxy = zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         match proxy.call_method("StartDiscovery", &()).await {
             Ok(_) => Ok(()),
-            // Already scanning is success, not an error — two panes asking to
-            // scan should not fight.
+            // Already scanning is success, not an error — two panes asking to scan should not fight.
             Err(zbus::Error::MethodError(name, _, _))
                 if name.as_str() == "org.bluez.Error.InProgress" =>
             {
@@ -166,7 +169,8 @@ impl BluezClient {
     }
 
     pub async fn stop_discovery(&self, adapter: &str) -> zbus::Result<()> {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         match proxy.call_method("StopDiscovery", &()).await {
             Ok(_) => Ok(()),
             // Not scanning, or someone else's session — nothing to undo.
@@ -190,14 +194,10 @@ impl BluezClient {
         zbus::Proxy::new(&self.connection, DEST, device.to_string(), DEVICE_IFACE).await
     }
 
-    /// Pair with a device.
-    ///
-    /// This is the call that drives the agent: BlueZ will invoke our
-    /// `org.bluez.Agent1` object one or more times before this returns, and
-    /// the pairing only completes if those calls are answered.
-    ///
-    /// The reply can take as long as the user takes to compare a passkey, so
-    /// this deliberately does not impose a short timeout of its own.
+    /// Pair with a device. This is the call that drives the agent: `BlueZ` will invoke our
+    /// `org.bluez.Agent1` object one or more times before returning, and pairing only completes
+    /// if those calls are answered. The reply can take as long as the user takes to compare a
+    /// passkey, so this deliberately imposes no short timeout of its own.
     pub async fn pair(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         match proxy.call_method("Pair", &()).await {
@@ -238,27 +238,30 @@ impl BluezClient {
         Ok(())
     }
 
-    /// Mark a paired device trusted.
-    ///
-    /// Trust is what lets a keyboard reconnect and be usable without the user
-    /// re-authorising every profile — BlueZ answers `AuthorizeService` itself
-    /// for trusted devices. It is a real grant, so it is set explicitly after
-    /// a successful pairing rather than being implied by pairing.
+    /// Mark a paired device trusted. Trust is what lets a keyboard reconnect without the user
+    /// re-authorising every profile (`BlueZ` answers `AuthorizeService` itself for trusted
+    /// devices) — a real grant, so it's set explicitly after a successful pairing rather than
+    /// implied by it.
     pub async fn set_trusted(&self, device: &str, trusted: bool) -> zbus::Result<()> {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
         proxy
             .call_method(
                 "Set",
-                &(DEVICE_IFACE, "Trusted", zbus::zvariant::Value::from(trusted)),
+                &(
+                    DEVICE_IFACE,
+                    "Trusted",
+                    zbus::zvariant::Value::from(trusted),
+                ),
             )
             .await?;
         Ok(())
     }
 
-    /// Forget a device: drops the bond, the keys and the trust. The device
-    /// must pair again from scratch.
+    /// Forget a device: drops the bond, the keys and the trust. The device must pair again from scratch.
     pub async fn remove_device(&self, adapter: &str, device: &str) -> zbus::Result<()> {
-        let proxy = zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         let path = ObjectPath::try_from(device.to_string())?;
         match proxy.call_method("RemoveDevice", &(&path,)).await {
             Ok(_) => {
@@ -275,18 +278,13 @@ impl BluezClient {
         }
     }
 
-    /// Pair, then connect, then trust — the sequence a user means by "pair
-    /// this device".
-    ///
-    /// Ordering is deliberate. Trust is granted only *after* pairing
-    /// succeeded, so a pairing the user rejected never leaves a trusted
-    /// entry behind. Connect failures are reported but do not undo the
-    /// pairing: plenty of devices pair and then need a button press to
-    /// connect.
+    /// Pair, then connect, then trust — the sequence a user means by "pair this device".
+    /// Ordering is deliberate: trust is granted only *after* pairing succeeded, so a rejected
+    /// pairing never leaves a trusted entry; connect failures are reported but don't undo the
+    /// pairing (plenty of devices pair and then need a button press to connect).
     pub async fn pair_and_connect(&self, adapter: &str, device: &str) -> zbus::Result<PairOutcome> {
-        // Scanning while pairing starves the radio and makes pairing flaky,
-        // so stop first. This is what `bluetoothctl` users are told to do by
-        // hand.
+        // Scanning while pairing starves the radio and makes pairing flaky, so stop first — what
+        // `bluetoothctl` users are told to do by hand.
         let _ = self.stop_discovery(adapter).await;
         self.pair(device).await?;
         self.set_trusted(device, true).await?;
@@ -301,10 +299,8 @@ impl BluezClient {
         }
     }
 
-    /// Watch for device add/remove/property changes, refreshing the name
-    /// cache, and call `on_change` whenever the device list may have moved.
-    ///
-    /// Runs until the connection drops.
+    /// Watch for device add/remove/property changes, refreshing the name cache, and call
+    /// `on_change` whenever the device list may have moved. Runs until the connection drops.
     pub async fn watch_devices<F>(&self, mut on_change: F) -> zbus::Result<()>
     where
         F: FnMut(Vec<DeviceInfo>) + Send,
@@ -330,14 +326,16 @@ impl BluezClient {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairOutcome {
     PairedAndConnected,
-    /// Paired successfully, but the link did not come up. Common and
-    /// recoverable — the row shows a Connect button.
-    PairedNotConnected { reason: String },
+    /// Paired successfully, but the link did not come up. Common and recoverable — the row
+    /// shows a Connect button.
+    PairedNotConnected {
+        reason: String,
+    },
 }
 
-/// Turn a BlueZ D-Bus error into something worth putting in front of a
-/// person. BlueZ's own messages are terse but accurate, so we keep them and
-/// only translate the ones whose wire name says more than the text.
+/// Turn a `BlueZ` D-Bus error into something worth putting in front of a person. `BlueZ`'s own
+/// messages are terse but accurate, so we keep them and only translate the ones whose wire
+/// name says more than the text.
 pub fn error_text(e: &zbus::Error) -> String {
     match e {
         zbus::Error::MethodError(name, detail, _) => {
@@ -347,10 +345,9 @@ pub fn error_text(e: &zbus::Error) -> String {
     }
 }
 
-/// The mapping itself, over the wire name and detail BlueZ sent. Split out so
-/// it is exercised directly rather than through a hand-built `zbus::Error`
-/// (whose `MethodError` variant carries a real `Message` that cannot be
-/// fabricated in a test).
+/// The mapping itself, over the wire name and detail `BlueZ` sent. Split out so it's exercised
+/// directly rather than through a hand-built `zbus::Error` (whose `MethodError` carries a
+/// real `Message` that can't be fabricated in a test).
 pub fn bluez_error_text(name: &str, detail: Option<&str>) -> String {
     let short = name.rsplit('.').next().unwrap_or(name);
     match short {
@@ -364,16 +361,13 @@ pub fn bluez_error_text(name: &str, detail: Option<&str>) -> String {
         }
         "NotReady" => "Bluetooth is turned off.".to_string(),
         "NotAuthorized" => "Not allowed to control Bluetooth.".to_string(),
-        _ => detail
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| format!("Bluetooth error: {short}")),
+        _ => detail.map_or_else(|| format!("Bluetooth error: {short}"), std::string::ToString::to_string),
     }
 }
 
-/// How long to leave a scan running before it stops on its own. Discovery
-/// costs radio time and battery on every nearby device, so it is not left on
-/// indefinitely.
-pub const DISCOVERY_WINDOW: Duration = Duration::from_secs(60);
+/// How long to leave a scan running before it stops on its own. Discovery costs radio time
+/// and battery on every nearby device, so it's not left on indefinitely.
+pub const DISCOVERY_WINDOW: Duration = Duration::from_mins(1);
 
 #[cfg(test)]
 mod tests {
@@ -395,12 +389,15 @@ mod tests {
         );
     }
 
-    /// An error we have not special-cased still surfaces BlueZ's own detail
-    /// rather than a bare wire name.
+    /// An error we have not special-cased still surfaces `BlueZ`'s own detail rather than a bare
+    /// wire name.
     #[test]
     fn unmapped_errors_keep_the_daemons_own_message() {
         assert_eq!(
-            bluez_error_text("org.bluez.Error.Failed", Some("br-connection-profile-unavailable")),
+            bluez_error_text(
+                "org.bluez.Error.Failed",
+                Some("br-connection-profile-unavailable")
+            ),
             "br-connection-profile-unavailable"
         );
     }

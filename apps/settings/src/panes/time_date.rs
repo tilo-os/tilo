@@ -25,17 +25,17 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{RegionSettings, TimeStyle};
-use crate::widgets::{card, caption, rows, setting_row, value_row};
+use crate::widgets::{caption, card, rows, setting_row, value_row};
 
 pub const AUTO_TIME_KEY: &str = "time.auto";
 pub const H24_KEY: &str = "time.h24";
@@ -84,10 +84,10 @@ fn timezone() -> String {
     }
     // `/etc/localtime` is usually a symlink into zoneinfo; derive the zone
     // from its target when `/etc/timezone` is absent (common on Fedora).
-    if let Ok(target) = fs::read_link("/etc/localtime") {
-        if let Some(idx) = target.to_string_lossy().find("zoneinfo/") {
-            return target.to_string_lossy()[idx + "zoneinfo/".len()..].to_string();
-        }
+    if let Ok(target) = fs::read_link("/etc/localtime")
+        && let Some(idx) = target.to_string_lossy().find("zoneinfo/")
+    {
+        return target.to_string_lossy()[idx + "zoneinfo/".len()..].to_string();
     }
     "Europe/Amsterdam".to_string()
 }
@@ -213,29 +213,27 @@ impl Widget for TimeDatePane {
         }
 
         // Automatic-time toggle → timedatectl set-ntp.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY) {
-            if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                if *b != self.last_auto {
-                    self.last_auto = *b;
-                    if let Err(e) = self.ntp.set_ntp(*b) {
-                        warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
-                    }
-                }
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, AUTO_TIME_KEY)
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_auto
+        {
+            self.last_auto = *b;
+            if let Err(e) = self.ntp.set_ntp(*b) {
+                warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
             }
         }
 
         // 24-hour preference → re-render the live clock AND persist to the
         // shared locale so Region & Formats and every consumer stay in sync
         // and the choice survives a restart.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, H24_KEY) {
-            if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                if *b != self.last_h24 {
-                    self.last_h24 = *b;
-                    self.h24 = *b;
-                    self.structure_dirty = true;
-                    (self.persist_format)(*b);
-                }
-            }
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, H24_KEY)
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_h24
+        {
+            self.last_h24 = *b;
+            self.h24 = *b;
+            self.structure_dirty = true;
+            (self.persist_format)(*b);
         }
 
         if let Some(c) = &mut self.composed {
@@ -262,24 +260,23 @@ impl Widget for TimeDatePane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -308,22 +305,21 @@ impl Widget for TimeDatePane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -343,7 +339,7 @@ impl Widget for TimeDatePane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TimeDatePane"
     }
 
@@ -356,8 +352,7 @@ impl Widget for TimeDatePane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -391,7 +386,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(ntp.calls.lock().unwrap().is_empty(), "seed must not dispatch");
+        assert!(
+            ntp.calls.lock().unwrap().is_empty(),
+            "seed must not dispatch"
+        );
         let _ = doc.put(&root, AUTO_TIME_KEY, automerge::ScalarValue::Boolean(false));
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root); // idempotent at rest

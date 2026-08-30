@@ -48,7 +48,7 @@
 //! the widget — presentation the recipe says must never be an action.
 
 use automerge::transaction::Transactable;
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -108,25 +108,24 @@ impl Action for DbAction {
                 doc.put(&row, "name", name.as_str())?;
                 doc.put(&row, "engine", engine.as_str())?;
                 doc.put(&row, "host", host.as_str())?;
-                doc.put(&row, "port", *port as i64)?;
+                doc.put(&row, "port", i64::from(*port))?;
                 doc.put(&row, "database", database.as_str())?;
                 doc.put(&row, "user", user.as_str())?;
                 doc.put(&row, "file_path", file_path.as_str())?;
             }
             DbAction::RemoveConnection { id } => {
-                if let Some(list) = list_object(doc) {
-                    if let Some(index) = row_index_for_id(doc, &list, id) {
-                        doc.delete(&list, index)?;
-                    }
+                if let Some(list) = list_object(doc)
+                    && let Some(index) = row_index_for_id(doc, &list, id)
+                {
+                    doc.delete(&list, index)?;
                 }
             }
             DbAction::RenameConnection { id, name } => {
-                if let Some(list) = list_object(doc) {
-                    if let Some(index) = row_index_for_id(doc, &list, id) {
-                        if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) {
-                            put_if_changed(doc, &row, "name", name.as_str());
-                        }
-                    }
+                if let Some(list) = list_object(doc)
+                    && let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                {
+                    put_if_changed(doc, &row, "name", name.as_str());
                 }
             }
         }
@@ -159,14 +158,12 @@ fn ensure_connections(doc: &mut Doc) -> Result<ObjId, ActionError> {
 /// Index of the row whose `id` field equals `id`, if any.
 fn row_index_for_id(doc: &Doc, list: &ObjId, id: &str) -> Option<usize> {
     for i in 0..doc.length(list) {
-        if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(list, i) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&row, "id") {
-                if let ScalarValue::Str(s) = v.as_ref() {
-                    if s.as_str() == id {
-                        return Some(i);
-                    }
-                }
-            }
+        if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(list, i)
+            && let Ok(Some((Value::Scalar(v), _))) = doc.get(&row, "id")
+            && let ScalarValue::Str(s) = v.as_ref()
+            && s.as_str() == id
+        {
+            return Some(i);
         }
     }
     None
@@ -197,7 +194,7 @@ pub fn add_connection_action(profile: &ConnectionProfile) -> DbAction {
         name: profile.name.clone(),
         engine: profile.engine.as_key().to_string(),
         host: profile.host.clone(),
-        port: profile.port as u32,
+        port: u32::from(profile.port),
         database: profile.database.clone(),
         user: profile.user.clone(),
         file_path: profile.file_path.clone(),
@@ -220,7 +217,10 @@ pub fn rename_connection_action(id: Uuid, name: &str) -> DbAction {
 /// True when `engine` is one this build knows how to open (kept next to the
 /// action so the modal and the decoder agree).
 pub fn known_engine(engine: &str) -> bool {
-    matches!(Engine::from_key(engine), Engine::Sqlite | Engine::Postgres | Engine::MySql)
+    matches!(
+        Engine::from_key(engine),
+        Engine::Sqlite | Engine::Postgres | Engine::MySql
+    )
 }
 
 #[cfg(test)]
@@ -240,7 +240,7 @@ mod tests {
         p
     }
 
-    /// AddConnection through the real `Action::apply` path writes the profile
+    /// `AddConnection` through the real `Action::apply` path writes the profile
     /// into `root["connections"]` and it reads back with every field intact.
     #[test]
     fn add_connection_writes_the_profile_to_the_doc() {
@@ -267,12 +267,18 @@ mod tests {
     fn password_never_enters_the_document() {
         let mut doc = AutoCommit::new();
         let p = profile();
-        assert_eq!(p.password, "s3cret", "precondition: the profile has a secret");
+        assert_eq!(
+            p.password, "s3cret",
+            "precondition: the profile has a secret"
+        );
         add_connection_action(&p).apply(&mut doc).unwrap();
 
         // Read-back password is empty.
         let conns = ConnectionsDoc::read(&doc);
-        assert!(conns[0].password.is_empty(), "read-back profile has no password");
+        assert!(
+            conns[0].password.is_empty(),
+            "read-back profile has no password"
+        );
 
         // And the raw serialized document contains the secret nowhere.
         let bytes = doc.save();
@@ -282,7 +288,7 @@ mod tests {
         );
     }
 
-    /// Add is idempotent under replay: applying the same AddConnection twice
+    /// Add is idempotent under replay: applying the same `AddConnection` twice
     /// (as a peer merge or an executor replay might) leaves exactly one row.
     #[test]
     fn add_is_idempotent_on_replay() {
@@ -293,7 +299,7 @@ mod tests {
         assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
     }
 
-    /// RemoveConnection deletes exactly the addressed profile.
+    /// `RemoveConnection` deletes exactly the addressed profile.
     #[test]
     fn remove_connection_deletes_the_row() {
         let mut doc = AutoCommit::new();
@@ -310,7 +316,7 @@ mod tests {
         assert_eq!(left[0].id, b.id, "the other profile survives the delete");
     }
 
-    /// RenameConnection updates the addressed profile's name in place.
+    /// `RenameConnection` updates the addressed profile's name in place.
     #[test]
     fn rename_connection_updates_the_name() {
         let mut doc = AutoCommit::new();

@@ -33,7 +33,7 @@ use qos_actions::{
 };
 
 use crate::doc::AuthDoc;
-use crate::model::{parse_otpauth_uri, Account, AccountId, Algorithm};
+use crate::model::{Account, AccountId, Algorithm, parse_otpauth_uri};
 
 /// Registry `type_id` for every Authenticator action.
 pub const TOTP_ACTION_TYPE: &str = "totp.action";
@@ -204,15 +204,24 @@ pub fn delete_account_action(id: AccountId) -> TotpAction {
 }
 
 pub fn set_issuer_action(id: AccountId, issuer: &str) -> TotpAction {
-    TotpAction::SetIssuer { id: id.to_string(), issuer: issuer.to_string() }
+    TotpAction::SetIssuer {
+        id: id.to_string(),
+        issuer: issuer.to_string(),
+    }
 }
 
 pub fn set_label_action(id: AccountId, label: &str) -> TotpAction {
-    TotpAction::SetLabel { id: id.to_string(), label: label.to_string() }
+    TotpAction::SetLabel {
+        id: id.to_string(),
+        label: label.to_string(),
+    }
 }
 
 pub fn set_color_action(id: AccountId, color: u8) -> TotpAction {
-    TotpAction::SetColor { id: id.to_string(), color }
+    TotpAction::SetColor {
+        id: id.to_string(),
+        color,
+    }
 }
 
 pub fn move_up_action(id: AccountId) -> TotpAction {
@@ -256,7 +265,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     // free-text argument carries everything (issuer, label, secret, params); the
     // uuid is minted once when the argument is committed and the colour/order are
     // pinned from the current vault, so the built envelope replays deterministically.
-    let next_order = accounts.iter().map(|a| a.order).max().map(|m| m + 1).unwrap_or(0);
+    let next_order = accounts.iter().map(|a| a.order).max().map_or(0, |m| m + 1);
     let next_color = (accounts.len() % 7) as u8;
     root = root.with_action(ActionSpec::prompted(
         "add-account",
@@ -293,8 +302,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     for acc in &accounts {
         let id = acc.id;
         let cur_color = acc.color;
-        let mut child =
-            Resource::new(format!("totp.account:{id}"), "totp.account", account_label(acc));
+        let mut child = Resource::new(
+            format!("totp.account:{id}"),
+            "totp.account",
+            account_label(acc),
+        );
 
         child = child.with_action(ActionSpec::prompted(
             "rename",
@@ -319,11 +331,20 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             "0",
             ExecutionLocus::ClientLocal,
             // An unparseable colour keeps the current one — never a no-op error.
-            move |s: &str| encode(&set_color_action(id, s.trim().parse::<u8>().unwrap_or(cur_color))),
+            move |s: &str| {
+                encode(&set_color_action(
+                    id,
+                    s.trim().parse::<u8>().unwrap_or(cur_color),
+                ))
+            },
         ));
         child = child.with_action(encode_spec("move-up", "Move up", &move_up_action(id)));
         child = child.with_action(encode_spec("move-down", "Move down", &move_down_action(id)));
-        child = child.with_action(encode_spec("delete", "Delete account", &delete_account_action(id)));
+        child = child.with_action(encode_spec(
+            "delete",
+            "Delete account",
+            &delete_account_action(id),
+        ));
 
         root = root.with_child(child);
     }
@@ -418,12 +439,22 @@ mod tests {
             vault.actions.iter().any(|a| a.id == "add-account"),
             "the vault exports add-account"
         );
-        assert!(!vault.children.is_empty(), "each account is a nested resource");
+        assert!(
+            !vault.children.is_empty(),
+            "each account is a nested resource"
+        );
 
         let acct = &vault.children[0];
         assert_eq!(acct.kind, "totp.account");
         let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
-        for want in ["rename", "relabel", "set-color", "move-up", "move-down", "delete"] {
+        for want in [
+            "rename",
+            "relabel",
+            "set-color",
+            "move-up",
+            "move-down",
+            "delete",
+        ] {
             assert!(ids.contains(&want), "account exports {want}: {ids:?}");
         }
 
@@ -432,8 +463,14 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Add account")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete account")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Add account")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete account")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -454,16 +491,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             AuthDoc::list_accounts(&state.doc).len(),
@@ -471,22 +499,27 @@ mod tests {
             "the action removed one account from the document"
         );
         assert!(
-            AuthDoc::list_accounts(&state.doc).iter().all(|a| a.id != target),
+            AuthDoc::list_accounts(&state.doc)
+                .iter()
+                .all(|a| a.id != target),
             "the targeted account is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         // Ctrl+Z reverts exactly this action.
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             AuthDoc::list_accounts(&state.doc).len(),
             before_len,
             "undo restored the deleted account and nothing else"
         );
         assert!(
-            AuthDoc::list_accounts(&state.doc).iter().any(|a| a.id == target),
+            AuthDoc::list_accounts(&state.doc)
+                .iter()
+                .any(|a| a.id == target),
             "the exact account is back after undo"
         );
     }
@@ -500,7 +533,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let new = Account {
             id: Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_FEED),
@@ -520,7 +557,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert!(
             AuthDoc::list_accounts(&a).iter().any(|x| x.id == new.id),
             "the account landed on the origin"
@@ -552,7 +593,10 @@ mod tests {
         let from_spec = immediate_encode(del);
         let from_builder = encode(&delete_account_action(accts[0].id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // Immediate move-down spec == move-down builder.
         let mv = acct.actions.iter().find(|a| a.id == "move-down").unwrap();
@@ -566,7 +610,10 @@ mod tests {
         let rn = acct.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rn, "NewName");
         let from_builder = encode(&set_issuer_action(accts[0].id, "NewName"));
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for rename");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for rename"
+        );
     }
 
     /// The vault's prompted "Add account" builds an action that, dispatched,
@@ -575,7 +622,11 @@ mod tests {
     fn add_account_prompt_parses_otpauth_and_inserts() {
         let mut doc = AutoCommit::new();
         let resources = provide_resources(&doc);
-        let add = resources[0].actions.iter().find(|a| a.id == "add-account").unwrap();
+        let add = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "add-account")
+            .unwrap();
         let encoded = prompted_encode(
             add,
             "otpauth://totp/Proton:ada@pm.me?secret=JBSWY3DPEHPK3PXP&issuer=Proton",
@@ -590,14 +641,18 @@ mod tests {
         assert_eq!(accts[0].secret, "JBSWY3DPEHPK3PXP");
     }
 
-    /// Reorder is deterministic against the document: MoveDown swaps the first
+    /// Reorder is deterministic against the document: `MoveDown` swaps the first
     /// two accounts' order values, applied straight to the doc.
     #[test]
     fn move_down_action_swaps_order_in_the_doc() {
         let mut doc = seeded_doc();
         let accts = seed_accounts();
         let (first, second) = (accts[0].id, accts[1].id);
-        assert_eq!(AuthDoc::list_accounts(&doc)[0].id, first, "first starts on top");
+        assert_eq!(
+            AuthDoc::list_accounts(&doc)[0].id,
+            first,
+            "first starts on top"
+        );
 
         let action = move_down_action(first);
         let encoded = encode(&action);
@@ -607,7 +662,10 @@ mod tests {
 
         let ordered = AuthDoc::list_accounts(&doc);
         assert_eq!(ordered[0].id, second, "the second account moved to the top");
-        assert_eq!(ordered[1].id, first, "the first account moved down one slot");
+        assert_eq!(
+            ordered[1].id, first,
+            "the first account moved down one slot"
+        );
     }
 
     /// A malformed `otpauth://` paste is a clean no-op: the built action applies
@@ -616,11 +674,18 @@ mod tests {
     fn malformed_add_link_is_a_no_op() {
         let mut doc = AutoCommit::new();
         let resources = provide_resources(&doc);
-        let add = resources[0].actions.iter().find(|a| a.id == "add-account").unwrap();
+        let add = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "add-account")
+            .unwrap();
         let encoded = prompted_encode(add, "not-an-otpauth-link");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        assert!(AuthDoc::list_accounts(&doc).is_empty(), "no partial account was inserted");
+        assert!(
+            AuthDoc::list_accounts(&doc).is_empty(),
+            "no partial account was inserted"
+        );
     }
 }

@@ -154,8 +154,8 @@ pub fn fingerprint(scene: &Scene) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ShotScenario;
     use crate::VideoEditorApp;
+    use crate::app::ShotScenario;
 
     /// Compose one scenario from scratch and fingerprint it — a whole
     /// independent build of the app, the document and the scene, which is

@@ -27,6 +27,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{put_if_changed, put_text_diffed};
 
 use crate::model::{PageId, PageMeta};
+use crate::num;
 
 /// Namespace for the workspace document helpers. Stateless — every
 /// function takes the doc explicitly.
@@ -44,7 +45,7 @@ impl NotesDoc {
     }
 
     /// Get-or-create the per-page Map for `id`. Returns the page Map's
-    /// ObjId. Does not touch the page's fields.
+    /// `ObjId`. Does not touch the page's fields.
     pub fn ensure_page(doc: &mut AutoCommit, id: PageId) -> ObjId {
         let pages = Self::pages_map(doc);
         let key = id.to_string();
@@ -71,7 +72,7 @@ impl NotesDoc {
         put_if_changed(doc, &page, "parent", parent_str);
 
         // order (int)
-        put_if_changed(doc, &page, "order", meta.order as i64);
+        put_if_changed(doc, &page, "order", i64::from(meta.order));
     }
 
     /// Remove a page's entry from the shared doc. Called when a page is
@@ -92,38 +93,38 @@ impl NotesDoc {
 
         let mut out = Vec::new();
         for key in doc.keys(&pages) {
-            let Ok(id) = key.parse::<PageId>() else { continue };
-            let Ok(Some((Value::Object(ObjType::Map), page))) =
-                doc.get(&pages, key.as_str())
+            let Ok(id) = key.parse::<PageId>() else {
+                continue;
+            };
+            let Ok(Some((Value::Object(ObjType::Map), page))) = doc.get(&pages, key.as_str())
             else {
                 continue;
             };
 
             let title = match doc.get(&page, "title") {
-                Ok(Some((Value::Object(ObjType::Text), tid))) => {
-                    doc.text(&tid).unwrap_or_default()
-                }
+                Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),
                 _ => String::new(),
             };
 
             let parent = match doc.get(&page, "parent") {
                 Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                    automerge::ScalarValue::Str(s) if !s.is_empty() => {
-                        s.parse::<PageId>().ok()
-                    }
+                    automerge::ScalarValue::Str(s) if !s.is_empty() => s.parse::<PageId>().ok(),
                     _ => None,
                 },
                 _ => None,
             };
 
             let order = match doc.get(&page, "order") {
-                Ok(Some((Value::Scalar(v), _))) => {
-                    v.to_i64().unwrap_or(0) as u32
-                }
+                Ok(Some((Value::Scalar(v), _))) => num::u32_of_i64(v.to_i64().unwrap_or(0)),
                 _ => 0,
             };
 
-            out.push(PageMeta { id, title, parent, order });
+            out.push(PageMeta {
+                id,
+                title,
+                parent,
+                order,
+            });
         }
         out.sort_by_key(|p| p.order);
         out
@@ -147,13 +148,9 @@ impl NotesDoc {
         })
     }
 
-    /// The `Text` ObjId for block `index` in a `blocks` List, if that
+    /// The `Text` `ObjId` for block `index` in a `blocks` List, if that
     /// block exists and has a Text body.
-    pub fn block_text_obj(
-        doc: &AutoCommit,
-        blocks: &ObjId,
-        index: usize,
-    ) -> Option<ObjId> {
+    pub fn block_text_obj(doc: &AutoCommit, blocks: &ObjId, index: usize) -> Option<ObjId> {
         let block = match doc.get(blocks, index) {
             Ok(Some((Value::Object(ObjType::Map), m))) => m,
             _ => return None,
@@ -166,8 +163,7 @@ impl NotesDoc {
 
     /// The `kind` string for block `index`, defaulting to `"paragraph"`.
     pub fn block_kind(doc: &AutoCommit, blocks: &ObjId, index: usize) -> String {
-        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(blocks, index)
-        else {
+        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(blocks, index) else {
             return "paragraph".to_string();
         };
         match doc.get(&block, "kind") {
@@ -180,13 +176,8 @@ impl NotesDoc {
     }
 
     /// Append a new block `{ kind, text }` to a `blocks` List and return
-    /// the new block's `text` ObjId (already seeded with `text`).
-    pub fn push_block(
-        doc: &mut AutoCommit,
-        blocks: &ObjId,
-        kind: &str,
-        text: &str,
-    ) -> ObjId {
+    /// the new block's `text` `ObjId` (already seeded with `text`).
+    pub fn push_block(doc: &mut AutoCommit, blocks: &ObjId, kind: &str, text: &str) -> ObjId {
         let index = doc.length(blocks);
         let block = doc
             .insert_object(blocks, index, ObjType::Map)
@@ -214,7 +205,12 @@ mod tests {
         let id = Uuid::new_v4();
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id, title: "Hello".into(), parent: None, order: 0 },
+            &PageMeta {
+                id,
+                title: "Hello".into(),
+                parent: None,
+                order: 0,
+            },
         );
         let pages = NotesDoc::list_pages(&doc);
         assert_eq!(pages.len(), 1);
@@ -231,11 +227,21 @@ mod tests {
         let child = Uuid::new_v4();
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id: root, title: "Root".into(), parent: None, order: 0 },
+            &PageMeta {
+                id: root,
+                title: "Root".into(),
+                parent: None,
+                order: 0,
+            },
         );
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id: child, title: "Child".into(), parent: Some(root), order: 0 },
+            &PageMeta {
+                id: child,
+                title: "Child".into(),
+                parent: Some(root),
+                order: 0,
+            },
         );
         let pages = NotesDoc::list_pages(&doc);
         let c = pages.iter().find(|p| p.id == child).unwrap();
@@ -248,11 +254,21 @@ mod tests {
         let id = Uuid::new_v4();
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id, title: "Old".into(), parent: None, order: 0 },
+            &PageMeta {
+                id,
+                title: "Old".into(),
+                parent: None,
+                order: 0,
+            },
         );
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id, title: "New".into(), parent: None, order: 0 },
+            &PageMeta {
+                id,
+                title: "New".into(),
+                parent: None,
+                order: 0,
+            },
         );
         let pages = NotesDoc::list_pages(&doc);
         assert_eq!(pages.len(), 1, "rename must not create a second page");
@@ -272,7 +288,12 @@ mod tests {
         let ida = Uuid::new_v4();
         NotesDoc::upsert_page_meta(
             &mut a,
-            &PageMeta { id: ida, title: "A".into(), parent: None, order: 0 },
+            &PageMeta {
+                id: ida,
+                title: "A".into(),
+                parent: None,
+                order: 0,
+            },
         );
 
         // B joins from A's state.
@@ -280,17 +301,30 @@ mod tests {
         let idb = Uuid::new_v4();
         NotesDoc::upsert_page_meta(
             &mut b,
-            &PageMeta { id: idb, title: "B".into(), parent: None, order: 1 },
+            &PageMeta {
+                id: idb,
+                title: "B".into(),
+                parent: None,
+                order: 1,
+            },
         );
 
         // A pulls B's new page back.
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b_loaded).unwrap();
 
-        let titles: Vec<_> =
-            NotesDoc::list_pages(&a).into_iter().map(|p| p.title).collect();
-        assert!(titles.contains(&"A".to_string()), "converged doc has A: {titles:?}");
-        assert!(titles.contains(&"B".to_string()), "converged doc has B: {titles:?}");
+        let titles: Vec<_> = NotesDoc::list_pages(&a)
+            .into_iter()
+            .map(|p| p.title)
+            .collect();
+        assert!(
+            titles.contains(&"A".to_string()),
+            "converged doc has A: {titles:?}"
+        );
+        assert!(
+            titles.contains(&"B".to_string()),
+            "converged doc has B: {titles:?}"
+        );
     }
 
     #[test]
@@ -303,14 +337,24 @@ mod tests {
         let long = "A very long note title that would be expensive to rewrite each keystroke";
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id, title: long.into(), parent: None, order: 0 },
+            &PageMeta {
+                id,
+                title: long.into(),
+                parent: None,
+                order: 0,
+            },
         );
         let before = doc.save().len();
         let mut longer = long.to_string();
         longer.push('!');
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id, title: longer.clone(), parent: None, order: 0 },
+            &PageMeta {
+                id,
+                title: longer.clone(),
+                parent: None,
+                order: 0,
+            },
         );
         let grew = doc.save().len() - before;
         assert_eq!(NotesDoc::list_pages(&doc)[0].title, longer);
@@ -326,7 +370,12 @@ mod tests {
         // change-guarded scalars + diff-spliced title mean zero new ops.
         let mut doc = AutoCommit::new();
         let id = Uuid::new_v4();
-        let meta = PageMeta { id, title: "Stable".into(), parent: None, order: 3 };
+        let meta = PageMeta {
+            id,
+            title: "Stable".into(),
+            parent: None,
+            order: 3,
+        };
         NotesDoc::upsert_page_meta(&mut doc, &meta);
         let before = doc.save().len();
         for _ in 0..25 {
@@ -345,7 +394,12 @@ mod tests {
         let id = Uuid::new_v4();
         NotesDoc::upsert_page_meta(
             &mut doc,
-            &PageMeta { id, title: "P".into(), parent: None, order: 0 },
+            &PageMeta {
+                id,
+                title: "P".into(),
+                parent: None,
+                order: 0,
+            },
         );
         let blocks = NotesDoc::page_blocks_list(&mut doc, id).unwrap();
         let _t = NotesDoc::push_block(&mut doc, &blocks, "paragraph", "hi");

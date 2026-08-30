@@ -1,44 +1,38 @@
 //! Screenshot-driven visual E2E smoke test.
 //!
-//! Renders a minimal vello scene through the headless offscreen
-//! harness (`support::offscreen`), then asserts pixel invariants —
-//! the background tint at (0, 0) matches the requested base colour,
-//! a filled rect lights up opaque pixels inside its bounds, and
-//! untouched regions stay at the base colour.
+//! Renders a minimal vello scene through the headless offscreen harness
+//! (`support::offscreen`), then asserts pixel invariants — background tint
+//! at (0, 0), a filled rect lighting up opaque pixels inside its bounds,
+//! untouched regions staying at the base colour.
 //!
-//! Skipped automatically (via `eprintln + early return`) if no wgpu
-//! adapter is available in the test environment (e.g. sandboxed CI
-//! without llvmpipe). We don't `#[ignore]` the whole test because we
-//! want CI logs to show whether the headless pipeline was exercised,
-//! and we don't panic on missing adapters so local runs without GPU
-//! libraries stay green.
+//! Skipped automatically (via `eprintln` + early return) if no wgpu adapter
+//! is available (e.g. sandboxed CI without llvmpipe) — not `#[ignore]`,
+//! since CI logs should show whether the headless pipeline ran, and not a
+//! panic, so local runs without GPU libraries stay green.
 //!
-//! Intentionally not a golden-image diff test — that requires a design
-//! pass for reference-set provenance + per-DPI bases + tolerance. This
-//! is the "am I wired up correctly" smoke check the ralph-loop brief
-//! asked for ("use screenshotting here to check for issues. Only
-//! inspect screenshots where you suspect issues/changed something").
+//! Intentionally not a golden-image diff test — that requires a design pass
+//! for reference-set provenance + per-DPI bases + tolerance. This is an "am
+//! I wired up correctly" smoke check.
 
-mod support;
-
-use support::offscreen::OffscreenRenderer;
+use crate::support::offscreen::OffscreenRenderer;
+use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h)))
-        .ok()
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OffscreenRenderer::new(w, h)
+    }))
+    .ok()
 }
 
 #[test]
 fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
-    let mut renderer = match try_new_renderer(128, 64) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(128, 64) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
+        return;
     };
 
     let mut scene = Scene::new();
@@ -55,7 +49,6 @@ fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
     let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
     let rgba = renderer.render(&scene, bg);
 
-    // Corner pixel should be the background (outside the filled rect).
     let (r, g, b, a) = OffscreenRenderer::sample(&rgba, 128, 0, 0);
     assert_eq!(
         (r, g, b, a),
@@ -63,8 +56,7 @@ fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
         "top-left pixel should be the slate-900 base colour"
     );
 
-    // Dead-center pixel should be opaque indigo — the rect spans (44..84, 22..42),
-    // so (64, 32) is solidly inside.
+    // The rect spans (44..84, 22..42), so (64, 32) is solidly inside.
     let (r, g, b, a) = OffscreenRenderer::sample(&rgba, 128, 64, 32);
     assert_eq!(a, 0xff, "center pixel should be opaque");
     assert!(
@@ -84,12 +76,11 @@ fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
 
 #[test]
 fn headless_renderer_writes_a_png_file() {
-    let mut renderer = match try_new_renderer(32, 32) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(32, 32) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
+        return;
     };
 
     let mut scene = Scene::new();
@@ -111,35 +102,35 @@ fn headless_renderer_writes_a_png_file() {
 
     // Cheapest possible signature check — PNGs start with 0x89 P N G.
     let bytes = std::fs::read(&out).expect("read PNG");
-    assert_eq!(&bytes[..4], b"\x89PNG", "file must start with PNG signature");
+    assert_eq!(
+        &bytes[..4],
+        b"\x89PNG",
+        "file must start with PNG signature"
+    );
 
     let _ = std::fs::remove_file(&out);
 }
 
 #[test]
 fn headless_renderer_captures_a_widget_tree() {
-    // Drive a real widget through `build_layout` → taffy compute →
-    // `apply_layout` → `draw`, then render to an offscreen texture.
-    // Proves the offscreen harness can be pointed at the actual
-    // widget pipeline — the foundation for visual regression tests.
+    // Drives a real widget through `build_layout` → taffy compute →
+    // `apply_layout` → `draw`, proving the offscreen harness can be pointed
+    // at the actual widget pipeline.
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use ui::widget::{Container, Widget};
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
     let (w, h) = (160, 80);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
+        return;
     };
 
-    // Widget tree: a single filling Container with a background. The
-    // container fills whatever viewport we hand it.
     let mut widget: Box<dyn Widget> = Box::new(Container::new().with_background().filling());
 
     let theme = Theme::dark();
@@ -177,15 +168,11 @@ fn headless_renderer_captures_a_widget_tree() {
         &presence,
     );
 
-    // Render the scene on top of a red base colour so we can assert
-    // that the container actually painted *something* — otherwise the
-    // whole buffer would still read red. Any pixel where the red
-    // channel dropped is proof the widget rendered over the base.
+    // Red base colour: any pixel where the red channel dropped is proof the
+    // widget rendered over it, otherwise the buffer would still read red.
     let bg = Color::from_rgb8(0xff, 0x00, 0x00);
     let rgba = renderer.render(&scene, bg);
 
-    // Widget should have painted a background over at least the top-left
-    // quadrant; sample a point at (10, 10).
     let (r, _g, _b, a) = OffscreenRenderer::sample(&rgba, w, 10, 10);
     assert_eq!(a, 0xff, "widget render should yield opaque pixels");
     assert_ne!(
@@ -194,42 +181,33 @@ fn headless_renderer_captures_a_widget_tree() {
     );
 }
 
-/// Render the real `TabBar` widget at its concept-parity geometry and
-/// assert the 40 px / 6 px-inset-pill layout shows up in the rasterised
-/// output. This is the first visual regression test tied to a recent
-/// deliberate change (bar height 56 → 40 px, pills inset 6 px top/bot).
+/// Render the real `TabBar` widget and assert the 40px / 6px-inset-pill
+/// layout shows up in the rasterised output.
 ///
-/// The bar is drawn against a magenta base colour so every pixel inside
-/// the pill shows up as non-magenta (pill fill + border stroke). Pixels
-/// in the 6 px insets above/below stay *colourless-over-magenta*: the
-/// pill body never extends into the inset (green channel = 0, r == b),
-/// but the concept's per-pill drop shadow (`shadow-[0_8px_32px_rgba(0,0,
-/// 0,0.2)]`, see `tabs::draw_pill_inner`) intentionally bleeds soft
-/// black rings into the inset and may darken the magenta base.
+/// Drawn against a magenta base so every pixel inside the pill shows up as
+/// non-magenta. Pixels in the 6px insets above/below stay
+/// *colourless-over-magenta* (green = 0, r == b) — the pill body never
+/// extends there, though the per-pill drop shadow may darken the base.
 #[test]
 fn tab_bar_renders_pills_inside_six_px_insets() {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use ui::widget::{TabBar, TabDescriptor, Widget};
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
     // 240 wide gives us room for the first 96 px min-width pill + gap;
     // 40 tall matches TAB_BAR_HEIGHT exactly.
     let (w, h) = (240u32, 40u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
+        return;
     };
 
-    let tabs = vec![
-        TabDescriptor::new(1, "a"),
-        TabDescriptor::new(2, "b"),
-    ];
+    let tabs = vec![TabDescriptor::new(1, "a"), TabDescriptor::new(2, "b")];
     let mut bar: Box<dyn Widget> = Box::new(TabBar::new("grp", tabs, 1));
 
     let theme = Theme::dark();
@@ -266,10 +244,9 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
     let bg = Color::from_rgb8(0xff, 0x00, 0xff);
     let rgba = renderer.render(&scene, bg);
 
-    // If QUICK_UI_SCREENSHOT_DIR is set (e.g. the developer is inspecting
-    // the recent 40 px tab-bar change by eye), write the rasterised bar
-    // to `<dir>/tab_bar.png`. Off by default so normal CI runs don't
-    // accumulate artifacts.
+    // If QUICK_UI_SCREENSHOT_DIR is set, write the rasterised bar to
+    // `<dir>/tab_bar.png` for visual inspection. Off by default so normal
+    // CI runs don't accumulate artifacts.
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let path = std::path::Path::new(&dir).join("tab_bar.png");
         std::fs::create_dir_all(&dir).ok();
@@ -283,25 +260,32 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
         eprintln!("wrote tab-bar screenshot to {}", path.display());
     }
 
-    // Top inset strip (y < 6): pill body does not extend here. The
-    // concept's drop shadow (pure black at low alpha) may darken the
-    // magenta base, but it cannot introduce green or break r==b — those
-    // would only come from a translucent-white pill fill bleeding up.
+    // Top inset (y < 6): pill body does not extend here; a drop shadow may
+    // darken the base but cannot introduce green or break r==b.
     let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 2);
-    assert_eq!(g, 0x00, "no pill body fill in top inset (got r={r}, g={g}, b={b})");
-    assert_eq!(r, b, "drop shadow preserves magenta r==b ratio in top inset");
+    assert_eq!(
+        g, 0x00,
+        "no pill body fill in top inset (got r={r}, g={g}, b={b})"
+    );
+    assert_eq!(
+        r, b,
+        "drop shadow preserves magenta r==b ratio in top inset"
+    );
 
-    // Bottom inset strip (y > 34): same rationale. Shadow has a +6 px
-    // y-offset so this inset receives more bleed than the top, but the
-    // r==b / g==0 invariant still holds.
+    // Bottom inset (y > 34): same rationale; the shadow's +6px y-offset
+    // means more bleed here, but the r==b / g==0 invariant still holds.
     let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 37);
-    assert_eq!(g, 0x00, "no pill body fill in bottom inset (got r={r}, g={g}, b={b})");
-    assert_eq!(r, b, "drop shadow preserves magenta r==b ratio in bottom inset");
+    assert_eq!(
+        g, 0x00,
+        "no pill body fill in bottom inset (got r={r}, g={g}, b={b})"
+    );
+    assert_eq!(
+        r, b,
+        "drop shadow preserves magenta r==b ratio in bottom inset"
+    );
 
-    // Pill interior (first pill center ≈ (48, 20)): the pill fills with
-    // a translucent white (`white/10` or `white/15`), so compositing over
-    // magenta drops the G channel below 0xff. A magenta pixel here would
-    // mean the pill didn't render.
+    // Pill interior (first pill center ~= (48, 20)): translucent-white fill
+    // drops the G channel below 0xff when composited over magenta.
     let (r, g, b, a) = OffscreenRenderer::sample(&rgba, w, 48, 20);
     assert_eq!(a, 0xff, "pill center should be opaque");
     assert!(

@@ -26,19 +26,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{Dispatcher, PowerProfile};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, ProgressBar, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
 pub const PROFILE_KEY: &str = "power.profile";
 pub const AUTO_SUSPEND_KEY: &str = "power.auto_suspend";
@@ -60,20 +60,32 @@ const SUSPEND_OPTIONS: &[(&str, u32)] = &[
 ];
 
 fn suspend_label(minutes: u32) -> &'static str {
-    SUSPEND_OPTIONS.iter().find(|(_, m)| *m == minutes).map(|(l, _)| *l).unwrap_or("15 minutes")
+    SUSPEND_OPTIONS
+        .iter()
+        .find(|(_, m)| *m == minutes)
+        .map_or("15 minutes", |(l, _)| *l)
 }
 
 fn suspend_from_label(label: &str) -> Option<u32> {
-    SUSPEND_OPTIONS.iter().find(|(l, _)| *l == label).map(|(_, m)| *m)
+    SUSPEND_OPTIONS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, m)| *m)
 }
 
 /// The action options offered for the lid / power-key / critical-battery
 /// dropdowns, in display order.
-const ACTION_OPTIONS: &[PowerActionPref] =
-    &[PowerActionPref::Suspend, PowerActionPref::Lock, PowerActionPref::Ignore];
+const ACTION_OPTIONS: &[PowerActionPref] = &[
+    PowerActionPref::Suspend,
+    PowerActionPref::Lock,
+    PowerActionPref::Ignore,
+];
 
 fn action_options() -> Vec<String> {
-    ACTION_OPTIONS.iter().map(|a| a.display().to_string()).collect()
+    ACTION_OPTIONS
+        .iter()
+        .map(|a| a.display().to_string())
+        .collect()
 }
 
 /// The power-profile options, as `(display label, profile)`. The label is what
@@ -85,7 +97,10 @@ const PROFILES: &[(&str, PowerProfile)] = &[
 ];
 
 fn profile_label(p: PowerProfile) -> &'static str {
-    PROFILES.iter().find(|(_, pp)| *pp == p).map(|(l, _)| *l).unwrap_or("Balanced")
+    PROFILES
+        .iter()
+        .find(|(_, pp)| *pp == p)
+        .map_or("Balanced", |(l, _)| *l)
 }
 
 fn profile_from_label(label: &str) -> Option<PowerProfile> {
@@ -107,12 +122,14 @@ fn blank_label(minutes: u32) -> &'static str {
     BLANK_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
-        .map(|(l, _)| *l)
-        .unwrap_or("10 minutes")
+        .map_or("10 minutes", |(l, _)| *l)
 }
 
 fn blank_from_label(label: &str) -> Option<u32> {
-    BLANK_OPTIONS.iter().find(|(l, _)| *l == label).map(|(_, m)| *m)
+    BLANK_OPTIONS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, m)| *m)
 }
 
 /// A snapshot of the machine's power supply, read from
@@ -149,10 +166,8 @@ impl BatteryInfo {
                 let ty = read_trim(&dir.join("type")).unwrap_or_default();
                 match ty.as_str() {
                     "Battery" if battery_dir.is_none() => battery_dir = Some(dir),
-                    "Mains" => {
-                        if read_trim(&dir.join("online")).as_deref() == Some("1") {
-                            on_ac = true;
-                        }
+                    "Mains" if read_trim(&dir.join("online")).as_deref() == Some("1") => {
+                        on_ac = true;
                     }
                     _ => {}
                 }
@@ -178,7 +193,13 @@ impl BatteryInfo {
             .min(100);
         let status = read_trim(&dir.join("status")).unwrap_or_else(|| "Unknown".to_string());
         let cycle_count = read_trim(&dir.join("cycle_count")).and_then(|s| s.parse::<u32>().ok());
-        Self { present: true, capacity, status, cycle_count, on_ac }
+        Self {
+            present: true,
+            capacity,
+            status,
+            cycle_count,
+            on_ac,
+        }
     }
 
     /// A friendly one-line summary of the charge state.
@@ -196,7 +217,10 @@ impl BatteryInfo {
 }
 
 fn read_trim(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Power pane widget.
@@ -314,7 +338,8 @@ impl PowerPane {
 
         // --- Session-idle card (durable preferences).
         let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let suspend_opts: Vec<String> = SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
+        let suspend_opts: Vec<String> =
+            SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
         let idle = card(
             "Automatic power saving",
             rows(vec![
@@ -415,80 +440,74 @@ impl Widget for PowerPane {
         }
 
         // Power profile → dispatch on change, guarded so it doesn't re-fire.
-        if let Some(label) = read_str(state, root, PROFILE_KEY) {
-            if let Some(p) = profile_from_label(&label) {
-                if p != self.last_profile {
-                    self.last_profile = p;
-                    self.profile = p;
-                    if let Err(e) = self.dispatcher.set_power_profile(p) {
-                        warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
-                    }
-                }
+        if let Some(label) = read_str(state, root, PROFILE_KEY)
+            && let Some(p) = profile_from_label(&label)
+            && p != self.last_profile
+        {
+            self.last_profile = p;
+            self.profile = p;
+            if let Err(e) = self.dispatcher.set_power_profile(p) {
+                warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
             }
         }
 
         // Auto-suspend → persist on change.
-        if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY) {
-            if b != self.last_prefs.auto_suspend {
-                self.last_prefs.auto_suspend = b;
-                self.prefs.auto_suspend = b;
-                self.persist();
-            }
+        if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY)
+            && b != self.last_prefs.auto_suspend
+        {
+            self.last_prefs.auto_suspend = b;
+            self.prefs.auto_suspend = b;
+            self.persist();
         }
 
         // Screen-blank timeout → persist on change.
-        if let Some(label) = read_str(state, root, BLANK_KEY) {
-            if let Some(m) = blank_from_label(&label) {
-                if m != self.last_prefs.blank_minutes {
-                    self.last_prefs.blank_minutes = m;
-                    self.prefs.blank_minutes = m;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, BLANK_KEY)
+            && let Some(m) = blank_from_label(&label)
+            && m != self.last_prefs.blank_minutes
+        {
+            self.last_prefs.blank_minutes = m;
+            self.prefs.blank_minutes = m;
+            self.persist();
         }
 
         // Idle-suspend timeout → persist on change.
-        if let Some(label) = read_str(state, root, SUSPEND_KEY) {
-            if let Some(m) = suspend_from_label(&label) {
-                if m != self.last_prefs.suspend_minutes {
-                    self.last_prefs.suspend_minutes = m;
-                    self.prefs.suspend_minutes = m;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, SUSPEND_KEY)
+            && let Some(m) = suspend_from_label(&label)
+            && m != self.last_prefs.suspend_minutes
+        {
+            self.last_prefs.suspend_minutes = m;
+            self.prefs.suspend_minutes = m;
+            self.persist();
         }
 
         // Lid-close action → persist on change.
-        if let Some(label) = read_str(state, root, LID_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.lid_close_action {
-                    self.last_prefs.lid_close_action = a;
-                    self.prefs.lid_close_action = a;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, LID_KEY)
+            && let Some(a) = PowerActionPref::from_display(&label)
+            && a != self.last_prefs.lid_close_action
+        {
+            self.last_prefs.lid_close_action = a;
+            self.prefs.lid_close_action = a;
+            self.persist();
         }
 
         // Power-key action → persist on change.
-        if let Some(label) = read_str(state, root, POWER_KEY_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.power_key_action {
-                    self.last_prefs.power_key_action = a;
-                    self.prefs.power_key_action = a;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, POWER_KEY_KEY)
+            && let Some(a) = PowerActionPref::from_display(&label)
+            && a != self.last_prefs.power_key_action
+        {
+            self.last_prefs.power_key_action = a;
+            self.prefs.power_key_action = a;
+            self.persist();
         }
 
         // Critical-battery action → persist on change.
-        if let Some(label) = read_str(state, root, CRITICAL_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.critical_action {
-                    self.last_prefs.critical_action = a;
-                    self.prefs.critical_action = a;
-                    self.persist();
-                }
-            }
+        if let Some(label) = read_str(state, root, CRITICAL_KEY)
+            && let Some(a) = PowerActionPref::from_display(&label)
+            && a != self.last_prefs.critical_action
+        {
+            self.last_prefs.critical_action = a;
+            self.prefs.critical_action = a;
+            self.persist();
         }
 
         if let Some(c) = &mut self.composed {
@@ -515,24 +534,23 @@ impl Widget for PowerPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -561,15 +579,21 @@ impl Widget for PowerPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -589,7 +613,7 @@ impl Widget for PowerPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PowerPane"
     }
 
@@ -637,7 +661,10 @@ mod tests {
     #[test]
     fn profile_label_and_from_label_round_trip() {
         assert_eq!(profile_label(PowerProfile::Saver), "Power Saver");
-        assert_eq!(profile_from_label("Performance"), Some(PowerProfile::Performance));
+        assert_eq!(
+            profile_from_label("Performance"),
+            Some(PowerProfile::Performance)
+        );
         assert_eq!(profile_from_label("Nonsense"), None);
     }
 
@@ -725,7 +752,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, AUTO_SUSPEND_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &root,
+            AUTO_SUSPEND_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
         let _ = doc.put(&root, BLANK_KEY, "30 minutes");
         pane.sync(&mut doc, &root);
         assert!(!pane.prefs().auto_suspend);

@@ -20,9 +20,9 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, Stroke};
 use vello::peniko::Color;
-use vello::Scene;
 use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
@@ -176,8 +176,8 @@ impl CountdownRing {
                 theme.tokens.colors.text_dim
             };
             let (w, h) = text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
-            let tx = self.center.x - w as f64 / 2.0;
-            let ty = self.center.y - h as f64 / 2.0;
+            let tx = self.center.x - f64::from(w) / 2.0;
+            let ty = self.center.y - f64::from(h) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
@@ -211,16 +211,16 @@ impl Widget for CountdownRing {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
-        let w = layout.size.width as f64;
-        let h = layout.size.height as f64;
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        let w = f64::from(layout.size.width);
+        let h = f64::from(layout.size.height);
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
         self.center = self.rect.center();
         self.radius = (w.min(h) / 2.0).max(0.0);
@@ -251,7 +251,7 @@ impl Widget for CountdownRing {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "CountdownRing"
     }
 

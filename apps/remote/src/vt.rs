@@ -23,7 +23,10 @@ pub struct VtGrid {
 
 impl VtGrid {
     pub fn new(cols: usize, rows: usize) -> Self {
-        Self { parser: Parser::new(), grid: Grid::new(cols.max(1), rows.max(1)) }
+        Self {
+            parser: Parser::new(),
+            grid: Grid::new(cols.max(1), rows.max(1)),
+        }
     }
 
     /// Feed a chunk of remote PTY output into the emulator.
@@ -59,8 +62,10 @@ impl VtGrid {
             .iter()
             .map(|row| {
                 let last = row.iter().rposition(|c| c.ch != ' ' || c.color.is_some());
-                let end = last.map(|i| i + 1).unwrap_or(0);
-                TermLine { cells: row[..end].to_vec() }
+                let end = last.map_or(0, |i| i + 1);
+                TermLine {
+                    cells: row[..end].to_vec(),
+                }
             })
             .collect()
     }
@@ -120,10 +125,14 @@ impl Grid {
             self.cx = 0;
             self.newline();
         }
-        if let Some(row) = self.cells.get_mut(self.cy) {
-            if let Some(cell) = row.get_mut(self.cx) {
-                *cell = Cell { ch, color: self.pen_color, bold: self.pen_bold };
-            }
+        if let Some(row) = self.cells.get_mut(self.cy)
+            && let Some(cell) = row.get_mut(self.cx)
+        {
+            *cell = Cell {
+                ch,
+                color: self.pen_color,
+                bold: self.pen_bold,
+            };
         }
         self.cx += 1;
     }
@@ -155,7 +164,7 @@ impl Grid {
     /// Apply a Select-Graphic-Rendition parameter list to the pen.
     fn apply_sgr(&mut self, params: &Params) {
         let mut any = false;
-        for p in params.iter() {
+        for p in params {
             any = true;
             let code = p.first().copied().unwrap_or(0);
             match code {
@@ -212,32 +221,54 @@ impl Perform for Grid {
             'H' | 'f' => {
                 // Cursor position: 1-based (row, col).
                 let mut it = params.iter();
-                let row = it.next().and_then(|p| p.first()).copied().unwrap_or(1).max(1);
-                let col = it.next().and_then(|p| p.first()).copied().unwrap_or(1).max(1);
+                let row = it
+                    .next()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1);
+                let col = it
+                    .next()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1);
                 self.cy = (row as usize - 1).min(self.rows.saturating_sub(1));
                 self.cx = (col as usize - 1).min(self.cols.saturating_sub(1));
             }
             'A' => self.cy = self.cy.saturating_sub(first_param(params, 1) as usize),
             'B' => {
-                self.cy = (self.cy + first_param(params, 1) as usize).min(self.rows.saturating_sub(1))
+                self.cy =
+                    (self.cy + first_param(params, 1) as usize).min(self.rows.saturating_sub(1));
             }
             'C' => {
-                self.cx = (self.cx + first_param(params, 1) as usize).min(self.cols.saturating_sub(1))
+                self.cx =
+                    (self.cx + first_param(params, 1) as usize).min(self.cols.saturating_sub(1));
             }
             'D' => self.cx = self.cx.saturating_sub(first_param(params, 1) as usize),
-            'G' => {
-                self.cx = (first_param(params, 1) as usize - 1).min(self.cols.saturating_sub(1))
-            }
+            'G' => self.cx = (first_param(params, 1) as usize - 1).min(self.cols.saturating_sub(1)),
             'J' => {
                 // Erase in display: 2 = whole screen (and home the cursor is
                 // common but not required); 0 = to end (approximate as line).
-                match params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0) {
+                match params
+                    .iter()
+                    .next()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(0)
+                {
                     2 | 3 => self.clear_all(),
                     _ => self.erase_line_from_cursor(),
                 }
             }
             'K' => {
-                match params.iter().next().and_then(|p| p.first()).copied().unwrap_or(0) {
+                match params
+                    .iter()
+                    .next()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(0)
+                {
                     2 => self.erase_whole_line(),
                     _ => self.erase_line_from_cursor(),
                 }

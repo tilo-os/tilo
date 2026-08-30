@@ -1,39 +1,19 @@
 //! Frame profiler and headless performance-testing harness for `ui` apps.
 //!
-//! Every app built on the toolkit runs the same five-pass frame — `sync`,
-//! `build_layout`, `apply_layout`, `draw`, `handle_event` (see
-//! [`crate::widget::Widget`]). This module measures each of those passes so an
-//! app's frame cost can be **read off, not guessed**, and guards against a
-//! regression by driving a scripted interaction headless and reporting
-//! frame-time statistics.
+//! Measures each of the toolkit's five frame passes (`sync`, `build_layout`,
+//! `apply_layout`, `draw`, `handle_event` — see [`crate::widget::Widget`]) so
+//! frame cost can be **read off, not guessed**. Three surfaces share one type
+//! ([`FrameTiming`]): an in-app HUD (`QOS_PROFILE=1`, hooked into
+//! [`crate::app::App`]'s render loop with no per-app code), a machine-readable
+//! dump (`QOS_PROFILE_OUT=<path>`, JSON-lines or CSV, plus a `tracing` event
+//! under `qos::profile` per frame), and a headless perf harness
+//! ([`run_scenario`]) that drives a scripted [`PerfScenario`] through the
+//! app's **real** widget passes with no GPU or display and returns a
+//! [`PerfReport`] a test can assert on.
 //!
-//! There are three surfaces, and they all share one type ([`FrameTiming`]):
-//!
-//! 1. **In-app HUD.** [`FrameProfiler`] hooks the [`crate::app::App`] render
-//!    loop. Turn it on with `QOS_PROFILE=1`; every app gets a live per-pass
-//!    readout and a rolling frame-time graph, with the 60 fps / 16.6 ms budget
-//!    line drawn and over-budget frames flagged red. No per-app code — the hook
-//!    lives in `App`.
-//!
-//! 2. **Machine-readable dump.** `QOS_PROFILE_OUT=<path>` appends one record
-//!    per frame for offline analysis — JSON-lines by default, CSV when the path
-//!    ends in `.csv`. Each frame also emits a `tracing` event under the
-//!    `qos::profile` target, so an external tracer (`tracing-subscriber`,
-//!    Perfetto via a layer, …) can consume the same numbers with no file.
-//!
-//! 3. **Headless perf harness.** [`run_scenario`] drives a [`crate::headless::Driver`]
-//!    through a scripted [`PerfScenario`] — scroll K times, type a string, click
-//!    a target — for N frames and returns a [`PerfReport`] (mean / p50 / p95 /
-//!    max per pass, plus how many frames blew the budget). This is what lets a
-//!    test measure a fix objectively and fail if a later change slows a pass
-//!    down. It runs the app's **real** widget passes with no GPU or display.
-//!
-//! ## Zero cost when off
-//!
-//! When neither env var is set, [`FrameProfiler::from_env`] returns `None` and
-//! `App` holds no profiler. The render-loop hooks are `Option::map` over that
-//! `None`: no clock is read and no allocation happens on the hot path. Timing
-//! only begins once profiling is explicitly requested.
+//! When neither env var is set, [`FrameProfiler::from_env`] returns `None`
+//! and the render-loop hooks are `Option::map` over that: no clock read, no
+//! allocation, until profiling is explicitly requested.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -47,53 +27,43 @@ use vello::peniko::{Color, Fill};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// The per-frame CPU budget for a sustained 60 fps, in microseconds
-/// (`1_000_000 / 60`). A frame whose total exceeds this cannot hold 60 fps and
+/// `1_000_000 / 60`. A frame whose total exceeds this cannot hold 60 fps and
 /// is counted as over-budget / dropped by [`PerfReport`].
 pub const FRAME_BUDGET_US: u64 = 16_667;
 
-/// One of the toolkit's five frame passes. Used to attribute a measured
-/// duration to the right column of the current frame's [`FrameTiming`].
+/// Attributes a measured duration to the right column of the current
+/// frame's [`FrameTiming`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
-    /// Pull visual state from the CRDT ([`crate::widget::Widget::sync`]).
     Sync,
-    /// Build the Taffy tree and solve layout ([`crate::widget::Widget::build_layout`]
-    /// plus `compute_layout`).
+    /// Includes `compute_layout`.
     BuildLayout,
-    /// Push solved rects down into widgets ([`crate::widget::Widget::apply_layout`]).
     ApplyLayout,
-    /// Encode the widget tree into a Vello scene ([`crate::widget::Widget::draw`]).
     Draw,
-    /// Dispatch a winit event through the tree ([`crate::widget::Widget::handle_event`]).
     HandleEvent,
 }
 
-/// Per-pass timings for a single frame, in microseconds, plus the frame index
-/// and a monotonic timestamp. This is the atom every surface shares: the HUD
-/// graphs it, the dump serialises it, and [`PerfReport`] aggregates it.
+/// This is the atom every surface shares: the HUD graphs it, the dump
+/// serialises it, and [`PerfReport`] aggregates it.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct FrameTiming {
-    /// Monotonically increasing frame counter, from the profiler's start.
     pub frame: u64,
-    /// Microseconds since the profiler started — a monotonic counter, not a
-    /// wall clock, so it is immune to clock steps.
+    /// A monotonic counter, not a wall clock, so it is immune to clock steps.
     pub t_us: u64,
     pub sync_us: u64,
     pub build_layout_us: u64,
     pub apply_layout_us: u64,
     pub draw_us: u64,
     pub handle_event_us: u64,
-    /// Total frame cost. For the live app this is the measured wall time of the
-    /// whole frame build (so it includes the small amount of work *between*
-    /// passes); for the headless harness, where the passes run contiguously, it
-    /// is their sum.
+    /// For the live app this is the measured wall time of the whole frame
+    /// build (so it includes work *between* passes); for the headless
+    /// harness, where passes run contiguously, it is their sum.
     pub total_us: u64,
 }
 
 impl FrameTiming {
-    /// Sum of the five measured passes. Used as the total in the headless
-    /// harness, where nothing runs between passes.
+    /// Used as the total in the headless harness, where nothing runs
+    /// between passes.
     fn pass_sum(&self) -> u64 {
         self.sync_us
             + self.build_layout_us
@@ -102,17 +72,13 @@ impl FrameTiming {
             + self.handle_event_us
     }
 
-    /// Whether this frame exceeded the 60 fps budget.
     pub fn over_budget(&self) -> bool {
         self.total_us > FRAME_BUDGET_US
     }
 }
 
-/// Where a machine-readable dump goes and in what shape.
 enum DumpFormat {
-    /// One JSON object per line.
     Jsonl,
-    /// Comma-separated, with a header row.
     Csv,
 }
 
@@ -150,7 +116,11 @@ impl DumpWriter {
         use std::io::Write;
         let _ = match self.format {
             DumpFormat::Jsonl => {
-                writeln!(self.file, "{}", serde_json::to_string(t).unwrap_or_default())
+                writeln!(
+                    self.file,
+                    "{}",
+                    serde_json::to_string(t).unwrap_or_default()
+                )
             }
             DumpFormat::Csv => {
                 if !self.header_written {
@@ -177,32 +147,26 @@ impl DumpWriter {
     }
 }
 
-/// Number of recent frames the HUD keeps for its rolling graph and live stats
-/// (4 s at 60 fps).
+/// 4 s at 60 fps.
 const HISTORY_CAP: usize = 240;
 
-/// Accumulates per-pass timings for the frame currently being built, keeps a
-/// rolling history for the HUD, and fans committed frames out to the dump, the
-/// tracer, and (in the headless harness) a capture buffer.
-///
-/// The [`crate::app::App`] holds one of these behind an `Option`; the headless
-/// [`crate::headless::Driver`] holds another for the perf harness. Both feed it
-/// the same way: [`record`](Self::record) a pass duration, then
+/// The [`crate::app::App`] holds one of these behind an `Option`; the
+/// headless [`crate::headless::Driver`] holds another for the perf harness.
+/// Both feed it the same way: [`record`](Self::record) a pass duration, then
 /// [`commit_frame`](Self::commit_frame) once per frame.
 pub struct FrameProfiler {
     origin: Instant,
     frame_index: u64,
     /// The in-progress frame — passes accumulate here until commit.
     cur: FrameTiming,
-    /// `handle_event` time seen since the last commit. In the live app several
-    /// input events land between two redraws; their cost is summed here and
-    /// attributed to the next frame.
+    /// In the live app several input events land between two redraws;
+    /// their cost is summed here and attributed to the next frame.
     pending_handle_event_us: u64,
     history: VecDeque<FrameTiming>,
     hud: bool,
     dump: Option<DumpWriter>,
-    /// When `Some`, every committed frame is also appended here — the headless
-    /// harness reads this back as the sample set for its [`PerfReport`].
+    /// When `Some`, every committed frame is also appended here — the
+    /// headless harness reads this back as its [`PerfReport`] sample set.
     capture: Option<Vec<FrameTiming>>,
 }
 
@@ -220,15 +184,11 @@ impl FrameProfiler {
         }
     }
 
-    /// Build a profiler from the environment, or `None` when profiling is off.
-    ///
-    /// - `QOS_PROFILE` (non-empty) turns on the in-app HUD.
-    /// - `QOS_PROFILE_OUT=<path>` appends a per-frame dump — CSV when the path
-    ///   ends in `.csv`, JSON-lines otherwise.
-    ///
-    /// Either variable alone enables profiling. Deliberately **not** gated on
-    /// `debug_assertions` (unlike the debug overlay): the point of a profiler is
-    /// to measure release builds, which is where frame cost actually matters.
+    /// `QOS_PROFILE` (non-empty) turns on the in-app HUD;
+    /// `QOS_PROFILE_OUT=<path>` appends a per-frame dump (CSV when the path
+    /// ends in `.csv`, JSON-lines otherwise); either alone enables profiling.
+    /// Deliberately **not** gated on `debug_assertions`: the point of a
+    /// profiler is to measure release builds, where frame cost matters.
     pub fn from_env() -> Option<Self> {
         let hud = std::env::var_os("QOS_PROFILE").is_some_and(|v| !v.is_empty());
         let out = std::env::var_os("QOS_PROFILE_OUT").filter(|v| !v.is_empty());
@@ -239,20 +199,17 @@ impl FrameProfiler {
         Some(Self::new(hud, dump))
     }
 
-    /// A profiler that only captures samples into a buffer — no HUD, no dump.
-    /// Used by the headless harness.
+    /// No HUD, no dump. Used by the headless harness.
     pub fn for_capture() -> Self {
         let mut p = Self::new(false, None);
         p.capture = Some(Vec::new());
         p
     }
 
-    /// Whether the on-screen HUD should be drawn this frame.
     pub fn hud_enabled(&self) -> bool {
         self.hud
     }
 
-    /// Attribute `dur` to `pass` of the frame currently being built.
     #[inline]
     pub fn record(&mut self, pass: Pass, dur: Duration) {
         let us = dur.as_micros() as u64;
@@ -261,16 +218,15 @@ impl FrameProfiler {
             Pass::BuildLayout => self.cur.build_layout_us += us,
             Pass::ApplyLayout => self.cur.apply_layout_us += us,
             Pass::Draw => self.cur.draw_us += us,
-            // Input can arrive between frames, so it is banked and folded into
-            // the next committed frame.
+            // Input can arrive between frames, so it is banked and folded
+            // into the next committed frame.
             Pass::HandleEvent => self.pending_handle_event_us += us,
         }
     }
 
-    /// Convenience for the render-loop hooks: record the elapsed time since
-    /// `start`, doing nothing when `start` is `None` (profiling was off when the
-    /// pass began). Keeps the call sites in `app.rs` / `headless.rs` to two
-    /// lines each.
+    /// Does nothing when `start` is `None` (profiling was off when the
+    /// pass began). Keeps the call sites in `app.rs` / `headless.rs` to
+    /// two lines each.
     #[inline]
     pub fn record_since(&mut self, pass: Pass, start: Option<Instant>) {
         if let Some(t) = start {
@@ -278,8 +234,7 @@ impl FrameProfiler {
         }
     }
 
-    /// Finalise the current frame with an explicit total (the live app's
-    /// measured wall time), publish it, and reset for the next one.
+    /// `total_us` is the live app's measured wall time.
     pub fn commit_frame(&mut self, total_us: u64) {
         self.cur.handle_event_us = std::mem::take(&mut self.pending_handle_event_us);
         self.cur.frame = self.frame_index;
@@ -314,8 +269,7 @@ impl FrameProfiler {
         self.cur = FrameTiming::default();
     }
 
-    /// Finalise the current frame with the total taken as the sum of its
-    /// passes. Used by the headless harness, where passes run contiguously so
+    /// Used by the headless harness, where passes run contiguously so
     /// their sum *is* the frame cost.
     pub fn commit_frame_summed(&mut self) {
         // Fold pending input in before summing, so it is counted.
@@ -323,10 +277,12 @@ impl FrameProfiler {
         self.commit_frame(total);
     }
 
-    /// The frames captured so far, draining the buffer. Empty when not in
-    /// capture mode.
+    /// Drains the buffer. Empty when not in capture mode.
     pub fn take_capture(&mut self) -> Vec<FrameTiming> {
-        self.capture.as_mut().map(std::mem::take).unwrap_or_default()
+        self.capture
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// Discard captured frames (e.g. warmup) without stopping capture.
@@ -336,19 +292,16 @@ impl FrameProfiler {
         }
     }
 
-    /// The rolling history the HUD draws — most recent frame last.
+    /// Most recent frame last.
     pub fn history(&self) -> &VecDeque<FrameTiming> {
         &self.history
     }
 
-    /// Draw the profiling HUD into `scene`, in the same logical space and under
-    /// the same `transform` the app draws its widgets with, so it is crisp at
-    /// any scale. `viewport` is the logical `(width, height)`.
-    ///
-    /// The HUD is a top-right panel: a text readout (current + windowed mean /
-    /// max frame time, an fps estimate, and the per-pass breakdown) above a
-    /// rolling bar graph of recent frame totals, with the 16.6 ms budget line
-    /// drawn across it and over-budget bars painted red.
+    /// Drawn in the same logical space and `transform` the app draws its
+    /// widgets with, so it's crisp at any scale. `viewport` is the logical
+    /// `(width, height)`. A top-right panel: a text readout above a rolling
+    /// bar graph, with the 16.6ms budget line drawn across it and
+    /// over-budget bars painted red.
     pub fn draw_hud(
         &self,
         scene: &mut Scene,
@@ -362,7 +315,7 @@ impl FrameProfiler {
         }
         let (vw, _vh) = viewport;
 
-        // Panel geometry (logical px), pinned to the top-right corner.
+        // Logical px, pinned to the top-right corner.
         let pad = 8.0;
         let panel_w = 260.0_f64;
         let graph_h = 56.0_f64;
@@ -388,7 +341,6 @@ impl FrameProfiler {
             &panel,
         );
 
-        // Windowed stats over the history buffer.
         let n = self.history.len() as u64;
         let last = *self.history.back().unwrap();
         let sum: u64 = self.history.iter().map(|f| f.total_us).sum();
@@ -404,9 +356,8 @@ impl FrameProfiler {
         let ms = |us: u64| us as f64 / 1000.0;
         let mut ty = y0 + pad + 10.0;
         let tx = x0 + pad;
-        // `scene` and `text` are passed in per call rather than captured, so
-        // this closure holds no borrow across calls and the graph below can
-        // reuse `scene` freely.
+        // Passed in per call rather than captured, so this closure holds no
+        // borrow across calls and the graph below can reuse `scene` freely.
         let draw_line =
             |scene: &mut Scene, text: &mut TextRenderer, s: &str, color: Color, ty: &mut f64| {
                 text.draw_text(
@@ -428,28 +379,47 @@ impl FrameProfiler {
         draw_line(
             scene,
             text,
-            &format!("frame {}  {:.1}ms  {:.0}fps", last.frame, ms(last.total_us), fps),
+            &format!(
+                "frame {}  {:.1}ms  {:.0}fps",
+                last.frame,
+                ms(last.total_us),
+                fps
+            ),
             head_color,
             &mut ty,
         );
         draw_line(
             scene,
             text,
-            &format!("mean {:.1}ms  max {:.1}ms  over {}/{}", ms(mean), ms(max), over, n),
+            &format!(
+                "mean {:.1}ms  max {:.1}ms  over {}/{}",
+                ms(mean),
+                ms(max),
+                over,
+                n
+            ),
             theme.text_primary,
             &mut ty,
         );
         draw_line(
             scene,
             text,
-            &format!("sync {:.2}  build {:.2}", ms(last.sync_us), ms(last.build_layout_us)),
+            &format!(
+                "sync {:.2}  build {:.2}",
+                ms(last.sync_us),
+                ms(last.build_layout_us)
+            ),
             theme.text_dim,
             &mut ty,
         );
         draw_line(
             scene,
             text,
-            &format!("apply {:.2}  draw {:.2}", ms(last.apply_layout_us), ms(last.draw_us)),
+            &format!(
+                "apply {:.2}  draw {:.2}",
+                ms(last.apply_layout_us),
+                ms(last.draw_us)
+            ),
             theme.text_dim,
             &mut ty,
         );
@@ -461,26 +431,22 @@ impl FrameProfiler {
             &mut ty,
         );
 
-        // Rolling frame-time graph.
         let gx0 = x0 + pad;
         let gx1 = x0 + panel_w - pad;
         let gy1 = y0 + panel_h - pad;
         let gw = gx1 - gx0;
 
-        // Vertical scale: at least 2x budget, so the budget line sits mid-graph
-        // and a normal frame reads as a clearly-visible bar. Grow to the 95th
-        // percentile of recent frames so a genuinely heavy app still fits — but
-        // NOT to the raw `max`: a single cold-start or GC spike would otherwise
-        // rescale the whole graph and flatten every normal frame to an invisible
-        // sliver. The rare frames above the ceiling clip to a full-height bar,
-        // which — being over budget — is already painted red, so nothing is lost.
+        // Scale to at least 2x budget (so the budget line sits mid-graph)
+        // and the 95th percentile, NOT the raw max: a single cold-start or
+        // GC spike would otherwise rescale the graph and flatten every
+        // normal frame to an invisible sliver. Frames above the ceiling
+        // clip to a full-height bar, already painted red as over-budget.
         let mut totals: Vec<u64> = self.history.iter().map(|f| f.total_us).collect();
         totals.sort_unstable();
         let p95 = percentile(&totals, 95.0);
         let scale_top = (FRAME_BUDGET_US * 2).max(p95) as f64;
         let y_of = |us: u64| gy1 - (us as f64 / scale_top).min(1.0) * graph_h;
 
-        // Budget line.
         let budget_y = y_of(FRAME_BUDGET_US);
         let mut bl = vello::kurbo::BezPath::new();
         bl.move_to((gx0, budget_y));
@@ -493,7 +459,6 @@ impl FrameProfiler {
             &bl,
         );
 
-        // One bar per recent frame, newest at the right edge.
         let shown = self.history.len().min(HISTORY_CAP);
         let bar_w = (gw / shown as f64).max(1.0);
         for (i, f) in self.history.iter().rev().take(shown).enumerate() {
@@ -515,8 +480,8 @@ impl FrameProfiler {
 // Statistics & report
 // ---------------------------------------------------------------------------
 
-/// Summary statistics for one column of measurements (a single pass, or the
-/// total), in microseconds.
+/// For one column of measurements (a single pass, or the total), in
+/// microseconds.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct StatSummary {
     pub count: usize,
@@ -528,7 +493,7 @@ pub struct StatSummary {
 }
 
 impl StatSummary {
-    /// Compute the summary of `values` (unsorted; this sorts a copy).
+    /// `values` is unsorted; this sorts a copy.
     pub fn of(values: &[u64]) -> Self {
         if values.is_empty() {
             return Self::default();
@@ -536,7 +501,7 @@ impl StatSummary {
         let mut v = values.to_vec();
         v.sort_unstable();
         let count = v.len();
-        let sum: u128 = v.iter().map(|&x| x as u128).sum();
+        let sum: u128 = v.iter().map(|&x| u128::from(x)).sum();
         let mean_us = (sum / count as u128) as u64;
         Self {
             count,
@@ -549,8 +514,8 @@ impl StatSummary {
     }
 }
 
-/// Nearest-rank percentile over an already-sorted slice (NIST method): the
-/// value at 1-indexed rank `ceil(p/100 * n)`, clamped into range.
+/// Nearest-rank (NIST method): the value at 1-indexed rank
+/// `ceil(p/100 * n)`, clamped into range. `sorted` must already be sorted.
 fn percentile(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -561,14 +526,14 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[idx]
 }
 
-/// The result of running a [`PerfScenario`]: per-pass and total statistics over
-/// every frame the scenario produced, plus how many blew the frame budget.
+/// Per-pass and total statistics over every frame a [`PerfScenario`]
+/// produced, plus how many blew the frame budget.
 #[derive(Debug, Clone, Serialize)]
 pub struct PerfReport {
     pub scenario: String,
     pub frames: usize,
     pub budget_us: u64,
-    /// Frames whose total exceeded the budget (i.e. would drop below 60 fps).
+    /// Would drop below 60 fps.
     pub over_budget: usize,
     pub over_budget_pct: f64,
     pub total: StatSummary,
@@ -577,14 +542,13 @@ pub struct PerfReport {
     pub apply_layout: StatSummary,
     pub draw: StatSummary,
     pub handle_event: StatSummary,
-    /// The raw per-frame samples, in order. Skipped when serialising the report
-    /// itself so a JSON summary stays small; dump them separately if wanted.
+    /// Skipped when serialising the report itself so a JSON summary stays
+    /// small; dump separately if wanted.
     #[serde(skip)]
     pub samples: Vec<FrameTiming>,
 }
 
 impl PerfReport {
-    /// Aggregate `samples` into a report against `budget_us`.
     pub fn from_samples(scenario: &str, samples: Vec<FrameTiming>, budget_us: u64) -> Self {
         let frames = samples.len();
         let col = |f: fn(&FrameTiming) -> u64| {
@@ -612,7 +576,7 @@ impl PerfReport {
         }
     }
 
-    /// A compact human-readable table, microseconds shown as milliseconds.
+    /// Microseconds shown as milliseconds.
     pub fn to_table(&self) -> String {
         use std::fmt::Write;
         let ms = |us: u64| us as f64 / 1000.0;
@@ -652,7 +616,7 @@ impl PerfReport {
         s
     }
 
-    /// The report as pretty JSON (without the raw samples).
+    /// Without the raw samples.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
@@ -668,43 +632,42 @@ impl std::fmt::Display for PerfReport {
 // Scenario harness
 // ---------------------------------------------------------------------------
 
-/// One step in a [`PerfScenario`]. Each step drives the headless driver and
-/// produces one or more measured frames.
+/// Each step drives the headless driver and produces one or more measured
+/// frames.
 #[derive(Debug, Clone)]
 pub enum PerfStep {
-    /// Re-render one frame with no input — measures steady-state redraw cost.
+    /// No input — measures steady-state redraw cost.
     Frame,
-    /// Re-render `n` frames with no input.
     Frames(usize),
-    /// Send a vertical wheel scroll `count` times (`dy` per notch; negative
-    /// scrolls the content down). Each notch is one measured frame.
-    Scroll { dy: f64, count: usize },
-    /// Type a string, one key press/release pair per character.
+    /// Negative `dy` scrolls the content down. Each notch is one measured
+    /// frame.
+    Scroll {
+        dy: f64,
+        count: usize,
+    },
+    /// One key press/release pair per character.
     Type(String),
-    /// Press and release one named key (`Enter`, `Tab`, arrows, or a character).
+    /// `Enter`, `Tab`, arrows, or a character.
     Key(String),
-    /// Click the widget addressed by `test_id` / path.
+    /// The widget addressed by `test_id` / path.
     ClickNamed(String),
-    /// Click at raw logical coordinates.
     ClickAt(f64, f64),
 }
 
-/// A named, scripted interaction to run headless and time. Reusable across any
-/// app: build a [`crate::headless::Driver`] over the app's real root + state,
-/// then call [`run_scenario`].
+/// Reusable across any app: build a [`crate::headless::Driver`] over the
+/// app's real root + state, then call [`run_scenario`].
 #[derive(Debug, Clone)]
 pub struct PerfScenario {
     pub name: String,
     pub viewport: (u32, u32),
-    /// Frames to run and discard before measuring, so first-frame allocation /
-    /// shaping-cache warmup doesn't skew the stats.
+    /// Frames to run and discard before measuring, so first-frame
+    /// allocation / shaping-cache warmup doesn't skew the stats.
     pub warmup: usize,
     pub steps: Vec<PerfStep>,
 }
 
 impl PerfScenario {
-    /// A scroll scenario: warm up, then scroll `count` notches. The most common
-    /// shape — it is what surfaces list/grid draw and layout cost.
+    /// The most common shape — what surfaces list/grid draw and layout cost.
     pub fn scroll(name: impl Into<String>, count: usize) -> Self {
         Self {
             name: name.into(),
@@ -714,7 +677,6 @@ impl PerfScenario {
         }
     }
 
-    /// A typing scenario: warm up, then type `text`.
     pub fn typing(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -724,19 +686,14 @@ impl PerfScenario {
         }
     }
 
-    /// Override the viewport the scenario lays out at.
     pub fn with_viewport(mut self, w: u32, h: u32) -> Self {
         self.viewport = (w, h);
         self
     }
 }
 
-/// Run `scenario` against an already-built driver and return the report.
-///
-/// The driver runs the app's real five passes — `sync`, `build_layout`,
-/// `apply_layout`, `draw`, `handle_event` — with no GPU or display, so the
-/// timings are of the production code path, not a mock. Warmup frames are run
-/// and discarded before measurement begins.
+/// The driver runs the app's real five passes with no GPU or display, so
+/// timings are of the production code path, not a mock.
 pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenario) -> PerfReport {
     driver.begin_profiling();
     for _ in 0..scenario.warmup {
@@ -770,8 +727,8 @@ pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenari
     PerfReport::from_samples(&scenario.name, samples, FRAME_BUDGET_US)
 }
 
-/// Build a headless driver over `state` + `root` and run `scenario` against it.
-/// The one-call entry point for an app author or a test: no driver bookkeeping.
+/// The one-call entry point for an app author or a test: no driver
+/// bookkeeping.
 pub fn run_scenario_on(
     state: crate::state::State,
     root: Box<dyn crate::widget::Widget>,
@@ -811,8 +768,6 @@ mod tests {
         assert_eq!(s.max_us, 0);
     }
 
-    /// A profiler records each pass into the right column and commits it, and
-    /// the over-budget flag tracks the budget.
     #[test]
     fn profiler_records_passes_and_commits() {
         let mut p = FrameProfiler::for_capture();

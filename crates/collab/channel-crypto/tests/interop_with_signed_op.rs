@@ -1,17 +1,14 @@
 //! Interop: encrypt-then-sign round-trips cleanly through the
 //! `collab-types` envelope.
 //!
-//! The Phase-7 wire shape is: producer calls
-//! `ChannelGroup::encrypt`, then wraps the ciphertext +
-//! `EncryptionMetadata` in `SignedOp::new_unsigned_with_encryption`,
-//! signs, hands to the broker. The receiver verifies the outer
-//! signature first (drop + log on failure), then feeds the payload
-//! to its matching `ChannelGroup::decrypt`. The decrypted bytes go
-//! to the original Phase-2 ingestion path (Automerge change
-//! application, etc.).
-//!
-//! This file pins each of those steps. The Automerge step is out
-//! of scope — `channel-crypto` does not depend on Automerge.
+//! Wire shape: producer calls `ChannelGroup::encrypt`, wraps the
+//! ciphertext + `EncryptionMetadata` in
+//! `SignedOp::new_unsigned_with_encryption`, signs, hands to the
+//! broker. The receiver verifies the outer signature first (drop + log
+//! on failure), then feeds the payload to its matching
+//! `ChannelGroup::decrypt`; decrypted bytes go to the ordinary
+//! Automerge-change-application ingestion path (out of scope here —
+//! `channel-crypto` doesn't depend on Automerge).
 
 use std::time::SystemTime;
 
@@ -23,11 +20,9 @@ use collab_types::{
 
 /// Stand up a two-member encrypted group + a producer identity keypair.
 ///
-/// The producer's identity (used to sign the *outer* envelope) is
-/// distinct from the producer's MLS signature keypair. In production
-/// they may coincide once Phase 8's threshold identity is wired up;
-/// for this test we keep them separate so the test fails loudly if
-/// the two signature paths get accidentally merged.
+/// The producer's identity (signing the *outer* envelope) is distinct
+/// from its MLS signature keypair — kept separate here so the test
+/// fails loudly if the two signature paths get accidentally merged.
 fn fixture() -> (
     ChannelId,
     ChannelGroup,
@@ -60,12 +55,14 @@ fn encrypted_signed_op_round_trips_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata { epoch, channel: cid },
+        EncryptionMetadata {
+            epoch,
+            channel: cid,
+        },
     );
     sign_op(&mut op, &sk).unwrap();
-    // Outer signature verifies — that's the only contract
-    // verify_op cares about. The validator pipeline check is in a
-    // separate test below so we can keep failure modes localised.
+    // Outer signature verifies — the only contract verify_op cares
+    // about; the validator pipeline check is a separate test below.
     assert!(verify_op(&op).is_ok());
 }
 
@@ -83,7 +80,10 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata { epoch, channel: cid },
+        EncryptionMetadata {
+            epoch,
+            channel: cid,
+        },
     );
     sign_op(&mut op, &sk).unwrap();
 
@@ -98,10 +98,9 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
 
 #[test]
 fn tampering_with_payload_breaks_outer_signature() {
-    // The outer signature covers the (cipher)bytes. A peer that
-    // re-encrypts the inner payload to something else cannot keep
-    // the outer signature valid — they would need the author's
-    // signing key.
+    // The outer signature covers the (cipher)bytes. A peer re-encrypting
+    // the inner payload cannot keep the outer signature valid — they'd
+    // need the author's signing key.
     let (cid, mut alice_g, _bob_g, sk, pk) = fixture();
     let ct = alice_g.encrypt(b"a").unwrap();
     let mut op = SignedOp::new_unsigned_with_encryption(
@@ -126,10 +125,10 @@ fn tampering_with_payload_breaks_outer_signature() {
 
 #[test]
 fn tampering_with_encryption_metadata_breaks_outer_signature() {
-    // Same as above but the tamper is on the metadata: a peer tries
-    // to redirect a ciphertext to a *different* channel by rewriting
+    // Same as above but tampering the metadata: a peer tries to
+    // redirect a ciphertext to a *different* channel by rewriting
     // EncryptionMetadata.channel. The outer signature covers the
-    // metadata so this also fails.
+    // metadata too, so this also fails.
     let (cid, mut alice_g, _bob_g, sk, pk) = fixture();
     let ct = alice_g.encrypt(b"a").unwrap();
     let mut op = SignedOp::new_unsigned_with_encryption(
@@ -155,9 +154,8 @@ fn tampering_with_encryption_metadata_breaks_outer_signature() {
 
 #[test]
 fn unencrypted_op_still_works_alongside_encrypted_ones() {
-    // Backwards-compat: pre-Phase-7 legacy/unencrypted channels keep
-    // round-tripping with `encryption: None`. Same signing pipeline,
-    // same verify call, no decrypt step.
+    // Backwards-compat: legacy/unencrypted channels keep round-tripping
+    // with `encryption: None` — same signing pipeline, same verify call, no decrypt.
     let (sk, pk) = generate_keypair();
     let mut op = SignedOp::new_unsigned(
         b"plaintext".to_vec(),
@@ -175,9 +173,9 @@ fn unencrypted_op_still_works_alongside_encrypted_ones() {
 
 #[test]
 fn epoch_in_metadata_matches_group_epoch_at_time_of_encrypt() {
-    // The receiver uses meta.epoch to decide whether the
-    // ChannelGroup is current enough to decrypt. The test pins the
-    // invariant that the producer stamps the current epoch.
+    // The receiver uses meta.epoch to decide whether the ChannelGroup is
+    // current enough to decrypt; pins the invariant that the producer
+    // stamps the current epoch.
     let (cid, mut alice_g, _bob_g, _sk, _pk) = fixture();
     let snapshot_epoch = alice_g.epoch();
     let ct = alice_g.encrypt(b"x").unwrap();

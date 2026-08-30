@@ -1,9 +1,9 @@
 //! Confidentiality: a party who is not a member of the group cannot
 //! read its ciphertexts.
 //!
-//! The Phase-7 promise is "only group members can decrypt". This
-//! file pins that property from several angles — a fresh standalone
-//! ChannelGroup, a different-channel group, and a tampered ciphertext.
+//! The core promise is "only group members can decrypt"; this file
+//! pins that from several angles — a fresh standalone `ChannelGroup`, a
+//! different-channel group, and a tampered ciphertext.
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
@@ -21,10 +21,9 @@ fn alice_bob_group() -> (ChannelId, ChannelGroup, ChannelGroup) {
 
 #[test]
 fn outsider_in_a_brand_new_group_cannot_decrypt() {
-    // Dave never joins. He has his own ChannelGroup (different
-    // identity, different MLS group state) and tries to decrypt
-    // alice's ciphertext. openmls rejects (no key schedule for the
-    // sender's group).
+    // Dave never joins. He has his own ChannelGroup (different identity,
+    // different MLS group state) and tries to decrypt alice's ciphertext
+    // — openmls rejects (no key schedule for the sender's group).
     let (_cid, mut alice_g, _bob_g) = alice_bob_group();
     let ct = alice_g.encrypt(b"members only").unwrap();
 
@@ -41,11 +40,10 @@ fn outsider_in_a_brand_new_group_cannot_decrypt() {
 
 #[test]
 fn outsider_who_never_received_a_welcome_cannot_decrypt_from_same_channel_id() {
-    // Subtle case: the *channel id* in the EncryptionMetadata is
-    // not the security boundary — the MLS group is. Even if dave
-    // creates a fresh ChannelGroup with the *same* ChannelId as
-    // alice's, his MLS group state has no overlap with alice's, so
-    // decryption fails.
+    // Subtle case: the *channel id* in EncryptionMetadata is not the
+    // security boundary, the MLS group is. Even if dave creates a fresh
+    // ChannelGroup with the *same* ChannelId as alice's, his MLS group
+    // state has no overlap with hers, so decryption fails.
     let (cid, mut alice_g, _bob_g) = alice_bob_group();
     let ct = alice_g.encrypt(b"colliding-channel-id payload").unwrap();
 
@@ -60,9 +58,8 @@ fn outsider_who_never_received_a_welcome_cannot_decrypt_from_same_channel_id() {
 
 #[test]
 fn tampered_ciphertext_is_rejected() {
-    // Flip a byte in the ciphertext. The AEAD tag check fails inside
-    // openmls; we get an Error::OpenMls rather than a successful
-    // decrypt to garbage.
+    // Flip a byte in the ciphertext — the AEAD tag check fails inside
+    // openmls, giving Error::OpenMls rather than a successful decrypt to garbage.
     let (_cid, mut alice_g, mut bob_g) = alice_bob_group();
     let mut ct = alice_g.encrypt(b"untampered").unwrap();
     // Flip a byte deep enough to be inside the AEAD-protected region.
@@ -75,8 +72,8 @@ fn tampered_ciphertext_is_rejected() {
 #[test]
 fn truncated_ciphertext_is_rejected() {
     // A 1-byte truncation breaks the TLS-codec framing; the error
-    // surfaces as Error::TlsCodec or Error::OpenMls depending on
-    // where the truncation lands. Either way: not Ok.
+    // surfaces as Error::TlsCodec or Error::OpenMls depending on where
+    // it lands. Either way: not Ok.
     let (_cid, mut alice_g, mut bob_g) = alice_bob_group();
     let mut ct = alice_g.encrypt(b"untruncated").unwrap();
     ct.pop();

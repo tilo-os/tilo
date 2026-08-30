@@ -51,13 +51,15 @@ impl Driver {
         }
     }
 
-    /// Run sync → build_layout → compute_layout → apply_layout → draw, caching
+    /// Run sync → `build_layout` → `compute_layout` → `apply_layout` → draw, caching
     /// the produced scene for inspection.
     fn frame(&mut self) {
         self.app.sync(&mut self.doc, &self.root);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self.app.build_layout(&mut taffy, &self.theme, &mut node_map);
+        let child = self
+            .app
+            .build_layout(&mut taffy, &self.theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style {
@@ -94,8 +96,13 @@ impl Driver {
         self.app.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::empty();
-        self.app
-            .draw(&mut scene, Affine::IDENTITY, &mut tr, &self.theme, &presence);
+        self.app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &self.theme,
+            &presence,
+        );
         self.last_scene = scene;
     }
 
@@ -105,7 +112,7 @@ impl Driver {
         self.dispatch(left_press());
     }
 
-    /// Type a single character through `handle_event` (KeyboardInput).
+    /// Type a single character through `handle_event` (`KeyboardInput`).
     fn type_char(&mut self, ch: &str) {
         self.dispatch(char_press(ch));
     }
@@ -165,9 +172,8 @@ fn left_press() -> winit::event::WindowEvent {
 fn char_press(ch: &str) -> winit::event::WindowEvent {
     let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = winit::keyboard::Key::Character(ch.into());
-    ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-        winit::keyboard::NativeKeyCode::Unidentified,
-    );
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = winit::keyboard::KeyLocation::Standard;
     ev.state = winit::event::ElementState::Pressed;
     ev.repeat = false;
@@ -181,9 +187,8 @@ fn char_press(ch: &str) -> winit::event::WindowEvent {
 fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
     let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = winit::keyboard::Key::Named(named);
-    ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-        winit::keyboard::NativeKeyCode::Unidentified,
-    );
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = winit::keyboard::KeyLocation::Standard;
     ev.state = winit::event::ElementState::Pressed;
     ev.repeat = false;
@@ -224,7 +229,10 @@ fn images_section_renders_non_blank() {
     d.frame();
     assert_eq!(ViewDoc::section(&mut d.doc), Section::Images);
     let rgba = d.rgba();
-    assert!(painted_pixels(&rgba) > (VW * VH / 12) as usize, "images list paints content");
+    assert!(
+        painted_pixels(&rgba) > (VW * VH / 12) as usize,
+        "images list paints content"
+    );
 }
 
 #[test]
@@ -234,7 +242,10 @@ fn volumes_section_renders_non_blank() {
     ViewDoc::set_section(&mut d.doc, Section::Volumes);
     d.frame();
     let rgba = d.rgba();
-    assert!(painted_pixels(&rgba) > (VW * VH / 14) as usize, "volumes list paints content");
+    assert!(
+        painted_pixels(&rgba) > (VW * VH / 14) as usize,
+        "volumes list paints content"
+    );
 }
 
 #[test]
@@ -250,7 +261,10 @@ fn create_modal_with_open_combobox_renders() {
     // painted pixels including the centered modal region.
     let (_, _, _, a) = OffscreenRenderer::sample(&rgba, VW, VW / 2, VH / 2);
     assert!(a > 8, "create modal center should be painted");
-    assert!(painted_pixels(&rgba) > (VW * VH / 6) as usize, "modal overlay paints widely");
+    assert!(
+        painted_pixels(&rgba) > (VW * VH / 6) as usize,
+        "modal overlay paints widely"
+    );
 }
 
 // =====================================================================
@@ -276,7 +290,10 @@ fn combobox_filters_as_you_type_via_event_path() {
     d.type_char("g");
     d.type_char("i");
     let typed = ViewDoc::create_field(&mut d.doc, CreateField::Image);
-    assert_eq!(typed, "ngi", "typed chars spliced into the CRDT image field");
+    assert_eq!(
+        typed, "ngi",
+        "typed chars spliced into the CRDT image field"
+    );
 
     let filtered = combobox::filter_options(&all, &typed);
     assert!(
@@ -285,7 +302,10 @@ fn combobox_filters_as_you_type_via_event_path() {
         filtered.iter().map(|i| &all[*i]).collect::<Vec<_>>()
     );
     // Typing keeps the dropdown open.
-    assert!(d.app.is_combo_open(), "typing keeps the suggestion dropdown open");
+    assert!(
+        d.app.is_combo_open(),
+        "typing keeps the suggestion dropdown open"
+    );
 }
 
 #[test]
@@ -300,7 +320,10 @@ fn combobox_arrow_then_enter_picks_a_suggestion() {
     let expected = all[1].clone(); // highlight moved to index 1
     d.key(winit::keyboard::NamedKey::Enter);
     let committed = ViewDoc::create_field(&mut d.doc, CreateField::Image);
-    assert_eq!(committed, expected, "Enter commits the highlighted suggestion");
+    assert_eq!(
+        committed, expected,
+        "Enter commits the highlighted suggestion"
+    );
     assert!(!d.app.is_combo_open(), "picking closes the dropdown");
 }
 
@@ -334,7 +357,11 @@ fn create_form_assembles_full_podman_run() {
     ViewDoc::set_create_field(&mut doc, CreateField::Image, "ghcr.io/acme/app:edge");
     ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
     ViewDoc::set_create_field(&mut doc, CreateField::Env, "TZ=UTC, LOG=info");
-    ViewDoc::set_create_field(&mut doc, CreateField::Volumes, "data:/var/lib/app, cfg:/etc/app");
+    ViewDoc::set_create_field(
+        &mut doc,
+        CreateField::Volumes,
+        "data:/var/lib/app, cfg:/etc/app",
+    );
     let args = ViewDoc::create_run_args(&mut doc).expect("image present → args");
     // Exact shape: run -d --name web -p ... -p ... -e ... -e ... -v ... -v ... <image>
     assert_eq!(&args[0..2], &["run", "-d"]);
@@ -342,7 +369,10 @@ fn create_form_assembles_full_podman_run() {
     assert_eq!(args.iter().filter(|a| *a == "-p").count(), 2);
     assert_eq!(args.iter().filter(|a| *a == "-e").count(), 2);
     assert_eq!(args.iter().filter(|a| *a == "-v").count(), 2);
-    assert!(args.windows(2).any(|w| w[0] == "-v" && w[1] == "data:/var/lib/app"));
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "-v" && w[1] == "data:/var/lib/app")
+    );
     // Image is the last positional (no command override here).
     assert_eq!(args.last().unwrap(), "ghcr.io/acme/app:edge");
 }
@@ -360,7 +390,10 @@ fn enter_distrobox_builds_terminal_running_distrobox_enter() {
     // to a launcher that runs that inner command.
     let cmd = terminal::terminal_command(&inner, "enter-my-distrobox").expect("build cmd");
     let prog = cmd.get_program().to_string_lossy().to_string();
-    assert!(prog.ends_with("terminal"), "spawns the terminal binary: {prog}");
+    assert!(
+        prog.ends_with("terminal"),
+        "spawns the terminal binary: {prog}"
+    );
     let shell = cmd
         .get_envs()
         .find(|(k, _)| *k == std::ffi::OsStr::new("SHELL"))
@@ -407,7 +440,10 @@ fn sidebar_collapses_and_expands_via_shortcut() {
         }
     }
     let narrow = d.app.rail_width();
-    assert!(narrow < wide, "rail narrows when collapsed ({narrow} < {wide})");
+    assert!(
+        narrow < wide,
+        "rail narrows when collapsed ({narrow} < {wide})"
+    );
     assert!(!d.app.rail_expanded(), "labels hidden once collapsed");
     // Toggle back open.
     d.type_char("b");

@@ -1,6 +1,6 @@
 //! End-to-end test of the `qos-pkg` CLI binary.
 //!
-//! Drives the compiled binary via std::process::Command (the
+//! Drives the compiled binary via `std::process::Command` (the
 //! cargo test harness exposes the binary under
 //! `target/debug/qos-pkg`).
 

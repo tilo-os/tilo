@@ -1,9 +1,9 @@
 //! Browser-extension groundwork: acquire and inventory extension
 //! packages from the Firefox (AMO) / Chrome web stores.
 //!
-//! The runtime that actually *executes* extensions is WebKit's upstream
-//! WebExtension support (Safari's engine-level implementation, being
-//! exposed through the GTK/WPE GLib API — manifest handling shipped in
+//! The runtime that actually *executes* extensions is `WebKit`'s upstream
+//! `WebExtension` support (Safari's engine-level implementation, being
+//! exposed through the GTK/WPE `GLib` API — manifest handling shipped in
 //! 2.52, the controller classes follow in later releases). Until the
 //! controller lands, this module covers everything up to activation:
 //!
@@ -72,17 +72,14 @@ pub fn extensions_dir() -> PathBuf {
 /// (AMO serves `.xpi`, the Chrome store `.crx`).
 pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
     let bytes = reqwest::blocking::get(url)
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.bytes())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::bytes)
         .map_err(|e| ExtensionError::Download(e.to_string()))?;
     install_from_bytes(&bytes, extensions_dir())
 }
 
 /// Unpack an extension archive into `root` and inventory it.
-pub fn install_from_bytes(
-    archive: &[u8],
-    root: PathBuf,
-) -> Result<ExtensionInfo, ExtensionError> {
+pub fn install_from_bytes(archive: &[u8], root: PathBuf) -> Result<ExtensionInfo, ExtensionError> {
     let zip_bytes = strip_crx_header(archive)?;
     let mut zip = zip::ZipArchive::new(Cursor::new(zip_bytes))
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
@@ -156,7 +153,11 @@ fn strip_crx_header(bytes: &[u8]) -> Result<&[u8], ExtensionError> {
             let header_len = word(8)? as usize;
             12 + header_len
         }
-        v => return Err(ExtensionError::Archive(format!("unsupported CRX version {v}"))),
+        v => {
+            return Err(ExtensionError::Archive(format!(
+                "unsupported CRX version {v}"
+            )));
+        }
     };
     bytes
         .get(zip_start..)
@@ -175,7 +176,10 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
         .ok_or_else(|| ExtensionError::Manifest("manifest has no version".into()))?
         .to_string();
     let manifest_version = value["manifest_version"].as_u64().unwrap_or(2);
-    let description = value["description"].as_str().unwrap_or_default().to_string();
+    let description = value["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let permissions = value["permissions"]
         .as_array()
         .map(|a| {
@@ -188,7 +192,7 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     let gecko_id = value["browser_specific_settings"]["gecko"]["id"]
         .as_str()
         .or_else(|| value["applications"]["gecko"]["id"].as_str());
-    let id = gecko_id.map(str::to_string).unwrap_or_else(|| slug(&name));
+    let id = gecko_id.map_or_else(|| slug(&name), str::to_string);
 
     Ok(ExtensionInfo {
         id,

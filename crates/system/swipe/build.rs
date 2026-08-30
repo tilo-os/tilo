@@ -1,8 +1,8 @@
 //! Builds the C-ABI shim (`csrc/swipe_ffi.cpp`) and links it against the
-//! prebuilt FUTO `libswipe_decoder.a` + ExecuTorch static libraries.
+//! prebuilt FUTO `libswipe_decoder.a` + `ExecuTorch` static libraries.
 //!
 //! The FUTO swipe-library is built out-of-tree via its own `make host`
-//! (clones ExecuTorch as a submodule). Point this build at that tree with:
+//! (clones `ExecuTorch` as a submodule). Point this build at that tree with:
 //!
 //!     QOS_SWIPE_LIB=/path/to/swipe-library   # contains build/ + third_party/executorch/cmake-out-host/ + include/
 //!
@@ -64,20 +64,56 @@ fn main() {
         ("executorch_selected_kernels", et.clone(), true),
         ("xnnpack_backend", et.join("backends/xnnpack"), true),
         // regular
-        ("extension_module_static", et.join("extension/module"), false),
+        (
+            "extension_module_static",
+            et.join("extension/module"),
+            false,
+        ),
         ("extension_tensor", et.join("extension/tensor"), false),
-        ("extension_data_loader", et.join("extension/data_loader"), false),
-        ("extension_flat_tensor", et.join("extension/flat_tensor"), false),
-        ("extension_named_data_map", et.join("extension/named_data_map"), false),
-        ("extension_threadpool", et.join("extension/threadpool"), false),
+        (
+            "extension_data_loader",
+            et.join("extension/data_loader"),
+            false,
+        ),
+        (
+            "extension_flat_tensor",
+            et.join("extension/flat_tensor"),
+            false,
+        ),
+        (
+            "extension_named_data_map",
+            et.join("extension/named_data_map"),
+            false,
+        ),
+        (
+            "extension_threadpool",
+            et.join("extension/threadpool"),
+            false,
+        ),
         ("executorch_core", et.clone(), false),
         ("portable_kernels", et.join("kernels/portable"), false),
-        ("XNNPACK", et.join("backends/xnnpack/third-party/XNNPACK"), false),
-        ("xnnpack-microkernels-prod", et.join("backends/xnnpack/third-party/XNNPACK"), false),
-        ("pthreadpool", et.join("backends/xnnpack/third-party/pthreadpool"), false),
-        ("cpuinfo", et.join("backends/xnnpack/third-party/cpuinfo"), false),
+        (
+            "XNNPACK",
+            et.join("backends/xnnpack/third-party/XNNPACK"),
+            false,
+        ),
+        (
+            "xnnpack-microkernels-prod",
+            et.join("backends/xnnpack/third-party/XNNPACK"),
+            false,
+        ),
+        (
+            "pthreadpool",
+            et.join("backends/xnnpack/third-party/pthreadpool"),
+            false,
+        ),
+        (
+            "cpuinfo",
+            et.join("backends/xnnpack/third-party/cpuinfo"),
+            false,
+        ),
         ("flatccrt", et.join("third-party/flatcc_ep/lib"), false),
-        ("swipe_decoder", build_dir.clone(), false),
+        ("swipe_decoder", build_dir, false),
     ];
     for (name, dir, whole) in libs {
         println!("cargo:rustc-link-search=native={}", dir.display());

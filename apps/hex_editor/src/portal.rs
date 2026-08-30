@@ -39,12 +39,17 @@ mod tests {
         assert_eq!(open.title(), "Open file");
         assert!(!open.is_multiple());
         assert_eq!(open.filter_names(), vec!["All files"]);
-        assert_eq!(open.suggested_name(), None, "an open dialog seeds no filename");
+        assert_eq!(
+            open.suggested_name(),
+            None,
+            "an open dialog seeds no filename"
+        );
     }
 
     #[test]
     fn save_dialog_seeds_the_current_name() {
-        let save = PickRequest::save("Save file", "Save", "dump.bin").filter(FileFilter::all_files());
+        let save =
+            PickRequest::save("Save file", "Save", "dump.bin").filter(FileFilter::all_files());
         assert_eq!(save.suggested_name(), Some("dump.bin"));
     }
 

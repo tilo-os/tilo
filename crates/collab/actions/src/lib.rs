@@ -1,35 +1,46 @@
 //! # qOS ACTION model
 //!
-//! The state layer behind Ctrl+K and cross-peer collaboration: a serializable,
-//! **replayable** unit of CRDT mutation.
+//! The state layer behind Ctrl+K and cross-peer collaboration: a
+//! serializable, **replayable** unit of CRDT mutation.
 //!
 //! ## Play locally, replay anywhere
 //!
 //! An [`Action`] is a *value* that deterministically mutates a CRDT
-//! [`Doc`](action::Doc). It is applied to the local replica and its
-//! [`ActionEnvelope`] is replicated; a peer that starts from the same state
-//! [`replay`](executor::replay)s it and lands on the **identical** document.
-//! Determinism comes from the [executor](executor) pinning the Automerge actor
-//! id (from the action's [`ActionId`]) and commit timestamp on every apply, so
-//! the resulting change is content-addressed identical on origin and peers.
+//! [`Doc`](action::Doc). Applied to the local replica, its
+//! [`ActionEnvelope`] is replicated; a peer starting from the same state
+//! [`replay`](executor::replay)s it and lands on the **identical**
+//! document — the [executor](executor) pins the Automerge actor id (from
+//! the action's [`ActionId`]) and commit timestamp on every apply, so
+//! the resulting change is content-addressed identical everywhere.
 //!
-//! Actions are strictly **not presentation**. Anything local-only — rendering,
-//! scroll, selection — never becomes an action; only shared-CRDT mutations do.
+//! Actions are strictly **not presentation** — anything local-only
+//! (rendering, scroll, selection) never becomes an action; only
+//! shared-CRDT mutations do.
 //!
 //! ## Resources
 //!
-//! An app publishes the tree of [`Resource`]s it currently has open (a video →
-//! its comments; a book → its annotations) via [`ResourceProvider`]. Each
-//! resource exports [`ActionSpec`]s. The palette lists them; choosing one
+//! An app publishes the tree of [`Resource`]s it currently has open (a
+//! video → its comments; a book → its annotations) via
+//! [`ResourceProvider`]. Each resource exports [`ActionSpec`]s; the
+//! palette lists them, and choosing one
 //! [`dispatch`](executor::dispatch)es the underlying action.
+//!
+//! ## The door
+//!
+//! A resource tree is only useful to the app that built it until someone
+//! else can reach it. [`door`] is that reach: [`door::survey`] turns a
+//! live tree into inert, stably-addressed descriptors, and
+//! [`door::invoke`] performs one attributed to the caller — so another
+//! session acts on an app without the app growing a remote-control
+//! surface of its own.
 //!
 //! ## Execution locus
 //!
-//! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this client
-//! applies + replicates; peers replay) or `ServerPreferred` (route to a host).
-//! [`dispatch`](executor::dispatch) honors it against an
-//! [`ActionTransport`](executor::ActionTransport), falling back to local
-//! execution when no host answers.
+//! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this
+//! client applies + replicates; peers replay) or `ServerPreferred`
+//! (route to a host). [`dispatch`](executor::dispatch) honours it
+//! against an [`ActionTransport`](executor::ActionTransport), falling
+//! back to local execution when no host answers.
 //!
 //! ## Driving an app that has no window
 //!
@@ -68,6 +79,7 @@
 //! declaration is `Cow::Borrowed` and costs nothing.
 
 pub mod action;
+pub mod door;
 pub mod envelope;
 pub mod executor;
 pub mod params;
@@ -76,30 +88,32 @@ pub mod resource;
 pub mod wire;
 
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    apply_local, dispatch, replay, ActionTransport, Dispatched, HostDecision, LocalTransport,
+    ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
+    dispatch, dispatch_by, replay,
 };
 pub use params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 pub use registry::ActionRegistry;
 pub use resource::{
-    flatten, ActionInput, ActionSpec, ArgsBuilder, FlatAction, Resource, ResourceId,
-    ResourceProvider, KEY_SEP, PROMPTED_PARAM,
+    ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,
+    ResourceId, ResourceProvider, flatten,
 };
 pub use wire::{
-    build_from_flat, build_from_json, project, project_flat, read_message, resolve, FlatSpec,
-    InvokeError, IoTransport, SerializableResource, SerializableSpec, WireMessage,
+    FlatSpec, InvokeError, IoTransport, SerializableResource, SerializableSpec, WireMessage,
+    build_from_flat, build_from_json, project, project_flat, read_message, resolve,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{AutoCommit, ReadDoc, ScalarValue, ROOT};
+    use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
 
-    /// A real action: set a scalar under a key, and (for lists) append. Mutates
-    /// only via the passed doc, no wall-clock / RNG — the determinism contract.
+    /// A real action: set a scalar under a key, and (for lists) append.
+    /// Mutates only via the passed doc, no wall-clock/RNG — the determinism contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum Counter {
         Put { key: String, value: i64 },
@@ -141,8 +155,8 @@ mod tests {
         r
     }
 
-    /// Seed two independent replicas that share history (so a replayed change
-    /// has identical deps), each with its OWN actor for normal edits.
+    /// Seed two independent replicas that share history (so a replayed
+    /// change has identical deps), each with its OWN actor for normal edits.
     fn two_replicas() -> (AutoCommit, AutoCommit) {
         let mut a = AutoCommit::new();
         a.put(&ROOT, "seed", ScalarValue::Str("s".into())).unwrap();
@@ -153,12 +167,16 @@ mod tests {
     }
 
     /// THE HEADLINE TEST. An action applied on replica A, replicated, and
-    /// replayed on replica B (starting from the same state) yields the
-    /// **identical** document — same head hashes, not merely the same values.
+    /// replayed on replica B (from the same state) yields the **identical**
+    /// document — same head hashes, not merely the same values.
     #[test]
     fn action_replays_to_identical_doc_on_peer() {
         let (mut a, mut b) = two_replicas();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = Counter::Put {
             key: "score".into(),
@@ -184,10 +202,10 @@ mod tests {
         assert_eq!(bv.to_i64(), av.to_i64());
     }
 
-    /// The replayed change is content-addressed *identical* to the change the
-    /// origin produced, so if the replicas later exchange native Automerge
-    /// changes (ordinary CRDT sync) the duplicate dedupes instead of
-    /// double-applying. This is why pinning actor + time on every apply matters.
+    /// The replayed change is content-addressed *identical* to the origin's,
+    /// so if the replicas later exchange native Automerge changes (ordinary
+    /// CRDT sync) the duplicate dedupes instead of double-applying — why
+    /// pinning actor + time on every apply matters.
     #[test]
     fn replayed_change_dedupes_against_native_automerge_merge() {
         let (mut a, mut b) = two_replicas();
@@ -209,7 +227,7 @@ mod tests {
         let heads_after_replay = b.get_heads();
 
         // Now B *also* receives A's native Automerge change via ordinary CRDT
-        // sync. Because it is the same content-addressed change B already
+        // sync. Since it's the same content-addressed change B already
         // replayed, the merge is a no-op: no second append.
         let a_bytes = a.save();
         let mut a_native = AutoCommit::load(&a_bytes).unwrap();
@@ -241,7 +259,7 @@ mod tests {
         assert_eq!(a.get(&ROOT, "likes").unwrap().unwrap().0.to_i64(), Some(1));
     }
 
-    /// A transport that speaks for a reachable host. Proves the
+    /// A transport that speaks for a reachable host, proving the
     /// `ServerPreferred` plumbing is real: when a host accepts, the action is
     /// NOT applied to the local doc (the host will execute + broadcast).
     struct HostTransport {
@@ -267,7 +285,10 @@ mod tests {
         let mut tx = HostTransport { submitted: vec![] };
         let d = dispatch(&mut a, &action, encoded, &mut tx).unwrap();
         assert!(matches!(d, Dispatched::SubmittedToHost(_)));
-        assert!(!d.mutated_local(), "host-accepted action is not applied locally");
+        assert!(
+            !d.mutated_local(),
+            "host-accepted action is not applied locally"
+        );
         assert_eq!(tx.submitted.len(), 1, "submitted to the host once");
         assert_eq!(a.get_heads(), before, "local doc untouched");
         assert_eq!(d.envelope().locus, ExecutionLocus::ServerPreferred);
@@ -288,7 +309,10 @@ mod tests {
         assert_eq!(tx.replicated.len(), 1);
         // The append landed in the list.
         let (val, list) = a.get(&ROOT, "queue").unwrap().unwrap();
-        assert!(matches!(val, automerge::Value::Object(automerge::ObjType::List)));
+        assert!(matches!(
+            val,
+            automerge::Value::Object(automerge::ObjType::List)
+        ));
         assert_eq!(a.length(&list), 1);
     }
 
@@ -306,6 +330,7 @@ mod tests {
             base_heads: vec![],
             timestamp: 0,
             locus: ExecutionLocus::ClientLocal,
+            actor: None,
         };
         assert!(matches!(
             replay(&mut doc, &env, &reg),
@@ -330,9 +355,9 @@ mod tests {
             );
         let flat = flatten(std::slice::from_ref(&video));
         assert_eq!(flat.len(), 2);
-        assert_eq!(flat[0].key, format!("tube.video:v1{}like", KEY_SEP));
+        assert_eq!(flat[0].key, format!("tube.video:v1{KEY_SEP}like"));
         assert_eq!(flat[0].resource_kind, "tube.video");
-        assert_eq!(flat[1].key, format!("tube.comment:v1:0{}like", KEY_SEP));
+        assert_eq!(flat[1].key, format!("tube.comment:v1:0{KEY_SEP}like"));
         assert_eq!(flat[1].resource_kind, "tube.comment");
     }
 }

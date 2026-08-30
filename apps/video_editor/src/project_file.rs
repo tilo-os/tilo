@@ -108,7 +108,10 @@ pub enum ProjectFileError {
     /// prefix would produce a *plausible* half-project — the worst outcome.
     Truncated { declared: usize, present: usize },
     /// Written by a newer editor whose layout this build would misread.
-    TooNew { file_min_reader: u16, this_reader: u16 },
+    TooNew {
+        file_min_reader: u16,
+        this_reader: u16,
+    },
     /// The header parsed but Automerge would not load the payload.
     Corrupt(String),
     /// The file could not be read or written.
@@ -120,10 +123,18 @@ impl std::fmt::Display for ProjectFileError {
         match self {
             ProjectFileError::NotAProject => write!(f, "Not a video project file"),
             ProjectFileError::Truncated { declared, present } => {
-                write!(f, "Project file is incomplete ({present} of {declared} bytes)")
+                write!(
+                    f,
+                    "Project file is incomplete ({present} of {declared} bytes)"
+                )
             }
-            ProjectFileError::TooNew { file_min_reader, .. } => {
-                write!(f, "Project needs a newer video editor (format {file_min_reader})")
+            ProjectFileError::TooNew {
+                file_min_reader, ..
+            } => {
+                write!(
+                    f,
+                    "Project needs a newer video editor (format {file_min_reader})"
+                )
             }
             ProjectFileError::Corrupt(e) => write!(f, "Project file is damaged: {e}"),
             ProjectFileError::Io(e) => write!(f, "{e}"),
@@ -210,7 +221,10 @@ pub fn load(path: &Path) -> Result<Project, ProjectFileError> {
 pub fn with_extension(name: &str) -> String {
     let stem = name.trim();
     let stem = if stem.is_empty() { "Untitled" } else { stem };
-    if stem.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(EXTENSION)) {
+    if stem
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(EXTENSION))
+    {
         return stem.to_string();
     }
     format!("{stem}.{EXTENSION}")
@@ -304,7 +318,9 @@ pub mod recents {
     /// volume must not permanently forget the project on it.
     pub fn load() -> Vec<PathBuf> {
         let Some(p) = path() else { return Vec::new() };
-        let Ok(text) = std::fs::read_to_string(&p) else { return Vec::new() };
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            return Vec::new();
+        };
         let all: Vec<PathBuf> = serde_json::from_str(&text).unwrap_or_default();
         all.into_iter().filter(|p| p.is_file()).take(MAX).collect()
     }
@@ -401,7 +417,12 @@ mod tests {
         };
         clip.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.05);
         clip.set_speed(2.0, true);
-        clip.set_key_at(crate::param::Param::Opacity, 0.0, 0.25, crate::param::Interp::Ease);
+        clip.set_key_at(
+            crate::param::Param::Opacity,
+            0.0,
+            0.25,
+            crate::param::Interp::Ease,
+        );
         p.clips.push(clip);
         p
     }
@@ -458,7 +479,10 @@ mod tests {
         let bytes = encode(&Project::new("x"));
         assert_eq!(&bytes[..8], MAGIC);
         assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), FORMAT_VERSION);
-        assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), MIN_READER_VERSION);
+        assert_eq!(
+            u16::from_le_bytes([bytes[10], bytes[11]]),
+            MIN_READER_VERSION
+        );
         let declared = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
         assert_eq!(
             declared,
@@ -471,10 +495,16 @@ mod tests {
     fn something_that_is_not_a_project_is_named_as_such() {
         // The overwhelmingly likely cause is picking the wrong file, so the
         // error has to say that and not "parse error at byte 0".
-        assert_eq!(decode(b"not a project at all").unwrap_err(), ProjectFileError::NotAProject);
+        assert_eq!(
+            decode(b"not a project at all").unwrap_err(),
+            ProjectFileError::NotAProject
+        );
         assert_eq!(decode(b"").unwrap_err(), ProjectFileError::NotAProject);
         // A file shorter than the header is not a readable project either.
-        assert_eq!(header_versions(&[0u8; 4]).unwrap_err(), ProjectFileError::NotAProject);
+        assert_eq!(
+            header_versions(&[0u8; 4]).unwrap_err(),
+            ProjectFileError::NotAProject
+        );
     }
 
     #[test]
@@ -501,7 +531,10 @@ mod tests {
         let mut bytes = encode(&rich_project());
         bytes[10..12].copy_from_slice(&(MIN_READER_VERSION + 1).to_le_bytes());
         match decode(&bytes) {
-            Err(ProjectFileError::TooNew { file_min_reader, this_reader }) => {
+            Err(ProjectFileError::TooNew {
+                file_min_reader,
+                this_reader,
+            }) => {
                 assert_eq!(file_min_reader, MIN_READER_VERSION + 1);
                 assert_eq!(this_reader, MIN_READER_VERSION);
             }
@@ -520,7 +553,10 @@ mod tests {
         bytes[8..10].copy_from_slice(&(FORMAT_VERSION + 7).to_le_bytes());
         let back = decode(&bytes).expect("a compatible newer file still opens");
         assert_eq!(back.clips.len(), 1);
-        assert_eq!(header_versions(&bytes).unwrap(), (FORMAT_VERSION + 7, MIN_READER_VERSION));
+        assert_eq!(
+            header_versions(&bytes).unwrap(),
+            (FORMAT_VERSION + 7, MIN_READER_VERSION)
+        );
     }
 
     #[test]
@@ -540,8 +576,8 @@ mod tests {
 
     #[test]
     fn saving_and_loading_a_real_file_round_trips() {
-        let path = std::env::temp_dir()
-            .join(format!("qos-ve-proj-{}.{EXTENSION}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("qos-ve-proj-{}.{EXTENSION}", std::process::id()));
         let p = rich_project();
         save(&path, &p).expect("saves");
         let back = load(&path).expect("loads");
@@ -605,7 +641,10 @@ mod tests {
             list = promote(&list, std::path::Path::new(&format!("/p/{i}.qvp")));
         }
         assert_eq!(list.len(), MAX, "the menu cannot grow without bound");
-        assert_eq!(list[0], std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4)));
+        assert_eq!(
+            list[0],
+            std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4))
+        );
     }
 
     #[test]
@@ -632,7 +671,11 @@ mod tests {
         // A fresh process reads it back — and silently skips the entry whose
         // file no longer exists rather than offering a menu item that fails.
         let reloaded = super::recents::load();
-        assert_eq!(reloaded, vec![present.clone()], "only the file that is there");
+        assert_eq!(
+            reloaded,
+            vec![present.clone()],
+            "only the file that is there"
+        );
         assert_eq!(super::recents::label(&present), "Present");
 
         unsafe {

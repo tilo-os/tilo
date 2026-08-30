@@ -68,6 +68,42 @@ FROM ${RPMS_REF} AS rpms
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 
+# ---- Modern AirPlay sender -------------------------------------------------
+# Doubletake's current protocol implementation is newer than its last binary
+# release: it includes the CoreUtils/HAP pairing path required by current
+# AirPlay receivers. Build one audited commit, run its hardware-free protocol
+# suite, and copy only the static sender into the OS image.
+FROM docker.io/library/golang:1.25.0-bookworm@sha256:81dc45d05a7444ead8c92a389621fafabc8e40f8fd1a19d7e5df14e61e98bc1a AS doubletake-builder
+ADD --checksum=sha256:e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7 \
+    https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz \
+    /tmp/doubletake.tar.gz
+RUN mkdir -p /src /out \
+    && tar -xzf /tmp/doubletake.tar.gz --strip-components=1 -C /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go test ./... \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -extldflags=-static' \
+        -o /out/doubletake ./cmd/doubletake \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -extldflags=-static' \
+        -o /out/doubletake-test-receiver ./cmd/doubletake-test-receiver
+
+
+# ---- Architecture-neutral Miracast/Wi-Fi Display sender -------------------
+# Build/test FluxCast from its pinned Python source on the target architecture
+# instead of shipping the project's x86-64-only AppImage.
+FROM ${BASE_REF} AS fluxcast-builder
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo python3 \
+    && dnf clean all
+ADD --checksum=sha256:bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab \
+    https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz \
+    /tmp/fluxcast.tar.gz
+RUN mkdir -p /src \
+    && tar -xzf /tmp/fluxcast.tar.gz --strip-components=1 -C /src
+COPY os/tests/fluxcast-rtsp-receiver.py /fluxcast-rtsp-receiver.py
+RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.py' \
+    && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
+
+
 # ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
 # The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
 # stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release
@@ -266,7 +302,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
-        -p qos-rollback -p qos-cli -p ush \
+        -p qos-rollback -p qos-cli -p ush -p qos-projector \
         -p pkg-cli -p install -p cli-shim \
         ${APP_PKGS} \
         ${BROWSER_PKG} \
@@ -274,6 +310,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
     && cp target/release/shell \
+          target/release/qos-projector \
           target/release/fs \
           target/release/terminal \
           target/release/file-explorer \
@@ -462,7 +499,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
     gstreamer1-plugin-libav \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    gstreamer1-plugin-openh264 \
+    ffmpeg-free \
+    python3 \
+    python3-dbus-next \
+    python3-gobject \
+    && dnf clean all && ${DROP_RPMDB_WAL} \
+    && gst-inspect-1.0 openh264enc >/dev/null
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).
@@ -554,8 +597,20 @@ RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
 
 # Fonts
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    adwaita-sans-fonts \
     google-noto-sans-fonts \
     google-noto-sans-mono-fonts \
+    google-noto-serif-fonts \
+    google-noto-color-emoji-fonts \
+    google-noto-sans-symbols-fonts \
+    google-noto-sans-symbols-2-fonts \
+    google-noto-sans-math-fonts \
+    google-noto-sans-cjk-fonts \
+    google-noto-sans-arabic-fonts \
+    google-noto-sans-hebrew-fonts \
+    google-noto-sans-devanagari-fonts \
+    google-noto-sans-bengali-fonts \
+    google-noto-sans-thai-fonts \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Wayland runtime libraries (needed by compositor)
@@ -619,13 +674,45 @@ COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 # the packaged Terminal cannot launch. /usr/libexec because the terminal's own
 # lookup order is $QOS_USH_BIN, then /usr/libexec/qos-ush, then $PATH.
 COPY --from=builder /out/qos-ush /usr/libexec/qos-ush
+COPY --from=builder /out/qos-projector /usr/libexec/qos-projector
+# Modern AirPlay 2 mirroring (FairPlay SAP, HAP pairing, encrypted video and
+# system audio) is delegated to the source-pinned, tested build above.
+COPY --from=doubletake-builder /out/doubletake /usr/libexec/qos-doubletake
+COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/qos-doubletake-test-receiver
+ADD --checksum=sha256:e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118 \
+    https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE \
+    /usr/share/licenses/qos-doubletake/LICENSE
+# Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
+# H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
+COPY --from=fluxcast-builder /src/src /usr/libexec/qos-fluxcast-src
+COPY os/usr/libexec/qos-fluxcast /usr/libexec/qos-fluxcast
+ADD --checksum=sha256:3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986 \
+    https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE \
+    /usr/share/licenses/qos-fluxcast/LICENSE
+COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
+     /usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf
 COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
               /usr/bin/qos-install /usr/bin/qos-pkg /usr/libexec/qos-cli-shim \
               /usr/bin/qos-power /usr/libexec/qos-unlock-helper /usr/libexec/qos-ush \
-    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; }
+              /usr/libexec/qos-projector /usr/libexec/qos-doubletake \
+              /usr/libexec/qos-doubletake-test-receiver \
+              /usr/libexec/qos-fluxcast \
+    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
+    && /usr/libexec/qos-doubletake -h >/dev/null \
+    && /usr/libexec/qos-fluxcast --help >/dev/null
+
+# Exercise the exact modern-AirPlay CLI path that ships: PIN pairing,
+# FairPlay setup, encrypted RTSP/video transport and real H.264 media into the
+# source-pinned receiver simulator. No receiver hardware or live network is
+# involved, but an empty/control-plane-only session fails the stats assertions.
+COPY os/tests/airplay-encrypted-session.sh /usr/libexec/qos/airplay-encrypted-session-test.sh
+COPY os/tests/projection-boot-check.sh /usr/libexec/qos/projection-boot-check.sh
+RUN chmod 0755 /usr/libexec/qos/airplay-encrypted-session-test.sh \
+        /usr/libexec/qos/projection-boot-check.sh \
+    && /usr/libexec/qos/airplay-encrypted-session-test.sh
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
 # Engine libraries + the WebKit helper processes (WPEWebProcess,
@@ -662,7 +749,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     libmanette \
     libxslt \
     && dnf clean all && ${DROP_RPMDB_WAL} \
-    && ldconfig
+    && ldconfig \
+    && gst-inspect-1.0 h264parse >/dev/null \
+    && gst-inspect-1.0 hlssink2 >/dev/null \
+    && gst-inspect-1.0 pulsesrc >/dev/null \
+    && gst-inspect-1.0 avenc_aac >/dev/null \
+    && gst-inspect-1.0 aacparse >/dev/null
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
@@ -716,7 +808,7 @@ COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
-#   - shell-peer-sync.desktop — opt-in session (libp2p enabled)
+#   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
 # tuigreet lists both at the login prompt; see docs/peer-sync.md.
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
 COPY os/usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
@@ -958,6 +1050,13 @@ COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardenin
 # most of this system is Rust, which does not produce the bugs it catches. The
 # image owns the list — an app manifest can neither request nor decline it.
 COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
+
+# Which sandboxed packages may map memory writable and executable at once.
+# Read by qos-launcher when it compiles the syscall filter. Same reasoning as
+# the file above and the same format: a package that could name its own
+# profile would be lifting a protection off itself, so the image decides and
+# the manifest only asks.
+COPY os/usr/lib/qos/jit-entitled.conf /usr/lib/qos/jit-entitled.conf
 
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
@@ -1228,10 +1327,9 @@ RUN for u in \
     ; do systemctl mask "$u" || true; done
 
 # C5 firewall policy. Default to the desktop zone (FedoraWorkstation), whose
-# 1025-65535 tcp/udp ranges already cover the compositor's peer-sync traffic:
-#   * mDNS LAN discovery on 5353/udp (also added explicitly below).
-#   * The libp2p/gossipsub TCP listener, which binds an EPHEMERAL port
-#     (`/ip4/0.0.0.0/tcp/0` in shell/src/network/p2p.rs) inside that range.
+# 1025-65535 UDP range covers Iroh's ephemeral QUIC endpoint. Invites carry
+# authenticated endpoint addresses, so collaboration needs no multicast
+# discovery service or fixed inbound port.
 # firewalld isn't running at build time, so edit the permanent config offline.
 #
 # Printing adds NO service here, deliberately. `ipp` (631/tcp) would expose
@@ -1240,8 +1338,7 @@ RUN for u in \
 # only — the desktop talks to a printer, nothing talks to the desktop — and
 # the FedoraWorkstation zone already permits the outbound side. Adding either
 # service is a decision to be argued for, not a default.
-RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
-    firewall-offline-cmd --zone=FedoraWorkstation --add-service=mdns
+RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 
 # ---------------------------------------------------------------------------
 # Custom qOS kernel: swap Fedora's kernel-core for our tuned qos-kernel-core.

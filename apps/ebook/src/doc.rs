@@ -1,10 +1,5 @@
-//! Automerge document layer for Books.
-//!
-//! Everything the user can change lives in the shared CRDT so undo/redo and
-//! live collaboration work for free — and, since `main` opens that document
-//! through `ui::persist`, so does picking up where you left off: reading
-//! progress and annotations are written back to the app's state document
-//! and reloaded on the next launch.
+//! Automerge document layer for Books: everything the user can change lives
+//! in the shared CRDT so undo/redo and live collaboration work for free.
 //!
 //! ```text
 //! root
@@ -17,32 +12,33 @@
 //!                                                 color, created }
 //! ```
 //!
-//! The library, progress and annotations are all keyed by the **content-hash
-//! book id**, so a book's shelf entry, where the reader left off, and every
-//! highlight and comment travel together — across the reader's devices and to
-//! anyone they share the book with over the workspace.
-//!
-//! The reader's *transient* view (which book is open, the live page index, the
-//! selected block) is per-peer and stays out of the document — two readers can
-//! browse the same library and annotations while sitting on different pages.
+//! Library, progress and annotations are all keyed by the content-hash book
+//! id, so a book's shelf entry, reading position, and every annotation
+//! travel together across devices and to anyone it's shared with. The
+//! reader's transient view (open book, page, selection) stays per-peer,
+//! out of the document.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
 
 use std::path::PathBuf;
 
 use crate::model::{
-    default_fonts, default_schemes, now_ms, AnnoKind, Annotation, ColorScheme, FontEntry, FontKind,
-    HiColor, LibraryEntry, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
+    AnnoKind, Annotation, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, LibraryPrefs,
+    LibrarySort, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
 fn pack_rgb(c: [u8; 3]) -> i64 {
-    ((c[0] as i64) << 16) | ((c[1] as i64) << 8) | (c[2] as i64)
+    (i64::from(c[0]) << 16) | (i64::from(c[1]) << 8) | i64::from(c[2])
 }
 fn unpack_rgb(v: i64) -> [u8; 3] {
-    [((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8]
+    [
+        ((v >> 16) & 0xFF) as u8,
+        ((v >> 8) & 0xFF) as u8,
+        (v & 0xFF) as u8,
+    ]
 }
 
 /// Stateless namespace of document helpers.
@@ -112,17 +108,21 @@ impl BooksDoc {
     // --- settings ----------------------------------------------------------
 
     pub fn has_settings(doc: &AutoCommit) -> bool {
-        matches!(doc.get(&ROOT, "settings"), Ok(Some((Value::Object(ObjType::Map), _))))
+        matches!(
+            doc.get(&ROOT, "settings"),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
     }
 
     pub fn write_settings(doc: &mut AutoCommit, s: &Settings) {
         let m = Self::root_map(doc, "settings");
-        let _ = doc.put(&m, "font_scale", s.font_scale as f64);
-        let _ = doc.put(&m, "line_spacing", s.line_spacing as f64);
+        let _ = doc.put(&m, "font_scale", f64::from(s.font_scale));
+        let _ = doc.put(&m, "line_spacing", f64::from(s.line_spacing));
         let _ = doc.put(&m, "font_id", s.font_id.as_str());
         let _ = doc.put(&m, "theme", s.theme.as_str());
         let _ = doc.put(&m, "scheme_id", s.scheme_id.as_str());
         let _ = doc.put(&m, "mode", s.mode.as_str());
+        let _ = doc.put(&m, "composition", s.composition.as_str());
     }
 
     pub fn read_settings(doc: &AutoCommit) -> Settings {
@@ -148,6 +148,9 @@ impl BooksDoc {
         }
         if let Some(v) = Self::scalar_str(doc, &m, "mode") {
             s.mode = ReadMode::from_str(&v);
+        }
+        if let Some(v) = Self::scalar_str(doc, &m, "composition") {
+            s.composition = crate::model::CompositionStyle::from_str(&v);
         }
         s
     }
@@ -176,9 +179,9 @@ impl BooksDoc {
                     &Self::scalar_str(doc, &e, "kind").unwrap_or_else(|| "default".into()),
                 ),
                 name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
-                size_mult: Self::scalar_f64(doc, &e, "size_mult")
-                    .map(|v| (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX))
-                    .unwrap_or(1.0),
+                size_mult: Self::scalar_f64(doc, &e, "size_mult").map_or(1.0, |v| {
+                    (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
+                }),
                 shown: Self::scalar_bool(doc, &e, "shown").unwrap_or(true),
                 id,
             });
@@ -198,7 +201,7 @@ impl BooksDoc {
             let _ = doc.put(&e, "id", f.id.as_str());
             let _ = doc.put(&e, "kind", f.kind.as_code());
             let _ = doc.put(&e, "name", f.name.as_str());
-            let _ = doc.put(&e, "size_mult", f.size_mult as f64);
+            let _ = doc.put(&e, "size_mult", f64::from(f.size_mult));
             let _ = doc.put(&e, "shown", f.shown);
         }
     }
@@ -243,12 +246,7 @@ impl BooksDoc {
         let _ = doc.put(&m, "library_hide_read", p.hide_read);
     }
 
-    // --- the library: books the reader has added --------------------------
-    //
-    // The shelf is the app's own collection, persisted here (keyed by the
-    // content-hash book id) rather than re-derived from a magic folder on every
-    // launch. It rides the same document as progress + annotations, so adding a
-    // book on one device makes it appear on the reader's others.
+    // --- the library: books the reader has added, keyed by content-hash id -
 
     /// Add or update a book in the library. Re-importing the same file (same
     /// content id) refreshes its recorded path + metadata while preserving the
@@ -256,9 +254,9 @@ impl BooksDoc {
     pub fn upsert_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
         let lib = Self::root_map(doc, "library");
         let existing_added = match doc.get(&lib, e.id.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => {
-                Self::scalar_i64(doc, &id, "added").filter(|&v| v > 0).map(|v| v as u64)
-            }
+            Ok(Some((Value::Object(ObjType::Map), id))) => Self::scalar_i64(doc, &id, "added")
+                .filter(|&v| v > 0)
+                .map(|v| v as u64),
             _ => None,
         };
         let entry = Self::get_or_make_map(doc, &lib, &e.id);
@@ -289,7 +287,9 @@ impl BooksDoc {
             let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&lib, key.as_str()) else {
                 continue;
             };
-            let Some(path) = Self::scalar_str(doc, &e, "path") else { continue };
+            let Some(path) = Self::scalar_str(doc, &e, "path") else {
+                continue;
+            };
             if path.is_empty() {
                 continue;
             }
@@ -318,12 +318,11 @@ impl BooksDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let ScalarValue::Str(s) = v.as_ref() {
-                    if !s.is_empty() {
-                        out.push(PathBuf::from(s.to_string()));
-                    }
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let ScalarValue::Str(s) = v.as_ref()
+                && !s.is_empty()
+            {
+                out.push(PathBuf::from(s.to_string()));
             }
         }
         out
@@ -371,7 +370,11 @@ impl BooksDoc {
                 id,
             });
         }
-        if out.is_empty() { default_schemes() } else { out }
+        if out.is_empty() {
+            default_schemes()
+        } else {
+            out
+        }
     }
 
     /// Replace the whole scheme registry (the manager edits it wholesale).
@@ -401,7 +404,7 @@ impl BooksDoc {
         let entry = Self::get_or_make_map(doc, &progress, book_id);
         let _ = doc.put(&entry, "chapter", p.chapter as i64);
         let _ = doc.put(&entry, "page", p.page as i64);
-        let _ = doc.put(&entry, "fraction", p.fraction as f64);
+        let _ = doc.put(&entry, "fraction", f64::from(p.fraction));
         // Preserve a previously recorded open time; only advance it (0 = never).
         if p.opened > 0 {
             let _ = doc.put(&entry, "opened", p.opened as i64);
@@ -473,26 +476,23 @@ impl BooksDoc {
         };
         let mut out = Vec::new();
         for key in doc.keys(&map) {
-            let Ok(id) = key.parse::<Uuid>() else { continue };
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&map, key.as_str())
-            else {
+            let Ok(id) = key.parse::<Uuid>() else {
+                continue;
+            };
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&map, key.as_str()) else {
                 continue;
             };
             let a = Annotation {
                 id,
                 doc_id: Self::scalar_str(doc, &e, "doc_id").unwrap_or_default(),
-                kind: AnnoKind::from_str(
-                    &Self::scalar_str(doc, &e, "kind").unwrap_or_default(),
-                ),
+                kind: AnnoKind::from_str(&Self::scalar_str(doc, &e, "kind").unwrap_or_default()),
                 chapter: Self::scalar_i64(doc, &e, "chapter").unwrap_or(0).max(0) as usize,
                 block: Self::scalar_i64(doc, &e, "block").unwrap_or(0).max(0) as usize,
                 start: Self::scalar_i64(doc, &e, "start").unwrap_or(0).max(0) as usize,
                 end: Self::scalar_i64(doc, &e, "end").unwrap_or(0).max(0) as usize,
                 excerpt: Self::scalar_str(doc, &e, "excerpt").unwrap_or_default(),
                 note: Self::scalar_str(doc, &e, "note").unwrap_or_default(),
-                color: HiColor::from_str(
-                    &Self::scalar_str(doc, &e, "color").unwrap_or_default(),
-                ),
+                color: HiColor::from_str(&Self::scalar_str(doc, &e, "color").unwrap_or_default()),
                 created: Self::scalar_i64(doc, &e, "created").unwrap_or(0).max(0) as u64,
                 // Older rows predate grouping; fall back to a self-group (the
                 // row's own id) so each behaves as a standalone mark.
@@ -512,8 +512,7 @@ impl BooksDoc {
             .filter(|a| a.doc_id == book_id)
             .collect();
         v.sort_by(|a, b| {
-            (a.chapter, a.block, a.start, a.created)
-                .cmp(&(b.chapter, b.block, b.start, b.created))
+            (a.chapter, a.block, a.start, a.created).cmp(&(b.chapter, b.block, b.start, b.created))
         });
         v
     }
@@ -527,13 +526,15 @@ mod tests {
     #[test]
     fn settings_round_trip() {
         let mut doc = AutoCommit::new();
-        let mut s = Settings::default();
-        s.font_scale = 1.3;
-        s.line_spacing = 1.45;
-        s.font_id = "serif".into();
-        s.theme = ReadTheme::Dark;
-        s.scheme_id = "midnight".into();
-        s.mode = crate::model::ReadMode::TwoUp;
+        let s = Settings {
+            font_scale: 1.3,
+            line_spacing: 1.45,
+            font_id: "serif".into(),
+            theme: ReadTheme::Dark,
+            scheme_id: "midnight".into(),
+            mode: crate::model::ReadMode::TwoUp,
+            composition: crate::model::CompositionStyle::Ragged,
+        };
         BooksDoc::write_settings(&mut doc, &s);
         let back = BooksDoc::read_settings(&doc);
         assert!((back.font_scale - 1.3).abs() < 0.001);
@@ -541,9 +542,25 @@ mod tests {
         assert_eq!(back.font_id, "serif");
         assert_eq!(back.theme, ReadTheme::Dark);
         assert_eq!(back.scheme_id, "midnight");
-        assert_eq!(back.mode, crate::model::ReadMode::TwoUp, "reading mode persists");
+        assert_eq!(
+            back.mode,
+            crate::model::ReadMode::TwoUp,
+            "reading mode persists"
+        );
+        assert_eq!(
+            back.composition,
+            crate::model::CompositionStyle::Ragged,
+            "composition style persists"
+        );
         // A fresh document defaults to the paged reading mode.
-        assert_eq!(BooksDoc::read_settings(&AutoCommit::new()).mode, crate::model::ReadMode::Paged);
+        assert_eq!(
+            BooksDoc::read_settings(&AutoCommit::new()).mode,
+            crate::model::ReadMode::Paged
+        );
+        assert_eq!(
+            BooksDoc::read_settings(&AutoCommit::new()).composition,
+            crate::model::CompositionStyle::Book
+        );
     }
 
     #[test]
@@ -569,20 +586,31 @@ mod tests {
         assert_eq!(back.len(), custom.len());
         assert_eq!(back[0].name, "Book");
         assert!(!back[1].shown);
-        assert_eq!(back.last().unwrap().kind, FontKind::Named("Literata".into()));
+        assert_eq!(
+            back.last().unwrap().kind,
+            FontKind::Named("Literata".into())
+        );
         assert!((back.last().unwrap().size_mult - 1.1).abs() < 0.001);
     }
 
     #[test]
     fn progress_round_trip() {
         let mut doc = AutoCommit::new();
-        let p = Progress { chapter: 2, page: 5, fraction: 0.42, opened: 1720000000000 };
+        let p = Progress {
+            chapter: 2,
+            page: 5,
+            fraction: 0.42,
+            opened: 1720000000000,
+        };
         BooksDoc::write_progress(&mut doc, "book:x", &p);
         let back = BooksDoc::read_progress(&doc, "book:x");
         assert_eq!(back.chapter, 2);
         assert_eq!(back.page, 5);
         assert!((back.fraction - 0.42).abs() < 0.001);
-        assert_eq!(back.opened, 1720000000000, "open time persists for recent-sort");
+        assert_eq!(
+            back.opened, 1720000000000,
+            "open time persists for recent-sort"
+        );
         // Unknown book -> default.
         assert_eq!(BooksDoc::read_progress(&doc, "nope"), Progress::default());
     }
@@ -591,7 +619,10 @@ mod tests {
     fn library_prefs_round_trip() {
         let mut doc = AutoCommit::new();
         assert_eq!(BooksDoc::read_library_prefs(&doc), LibraryPrefs::default());
-        let p = LibraryPrefs { sort: LibrarySort::Recent, hide_read: true };
+        let p = LibraryPrefs {
+            sort: LibrarySort::Recent,
+            hide_read: true,
+        };
         BooksDoc::write_library_prefs(&mut doc, &p);
         assert_eq!(BooksDoc::read_library_prefs(&doc), p);
     }
@@ -642,7 +673,10 @@ mod tests {
     fn library_entries_round_trip_and_preserve_added_time() {
         use crate::model::LibraryEntry;
         let mut doc = AutoCommit::new();
-        assert!(BooksDoc::read_library_entries(&doc).is_empty(), "fresh library is empty");
+        assert!(
+            BooksDoc::read_library_entries(&doc).is_empty(),
+            "fresh library is empty"
+        );
 
         let e = LibraryEntry {
             id: "book:abc".into(),
@@ -667,18 +701,34 @@ mod tests {
         };
         BooksDoc::upsert_library_entry(&mut doc, &moved);
         let back = BooksDoc::read_library_entries(&doc);
-        assert_eq!(back.len(), 1, "same content id updates in place, not duplicated");
-        assert_eq!(back[0].path, std::path::PathBuf::from("/var/workspace/Books/Novel.epub"));
-        assert_eq!(back[0].added, 1_000, "added time is preserved across a re-import");
+        assert_eq!(
+            back.len(),
+            1,
+            "same content id updates in place, not duplicated"
+        );
+        assert_eq!(
+            back[0].path,
+            std::path::PathBuf::from("/var/workspace/Books/Novel.epub")
+        );
+        assert_eq!(
+            back[0].added, 1_000,
+            "added time is preserved across a re-import"
+        );
 
         BooksDoc::remove_library_entry(&mut doc, "book:abc");
-        assert!(BooksDoc::read_library_entries(&doc).is_empty(), "removed from the shelf");
+        assert!(
+            BooksDoc::read_library_entries(&doc).is_empty(),
+            "removed from the shelf"
+        );
     }
 
     #[test]
     fn watched_folders_round_trip() {
         let mut doc = AutoCommit::new();
-        assert!(BooksDoc::read_watched_folders(&doc).is_empty(), "nothing watched by default");
+        assert!(
+            BooksDoc::read_watched_folders(&doc).is_empty(),
+            "nothing watched by default"
+        );
         let folders = vec![
             std::path::PathBuf::from("/home/reader/Books"),
             std::path::PathBuf::from("/var/workspace/Books"),
@@ -694,10 +744,7 @@ mod tests {
             &mut doc,
             &Annotation::new("book:a", AnnoKind::Bookmark, 0, 0),
         );
-        BooksDoc::upsert_annotation(
-            &mut doc,
-            &Annotation::new("book:b", AnnoKind::Note, 0, 0),
-        );
+        BooksDoc::upsert_annotation(&mut doc, &Annotation::new("book:b", AnnoKind::Note, 0, 0));
         assert_eq!(BooksDoc::annotations_for(&doc, "book:a").len(), 1);
         assert_eq!(BooksDoc::annotations_for(&doc, "book:b").len(), 1);
     }

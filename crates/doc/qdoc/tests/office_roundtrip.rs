@@ -1,11 +1,11 @@
-//! Real-path office round-trip, version-diff, security, and performance tests
-//! over **genuine** `.odt`/`.docx` fixtures (see `tests/fixtures/`, complete
-//! ODF/OOXML packages that LibreOffice/Word open normally). Nothing here is
-//! synthetic-minimal: the office bytes are parsed into the `qdoc` CRDT model,
-//! edited as CRDT operations, serialized back to the same format, and reopened —
-//! proving the model is the source of truth, not an opaque blob.
+//! Real-path office round-trip, version-diff, security, and performance
+//! tests over **genuine** `.odt`/`.docx` fixtures (complete ODF/OOXML
+//! packages LibreOffice/Word open normally). Office bytes are parsed
+//! into the `qdoc` CRDT model, edited as CRDT operations, serialized
+//! back, and reopened — proving the model is the source of truth, not
+//! an opaque blob.
 
-use qdoc::diff::{diff_snapshots, BlockOp, RunOp};
+use qdoc::diff::{BlockOp, RunOp, diff_snapshots};
 use qdoc::{BlockView, DocSnapshot, Document, DocxCodec, FormatProvider, MarkSpan, OdtCodec};
 
 const SAMPLE_ODT: &[u8] = include_bytes!("fixtures/sample.odt");
@@ -18,19 +18,26 @@ const XXE_ODT: &[u8] = include_bytes!("fixtures/xxe.odt");
 
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     let mut d = Document::new();
-    codec.import(bytes, &mut d.as_mut()).expect("import into CRDT model");
+    codec
+        .import(bytes, &mut d.as_mut())
+        .expect("import into CRDT model");
     d
 }
 
-/// The characters a mark of `name` covers in a block (its rendered substring),
-/// so tests can assert *what* is bold/italic without pinning exact offsets.
+/// The characters a mark of `name` covers in a block (its rendered
+/// substring), so tests can assert *what* is bold/italic without
+/// pinning exact offsets.
 fn covered(block: &BlockView, name: &str) -> Vec<String> {
     let chars: Vec<char> = block.text.chars().collect();
     block
         .marks
         .iter()
         .filter(|m: &&MarkSpan| m.name == name)
-        .map(|m| chars[m.start.min(chars.len())..m.end.min(chars.len())].iter().collect())
+        .map(|m| {
+            chars[m.start.min(chars.len())..m.end.min(chars.len())]
+                .iter()
+                .collect()
+        })
         .collect()
 }
 
@@ -42,14 +49,18 @@ fn texts(blocks: &[&BlockView]) -> Vec<String> {
     blocks.iter().map(|b| b.text.clone()).collect()
 }
 
-/// The invariant structure both fixtures share: an H1, a paragraph with a bold
-/// and an italic run, two bullet items, a 2x2 table, and title/author metadata.
+/// The invariant structure both fixtures share: an H1, a paragraph with
+/// a bold and an italic run, two bullet items, a 2x2 table, and
+/// title/author metadata.
 fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
     let headings = kinds(snap, "heading");
     assert!(
         headings.iter().any(|h| h.text == "Quarterly Report"),
         "{format}: expected an H1 'Quarterly Report', got {:?}",
-        snap.blocks.iter().map(|b| (b.kind.as_str(), b.text.as_str())).collect::<Vec<_>>()
+        snap.blocks
+            .iter()
+            .map(|b| (b.kind.as_str(), b.text.as_str()))
+            .collect::<Vec<_>>()
     );
 
     let para = snap
@@ -57,17 +68,41 @@ fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
         .iter()
         .find(|b| b.kind == "paragraph" && b.text.contains("bold") && b.text.contains("italic"))
         .unwrap_or_else(|| panic!("{format}: mixed-run paragraph missing"));
-    assert!(covered(para, "strong").iter().any(|s| s == "bold"), "{format}: 'bold' run must carry a strong mark; marks={:?}", para.marks);
-    assert!(covered(para, "em").iter().any(|s| s == "italic"), "{format}: 'italic' run must carry an em mark; marks={:?}", para.marks);
+    assert!(
+        covered(para, "strong").iter().any(|s| s == "bold"),
+        "{format}: 'bold' run must carry a strong mark; marks={:?}",
+        para.marks
+    );
+    assert!(
+        covered(para, "em").iter().any(|s| s == "italic"),
+        "{format}: 'italic' run must carry an em mark; marks={:?}",
+        para.marks
+    );
 
     let items = kinds(snap, "list_item");
-    assert_eq!(texts(&items), vec!["First item", "Second item"], "{format}: two bullet items");
+    assert_eq!(
+        texts(&items),
+        vec!["First item", "Second item"],
+        "{format}: two bullet items"
+    );
 
     let cells = kinds(snap, "cell");
-    assert_eq!(texts(&cells), vec!["Region", "Total", "North", "1200"], "{format}: 2x2 table cells in order");
+    assert_eq!(
+        texts(&cells),
+        vec!["Region", "Total", "North", "1200"],
+        "{format}: 2x2 table cells in order"
+    );
 
-    assert_eq!(snap.properties.get("title").map(String::as_str), Some("Quarterly Report"), "{format}: title metadata");
-    assert_eq!(snap.properties.get("author").map(String::as_str), Some("Ada Lovelace"), "{format}: author metadata");
+    assert_eq!(
+        snap.properties.get("title").map(String::as_str),
+        Some("Quarterly Report"),
+        "{format}: title metadata"
+    );
+    assert_eq!(
+        snap.properties.get("author").map(String::as_str),
+        Some("Ada Lovelace"),
+        "{format}: author metadata"
+    );
 }
 
 // ---- 1. parse real office files into the CRDT model ------------------------
@@ -86,11 +121,11 @@ fn docx_parses_real_file_into_crdt_model() {
 
 // ---- 2. edit as a CRDT op, serialize, and reopen ---------------------------
 
-/// Apply two edits as real CRDT operations (a text splice into the heading and a
-/// newly inserted paragraph), export to `format`, reopen, and prove both edits +
-/// the original structure survive. Also proves the edits are recorded as
-/// replayable CRDT change history (the timeline grows, and an intermediate
-/// version shows the first edit but not the second).
+/// Apply two edits as real CRDT operations (a text splice into the
+/// heading, a newly inserted paragraph), export to `format`, reopen,
+/// and prove both edits + the original structure survive as replayable
+/// CRDT change history (an intermediate version shows the first edit
+/// but not the second).
 fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let mut d = import(codec, bytes);
 
@@ -100,7 +135,11 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
         .into_iter()
         .find(|id| d.block_kind(id).as_deref() == Some("heading"))
         .expect("heading block");
-    let hlen = d.block_text(&heading_id).unwrap_or_default().chars().count();
+    let hlen = d
+        .block_text(&heading_id)
+        .unwrap_or_default()
+        .chars()
+        .count();
     let versions_before = d.versions().len();
     d.splice_text(&heading_id, hlen, 0, " (DRAFT)");
 
@@ -109,38 +148,82 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let new_para = d.insert_block(Some(&last), "paragraph");
     d.splice_text(&new_para, 0, 0, "Appended by CRDT edit");
     let versions_after = d.versions().len();
-    assert!(versions_after > versions_before, "{format}: edits must extend the CRDT change history ({versions_before} -> {versions_after})");
+    assert!(
+        versions_after > versions_before,
+        "{format}: edits must extend the CRDT change history ({versions_before} -> {versions_after})"
+    );
 
-    // Time-travel: some earlier version has the heading edit but NOT the appended
-    // paragraph — the edits are independent, replayable changes, not a blob rewrite.
+    // Time-travel: some earlier version has the heading edit but NOT
+    // the appended paragraph — independent, replayable changes, not a blob rewrite.
     let saw_intermediate = (0..d.versions().len()).any(|v| {
         let s = d.materialize_at(v).unwrap();
-        let has_draft = s.blocks.iter().any(|b| b.kind == "heading" && b.text.contains("(DRAFT)"));
+        let has_draft = s
+            .blocks
+            .iter()
+            .any(|b| b.kind == "heading" && b.text.contains("(DRAFT)"));
         let has_appended = s.blocks.iter().any(|b| b.text == "Appended by CRDT edit");
         has_draft && !has_appended
     });
-    assert!(saw_intermediate, "{format}: expected an intermediate version with only the first edit");
+    assert!(
+        saw_intermediate,
+        "{format}: expected an intermediate version with only the first edit"
+    );
 
     // Serialize back to the format and reopen it.
-    let out = codec.export(d.as_ref()).unwrap_or_else(|e| panic!("{format}: export failed: {e}"));
+    let out = codec
+        .export(d.as_ref())
+        .unwrap_or_else(|e| panic!("{format}: export failed: {e}"));
     let reopened = import(codec, &out);
     let snap = reopened.materialize();
 
     // Both edits survived the format round-trip...
     assert!(
-        snap.blocks.iter().any(|b| b.kind == "heading" && b.text == "Quarterly Report (DRAFT)"),
+        snap.blocks
+            .iter()
+            .any(|b| b.kind == "heading" && b.text == "Quarterly Report (DRAFT)"),
         "{format}: heading edit lost on reopen: {:?}",
-        snap.blocks.iter().filter(|b| b.kind == "heading").map(|b| b.text.clone()).collect::<Vec<_>>()
+        snap.blocks
+            .iter()
+            .filter(|b| b.kind == "heading")
+            .map(|b| b.text.clone())
+            .collect::<Vec<_>>()
     );
-    assert!(snap.blocks.iter().any(|b| b.text == "Appended by CRDT edit"), "{format}: appended paragraph lost on reopen");
+    assert!(
+        snap.blocks
+            .iter()
+            .any(|b| b.text == "Appended by CRDT edit"),
+        "{format}: appended paragraph lost on reopen"
+    );
 
     // ...and so did everything else the model captured (marks, list, table, meta).
-    let para = snap.blocks.iter().find(|b| b.text.contains("bold") && b.text.contains("italic")).expect("styled paragraph");
-    assert!(covered(para, "strong").iter().any(|s| s == "bold"), "{format}: bold lost on reopen");
-    assert!(covered(para, "em").iter().any(|s| s == "italic"), "{format}: italic lost on reopen");
-    assert_eq!(texts(&kinds(&snap, "list_item")), vec!["First item", "Second item"], "{format}: list lost on reopen");
-    assert_eq!(texts(&kinds(&snap, "cell")), vec!["Region", "Total", "North", "1200"], "{format}: table lost on reopen");
-    assert_eq!(snap.properties.get("title").map(String::as_str), Some("Quarterly Report"), "{format}: title lost on reopen");
+    let para = snap
+        .blocks
+        .iter()
+        .find(|b| b.text.contains("bold") && b.text.contains("italic"))
+        .expect("styled paragraph");
+    assert!(
+        covered(para, "strong").iter().any(|s| s == "bold"),
+        "{format}: bold lost on reopen"
+    );
+    assert!(
+        covered(para, "em").iter().any(|s| s == "italic"),
+        "{format}: italic lost on reopen"
+    );
+    assert_eq!(
+        texts(&kinds(&snap, "list_item")),
+        vec!["First item", "Second item"],
+        "{format}: list lost on reopen"
+    );
+    assert_eq!(
+        texts(&kinds(&snap, "cell")),
+        vec!["Region", "Total", "North", "1200"],
+        "{format}: table lost on reopen"
+    );
+    assert_eq!(
+        snap.properties.get("title").map(String::as_str),
+        Some("Quarterly Report"),
+        "{format}: title lost on reopen"
+    );
 }
 
 #[test]
@@ -161,8 +244,16 @@ fn version_diff_reports_structural_changes_on_real_docx() {
     let v1 = d.materialize();
 
     // Edit the heading text and append a new paragraph.
-    let heading_id = d.blocks_in_order().into_iter().find(|id| d.block_kind(id).as_deref() == Some("heading")).unwrap();
-    let hlen = d.block_text(&heading_id).unwrap_or_default().chars().count();
+    let heading_id = d
+        .blocks_in_order()
+        .into_iter()
+        .find(|id| d.block_kind(id).as_deref() == Some("heading"))
+        .unwrap();
+    let hlen = d
+        .block_text(&heading_id)
+        .unwrap_or_default()
+        .chars()
+        .count();
     d.splice_text(&heading_id, hlen, 0, " (DRAFT)");
     let last = d.blocks_in_order().pop().unwrap();
     let np = d.insert_block(Some(&last), "paragraph");
@@ -175,12 +266,26 @@ fn version_diff_reports_structural_changes_on_real_docx() {
     assert_eq!(diff.summary.changed, 1, "the heading changed");
 
     // The changed heading carries a minimal run diff.
-    let ch = diff.blocks.iter().find(|b| b.op == BlockOp::Changed).unwrap();
+    let ch = diff
+        .blocks
+        .iter()
+        .find(|b| b.op == BlockOp::Changed)
+        .unwrap();
     assert_eq!(ch.id, heading_id);
     assert_eq!(ch.old_text.as_deref(), Some("Quarterly Report"));
     assert_eq!(ch.new_text.as_deref(), Some("Quarterly Report (DRAFT)"));
-    assert!(ch.runs.iter().any(|r| r.op == RunOp::Insert && r.text.contains("DRAFT")), "run diff must show the inserted text");
-    assert!(ch.runs.iter().any(|r| r.op == RunOp::Equal && r.text.contains("Quarterly Report")), "run diff must keep the shared prefix");
+    assert!(
+        ch.runs
+            .iter()
+            .any(|r| r.op == RunOp::Insert && r.text.contains("DRAFT")),
+        "run diff must show the inserted text"
+    );
+    assert!(
+        ch.runs
+            .iter()
+            .any(|r| r.op == RunOp::Equal && r.text.contains("Quarterly Report")),
+        "run diff must keep the shared prefix"
+    );
 
     // The added block reports its new text and no old text.
     let added = diff.blocks.iter().find(|b| b.op == BlockOp::Added).unwrap();
@@ -196,66 +301,87 @@ fn version_diff_reports_structural_changes_on_real_docx() {
 
 #[test]
 fn zip_bomb_is_rejected_not_inflated() {
-    // The production codec path (codec -> container::read -> read_zip_parts) must
-    // reject a decompression bomb, fast, without OOMing. The fixture is ~300 KB on
-    // disk but declares a 300 MiB part — over the 256 MiB per-part cap.
+    // The production codec path must reject a decompression bomb, fast,
+    // without OOMing. The fixture is ~300 KB on disk but declares a
+    // 300 MiB part — over the 256 MiB per-part cap.
     let mut d = Document::new();
-    let err = DocxCodec.import(ZIPBOMB_DOCX, &mut d.as_mut()).expect_err("zip bomb must be rejected");
+    let err = DocxCodec
+        .import(ZIPBOMB_DOCX, &mut d.as_mut())
+        .expect_err("zip bomb must be rejected");
     let msg = format!("{err}");
-    assert!(msg.contains("limit") || msg.contains("bomb"), "expected a bounded-size rejection, got: {msg}");
+    assert!(
+        msg.contains("limit") || msg.contains("bomb"),
+        "expected a bounded-size rejection, got: {msg}"
+    );
 }
 
 #[test]
 fn xxe_dtd_is_rejected_in_both_formats() {
-    // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected outright
-    // (defence in depth against XXE / entity-expansion), for both codecs.
+    // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected
+    // outright (defence in depth against XXE/entity-expansion), both codecs.
     let mut d = Document::new();
-    let err = DocxCodec.import(XXE_DOCX, &mut d.as_mut()).expect_err("docx XXE must be rejected");
-    assert!(format!("{err}").contains("DTD"), "docx: expected a DTD rejection, got: {err}");
+    let err = DocxCodec
+        .import(XXE_DOCX, &mut d.as_mut())
+        .expect_err("docx XXE must be rejected");
+    assert!(
+        format!("{err}").contains("DTD"),
+        "docx: expected a DTD rejection, got: {err}"
+    );
 
     let mut d2 = Document::new();
-    let err2 = OdtCodec.import(XXE_ODT, &mut d2.as_mut()).expect_err("odt XXE must be rejected");
-    assert!(format!("{err2}").contains("DTD"), "odt: expected a DTD rejection, got: {err2}");
+    let err2 = OdtCodec
+        .import(XXE_ODT, &mut d2.as_mut())
+        .expect_err("odt XXE must be rejected");
+    assert!(
+        format!("{err2}").contains("DTD"),
+        "odt: expected a DTD rejection, got: {err2}"
+    );
 }
 
 #[test]
 fn garbage_input_is_rejected_cleanly() {
     // Non-zip garbage must fail as a clean error, never a panic.
     let mut d = Document::new();
-    assert!(DocxCodec.import(b"not a zip at all", &mut d.as_mut()).is_err());
-    assert!(OdtCodec.import(&[0xff, 0x00, 0x13, 0x37], &mut d.as_mut()).is_err());
+    assert!(
+        DocxCodec
+            .import(b"not a zip at all", &mut d.as_mut())
+            .is_err()
+    );
+    assert!(
+        OdtCodec
+            .import(&[0xff, 0x00, 0x13, 0x37], &mut d.as_mut())
+            .is_err()
+    );
 }
 
 // ---- 5. performance: large document parse + serialize ----------------------
 
-/// Build a large book-length document in the CRDT model, then export + reimport it
-/// for both formats.
+/// Build a large book-length document in the CRDT model, export +
+/// reimport for both formats.
 ///
-/// The two O(n^2) traps this guards against are the ones the block-order fix closed:
-/// a full container rescan per insert, and order keys that grow a byte per insert.
-/// Both are asserted **structurally and mode-independently** — a scan counter and the
-/// order-key lengths — so a regression fails in a plain debug `cargo test`, not only
-/// on wall-clock. The wall-clock bound is kept too, but release-gated: in a *debug*
-/// build the time is dominated by automerge-0.8's inherent O(n^2) incremental object
-/// creation (a block is >=2 automerge objects; raw automerge with no qdoc code builds
-/// 4000 sub-maps in ~100 s in debug), which no qdoc change can remove, so wall-clock is
-/// only meaningful in release. Timings print in both modes.
+/// Guards the two O(n^2) traps the block-order fix closed — a full
+/// container rescan per insert, and order keys that grow a byte per
+/// insert — asserted **structurally** (a scan counter, order-key
+/// lengths) so a regression fails in a plain debug `cargo test`, not
+/// only wall-clock. The wall-clock bound is kept too but release-gated:
+/// in debug the time is dominated by automerge-0.8's inherent O(n^2)
+/// incremental object creation (unrelated to qdoc), so wall-clock is
+/// only meaningful in release.
 #[test]
 fn large_document_parse_and_serialize_is_fast() {
     use std::time::Instant;
 
-    // The wall-clock guard runs the full book-length N; the structural guards are
-    // scale-independent (they catch a per-insert rescan or linear key growth at any
-    // N > a few hundred), so a *debug* build uses a smaller N to stay CI-fast —
-    // building N blocks is automerge-0.8's inherent O(n^2) (minutes at 4000 in debug,
-    // unrelated to qdoc), which would make a debug `cargo test` pathologically slow.
+    // The wall-clock guard runs the full book-length N; the structural
+    // guards are scale-independent, so a *debug* build uses a smaller N
+    // to stay CI-fast (building N blocks is automerge-0.8's inherent
+    // O(n^2), minutes at 4000 in debug).
     const N: usize = if cfg!(debug_assertions) { 400 } else { 4_000 };
     let mut d = Document::new();
     let mut prev: Option<String> = None;
 
-    // Guard #1 (mode-independent): the in-memory order index must keep the whole build
-    // to a *constant* number of full container scans (one, to seed it), not one per
-    // insert. A per-insert scan is exactly the O(n^2) this fix removed.
+    // Guard #1 (mode-independent): the in-memory order index must keep
+    // the whole build to a *constant* number of full container scans
+    // (one, to seed it) — a per-insert scan is the O(n^2) this fix removed.
     let scans_before = qdoc::ordered_keys_scan_count();
     for i in 0..N {
         let kind = if i % 25 == 0 { "heading" } else { "paragraph" };
@@ -278,9 +404,10 @@ fn large_document_parse_and_serialize_is_fast() {
     let built = d.materialize();
     assert_eq!(built.blocks.len(), N, "built N blocks");
 
-    // Guard #2 (mode-independent): the truncating fractional key keeps order keys bounded
-    // (~32 bytes for 4000 sequential appends) instead of growing a byte per insert, which
-    // makes every key comparison O(n) and building/sorting O(n^2).
+    // Guard #2 (mode-independent): the truncating fractional key keeps
+    // order keys bounded (~32 bytes for 4000 sequential appends) instead
+    // of growing a byte per insert, which makes comparison O(n) and
+    // building/sorting O(n^2).
     let max_key_len = d.block_order_key_lengths().into_iter().max().unwrap_or(0);
     assert!(
         max_key_len <= 64,
@@ -288,16 +415,19 @@ fn large_document_parse_and_serialize_is_fast() {
          it bounded; linear growth is O(n^2) (holds in debug and release)"
     );
 
-    // The timed export + reimport round-trip runs release-only. Each reimport rebuilds
-    // all N blocks, and in a debug build that is automerge-0.8's inherent O(n^2) object
-    // creation (~minutes at N=4000, unrelated to qdoc) — running it under a debug
-    // `cargo test` (CI) would be pathologically slow for no added signal, since the two
-    // structural guards above already prove the qdoc fix in debug. In release it is
-    // fast, so that is where the 4000/15s wall-clock and the ms report live. Round-trip
-    // *fidelity* is covered in every mode by the edit-and-reopen tests above.
+    // The timed export + reimport round-trip runs release-only: each
+    // reimport rebuilds all N blocks, and in debug that's automerge-0.8's
+    // inherent O(n^2) object creation (minutes at N=4000, unrelated to
+    // qdoc) — pathologically slow under CI for no added signal, since
+    // the structural guards above already prove the fix in debug.
     let mut report = String::new();
-    if !cfg!(debug_assertions) {
-        for (name, codec) in [("odt", &OdtCodec as &dyn FormatProvider), ("docx", &DocxCodec as &dyn FormatProvider)] {
+    if cfg!(debug_assertions) {
+        report.push_str("  (debug: export/reimport wall-clock runs in release; structural guards above cover debug)\n");
+    } else {
+        for (name, codec) in [
+            ("odt", &OdtCodec as &dyn FormatProvider),
+            ("docx", &DocxCodec as &dyn FormatProvider),
+        ] {
             let t0 = Instant::now();
             let bytes = codec.export(d.as_ref()).expect("export large doc");
             let export_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -307,22 +437,45 @@ fn large_document_parse_and_serialize_is_fast() {
             let import_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
             let snap = round.materialize();
-            assert_eq!(snap.blocks.len(), N, "{name}: block count preserved through a large round-trip");
+            assert_eq!(
+                snap.blocks.len(),
+                N,
+                "{name}: block count preserved through a large round-trip"
+            );
             // Spot-check fidelity at the ends and a bold run survived.
-            assert!(snap.blocks[0].text.starts_with("Section 0:"), "{name}: first block text preserved");
-            assert!(snap.blocks[N - 1].text.contains(&format!("number {}", N - 1)), "{name}: last block text preserved");
-            assert!(snap.blocks.iter().any(|b| b.marks.iter().any(|m| m.name == "strong")), "{name}: bold runs preserved");
+            assert!(
+                snap.blocks[0].text.starts_with("Section 0:"),
+                "{name}: first block text preserved"
+            );
+            assert!(
+                snap.blocks[N - 1]
+                    .text
+                    .contains(&format!("number {}", N - 1)),
+                "{name}: last block text preserved"
+            );
+            assert!(
+                snap.blocks
+                    .iter()
+                    .any(|b| b.marks.iter().any(|m| m.name == "strong")),
+                "{name}: bold runs preserved"
+            );
 
             let kib = bytes.len() as f64 / 1024.0;
             report.push_str(&format!("  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {kib:8.1} KiB\n"));
 
-            assert!(export_ms < 15_000.0, "{name}: export too slow ({export_ms:.0} ms) — possible O(n^2) regression");
-            assert!(import_ms < 15_000.0, "{name}: reimport too slow ({import_ms:.0} ms) — possible O(n^2) regression");
+            assert!(
+                export_ms < 15_000.0,
+                "{name}: export too slow ({export_ms:.0} ms) — possible O(n^2) regression"
+            );
+            assert!(
+                import_ms < 15_000.0,
+                "{name}: reimport too slow ({import_ms:.0} ms) — possible O(n^2) regression"
+            );
         }
-    } else {
-        report.push_str("  (debug: export/reimport wall-clock runs in release; structural guards above cover debug)\n");
     }
-    let head = format!("large_document_parse_and_serialize ({N} paragraphs; {build_scans} container scans, order-key <= {max_key_len}B)");
+    let head = format!(
+        "large_document_parse_and_serialize ({N} paragraphs; {build_scans} container scans, order-key <= {max_key_len}B)"
+    );
     println!("\n{head}:\n{report}");
     eprintln!("{head}:\n{report}");
 }

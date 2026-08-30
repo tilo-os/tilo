@@ -35,8 +35,10 @@ fn http_timeout() -> Duration {
     std::env::var("QOS_STORE_HTTP_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 #[derive(Debug, Error)]
@@ -117,8 +119,8 @@ pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, Regist
     let text = c
         .get(&url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.text())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
         .map_err(|e| RegistryError::Http(e.to_string()))?;
     if text.trim().is_empty() {
         return Err(RegistryError::Empty);
@@ -133,8 +135,8 @@ pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, Registr
     let text = c
         .get(&url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.text())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
         .map_err(|e| RegistryError::Http(e.to_string()))?;
     if text.trim().is_empty() {
         return Ok(Vec::new());

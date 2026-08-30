@@ -172,7 +172,8 @@ mod tests {
     fn environments_and_active_round_trip() {
         let (mut d, root) = doc();
         let mut e = Environment::new("Production");
-        e.variables.push(KeyValue::new("base_url", "https://api.example.com"));
+        e.variables
+            .push(KeyValue::new("base_url", "https://api.example.com"));
         ApiDoc::set_environments(&mut d, &root, &[e.clone()]);
         ApiDoc::set_active_env(&mut d, &root, Some(&e.id.to_string()));
         assert_eq!(ApiDoc::environments(&d, &root)[0].name, "Production");
@@ -224,7 +225,11 @@ mod tests {
         longer.push('!');
         ApiDoc::set_text(&mut d, &root, "body", &longer);
         let grew = d.save().len() - before;
-        assert_eq!(ApiDoc::read_text(&d, &root, "body"), longer, "value round-trips");
+        assert_eq!(
+            ApiDoc::read_text(&d, &root, "body"),
+            longer,
+            "value round-trips"
+        );
         assert!(
             grew < 40,
             "appending one char grew the doc by {grew} bytes (expected a single-char splice)"
@@ -243,7 +248,10 @@ mod tests {
             ApiDoc::set_text(&mut d, &root, "body", &long);
         }
         let b = d.save().len();
-        assert_eq!(a, b, "re-storing the same text grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-storing the same text grew the document {a} -> {b}"
+        );
     }
 
     #[test]

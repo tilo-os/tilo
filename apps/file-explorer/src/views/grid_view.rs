@@ -11,8 +11,8 @@ use std::rc::Rc;
 use crate::command::CommandSink;
 use crate::model::{Entry, ViewMode};
 use crate::views::file_view::{DropTargets, FileView, ThumbCtx};
-use ui::widget::Widget;
 use ui::SelectionModel;
+use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
 /// Default icon-grid cell size (logical px, at zoom level 0).

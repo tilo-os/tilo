@@ -97,7 +97,7 @@ fn draw_sun(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette
     // Rays.
     let stroke = Stroke::new((r * 0.22).max(1.5));
     for i in 0..8 {
-        let a = i as f64 * std::f64::consts::TAU / 8.0;
+        let a = f64::from(i) * std::f64::consts::TAU / 8.0;
         let inner = Point::new(center.x + a.cos() * r * 1.4, center.y + a.sin() * r * 1.4);
         let outer = Point::new(center.x + a.cos() * r * 1.95, center.y + a.sin() * r * 1.95);
         scene.stroke(&stroke, t, p.sun, None, &Line::new(inner, outer));
@@ -134,9 +134,27 @@ fn draw_cloud(scene: &mut Scene, t: Affine, rect: Rect, _p: &IconPalette, fill: 
     );
     scene.fill(Fill::NonZero, t, fill, None, &base);
     // Lobes.
-    scene.fill(Fill::NonZero, t, fill, None, &Circle::new(Point::new(cx - s * 0.18, base_y - s * 0.05), s * 0.16));
-    scene.fill(Fill::NonZero, t, fill, None, &Circle::new(Point::new(cx + s * 0.02, base_y - s * 0.14), s * 0.20));
-    scene.fill(Fill::NonZero, t, fill, None, &Circle::new(Point::new(cx + s * 0.22, base_y - s * 0.04), s * 0.15));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        fill,
+        None,
+        &Circle::new(Point::new(cx - s * 0.18, base_y - s * 0.05), s * 0.16),
+    );
+    scene.fill(
+        Fill::NonZero,
+        t,
+        fill,
+        None,
+        &Circle::new(Point::new(cx + s * 0.02, base_y - s * 0.14), s * 0.20),
+    );
+    scene.fill(
+        Fill::NonZero,
+        t,
+        fill,
+        None,
+        &Circle::new(Point::new(cx + s * 0.22, base_y - s * 0.04), s * 0.15),
+    );
 }
 
 fn draw_rain(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette, heavy: bool) {
@@ -146,7 +164,7 @@ fn draw_rain(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette, heavy: b
     let stroke = Stroke::new((s * 0.05).max(1.2));
     let n = if heavy { 4 } else { 3 };
     for i in 0..n {
-        let x = cx + (i as f64 - (n as f64 - 1.0) / 2.0) * s * 0.18;
+        let x = cx + (f64::from(i) - (f64::from(n) - 1.0) / 2.0) * s * 0.18;
         let a = Point::new(x + s * 0.04, top);
         let b = Point::new(x - s * 0.02, top + s * 0.16);
         scene.stroke(&stroke, t, p.rain, None, &Line::new(a, b));
@@ -158,8 +176,14 @@ fn draw_snow(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette) {
     let cx = rect.x0 + rect.width() / 2.0;
     let top = rect.y0 + rect.height() * 0.78;
     for i in 0..3 {
-        let x = cx + (i as f64 - 1.0) * s * 0.20;
-        scene.fill(Fill::NonZero, t, p.snow, None, &Circle::new(Point::new(x, top + s * 0.06), s * 0.035));
+        let x = cx + (f64::from(i) - 1.0) * s * 0.20;
+        scene.fill(
+            Fill::NonZero,
+            t,
+            p.snow,
+            None,
+            &Circle::new(Point::new(x, top + s * 0.06), s * 0.035),
+        );
     }
 }
 
@@ -168,7 +192,7 @@ fn draw_fog_lines(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette) {
     let cx = rect.x0 + rect.width() / 2.0;
     let stroke = Stroke::new((s * 0.05).max(1.2));
     for i in 0..3 {
-        let y = rect.y0 + rect.height() * 0.80 + i as f64 * s * 0.10;
+        let y = rect.y0 + rect.height() * 0.80 + f64::from(i) * s * 0.10;
         let a = Point::new(cx - s * 0.28, y);
         let b = Point::new(cx + s * 0.28, y);
         scene.stroke(&stroke, t, p.cloud, None, &Line::new(a, b));

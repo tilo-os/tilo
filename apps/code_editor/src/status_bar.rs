@@ -107,7 +107,11 @@ impl StatusModel {
         // Problems, only once there is at least one — a clean bill of health is
         // the resting state and needs no chip.
         if s.problems > 0 {
-            let word = if s.problems == 1 { "problem" } else { "problems" };
+            let word = if s.problems == 1 {
+                "problem"
+            } else {
+                "problems"
+            };
             parts.push(format!("\u{26A0} {} {}", s.problems, word));
         }
 

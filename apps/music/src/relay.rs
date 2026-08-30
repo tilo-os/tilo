@@ -34,16 +34,19 @@ impl Relay {
     /// up to it.
     pub fn new() -> Self {
         let path = storage::doc_path();
-        let mut doc = match storage::load_from(&path) {
-            Some(d) => d,
-            None => {
-                let mut d = AutoCommit::new();
-                doc::seed(&mut d, &Library::default(), &Playback::default());
-                d
-            }
+        let mut doc = if let Some(d) = storage::load_from(&path) {
+            d
+        } else {
+            let mut d = AutoCommit::new();
+            doc::seed(&mut d, &Library::default(), &Playback::default());
+            d
         };
         let transport = sync::default_sync(&mut doc);
-        Self { doc, transport, path }
+        Self {
+            doc,
+            transport,
+            path,
+        }
     }
 
     /// The dialable ticket clients connect to (loopback or live).
@@ -108,8 +111,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("qos-music-relay-{}-{}", std::process::id(), n));
+        let dir =
+            std::env::temp_dir().join(format!("qos-music-relay-{}-{}", std::process::id(), n));
         let path = dir.join("library.automerge");
         unsafe {
             std::env::set_var("QOS_MUSIC_DATA", &path);
@@ -123,7 +126,11 @@ mod tests {
         let (relay, dir, _path) = isolated_relay();
         // A fresh headless server fabricates no catalog — real tracks arrive
         // when clients sync their library up to it.
-        assert_eq!(relay.track_count(), 0, "a fresh relay serves an empty library");
+        assert_eq!(
+            relay.track_count(),
+            0,
+            "a fresh relay serves an empty library"
+        );
         // Without the p2p feature the transport is the loopback (not live) but
         // still advertises a ticket — the seam is wired.
         assert!(relay.ticket().is_some());
@@ -139,7 +146,10 @@ mod tests {
         // Use the test's own explicit path — never the process-global
         // `QOS_MUSIC_DATA` that a concurrently-running test may have re-pointed.
         let _ = storage::save_to(&path, &mut relay.doc);
-        assert!(storage::load_from(&path).is_some(), "relay wrote a durable copy");
+        assert!(
+            storage::load_from(&path).is_some(),
+            "relay wrote a durable copy"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,11 +4,12 @@
 //! component-instance model, not per-instance formatting. Persisted in the
 //! document (qdoc meta) so it round-trips and survives reopen.
 
-use qdoc::schema::{
-    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
-    STYLE_SPACE_BEFORE,
-};
+use crate::num;
 use qdoc::AttrVal;
+use qdoc::schema::{
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
+    STYLE_SIZE, STYLE_SPACE_AFTER, STYLE_SPACE_BEFORE,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,22 +21,25 @@ pub fn color_to_hex(c: [u8; 3]) -> String {
 /// `#rrggbb` (or `rrggbb`) → `[r,g,b]`; non-hex falls back to black.
 pub fn hex_to_color(s: &str) -> [u8; 3] {
     let h = s.trim().trim_start_matches('#');
-    if h.len() == 6 {
-        if let (Ok(r), Ok(g), Ok(b)) = (
-            u8::from_str_radix(&h[0..2], 16),
-            u8::from_str_radix(&h[2..4], 16),
-            u8::from_str_radix(&h[4..6], 16),
-        ) {
-            return [r, g, b];
-        }
+    // `get` returns `None` on a non-boundary split, so a multi-byte character
+    // in the six positions falls through to black instead of panicking.
+    if h.len() == 6
+        && let (Some(rs), Some(gs), Some(bs)) = (h.get(0..2), h.get(2..4), h.get(4..6))
+        && let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(rs, 16),
+            u8::from_str_radix(gs, 16),
+            u8::from_str_radix(bs, 16),
+        )
+    {
+        return [r, g, b];
     }
     [0, 0, 0]
 }
 
 fn attr_f32(props: &BTreeMap<String, AttrVal>, key: &str, default: f32) -> f32 {
     match props.get(key) {
-        Some(AttrVal::Float(f)) => *f as f32,
-        Some(AttrVal::Int(n)) => *n as f32,
+        Some(AttrVal::Float(f)) => num::f32_of_f64(*f),
+        Some(AttrVal::Int(n)) => num::f32_of_i64(*n),
         _ => default,
     }
 }
@@ -77,14 +81,20 @@ impl StyleProps {
         let mut m = BTreeMap::new();
         m.insert(STYLE_NAME.into(), AttrVal::Str(self.name.clone()));
         m.insert(STYLE_FONT.into(), AttrVal::Str(self.font.clone()));
-        m.insert(STYLE_SIZE.into(), AttrVal::Float(self.size as f64));
+        m.insert(STYLE_SIZE.into(), AttrVal::Float(f64::from(self.size)));
         m.insert(STYLE_BOLD.into(), AttrVal::Bool(self.bold));
         m.insert(STYLE_ITALIC.into(), AttrVal::Bool(self.italic));
         m.insert(STYLE_COLOR.into(), AttrVal::Str(color_to_hex(self.color)));
         m.insert(STYLE_ALIGN.into(), AttrVal::Str(self.align.clone()));
-        m.insert(STYLE_SPACE_BEFORE.into(), AttrVal::Float(self.space_before as f64));
-        m.insert(STYLE_SPACE_AFTER.into(), AttrVal::Float(self.space_after as f64));
-        m.insert(STYLE_INDENT.into(), AttrVal::Float(self.indent as f64));
+        m.insert(
+            STYLE_SPACE_BEFORE.into(),
+            AttrVal::Float(f64::from(self.space_before)),
+        );
+        m.insert(
+            STYLE_SPACE_AFTER.into(),
+            AttrVal::Float(f64::from(self.space_after)),
+        );
+        m.insert(STYLE_INDENT.into(), AttrVal::Float(f64::from(self.indent)));
         m
     }
 
@@ -94,7 +104,11 @@ impl StyleProps {
         let d = StyleProps::default();
         StyleProps {
             name: attr_str(props, STYLE_NAME, &d.name),
-            font: attr_str(props, STYLE_FONT, if d.font.is_empty() { "sans" } else { &d.font }),
+            font: attr_str(
+                props,
+                STYLE_FONT,
+                if d.font.is_empty() { "sans" } else { &d.font },
+            ),
             size: attr_f32(props, STYLE_SIZE, d.size),
             bold: attr_bool(props, STYLE_BOLD),
             italic: attr_bool(props, STYLE_ITALIC),
@@ -102,7 +116,11 @@ impl StyleProps {
                 Some(AttrVal::Str(s)) => hex_to_color(s),
                 _ => d.color,
             },
-            align: attr_str(props, STYLE_ALIGN, if d.align.is_empty() { "left" } else { &d.align }),
+            align: attr_str(
+                props,
+                STYLE_ALIGN,
+                if d.align.is_empty() { "left" } else { &d.align },
+            ),
             space_before: attr_f32(props, STYLE_SPACE_BEFORE, d.space_before),
             space_after: attr_f32(props, STYLE_SPACE_AFTER, d.space_after),
             indent: attr_f32(props, STYLE_INDENT, d.indent),
@@ -118,7 +136,15 @@ pub struct StyleSheet {
 
 const INK: [u8; 3] = [0x1c, 0x1c, 0x20];
 
-fn base(name: &str, font: &str, size: f32, bold: bool, color: [u8; 3], after: f32, indent: f32) -> StyleProps {
+fn base(
+    name: &str,
+    font: &str,
+    size: f32,
+    bold: bool,
+    color: [u8; 3],
+    after: f32,
+    indent: f32,
+) -> StyleProps {
     StyleProps {
         name: name.into(),
         font: font.into(),
@@ -136,12 +162,35 @@ fn base(name: &str, font: &str, size: f32, bold: bool, color: [u8; 3], after: f3
 impl Default for StyleSheet {
     fn default() -> Self {
         let mut s = BTreeMap::new();
-        s.insert("body".into(), base("Body", "sans", 16.5, false, INK, 8.0, 0.0));
-        s.insert("heading1".into(), base("Heading 1", "sans", 30.0, true, INK, 10.0, 0.0));
-        s.insert("heading2".into(), base("Heading 2", "sans", 25.0, true, INK, 8.0, 0.0));
-        s.insert("heading3".into(), base("Heading 3", "sans", 21.0, true, INK, 6.0, 0.0));
-        s.insert("list".into(), base("List Item", "sans", 16.5, false, INK, 4.0, 28.0));
-        let mut quote = base("Quote", "serif", 17.0, false, [0x55, 0x57, 0x60], 10.0, 22.0);
+        s.insert(
+            "body".into(),
+            base("Body", "sans", 16.5, false, INK, 8.0, 0.0),
+        );
+        s.insert(
+            "heading1".into(),
+            base("Heading 1", "sans", 30.0, true, INK, 10.0, 0.0),
+        );
+        s.insert(
+            "heading2".into(),
+            base("Heading 2", "sans", 25.0, true, INK, 8.0, 0.0),
+        );
+        s.insert(
+            "heading3".into(),
+            base("Heading 3", "sans", 21.0, true, INK, 6.0, 0.0),
+        );
+        s.insert(
+            "list".into(),
+            base("List Item", "sans", 16.5, false, INK, 4.0, 28.0),
+        );
+        let mut quote = base(
+            "Quote",
+            "serif",
+            17.0,
+            false,
+            [0x55, 0x57, 0x60],
+            10.0,
+            22.0,
+        );
         quote.italic = true;
         s.insert("quote".into(), quote);
         StyleSheet { styles: s }
@@ -183,20 +232,23 @@ impl StyleSheet {
     /// Allocate a fresh, unused `customN` style id (never colliding with an
     /// existing entry). Used by the Duplicate / New-style flows.
     pub fn fresh_custom_id(&self) -> String {
-        let mut n = 1;
-        loop {
-            let cand = format!("custom{n}");
-            if !self.styles.contains_key(&cand) {
-                return cand;
-            }
-            n += 1;
-        }
+        // Pigeonhole: at most `len()` of the `len() + 1` candidates can be
+        // taken, so the range always contains a free id. The fallback keeps
+        // the search bounded rather than looping on a counter that could wrap.
+        let limit = self.styles.len().saturating_add(1);
+        (1..=limit)
+            .map(|n| format!("custom{n}"))
+            .find(|cand| !self.styles.contains_key(cand))
+            .unwrap_or_else(|| format!("custom{}", limit.saturating_add(1)))
     }
 
     /// Style ids in a stable presentation order (built-ins first, then custom).
     pub fn order(&self) -> Vec<String> {
-        let mut out: Vec<String> =
-            BUILTIN_STYLES.iter().filter(|k| self.styles.contains_key(**k)).map(|k| k.to_string()).collect();
+        let mut out: Vec<String> = BUILTIN_STYLES
+            .iter()
+            .filter(|k| self.styles.contains_key(**k))
+            .map(std::string::ToString::to_string)
+            .collect();
         for k in self.styles.keys() {
             if !BUILTIN_STYLES.contains(&k.as_str()) {
                 out.push(k.clone());
@@ -214,13 +266,10 @@ impl StyleSheet {
     }
 }
 
-/// The localized, user-facing display name for a style.
-///
-/// Built-in styles (`body`, `heading1`…) carry an English name in the document
-/// so exports stay interoperable, but the panel and pickers must show them in
-/// the active locale — under German, "Body" reads as "Fließtext". This resolves
-/// a Fluent key per built-in id; **custom** styles keep their stored,
-/// user-editable name verbatim.
+/// The localized, user-facing display name for a style. Built-in styles carry
+/// an English name in the document so exports stay interoperable, but the
+/// panel/pickers show the active locale (German "Body" → "Fließtext") via a
+/// Fluent key per built-in id; custom styles keep their stored name verbatim.
 pub fn style_display_name(id: &str, props: &StyleProps) -> String {
     let key = match id {
         "body" => "style-body",
@@ -255,10 +304,10 @@ pub fn structural_kind_for(style_id: &str) -> Option<(&'static str, Option<i64>,
 /// derived from the block kind (+ heading level). This keeps existing documents
 /// working while letting blocks opt into custom styles.
 pub fn style_key_for(kind: &str, level: Option<i64>, explicit: Option<&str>) -> String {
-    if let Some(s) = explicit {
-        if !s.is_empty() {
-            return s.to_string();
-        }
+    if let Some(s) = explicit
+        && !s.is_empty()
+    {
+        return s.to_string();
     }
     match kind {
         "heading" => format!("heading{}", level.unwrap_or(1).clamp(1, 3)),
@@ -274,10 +323,22 @@ mod tests {
     #[test]
     fn defaults_cover_builtin_kinds() {
         let sheet = StyleSheet::default();
-        assert_eq!(sheet.get(&style_key_for("heading", Some(1), None)).name, "Heading 1");
-        assert_eq!(sheet.get(&style_key_for("heading", Some(2), None)).name, "Heading 2");
-        assert_eq!(sheet.get(&style_key_for("list_item", None, None)).name, "List Item");
-        assert_eq!(sheet.get(&style_key_for("paragraph", None, None)).name, "Body");
+        assert_eq!(
+            sheet.get(&style_key_for("heading", Some(1), None)).name,
+            "Heading 1"
+        );
+        assert_eq!(
+            sheet.get(&style_key_for("heading", Some(2), None)).name,
+            "Heading 2"
+        );
+        assert_eq!(
+            sheet.get(&style_key_for("list_item", None, None)).name,
+            "List Item"
+        );
+        assert_eq!(
+            sheet.get(&style_key_for("paragraph", None, None)).name,
+            "Body"
+        );
         // explicit override wins
         assert_eq!(style_key_for("paragraph", None, Some("quote")), "quote");
     }
@@ -299,9 +360,15 @@ mod tests {
         let sheet = StyleSheet::default();
         for id in BUILTIN_STYLES {
             let shown = style_display_name(id, &sheet.get(id));
-            assert!(!shown.is_empty(), "{id} resolves to a non-empty display name");
+            assert!(
+                !shown.is_empty(),
+                "{id} resolves to a non-empty display name"
+            );
         }
-        let custom = StyleProps { name: "My Callout".into(), ..StyleProps::default() };
+        let custom = StyleProps {
+            name: "My Callout".into(),
+            ..StyleProps::default()
+        };
         assert_eq!(
             style_display_name("custom1", &custom),
             "My Callout",
@@ -315,11 +382,30 @@ mod tests {
     #[test]
     fn structural_kind_maps_builtins_only() {
         assert_eq!(structural_kind_for("body"), Some(("paragraph", None, None)));
-        assert_eq!(structural_kind_for("quote"), Some(("paragraph", None, None)));
-        assert_eq!(structural_kind_for("heading1"), Some(("heading", Some(1), None)));
-        assert_eq!(structural_kind_for("heading2"), Some(("heading", Some(2), None)));
-        assert_eq!(structural_kind_for("heading3"), Some(("heading", Some(3), None)));
-        assert_eq!(structural_kind_for("list"), Some(("list_item", None, Some(false))));
-        assert_eq!(structural_kind_for("custom1"), None, "custom styles imply no structural kind");
+        assert_eq!(
+            structural_kind_for("quote"),
+            Some(("paragraph", None, None))
+        );
+        assert_eq!(
+            structural_kind_for("heading1"),
+            Some(("heading", Some(1), None))
+        );
+        assert_eq!(
+            structural_kind_for("heading2"),
+            Some(("heading", Some(2), None))
+        );
+        assert_eq!(
+            structural_kind_for("heading3"),
+            Some(("heading", Some(3), None))
+        );
+        assert_eq!(
+            structural_kind_for("list"),
+            Some(("list_item", None, Some(false)))
+        );
+        assert_eq!(
+            structural_kind_for("custom1"),
+            None,
+            "custom styles imply no structural kind"
+        );
     }
 }

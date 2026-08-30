@@ -1,29 +1,24 @@
 //! Screen 5 — mint a channel invite.
 //!
-//! Channel owner picks a title + expiry, clicks "Generate invite",
-//! and gets back:
-//! - A `qos://invite/<base32>` URL with a "Copy" button.
-//! - A QR-code rendering of the URL.
-//! - A "Revoke" button — wipes the local copy so the user can mint a
-//!   fresh one.
+//! Channel owner picks a title + expiry, clicks "Generate invite", and gets
+//! back a `qos://invite/<base32>` URL (with Copy/Revoke buttons) and a
+//! QR-code rendering of it.
 //!
-//! Cryptographic flow:
-//! 1. Generate a one-time delegation keypair.
-//! 2. Wrap the invitee role + expiry + delegation pubkey in an
-//!    `InviteEnvelope` and sign over the canonical view with the
-//!    owner's signing key.
-//! 3. Encode the envelope as postcard + base32 into the URL.
+//! Cryptographic flow: generate a one-time delegation keypair, wrap the
+//! invitee role + expiry + delegation pubkey in an `InviteEnvelope` signed
+//! over the canonical view with the owner's key, then encode it as postcard +
+//! base32 into the URL.
 //!
-//! The screen exposes `mint_now` for tests / shell so the owner's
-//! signing key (an Ed25519 secret) can be passed in without
-//! threading it through the widget event surface.
+//! `mint_now` is exposed for tests / shell so the owner's signing key (an
+//! Ed25519 secret) can be passed in without threading it through the widget
+//! event surface.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use ed25519_dalek::SigningKey as DalekSigningKey;
 use collab_types::{ChannelId, Ed25519PublicKey, Role};
+use ed25519_dalek::SigningKey as DalekSigningKey;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -34,10 +29,9 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::identity_flow::{
-    InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite,
-};
+use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
 use crate::widget::qr::QrWidget;
 
 /// Screen 5: invite-mint form.
@@ -59,6 +53,12 @@ pub struct InviteMintScreen {
     pub qr: Option<QrWidget>,
     clipboard_msg: Option<String>,
     error: Option<String>,
+}
+
+impl Default for InviteMintScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InviteMintScreen {
@@ -124,9 +124,7 @@ impl InviteMintScreen {
         now: SystemTime,
     ) -> Result<&InviteEnvelope, crate::widget::identity_flow::IdentityFlowError> {
         let channel = self.channel.ok_or_else(|| {
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(
-                "no channel set".into(),
-            )
+            crate::widget::identity_flow::IdentityFlowError::DecodeFailed("no channel set".into())
         })?;
         let expires_at = self.expiry.resolve(now);
         let env = mint_invite(
@@ -163,6 +161,11 @@ impl InviteMintScreen {
         self.clipboard_msg = None;
     }
 
+    // Mirrors `Widget::handle_event`'s parameter list on purpose --
+    // this is invoked from the trait impl, forwarding the same event,
+    // scale, modifiers, CRDT handle, and out-params the screen host
+    // received; bundling it would mean bundling the trait method too.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -207,9 +210,8 @@ impl InviteMintScreen {
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
-                // Generating an invite needs the owner's key, which the
-                // shell-side host provides through `mint_now`. The
-                // generate button is wired up at the shell layer.
+                // Needs the owner's key, which the shell-side host provides
+                // through `mint_now`; the button is wired up at that layer.
                 if self.generate_rect.contains(self.last_cursor) {
                     *handled = true;
                     self.error = Some("Wire owner signing key via mint_now".to_string());
@@ -231,40 +233,38 @@ impl Widget for InviteMintScreen {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(720.0),
-                    height: Dimension::length(580.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(720.0),
+                height: Dimension::length(580.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 600.0;
         let card_h = 480.0;
         let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let pad = 24.0;
-        // Expiry chooser — four equal-width segments.
         let seg_w = (card_w - 2.0 * pad) / 4.0;
         let seg_h = 36.0;
         let seg_y = card_y + 130.0;
         self.expiry_rects.clear();
         for i in 0..4 {
-            let x = card_x + pad + i as f64 * seg_w;
-            self.expiry_rects.push(Rect::new(x, seg_y, x + seg_w, seg_y + seg_h));
+            let x = card_x + pad + f64::from(i) * seg_w;
+            self.expiry_rects
+                .push(Rect::new(x, seg_y, x + seg_w, seg_y + seg_h));
         }
         self.generate_rect = Rect::new(
             card_x + card_w - pad - 160.0,
@@ -345,13 +345,13 @@ impl Widget for InviteMintScreen {
                 2 => InviteExpiry::OneWeek.label(),
                 _ => InviteExpiry::Never.label(),
             };
-            let selected = match (self.expiry, i) {
+            let selected = matches!(
+                (self.expiry, i),
                 (InviteExpiry::OneHour, 0)
-                | (InviteExpiry::OneDay, 1)
-                | (InviteExpiry::OneWeek, 2)
-                | (InviteExpiry::Never, 3) => true,
-                _ => false,
-            };
+                    | (InviteExpiry::OneDay, 1)
+                    | (InviteExpiry::OneWeek, 2)
+                    | (InviteExpiry::Never, 3)
+            );
             let bg = if selected {
                 theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
             } else {
@@ -362,7 +362,13 @@ impl Widget for InviteMintScreen {
             } else {
                 theme.tokens.colors.text_primary
             };
-            scene.fill(Fill::NonZero, transform, bg, None, &RoundedRect::from_rect(*r, 6.0));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bg,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -378,13 +384,12 @@ impl Widget for InviteMintScreen {
                 text_color,
                 transform
                     * Affine::translate((
-                        r.x0 + (r.width() - lw as f64) / 2.0,
+                        r.x0 + (r.width() - f64::from(lw)) / 2.0,
                         r.y0 + (r.height() - 13.0) / 2.0,
                     )),
                 None,
             );
         }
-        // Generate button.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -400,12 +405,11 @@ impl Widget for InviteMintScreen {
             Color::from_rgb8(255, 255, 255),
             transform
                 * Affine::translate((
-                    self.generate_rect.x0 + (self.generate_rect.width() - gw as f64) / 2.0,
+                    self.generate_rect.x0 + (self.generate_rect.width() - f64::from(gw)) / 2.0,
                     self.generate_rect.y0 + (self.generate_rect.height() - 13.0) / 2.0,
                 )),
             None,
         );
-        // URL display.
         if let Some(url) = &self.last_url {
             let text_y = card.y0 + 240.0;
             text_renderer.draw_text(
@@ -417,7 +421,6 @@ impl Widget for InviteMintScreen {
                 None,
             );
         }
-        // Copy + Revoke buttons.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -437,8 +440,7 @@ impl Widget for InviteMintScreen {
             "Copy URL",
             13.0,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
+            transform * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
             None,
         );
         scene.fill(
@@ -460,8 +462,7 @@ impl Widget for InviteMintScreen {
             "Revoke",
             13.0,
             Color::from_rgb8(220, 80, 80),
-            transform
-                * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
+            transform * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
             None,
         );
         if let Some(msg) = &self.clipboard_msg {
@@ -500,7 +501,7 @@ impl Widget for InviteMintScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "InviteMintScreen"
     }
 
@@ -545,7 +546,9 @@ mod tests {
     fn mint_now_errors_without_channel() {
         let mut s = InviteMintScreen::new();
         let (sk, pk) = generate_keypair();
-        let err = s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now()).unwrap_err();
+        let err = s
+            .mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+            .unwrap_err();
         assert!(matches!(
             err,
             crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
@@ -557,7 +560,8 @@ mod tests {
         let mut s = InviteMintScreen::new();
         s.set_channel(ChannelId::new(), "engineering");
         let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now()).unwrap();
+        s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+            .unwrap();
         assert!(s.last_envelope().is_some());
         s.revoke();
         assert!(s.last_envelope().is_none());

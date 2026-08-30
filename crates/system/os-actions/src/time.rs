@@ -15,7 +15,10 @@ pub fn get_ntp() -> Result<bool, String> {
 /// Enable/disable automatic time synchronisation. Needs privilege, so a
 /// denial surfaces as the command's error string.
 pub fn set_ntp(enabled: bool) -> Result<(), String> {
-    run("timedatectl", &["set-ntp", if enabled { "true" } else { "false" }])
+    run(
+        "timedatectl",
+        &["set-ntp", if enabled { "true" } else { "false" }],
+    )
 }
 
 /// Current wall-clock time, formatted 24-hour (`14:05`) or 12-hour

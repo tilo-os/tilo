@@ -3,19 +3,16 @@
 //! move. Driven end to end through the widget's real event + layout paths: a
 //! press, a threshold-crossing move that starts the drag, a move over the
 //! target that highlights it, and a release that commits the move.
-
-mod common;
-use common::{row_center, Harness};
+use crate::common::{Harness, row_center};
 
 use vello::kurbo::Point;
 
 fn folder_center(h: &Harness, name: &str) -> Point {
-    let (_p, rect) = h
-        .w
-        .debug_folder_targets()
-        .into_iter()
-        .find(|(p, _)| p.file_name().map(|n| n == name).unwrap_or(false))
-        .unwrap_or_else(|| panic!("folder {name} is not a published drop target"));
+    let (_p, rect) =
+        h.w.debug_folder_targets()
+            .into_iter()
+            .find(|(p, _)| p.file_name().is_some_and(|n| n == name))
+            .unwrap_or_else(|| panic!("folder {name} is not a published drop target"));
     rect.center()
 }
 
@@ -27,7 +24,10 @@ fn drag_from_to(h: &mut Harness, source: Point, target: Point) {
     // Cross the drag threshold (>6px) on the source row → the view emits the
     // drag-begin the app turns into a live drag.
     h.move_cursor(Point::new(source.x + 16.0, source.y));
-    assert!(h.w.debug_pin_dragging(), "the threshold-crossing move started a drag");
+    assert!(
+        h.w.debug_pin_dragging(),
+        "the threshold-crossing move started a drag"
+    );
     h.move_cursor(target);
     h.release();
 }
@@ -44,8 +44,14 @@ fn dragging_a_file_onto_a_folder_moves_it() {
 
     drag_from_to(&mut h, file_pt, dest_pt);
 
-    assert!(d.path().join("dest/movable.txt").exists(), "the file was moved into the folder");
-    assert!(!d.path().join("movable.txt").exists(), "the file no longer sits in the source dir");
+    assert!(
+        d.path().join("dest/movable.txt").exists(),
+        "the file was moved into the folder"
+    );
+    assert!(
+        !d.path().join("movable.txt").exists(),
+        "the file no longer sits in the source dir"
+    );
     assert_eq!(
         std::fs::read(d.path().join("dest/movable.txt")).unwrap(),
         b"hello",
@@ -70,8 +76,14 @@ fn dragging_a_multi_selection_moves_every_item() {
     drag_from_to(&mut h, a_pt, dest_pt);
 
     assert!(d.path().join("dest/a.txt").exists(), "a.txt moved");
-    assert!(d.path().join("dest/b.txt").exists(), "b.txt moved (the rest of the selection)");
-    assert!(!d.path().join("a.txt").exists() && !d.path().join("b.txt").exists(), "sources gone");
+    assert!(
+        d.path().join("dest/b.txt").exists(),
+        "b.txt moved (the rest of the selection)"
+    );
+    assert!(
+        !d.path().join("a.txt").exists() && !d.path().join("b.txt").exists(),
+        "sources gone"
+    );
 }
 
 #[test]
@@ -83,11 +95,16 @@ fn dropping_on_the_up_affordance_moves_to_the_parent() {
 
     let file_pt = row_center(&sub, 0);
     let mut h = Harness::new(&sub);
-    let up = h.w.debug_up_button_rect().expect("a subdirectory has an Up button");
+    let up =
+        h.w.debug_up_button_rect()
+            .expect("a subdirectory has an Up button");
 
     drag_from_to(&mut h, file_pt, up.center());
 
-    assert!(d.path().join("up.txt").exists(), "the file moved up into the parent");
+    assert!(
+        d.path().join("up.txt").exists(),
+        "the file moved up into the parent"
+    );
     assert!(!sub.join("up.txt").exists(), "and left the subdirectory");
 }
 
@@ -104,6 +121,12 @@ fn dropping_a_folder_on_itself_is_a_noop() {
     // own drop targets, so nothing moves.
     drag_from_to(&mut h, folder_pt, folder_pt);
 
-    assert!(d.path().join("keep/inner.txt").exists(), "the folder is untouched");
-    assert!(!d.path().join("keep/keep").exists(), "the folder was not moved into itself");
+    assert!(
+        d.path().join("keep/inner.txt").exists(),
+        "the folder is untouched"
+    );
+    assert!(
+        !d.path().join("keep/keep").exists(),
+        "the folder was not moved into itself"
+    );
 }

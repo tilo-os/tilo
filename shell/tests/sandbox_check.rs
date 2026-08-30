@@ -6,7 +6,6 @@ mod tests {
 
     #[test]
     fn test_bwrap_full_env() {
-        // Create symlinks and binds exactly like our production Container
         let mut cmd = Command::new("bwrap");
         cmd.arg("--ro-bind")
             .arg("/usr")
@@ -41,7 +40,6 @@ mod tests {
 
     #[test]
     fn test_gl_check() {
-        // Try to see if glxinfo or similar is available and runs
         let mut cmd = Command::new("bwrap");
         cmd.arg("--ro-bind")
             .arg("/usr")

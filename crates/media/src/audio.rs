@@ -6,19 +6,19 @@
 //! ## Why a CLI-tool client, not a `libpipewire` binding
 //!
 //! Enumeration reads `pw-dump` (the graph as JSON), routing writes the
-//! WirePlumber `target.object` metadata via `pw-metadata`, and per-node
+//! `WirePlumber` `target.object` metadata via `pw-metadata`, and per-node
 //! volume/mute + the default device go through `wpctl`. Every one of those is
-//! the *native* PipeWire path — the same protocol a graphical mixer speaks —
+//! the *native* `PipeWire` path — the same protocol a graphical mixer speaks —
 //! but reached through the daemon's own command-line tools rather than by
 //! linking `libpipewire-0.3`. That keeps a hermetic build (and the compositor's
-//! distrobox, which has no PipeWire dev stack) able to compile this crate with
+//! distrobox, which has no `PipeWire` dev stack) able to compile this crate with
 //! nothing but the Rust toolchain; the tools are needed only at *runtime*, on a
-//! host that actually has a graph to drive. On a machine with no PipeWire the
+//! host that actually has a graph to drive. On a machine with no `PipeWire` the
 //! enumerator returns an empty graph — never a fabricated device or stream.
 //!
 //! ## The routing mechanism
 //!
-//! WirePlumber exposes "moving streams" as metadata on the `default` metadata
+//! `WirePlumber` exposes "moving streams" as metadata on the `default` metadata
 //! store: setting the key `target.object` on a stream node's id to a target
 //! device's `object.serial` relinks the stream to that device; deleting the key
 //! returns the stream to following the default device. This is exactly what
@@ -39,7 +39,7 @@ use serde_json::Value;
 /// A sink (output) or source (input) device in the audio graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioDevice {
-    /// PipeWire node id — the handle `wpctl set-default <id>` takes.
+    /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
     pub id: u32,
     /// `object.serial` — the stable handle stream routing (`target.object`)
     /// takes. Distinct from `id`: a device keeps its `node.name` across a
@@ -61,7 +61,7 @@ pub struct AudioDevice {
 /// A per-application stream node (one app's playback or capture).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioStream {
-    /// PipeWire node id — the handle routing / `wpctl set-volume|set-mute`
+    /// `PipeWire` node id — the handle routing / `wpctl set-volume|set-mute`
     /// take.
     pub id: u32,
     pub serial: u32,
@@ -131,10 +131,16 @@ impl AudioGraph {
     /// appeared or disappeared (hotplug / a stream started or stopped).
     pub fn topology_signature(&self) -> String {
         let dev = |ds: &[AudioDevice]| {
-            ds.iter().map(|d| d.name.clone()).collect::<Vec<_>>().join(",")
+            ds.iter()
+                .map(|d| d.name.clone())
+                .collect::<Vec<_>>()
+                .join(",")
         };
         let st = |ss: &[AudioStream]| {
-            ss.iter().map(|s| format!("{}:{}", s.id, s.app)).collect::<Vec<_>>().join(",")
+            ss.iter()
+                .map(|s| format!("{}:{}", s.id, s.app))
+                .collect::<Vec<_>>()
+                .join(",")
         };
         format!(
             "sink[{}]|src[{}]|pb[{}]|rec[{}]",
@@ -153,7 +159,10 @@ impl AudioGraph {
         let by_name = |ds: &[AudioDevice]| ds.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
         let added = |old: &[AudioDevice], new: &[AudioDevice]| {
             let have = by_name(old);
-            new.iter().filter(|d| !have.contains(&d.name)).cloned().collect::<Vec<_>>()
+            new.iter()
+                .filter(|d| !have.contains(&d.name))
+                .cloned()
+                .collect::<Vec<_>>()
         };
         GraphDelta {
             added_sinks: added(&old.sinks, &new.sinks),
@@ -187,7 +196,7 @@ impl GraphDelta {
 // Parsing `pw-dump`
 // ---------------------------------------------------------------------------
 
-/// Coerce a JSON value that PipeWire renders as a bare number (sometimes a
+/// Coerce a JSON value that `PipeWire` renders as a bare number (sometimes a
 /// string) into a `u32` node id / serial.
 fn as_u32(v: &Value) -> Option<u32> {
     v.as_u64()
@@ -195,7 +204,7 @@ fn as_u32(v: &Value) -> Option<u32> {
         .map(|n| n as u32)
 }
 
-/// The perceptual volume `wpctl` shows is the cube root of PipeWire's raw
+/// The perceptual volume `wpctl` shows is the cube root of `PipeWire`'s raw
 /// linear channel volume; invert that so an enumerated `channelVolumes` matches
 /// the slider position a user set. `wpctl set-volume` takes the perceptual
 /// value back, so the round trip is exact.
@@ -211,12 +220,14 @@ fn node_volume_mute(obj: &Value) -> (Option<f32>, Option<bool>) {
         .and_then(|i| i.get("params"))
         .and_then(|p| p.get("Props"))
         .and_then(|p| p.as_array());
-    let Some(arr) = props else { return (None, None) };
+    let Some(arr) = props else {
+        return (None, None);
+    };
     for entry in arr {
         if let Some(cv) = entry.get("channelVolumes").and_then(|c| c.as_array()) {
-            let cv: Vec<f64> = cv.iter().filter_map(|x| x.as_f64()).collect();
+            let cv: Vec<f64> = cv.iter().filter_map(serde_json::Value::as_f64).collect();
             let vol = perceptual_from_channel_volumes(&cv);
-            let mute = entry.get("mute").and_then(|m| m.as_bool());
+            let mute = entry.get("mute").and_then(serde_json::Value::as_bool);
             return (vol, mute);
         }
     }
@@ -236,7 +247,9 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
     let mut default_sink_name: Option<String> = None;
     let mut default_source_name: Option<String> = None;
     for o in &objs {
-        let Some(md) = o.get("metadata").and_then(|m| m.as_array()) else { continue };
+        let Some(md) = o.get("metadata").and_then(|m| m.as_array()) else {
+            continue;
+        };
         for e in md {
             let key = e.get("key").and_then(|k| k.as_str()).unwrap_or("");
             let name = e
@@ -257,7 +270,10 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
     // its source.
     let mut links: Vec<(u32, u32)> = Vec::new();
     for o in &objs {
-        let is_link = o.get("type").and_then(|t| t.as_str()).is_some_and(|t| t.ends_with("Link"));
+        let is_link = o
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| t.ends_with("Link"));
         if !is_link {
             continue;
         }
@@ -272,16 +288,24 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
     // Pass 3 — the audio nodes: sinks, sources, and streams.
     let mut graph = AudioGraph::default();
     for o in &objs {
-        let is_node = o.get("type").and_then(|t| t.as_str()).is_some_and(|t| t.ends_with("Node"));
+        let is_node = o
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| t.ends_with("Node"));
         if !is_node {
             continue;
         }
-        let Some(id) = o.get("id").and_then(as_u32) else { continue };
+        let Some(id) = o.get("id").and_then(as_u32) else {
+            continue;
+        };
         let props = o.get("info").and_then(|i| i.get("props"));
         let getp = |k: &str| props.and_then(|p| p.get(k));
         let media_class = getp("media.class").and_then(|v| v.as_str()).unwrap_or("");
         let serial = getp("object.serial").and_then(as_u32).unwrap_or(id);
-        let name = getp("node.name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = getp("node.name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let (volume, muted) = node_volume_mute(o);
 
         match media_class {
@@ -326,9 +350,15 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
                 // A playback stream links out→sink; a capture stream links
                 // source→in. Resolve the device end accordingly.
                 let target_id = if playback {
-                    links.iter().find(|(out, _)| *out == id).map(|(_, inp)| *inp)
+                    links
+                        .iter()
+                        .find(|(out, _)| *out == id)
+                        .map(|(_, inp)| *inp)
                 } else {
-                    links.iter().find(|(_, inp)| *inp == id).map(|(out, _)| *out)
+                    links
+                        .iter()
+                        .find(|(_, inp)| *inp == id)
+                        .map(|(out, _)| *out)
                 };
                 let stream = AudioStream {
                     id,
@@ -364,7 +394,7 @@ pub fn wpctl_set_default_args(node_id: u32) -> Vec<String> {
 }
 
 /// `pw-metadata -n default <stream-id> target.object <serial>` — move a stream
-/// node to a specific device. WirePlumber observes the metadata and relinks the
+/// node to a specific device. `WirePlumber` observes the metadata and relinks the
 /// stream, so this is the real graph edit, not a display hint.
 pub fn pw_metadata_route_args(stream_id: u32, target_serial: u32) -> Vec<String> {
     vec![
@@ -393,7 +423,11 @@ pub fn pw_metadata_unroute_args(stream_id: u32) -> Vec<String> {
 /// possible: the same call that sets the sink's volume sets one app's.
 pub fn wpctl_set_volume_args(node_id: u32, perceptual: f32) -> Vec<String> {
     let frac = perceptual.clamp(0.0, 1.5); // wpctl allows >1.0 (boost); cap sanely
-    vec!["set-volume".into(), node_id.to_string(), format!("{frac:.2}")]
+    vec![
+        "set-volume".into(),
+        node_id.to_string(),
+        format!("{frac:.2}"),
+    ]
 }
 
 /// `wpctl set-mute <id> 1|0` — mute/unmute any node.
@@ -449,7 +483,10 @@ impl GraphControl for RealGraphControl {
         run("wpctl", &wpctl_set_default_args(node_id))
     }
     fn route_stream(&self, stream_id: u32, target_serial: u32) -> Result<(), String> {
-        run("pw-metadata", &pw_metadata_route_args(stream_id, target_serial))
+        run(
+            "pw-metadata",
+            &pw_metadata_route_args(stream_id, target_serial),
+        )
     }
     fn unroute_stream(&self, stream_id: u32) -> Result<(), String> {
         run("pw-metadata", &pw_metadata_unroute_args(stream_id))
@@ -495,7 +532,7 @@ pub trait AudioEnumerator: Send + Sync {
 }
 
 /// Production [`AudioEnumerator`]: `pw-dump` → [`parse_pw_dump`]. Returns an
-/// empty graph when `pw-dump` is missing or fails, so a host with no PipeWire
+/// empty graph when `pw-dump` is missing or fails, so a host with no `PipeWire`
 /// shows nothing rather than fabricated devices.
 pub struct RealEnumerator;
 
@@ -531,9 +568,9 @@ mod tests {
     use super::*;
 
     /// A faithful, trimmed capture of a real `pw-dump` from a running
-    /// PipeWire 1.6 / WirePlumber host: two sinks (the built-in analog stereo,
+    /// `PipeWire` 1.6 / `WirePlumber` host: two sinks (the built-in analog stereo,
     /// default; and a second "Headphones" device), the default source, and two
-    /// playback streams — LibreWolf following the default sink, and a `pw-play`
+    /// playback streams — `LibreWolf` following the default sink, and a `pw-play`
     /// stream that was moved onto the Headphones sink via `target.object`. The
     /// field shapes (`media.class`, `object.serial`, `Link` props,
     /// `info.params.Props[].channelVolumes`/`mute`, the default metadata) are
@@ -550,9 +587,14 @@ mod tests {
         assert_eq!(def.description, "Ryzen HD Audio Controller Analoges Stereo");
         assert!(def.is_default);
         // The second sink is the routing target and is NOT the default.
-        let hp = g.sink_by_description("Headphones").expect("headphones sink");
+        let hp = g
+            .sink_by_description("Headphones")
+            .expect("headphones sink");
         assert!(!hp.is_default);
-        assert_eq!(hp.serial, 269, "serial is the routing handle, distinct from id");
+        assert_eq!(
+            hp.serial, 269,
+            "serial is the routing handle, distinct from id"
+        );
         assert_eq!(hp.id, 91);
     }
 
@@ -560,7 +602,11 @@ mod tests {
     fn parses_streams_with_their_current_route() {
         let g = parse_pw_dump(FIXTURE);
         assert_eq!(g.playback_streams.len(), 2, "two playback streams");
-        let lw = g.playback_streams.iter().find(|s| s.app == "LibreWolf").expect("librewolf");
+        let lw = g
+            .playback_streams
+            .iter()
+            .find(|s| s.app == "LibreWolf")
+            .expect("librewolf");
         assert!(lw.playback);
         // LibreWolf is linked to the default sink (node 51).
         assert_eq!(lw.target_id, Some(51));
@@ -569,8 +615,16 @@ mod tests {
 
         // pw-play was explicitly moved onto the Headphones sink (node 91) — the
         // per-app routing this feature exists to do, read back from the graph.
-        let pw = g.playback_streams.iter().find(|s| s.app == "pw-play").expect("pw-play");
-        assert_eq!(pw.target_id, Some(91), "the moved stream reports its non-default sink");
+        let pw = g
+            .playback_streams
+            .iter()
+            .find(|s| s.app == "pw-play")
+            .expect("pw-play");
+        assert_eq!(
+            pw.target_id,
+            Some(91),
+            "the moved stream reports its non-default sink"
+        );
     }
 
     #[test]
@@ -578,8 +632,16 @@ mod tests {
         let g = parse_pw_dump(FIXTURE);
         // The pw-play stream's raw channelVolumes were 0.125; cube root is
         // exactly 0.5 — the perceptual value wpctl shows and set-volume takes.
-        let pw = g.playback_streams.iter().find(|s| s.app == "pw-play").unwrap();
-        assert!((pw.volume.unwrap() - 0.5).abs() < 1e-4, "0.125.cbrt() == 0.5, got {:?}", pw.volume);
+        let pw = g
+            .playback_streams
+            .iter()
+            .find(|s| s.app == "pw-play")
+            .unwrap();
+        assert!(
+            (pw.volume.unwrap() - 0.5).abs() < 1e-4,
+            "0.125.cbrt() == 0.5, got {:?}",
+            pw.volume
+        );
         assert_eq!(pw.muted, Some(false));
     }
 
@@ -609,7 +671,10 @@ mod tests {
 
     #[test]
     fn volume_and_mute_and_default_args() {
-        assert_eq!(wpctl_set_volume_args(84, 0.5), vec!["set-volume", "84", "0.50"]);
+        assert_eq!(
+            wpctl_set_volume_args(84, 0.5),
+            vec!["set-volume", "84", "0.50"]
+        );
         assert_eq!(wpctl_set_mute_args(84, true), vec!["set-mute", "84", "1"]);
         assert_eq!(wpctl_set_mute_args(84, false), vec!["set-mute", "84", "0"]);
         assert_eq!(wpctl_set_default_args(91), vec!["set-default", "91"]);
@@ -632,7 +697,10 @@ mod tests {
         let replug = AudioGraph::diff(&after, &before);
         assert_eq!(replug.added_sinks.len(), 1);
         assert_eq!(replug.added_sinks[0].description, "Headphones");
-        assert!(AudioGraph::diff(&before, &before).is_empty(), "no change ⇒ empty delta");
+        assert!(
+            AudioGraph::diff(&before, &before).is_empty(),
+            "no change ⇒ empty delta"
+        );
     }
 
     #[test]
@@ -642,13 +710,21 @@ mod tests {
         // A volume change is not a topology change.
         let mut vol = g.clone();
         vol.playback_streams[0].volume = Some(0.1);
-        assert_eq!(sig, vol.topology_signature(), "volume drift is not structural");
+        assert_eq!(
+            sig,
+            vol.topology_signature(),
+            "volume drift is not structural"
+        );
         // A new stream is.
         let mut added = g.clone();
         let mut ns = g.playback_streams[0].clone();
         ns.id = 999;
         ns.app = "music".into();
         added.playback_streams.push(ns);
-        assert_ne!(sig, added.topology_signature(), "a new app changes the topology");
+        assert_ne!(
+            sig,
+            added.topology_signature(),
+            "a new app changes the topology"
+        );
     }
 }

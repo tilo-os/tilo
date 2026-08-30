@@ -1,6 +1,6 @@
-use vello::peniko::Color;
+use super::colors::{ACCENT_PRIMARY_IDX, Colors};
 use crate::color_compat::ColorCompat;
-use super::colors::{Colors, ACCENT_PRIMARY_IDX};
+use vello::peniko::Color;
 
 /// Palette used by terminal-style widgets. Exposes default fg/bg and a 16-slot
 /// ANSI base palette. Higher-index colors (256/truecolor) are out of scope —
@@ -16,35 +16,22 @@ pub struct TerminalPalette {
 /// Mix two colours in straight (non-premultiplied) 8-bit sRGB. `t = 0` → `a`.
 fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
 /// Perceptual luminance in 0..=1 (Rec. 709 coefficients).
 fn luma(c: Color) -> f32 {
-    (0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32) / 255.0
+    (0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())) / 255.0
 }
 
 impl TerminalPalette {
-    /// Derive the terminal palette from the OS theme's colour tokens.
-    ///
-    /// The terminal must not carry its own colour scheme — per-app colour
-    /// customisation belongs at the shell/theme level, so the default fg/bg and
-    /// the ANSI ramp are read from the active [`Colors`] here. The result tracks
-    /// whatever theme the OS applies (graphite dark, paper light, Dracula, …)
-    /// instead of a fixed palette.
-    ///
-    /// * `fg_default` / `bg_default` come straight from the theme's primary text
-    ///   and ground, so a blank terminal is indistinguishable from any other
-    ///   surface of the OS.
-    /// * The six chromatic ANSI hues anchor to the theme's semantic colours —
-    ///   every qOS theme defines these on-brand (danger→red, success→green,
-    ///   warning→yellow, info→cyan) — with the accent supplying blue and magenta
-    ///   derived from red+blue. Cyan is nudged toward green so it stays visibly
-    ///   distinct from the (often blue-ish) accent.
-    /// * The neutral anchors (ANSI black / white and their bright tiers) blend
-    ///   from the ground toward the foreground, so both ends stay legible whether
-    ///   the theme is light or dark.
+    /// The terminal must not carry its own colour scheme — customisation
+    /// belongs at the shell/theme level, so fg/bg and the ANSI ramp are
+    /// read from the active [`Colors`], tracking whatever theme the OS
+    /// applies. `fg_default`/`bg_default` come straight from the theme's
+    /// primary text and ground; the neutral ANSI anchors blend
+    /// ground→foreground so both ends stay legible in light or dark.
     pub fn from_colors(c: &Colors) -> Self {
         let bg = c.surfaces.base;
         let fg = c.text_primary;
@@ -53,7 +40,11 @@ impl TerminalPalette {
         // "Bright" tier of a chromatic anchor: toward white on a dark ground,
         // toward black on a light ground, so brights gain (not lose) contrast.
         let bright = |col: Color| {
-            if dark { mix8(col, Color::WHITE, 0.25) } else { mix8(col, Color::BLACK, 0.22) }
+            if dark {
+                mix8(col, Color::WHITE, 0.25)
+            } else {
+                mix8(col, Color::BLACK, 0.22)
+            }
         };
         // A grey anchored on the ground→foreground axis; both ends are known
         // legible against the ground because the foreground is.
@@ -93,12 +84,10 @@ impl TerminalPalette {
         }
     }
 
-    /// The terminal palette for the default dark theme, derived from its colours.
     pub fn dark() -> Self {
         Self::from_colors(&Colors::dark())
     }
 
-    /// The terminal palette for the default light theme, derived from its colours.
     pub fn light() -> Self {
         Self::from_colors(&Colors::light())
     }

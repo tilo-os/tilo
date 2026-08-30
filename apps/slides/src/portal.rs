@@ -37,7 +37,7 @@ pub fn request_open() -> PortalChannel {
         .send()
 }
 
-/// The result of an OpenDocument Presentation open/save interaction. The two
+/// The result of an `OpenDocument` Presentation open/save interaction. The two
 /// success variants are the same path with different meanings: one to load
 /// from, one to write to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +107,10 @@ pub fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
         DocOutcome::Cancelled => (PortalOutcome::Cancelled, false),
         DocOutcome::Failed(e) => (PortalOutcome::Failed(e), false),
     };
-    DocPortalChannel { rx: inject_for_test(single), save }
+    DocPortalChannel {
+        rx: inject_for_test(single),
+        save,
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +119,9 @@ mod tests {
 
     #[test]
     fn each_dialog_is_configured_for_its_own_job() {
-        let img = PickRequest::open("Insert image", "Insert").filter(image_filter()).all_files();
+        let img = PickRequest::open("Insert image", "Insert")
+            .filter(image_filter())
+            .all_files();
         assert_eq!(img.title(), "Insert image");
         assert_eq!(img.filter_names(), vec!["Images", "All files"]);
 

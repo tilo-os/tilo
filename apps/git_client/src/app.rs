@@ -205,30 +205,26 @@ impl GitClientApp {
     /// (rename + delete + new file across all three areas, a multi-lane
     /// commit graph) rather than whatever happens to sit around the CWD.
     pub fn new() -> Self {
-        let force_sample = std::env::var("GIT_CLIENT_SAMPLE")
-            .map(|v| v != "0" && !v.is_empty())
-            .unwrap_or(false);
+        let force_sample =
+            std::env::var("GIT_CLIENT_SAMPLE").is_ok_and(|v| v != "0" && !v.is_empty());
         if force_sample {
             let (model, diffs) = crate::sample::model();
             return Self::from_model(model, diffs);
         }
-        match Self::load_repo() {
-            Some((path, model, diffs)) => {
-                let mut app = Self::from_model(model, diffs);
-                app.repo_path = Some(path);
-                app
+        if let Some((path, model, diffs)) = Self::load_repo() {
+            let mut app = Self::from_model(model, diffs);
+            app.repo_path = Some(path);
+            app
+        } else {
+            // No reachable repository — show the honest "open a repository"
+            // empty state rather than any placeholder data. The path field
+            // is pre-filled with the current directory as a convenience.
+            let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
+            app.awaiting_repo = true;
+            if let Ok(cwd) = std::env::current_dir() {
+                app.open_input.set_text(&cwd.to_string_lossy());
             }
-            None => {
-                // No reachable repository — show the honest "open a repository"
-                // empty state rather than any placeholder data. The path field
-                // is pre-filled with the current directory as a convenience.
-                let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
-                app.awaiting_repo = true;
-                if let Ok(cwd) = std::env::current_dir() {
-                    app.open_input.set_text(&cwd.to_string_lossy());
-                }
-                app
-            }
+            app
         }
     }
 
@@ -277,7 +273,7 @@ impl GitClientApp {
         // frame shows the overlay flap fully revealed over its scrim rather
         // than the closed default a fresh narrow window opens to.
         let mut flap = FlapState::open_when_docked();
-        if std::env::var("GIT_CLIENT_FLAP_OPEN").map(|v| v != "0" && !v.is_empty()).unwrap_or(false) {
+        if std::env::var("GIT_CLIENT_FLAP_OPEN").is_ok_and(|v| v != "0" && !v.is_empty()) {
             flap.snap(true);
         }
         let commit_input = TextInput::local()
@@ -420,7 +416,11 @@ impl GitClientApp {
     /// The live model's commit summaries, newest first.
     #[doc(hidden)]
     pub fn test_commit_summaries(&self) -> Vec<String> {
-        self.model.commits.iter().map(|c| c.summary.clone()).collect()
+        self.model
+            .commits
+            .iter()
+            .map(|c| c.summary.clone())
+            .collect()
     }
     /// The live model's local + remote branch names.
     #[doc(hidden)]
@@ -434,9 +434,10 @@ impl GitClientApp {
     }
 
     fn load_repo() -> Option<(std::path::PathBuf, RepoModel, DiffMap)> {
-        let path = std::env::var("GIT_CLIENT_REPO")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
+            |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            std::path::PathBuf::from,
+        );
         // Anchor actions on the working directory so later opens are stable
         // even if the CWD changes; fall back to the given path when bare.
         let anchor = crate::repo::workdir(&path).unwrap_or_else(|| path.clone());
@@ -547,7 +548,9 @@ impl GitClientApp {
                 ChangeArea::Unstaged => &self.model.unstaged,
                 ChangeArea::Untracked => &self.model.untracked,
             };
-            let Some(file) = list.get(idx).map(|f| f.path.clone()) else { return };
+            let Some(file) = list.get(idx).map(|f| f.path.clone()) else {
+                return;
+            };
             let res = match area {
                 ChangeArea::Staged => crate::repo::unstage_file(&path, &file),
                 ChangeArea::Unstaged | ChangeArea::Untracked => {
@@ -655,12 +658,12 @@ impl GitClientApp {
         let message = self.commit_input.value().to_string();
         let summary = message.lines().next().unwrap_or("").to_string();
         let body = message
-            .splitn(2, '\n')
-            .nth(1)
+            .split_once('\n')
+            .map(|x| x.1)
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let new = crate::model::Commit {
-            id: id.clone(),
+            id,
             summary,
             body,
             author_name: self.model.author_name.clone(),
@@ -669,16 +672,21 @@ impl GitClientApp {
             time: chrono::Utc::now().timestamp(),
             parents: parent.into_iter().collect(),
             refs: vec![
-                crate::model::RefLabel { name: "HEAD".into(), kind: crate::model::RefKind::Head },
-                crate::model::RefLabel { name: self.model.head.clone(), kind: crate::model::RefKind::LocalBranch },
+                crate::model::RefLabel {
+                    name: "HEAD".into(),
+                    kind: crate::model::RefKind::Head,
+                },
+                crate::model::RefLabel {
+                    name: self.model.head.clone(),
+                    kind: crate::model::RefKind::LocalBranch,
+                },
             ],
             lane: 0,
             files: staged,
         };
         if let Some(prev) = self.model.commits.first_mut() {
-            prev.refs.retain(|r| {
-                r.kind != crate::model::RefKind::Head && r.name != self.model.head
-            });
+            prev.refs
+                .retain(|r| r.kind != crate::model::RefKind::Head && r.name != self.model.head);
         }
         self.model.commits.insert(0, new);
         self.graph_layout = graph::layout(&mut self.model.commits);
@@ -699,14 +707,18 @@ impl GitClientApp {
             ChangeArea::Unstaged => &self.model.unstaged,
             ChangeArea::Untracked => &self.model.untracked,
         };
-        let Some(file) = list.get(idx).map(|f| f.path.clone()) else { return };
+        let Some(file) = list.get(idx).map(|f| f.path.clone()) else {
+            return;
+        };
         let res = crate::repo::discard_file(&path, &file);
         self.run_action(res);
     }
 
     /// Discard a single hunk of the selected (unstaged) file's worktree change.
     fn discard_hunk(&mut self, hunk: usize) {
-        let Some((area, _)) = self.selected_change else { return };
+        let Some((area, _)) = self.selected_change else {
+            return;
+        };
         // Only worktree (unstaged/untracked) hunks are discardable — a staged
         // file's diff is the index side, which "discard" doesn't act on.
         if area == ChangeArea::Staged {
@@ -809,15 +821,14 @@ impl GitClientApp {
 
     // --- Drawing -------------------------------------------------------
 
-    fn draw_appbar(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-    ) {
+    fn draw_appbar(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + APPBAR_H);
+        let bar = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + APPBAR_H,
+        );
         draw::fill_rect(scene, t, bar, c.surfaces.raised);
         draw::hline(scene, t, bar.y1, bar.x0, bar.x1, c.border_standard);
 
@@ -840,8 +851,8 @@ impl GitClientApp {
         let tab_h = 32.0;
         let tab_y = bar.y0 + (APPBAR_H - tab_h) / 2.0;
         let mut widths: Vec<f64> = Vec::new();
-        for (_, label) in TABS.iter() {
-            let w = tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0 as f64 + 28.0;
+        for (_, label) in &TABS {
+            let w = f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + 28.0;
             widths.push(w);
         }
         let settings_w = 220.0;
@@ -854,29 +865,65 @@ impl GitClientApp {
         let title_x = bar.x0 + 20.0 + left_pad;
         let title_max = (tab_group_left - title_x - 8.0).max(40.0) as f32;
         draw::text_weighted(
-            scene, tr, t, &self.model.name, 15.0, c.text_primary, title_x, bar.y0 + 9.0,
-            Some(title_max), TextWeight::Bold,
+            scene,
+            tr,
+            t,
+            &self.model.name,
+            15.0,
+            c.text_primary,
+            title_x,
+            bar.y0 + 9.0,
+            Some(title_max),
+            TextWeight::Bold,
         );
-        let nw = (tr.measure_weighted(&self.model.name, 15.0, None, TextWeight::Bold).0 as f64)
-            .min(title_max as f64);
+        let nw = f64::from(
+            tr.measure_weighted(&self.model.name, 15.0, None, TextWeight::Bold)
+                .0,
+        )
+        .min(f64::from(title_max));
         let pill_x = title_x + 8.0 + nw;
         // Only paint the branch pill if it still fits left of the tab group.
         if pill_x + 40.0 < tab_group_left {
             draw::pill(
-                scene, tr, t, pill_x, bar.y0 + 9.0, 20.0,
-                &self.model.head, Color::WHITE, theme.accent_primary, None,
+                scene,
+                tr,
+                t,
+                pill_x,
+                bar.y0 + 9.0,
+                20.0,
+                &self.model.head,
+                Color::WHITE,
+                theme.accent_primary,
+                None,
             );
         }
         // change count subtitle — or the last action error when present.
         let (sub, sub_color) = match &self.last_error {
             Some(err) => (err.clone(), c.semantic.danger),
             None => (
-                format!("{} pending change{}", self.model.change_count(),
-                    if self.model.change_count() == 1 { "" } else { "s" }),
+                format!(
+                    "{} pending change{}",
+                    self.model.change_count(),
+                    if self.model.change_count() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ),
                 c.text_dim,
             ),
         };
-        draw::text(scene, tr, t, &sub, 11.5, sub_color, title_x, bar.y0 + 30.0, Some(title_max));
+        draw::text(
+            scene,
+            tr,
+            t,
+            &sub,
+            11.5,
+            sub_color,
+            title_x,
+            bar.y0 + 30.0,
+            Some(title_max),
+        );
         let group_bg = Rect::new(tx - 6.0, tab_y, tx + total + 6.0, tab_y + tab_h);
         draw::fill_round(scene, t, group_bg, 9.0, c.surfaces.base);
         for (i, (screen, label)) in TABS.iter().enumerate() {
@@ -887,9 +934,17 @@ impl GitClientApp {
                 draw::fill_round(scene, t, trect, 7.0, theme.accent_primary);
             }
             let fg = if active { Color::WHITE } else { c.text_dim };
-            let lw = tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0 as f64;
+            let lw = f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0);
             draw::text_weighted(
-                scene, tr, t, label, 13.0, fg, tx + (w - lw) / 2.0, tab_y + 8.0, None,
+                scene,
+                tr,
+                t,
+                label,
+                13.0,
+                fg,
+                tx + (w - lw) / 2.0,
+                tab_y + 8.0,
+                None,
                 TextWeight::Medium,
             );
             self.tab_rects.push((*screen, trect));
@@ -928,9 +983,17 @@ impl GitClientApp {
             let active = (i == 0) == unified_active;
             let fg = if active { Color::WHITE } else { c.text_dim };
             let cx = seg.x0 + half * i as f64;
-            let lw = tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0 as f64;
+            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
             draw::text_weighted(
-                scene, tr, t, label, 12.0, fg, cx + (half - lw) / 2.0, y + 8.0, None,
+                scene,
+                tr,
+                t,
+                label,
+                12.0,
+                fg,
+                cx + (half - lw) / 2.0,
+                y + 8.0,
+                None,
                 TextWeight::Medium,
             );
         }
@@ -943,13 +1006,31 @@ impl GitClientApp {
         let hx = seg.x1 + 10.0;
         let hl = Rect::new(hx, y, hx + 46.0, y + 32.0);
         let on = self.settings.syntax_highlight;
-        draw::fill_round(scene, t, hl, 9.0, if on { theme.accent_primary } else { c.surfaces.base });
+        draw::fill_round(
+            scene,
+            t,
+            hl,
+            9.0,
+            if on {
+                theme.accent_primary
+            } else {
+                c.surfaces.base
+            },
+        );
         let hlfg = if on { Color::WHITE } else { c.text_dim };
         let glyph = "</>";
-        let gw = tr.measure_weighted(glyph, 12.5, None, TextWeight::Medium).0 as f64;
+        let gw = f64::from(tr.measure_weighted(glyph, 12.5, None, TextWeight::Medium).0);
         draw::text_weighted(
-            scene, tr, t, glyph, 12.5, hlfg,
-            hl.x0 + (hl.width() - gw) / 2.0, y + 8.0, None, TextWeight::Medium,
+            scene,
+            tr,
+            t,
+            glyph,
+            12.5,
+            hlfg,
+            hl.x0 + (hl.width() - gw) / 2.0,
+            y + 8.0,
+            None,
+            TextWeight::Medium,
         );
         self.settings_syn = hl;
     }
@@ -964,14 +1045,24 @@ impl GitClientApp {
         let by = bar.y0 + (APPBAR_H - size) / 2.0;
         let btn = Rect::new(bx, by, bx + size, by + size);
         let open = self.flap_open();
-        draw::fill_round(scene, t, btn, 8.0, if open { theme.accent_primary } else { c.surfaces.base });
+        draw::fill_round(
+            scene,
+            t,
+            btn,
+            8.0,
+            if open {
+                theme.accent_primary
+            } else {
+                c.surfaces.base
+            },
+        );
         let fg = if open { Color::WHITE } else { c.text_dim };
         // Three bars.
         let inset = 8.0;
         let x0 = btn.x0 + inset;
         let x1 = btn.x1 - inset;
         for i in 0..3 {
-            let ly = btn.y0 + 10.0 + i as f64 * 6.0;
+            let ly = btn.y0 + 10.0 + f64::from(i) * 6.0;
             let line = Rect::new(x0, ly, x1, ly + 2.0);
             draw::fill_round(scene, t, line, 1.0, fg);
         }
@@ -1019,7 +1110,15 @@ impl GitClientApp {
         scene.fill(Fill::NonZero, t, scrim, None, &body);
     }
 
-    fn draw_changes(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx, body: Rect) {
+    fn draw_changes(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        body: Rect,
+    ) {
         let (col, pane, list_visible) = self.master_detail_rects(body, CHANGES_COL_W);
         // Detail (diff) first — it sits behind the overlay flap.
         self.draw_diff_pane(scene, tr, t, theme, pane);
@@ -1028,7 +1127,14 @@ impl GitClientApp {
         if list_visible {
             let msg = self.commit_input.value().to_string();
             let out = ChangesColumn::draw(
-                scene, tr, t, theme, col, &self.model, self.selected_change, self.changes_scroll,
+                scene,
+                tr,
+                t,
+                theme,
+                col,
+                &self.model,
+                self.selected_change,
+                self.changes_scroll,
                 &msg,
             );
             self.change_hits = out.hits;
@@ -1044,7 +1150,14 @@ impl GitClientApp {
     }
 
     /// Paint the diff detail pane (header + diff body) into `pane`.
-    fn draw_diff_pane(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, pane: Rect) {
+    fn draw_diff_pane(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        pane: Rect,
+    ) {
         let header = Rect::new(pane.x0, pane.y0, pane.x1, pane.y0 + 36.0);
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, header, c.surfaces.raised);
@@ -1053,21 +1166,34 @@ impl GitClientApp {
         let key = self.current_diff_key();
         // Pull the header facts out as owned values so the `self.diffs` borrow
         // ends before we mutate `self` (discard rect) or re-borrow for the body.
-        let info = key
-            .as_ref()
-            .and_then(|k| self.diffs.get(k))
-            .map(|d| (d.old_path.clone(), d.path.clone(), d.additions(), d.deletions()));
+        let info = key.as_ref().and_then(|k| self.diffs.get(k)).map(|d| {
+            (
+                d.old_path.clone(),
+                d.path.clone(),
+                d.additions(),
+                d.deletions(),
+            )
+        });
         self.discard_file_rect = Rect::ZERO;
         let staged = self.selected_is_staged();
 
         if let Some((old_path, path, adds, dels)) = info {
             let title = match &old_path {
                 Some(old) => format!("{old}  →  {path}"),
-                None => path.clone(),
+                None => path,
             };
             let summary = format!("+{adds}  −{dels}");
-            let aw = draw::mono_width(tr, &summary, 12.0) as f64;
-            draw::mono(scene, tr, t, &summary, 12.0, c.text_dim, header.x1 - aw - 16.0, header.y0 + 10.0);
+            let aw = f64::from(draw::mono_width(tr, &summary, 12.0));
+            draw::mono(
+                scene,
+                tr,
+                t,
+                &summary,
+                12.0,
+                c.text_dim,
+                header.x1 - aw - 16.0,
+                header.y0 + 10.0,
+            );
 
             // Discard-file affordance on the worktree (unstaged / untracked)
             // side of a real repo. Two-click armed: shows "Discard file?" when
@@ -1076,24 +1202,65 @@ impl GitClientApp {
             let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
             if can_discard {
                 let armed = self.armed_discard == Some(DiscardTarget::File);
-                let label = if armed { "Discard file?" } else { "Discard file" };
-                let lw = tr.measure_weighted(label, 11.5, None, TextWeight::Medium).0 as f64;
+                let label = if armed {
+                    "Discard file?"
+                } else {
+                    "Discard file"
+                };
+                let lw = f64::from(tr.measure_weighted(label, 11.5, None, TextWeight::Medium).0);
                 let bw = lw + 20.0;
                 let bx = header.x1 - aw - 16.0 - 12.0 - bw;
                 let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
-                let bg = if armed { c.semantic.danger } else { c.surface_white_10 };
-                let fg = if armed { Color::WHITE } else { c.semantic.danger };
+                let bg = if armed {
+                    c.semantic.danger
+                } else {
+                    c.surface_white_10
+                };
+                let fg = if armed {
+                    Color::WHITE
+                } else {
+                    c.semantic.danger
+                };
                 draw::fill_round(scene, t, brect, 6.0, bg);
-                draw::text_weighted(scene, tr, t, label, 11.5, fg, bx + 10.0, header.y0 + 10.0, None, TextWeight::Medium);
+                draw::text_weighted(
+                    scene,
+                    tr,
+                    t,
+                    label,
+                    11.5,
+                    fg,
+                    bx + 10.0,
+                    header.y0 + 10.0,
+                    None,
+                    TextWeight::Medium,
+                );
                 self.discard_file_rect = brect;
                 title_max = (bx - header.x0 - 24.0).max(40.0) as f32;
             }
             draw::text_weighted(
-                scene, tr, t, &title, 13.0, c.text_primary, header.x0 + 16.0, header.y0 + 9.0,
-                Some(title_max), TextWeight::Medium,
+                scene,
+                tr,
+                t,
+                &title,
+                13.0,
+                c.text_primary,
+                header.x0 + 16.0,
+                header.y0 + 9.0,
+                Some(title_max),
+                TextWeight::Medium,
             );
         } else {
-            draw::text(scene, tr, t, "Select a file to view its diff", 13.0, c.text_dim, header.x0 + 16.0, header.y0 + 9.0, None);
+            draw::text(
+                scene,
+                tr,
+                t,
+                "Select a file to view its diff",
+                13.0,
+                c.text_dim,
+                header.x0 + 16.0,
+                header.y0 + 9.0,
+                None,
+            );
         }
 
         let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1);
@@ -1103,8 +1270,17 @@ impl GitClientApp {
         };
         if let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) {
             self.diff_hunk_buttons = DiffView::draw(
-                scene, tr, t, theme, viewport, diff, self.diff_scroll, &self.settings,
-                self.hover_hunk, staged, armed_hunk,
+                scene,
+                tr,
+                t,
+                theme,
+                viewport,
+                diff,
+                self.diff_scroll,
+                &self.settings,
+                self.hover_hunk,
+                staged,
+                armed_hunk,
             );
         } else {
             draw::fill_rect(scene, t, viewport, c.surfaces.base);
@@ -1122,7 +1298,14 @@ impl GitClientApp {
         list.get(idx).map(|f| f.path.clone())
     }
 
-    fn draw_history(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, body: Rect) {
+    fn draw_history(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        body: Rect,
+    ) {
         match self.layout_mode() {
             SplitLayout::Docked => {
                 // Wide: the commit list keeps its generous ~56% split, eased
@@ -1131,13 +1314,28 @@ impl GitClientApp {
                 let split = body.x0 + full_split * self.flap.reveal();
                 let detail = Rect::new(split, body.y0, body.x1, body.y1);
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
-                    HistoryView::draw_detail(scene, tr, t, theme, detail, commit, self.detail_scroll);
+                    HistoryView::draw_detail(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        detail,
+                        commit,
+                        self.detail_scroll,
+                    );
                 }
                 if self.flap.reveal() > 0.001 {
                     let list = Rect::new(body.x0, body.y0, split, body.y1);
                     self.history_rows = HistoryView::draw_list(
-                        scene, tr, t, theme, list, &self.model, &self.graph_layout,
-                        self.selected_commit, self.history_scroll,
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        list,
+                        &self.model,
+                        &self.graph_layout,
+                        self.selected_commit,
+                        self.history_scroll,
                     );
                 } else {
                     self.history_rows.clear();
@@ -1148,7 +1346,15 @@ impl GitClientApp {
                 // as a fixed-width flap behind a scrim.
                 let detail = body;
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
-                    HistoryView::draw_detail(scene, tr, t, theme, detail, commit, self.detail_scroll);
+                    HistoryView::draw_detail(
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        detail,
+                        commit,
+                        self.detail_scroll,
+                    );
                 }
                 self.draw_overlay_scrim(scene, t, body);
                 if self.flap.reveal() > 0.001 {
@@ -1156,8 +1362,15 @@ impl GitClientApp {
                     let x0 = body.x0 - FLAP_W * (1.0 - slide);
                     let list = Rect::new(x0, body.y0, x0 + FLAP_W, body.y1);
                     self.history_rows = HistoryView::draw_list(
-                        scene, tr, t, theme, list, &self.model, &self.graph_layout,
-                        self.selected_commit, self.history_scroll,
+                        scene,
+                        tr,
+                        t,
+                        theme,
+                        list,
+                        &self.model,
+                        &self.graph_layout,
+                        self.selected_commit,
+                        self.history_scroll,
                     );
                 } else {
                     self.history_rows.clear();
@@ -1166,8 +1379,17 @@ impl GitClientApp {
         }
     }
 
-    fn draw_panels(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx, body: Rect) {
-        self.panel_hits = PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
+    fn draw_panels(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        body: Rect,
+    ) {
+        self.panel_hits =
+            PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
         // New-branch creator: a compact labelled input + button drawn in the
         // toolbar's centre band, between the branch status (left) and the
         // fetch/pull/push cluster (right). Only meaningful for a real repo.
@@ -1182,7 +1404,15 @@ impl GitClientApp {
 
     /// Draw the new-branch input + "Create" button in the panels toolbar and
     /// record their hit rects. The toolbar is the top 56px band of `body`.
-    fn draw_new_branch(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx, body: Rect) {
+    fn draw_new_branch(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        body: Rect,
+    ) {
         let c = &theme.tokens.colors;
         let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
         // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
@@ -1193,7 +1423,12 @@ impl GitClientApp {
         let y = tb.y0 + (tb.height() - h) / 2.0;
         let right = tb.x1 - actions_w;
         let bx = right - btn_w;
-        let input = Rect::new((right - btn_w - gap - 180.0).max(tb.x0 + 180.0), y, bx - gap, y + h);
+        let input = Rect::new(
+            (right - btn_w - gap - 180.0).max(tb.x0 + 180.0),
+            y,
+            bx - gap,
+            y + h,
+        );
         if input.width() < 60.0 {
             // Too tight to render meaningfully — skip.
             self.new_branch_input = Rect::ZERO;
@@ -1208,10 +1443,34 @@ impl GitClientApp {
         // Create button.
         let brect = Rect::new(bx, y, bx + btn_w, y + h);
         let enabled = !self.branch_input.value().trim().is_empty();
-        draw::fill_round(scene, t, brect, 6.0, if enabled { theme.accent_primary } else { c.surface_white_10 });
+        draw::fill_round(
+            scene,
+            t,
+            brect,
+            6.0,
+            if enabled {
+                theme.accent_primary
+            } else {
+                c.surface_white_10
+            },
+        );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let lw = tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium).0 as f64;
-        draw::text_weighted(scene, tr, t, "Branch", 12.0, fg, bx + (btn_w - lw) / 2.0, y + 6.0, None, TextWeight::Medium);
+        let lw = f64::from(
+            tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium)
+                .0,
+        );
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            "Branch",
+            12.0,
+            fg,
+            bx + (btn_w - lw) / 2.0,
+            y + 6.0,
+            None,
+            TextWeight::Medium,
+        );
         self.new_branch_button = brect;
     }
 
@@ -1232,9 +1491,16 @@ impl GitClientApp {
     }
 
     /// Draw the empty "open a repository" state: a centered card with a path
-    /// field (toolkit TextInput) and an Open button. This is the honest
+    /// field (toolkit `TextInput`) and an Open button. This is the honest
     /// default when no repository is reachable — no placeholder repo data.
-    fn draw_open(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx) {
+    fn draw_open(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, self.rect, c.surfaces.base);
 
@@ -1245,17 +1511,49 @@ impl GitClientApp {
         // Branch glyph mark.
         let mark = Rect::new(cx + cw / 2.0 - 22.0, cy, cx + cw / 2.0 + 22.0, cy + 44.0);
         draw::fill_round(scene, t, mark, 12.0, c.accent[2]);
-        let gw = tr.measure_weighted("⑂", 24.0, None, TextWeight::Bold).0 as f64;
-        draw::text_weighted(scene, tr, t, "⑂", 24.0, theme.accent_primary, mark.x0 + (mark.width() - gw) / 2.0, mark.y0 + 8.0, None, TextWeight::Bold);
+        let gw = f64::from(tr.measure_weighted("⑂", 24.0, None, TextWeight::Bold).0);
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            "⑂",
+            24.0,
+            theme.accent_primary,
+            mark.x0 + (mark.width() - gw) / 2.0,
+            mark.y0 + 8.0,
+            None,
+            TextWeight::Bold,
+        );
 
         let mut y = cy + 64.0;
         let title = "No repository open";
-        let tw = tr.measure_weighted(title, 20.0, None, TextWeight::Bold).0 as f64;
-        draw::text_weighted(scene, tr, t, title, 20.0, c.text_primary, cx + (cw - tw) / 2.0, y, None, TextWeight::Bold);
+        let tw = f64::from(tr.measure_weighted(title, 20.0, None, TextWeight::Bold).0);
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            title,
+            20.0,
+            c.text_primary,
+            cx + (cw - tw) / 2.0,
+            y,
+            None,
+            TextWeight::Bold,
+        );
         y += 30.0;
         let sub = "Open a git repository to view its changes, history and branches.";
-        let sw = tr.measure(sub, 13.0, None).0 as f64;
-        draw::text(scene, tr, t, sub, 13.0, c.text_dim, cx + (cw - sw).max(0.0) / 2.0, y, Some(cw as f32));
+        let sw = f64::from(tr.measure(sub, 13.0, None).0);
+        draw::text(
+            scene,
+            tr,
+            t,
+            sub,
+            13.0,
+            c.text_dim,
+            cx + (cw - sw).max(0.0) / 2.0,
+            y,
+            Some(cw as f32),
+        );
         y += 40.0;
 
         // Path field + Open button.
@@ -1268,17 +1566,51 @@ impl GitClientApp {
         self.open_input_rect = field;
         let brect = Rect::new(field.x1 + gap, y, cx + cw, y + field_h);
         let enabled = !self.open_input.value().trim().is_empty();
-        draw::fill_round(scene, t, brect, 8.0, if enabled { theme.accent_primary } else { c.surface_white_10 });
+        draw::fill_round(
+            scene,
+            t,
+            brect,
+            8.0,
+            if enabled {
+                theme.accent_primary
+            } else {
+                c.surface_white_10
+            },
+        );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let ow = tr.measure_weighted("Open", 14.0, None, TextWeight::Semibold).0 as f64;
-        draw::text_weighted(scene, tr, t, "Open", 14.0, fg, brect.x0 + (brect.width() - ow) / 2.0, brect.y0 + 11.0, None, TextWeight::Semibold);
+        let ow = f64::from(
+            tr.measure_weighted("Open", 14.0, None, TextWeight::Semibold)
+                .0,
+        );
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            "Open",
+            14.0,
+            fg,
+            brect.x0 + (brect.width() - ow) / 2.0,
+            brect.y0 + 11.0,
+            None,
+            TextWeight::Semibold,
+        );
         self.open_button_rect = brect;
 
         // Any open error (e.g. "No git repository at …").
         if let Some(err) = &self.last_error {
             y += field_h + 16.0;
-            let ew = tr.measure(err, 12.5, None).0 as f64;
-            draw::text(scene, tr, t, err, 12.5, c.semantic.danger, cx + (cw - ew).max(0.0) / 2.0, y, Some(cw as f32));
+            let ew = f64::from(tr.measure(err, 12.5, None).0);
+            draw::text(
+                scene,
+                tr,
+                t,
+                err,
+                12.5,
+                c.semantic.danger,
+                cx + (cw - ew).max(0.0) / 2.0,
+                y,
+                Some(cw as f32),
+            );
         }
     }
 
@@ -1406,7 +1738,9 @@ impl GitClientApp {
     /// an unstaged/untracked file shows the index→workdir diff (so a hunk
     /// action *stages*). That matches `apply_hunk`'s ordering exactly.
     fn stage_hunk(&mut self, hunk: usize) {
-        let Some((area, _)) = self.selected_change else { return };
+        let Some((area, _)) = self.selected_change else {
+            return;
+        };
         if let (Some(path), Some(file)) = (self.repo(), self.current_path()) {
             let unstage = area == ChangeArea::Staged;
             // Map the displayed line's hunk to the Nth diff hunk for the file.
@@ -1513,10 +1847,7 @@ impl GitClientApp {
                 if over_list {
                     self.changes_scroll = (self.changes_scroll - dy).max(0.0);
                 } else {
-                    let max = self
-                        .current_diff()
-                        .map(DiffView::content_height)
-                        .unwrap_or(0.0)
+                    let max = self.current_diff().map_or(0.0, DiffView::content_height)
                         - (self.rect.height() - APPBAR_H - 36.0);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
@@ -1529,7 +1860,8 @@ impl GitClientApp {
                 };
                 let over_list = pos.x < self.rect.x0 + list_w && self.flap_open();
                 if over_list {
-                    let max = HistoryView::content_height(&self.model) - (self.rect.height() - APPBAR_H);
+                    let max =
+                        HistoryView::content_height(&self.model) - (self.rect.height() - APPBAR_H);
                     self.history_scroll = (self.history_scroll - dy).clamp(0.0, max.max(0.0));
                 } else {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
@@ -1559,7 +1891,12 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 
 impl Widget for GitClientApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        if !self.settings_seeded {
+        if self.settings_seeded {
+            // Adopt document changes: remote collaborators, and this app's own
+            // preference actions, which the framework `ActionHost` applies
+            // straight to the document through the executor.
+            self.settings = Settings::read(state);
+        } else {
             // First sync: adopt any persisted preferences, then seed the doc so
             // it is the source of truth and collaborators see the same
             // preferences. An initial override forced at construction (the
@@ -1569,11 +1906,6 @@ impl Widget for GitClientApp {
             }
             self.settings.write(state);
             self.settings_seeded = true;
-        } else {
-            // Adopt document changes: remote collaborators, and this app's own
-            // preference actions, which the framework `ActionHost` applies
-            // straight to the document through the executor.
-            self.settings = Settings::read(state);
         }
     }
 
@@ -1593,17 +1925,17 @@ impl Widget for GitClientApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // The layout mode is now known from the allocated width — reconcile
         // the flap so a window resize across the breakpoint adopts the new
@@ -1639,7 +1971,12 @@ impl Widget for GitClientApp {
 
         self.draw_appbar(scene, tr, transform, theme);
 
-        let body = Rect::new(self.rect.x0, self.rect.y0 + APPBAR_H, self.rect.x1, self.rect.y1);
+        let body = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + APPBAR_H,
+            self.rect.x1,
+            self.rect.y1,
+        );
         match self.screen {
             Screen::Changes => self.draw_changes(scene, tr, transform, theme, presence, body),
             Screen::History => self.draw_history(scene, tr, transform, theme, body),
@@ -1663,7 +2000,8 @@ impl Widget for GitClientApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // Hover state for hunk buttons + remote actions.
-                self.hover_hunk = diffview::hunk_button_at(&self.diff_hunk_buttons, self.last_mouse);
+                self.hover_hunk =
+                    diffview::hunk_button_at(&self.diff_hunk_buttons, self.last_mouse);
                 self.hover_action = None;
                 for f in &self.panel_hits {
                     if let Some(PanelHit::Remote(a)) = f(self.last_mouse) {
@@ -1674,16 +2012,23 @@ impl Widget for GitClientApp {
                 // Keep an in-flight text-selection drag updating.
                 self.forward_to_inputs(event, scale_factor, modifiers, state, path, taffy);
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.handle_press(event, scale_factor, modifiers, state, path, taffy);
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
                 self.forward_to_inputs(event, scale_factor, modifiers, state, path, taffy);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 36.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 36.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 self.scroll_active(dy, self.last_mouse);
@@ -1696,7 +2041,7 @@ impl Widget for GitClientApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "GitClientApp"
     }
 
@@ -1755,8 +2100,15 @@ impl GitClientApp {
         let mut handled = false;
         let mut ft: Option<NodeId> = None;
         input.handle_event(
-            event, scale_factor, modifiers, state, path, &mut handled, &mut ft,
-            NodeId::new(0), taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut ft,
+            NodeId::new(0),
+            taffy,
         );
         handled
     }
@@ -1772,9 +2124,33 @@ impl GitClientApp {
         path: &ObjId,
         taffy: &TaffyTree<()>,
     ) {
-        Self::fwd(&mut self.commit_input, event, scale_factor, modifiers, state, path, taffy);
-        Self::fwd(&mut self.branch_input, event, scale_factor, modifiers, state, path, taffy);
-        Self::fwd(&mut self.open_input, event, scale_factor, modifiers, state, path, taffy);
+        Self::fwd(
+            &mut self.commit_input,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            taffy,
+        );
+        Self::fwd(
+            &mut self.branch_input,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            taffy,
+        );
+        Self::fwd(
+            &mut self.open_input,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            taffy,
+        );
     }
 
     /// Route a left-press: text fields first (focus + caret placement), then
@@ -1798,7 +2174,15 @@ impl GitClientApp {
             }
             if self.open_input_rect.width() > 0.0 && self.open_input_rect.contains(pos) {
                 self.set_focus(Some(Field::Open));
-                Self::fwd(&mut self.open_input, event, scale_factor, modifiers, state, path, taffy);
+                Self::fwd(
+                    &mut self.open_input,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    taffy,
+                );
                 return;
             }
             self.set_focus(None);
@@ -1807,12 +2191,28 @@ impl GitClientApp {
         // A press on a visible text field focuses it and places the caret.
         if self.screen == Screen::Changes && rect_hit(self.commit_input.get_rect(), pos) {
             self.set_focus(Some(Field::Commit));
-            Self::fwd(&mut self.commit_input, event, scale_factor, modifiers, state, path, taffy);
+            Self::fwd(
+                &mut self.commit_input,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                taffy,
+            );
             return;
         }
         if self.screen == Screen::Panels && rect_hit(self.new_branch_input, pos) {
             self.set_focus(Some(Field::Branch));
-            Self::fwd(&mut self.branch_input, event, scale_factor, modifiers, state, path, taffy);
+            Self::fwd(
+                &mut self.branch_input,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                taffy,
+            );
             return;
         }
         // Anywhere else: blur the fields and run the normal click router.
@@ -1879,20 +2279,30 @@ impl GitClientApp {
         }
 
         // Esc dismisses an open overlay flap (Adwaita flap behaviour).
-        if let Key::Named(NamedKey::Escape) = &ev.logical_key {
-            if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
-                self.flap.close();
-                *handled = true;
-                return;
-            }
+        if let Key::Named(NamedKey::Escape) = &ev.logical_key
+            && self.layout_mode() == SplitLayout::Overlay
+            && self.flap_open()
+        {
+            self.flap.close();
+            *handled = true;
+            return;
         }
 
         // Global shortcuts: 1/2/3 switch screens.
         if let Key::Character(s) = &ev.logical_key {
             match s.as_str() {
-                "1" => { self.switch_screen(Screen::Changes); *handled = true; }
-                "2" => { self.switch_screen(Screen::History); *handled = true; }
-                "3" => { self.switch_screen(Screen::Panels); *handled = true; }
+                "1" => {
+                    self.switch_screen(Screen::Changes);
+                    *handled = true;
+                }
+                "2" => {
+                    self.switch_screen(Screen::History);
+                    *handled = true;
+                }
+                "3" => {
+                    self.switch_screen(Screen::Panels);
+                    *handled = true;
+                }
                 "d" => {
                     self.toggle_diff_layout(state);
                     *handled = true;
@@ -1936,7 +2346,9 @@ impl GitClientApp {
         let cur = match self.selected_change {
             Some((ChangeArea::Staged, i)) => i,
             Some((ChangeArea::Unstaged, i)) => self.model.staged.len() + i,
-            Some((ChangeArea::Untracked, i)) => self.model.staged.len() + self.model.unstaged.len() + i,
+            Some((ChangeArea::Untracked, i)) => {
+                self.model.staged.len() + self.model.unstaged.len() + i
+            }
             None => 0,
         } as i32;
         let next = (cur + dir).clamp(0, all as i32 - 1) as usize;
@@ -2033,7 +2445,10 @@ mod tests {
         app.flap.snap(true);
         // A click within the list column must not be treated as a scrim tap.
         app.handle_click(Point::new(40.0, 400.0), &mut AutoCommit::new());
-        assert!(app.flap_open(), "clicks on the list column keep the flap open");
+        assert!(
+            app.flap_open(),
+            "clicks on the list column keep the flap open"
+        );
     }
 
     #[test]
@@ -2067,7 +2482,11 @@ mod tests {
 
         // The action Ctrl+K would dispatch right now: flip unified → split.
         let resources = Widget::resources(&app, &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "diff-layout").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "diff-layout")
+            .unwrap();
         let palette_action = match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
             _ => panic!("diff-layout is an immediate action"),
@@ -2088,7 +2507,9 @@ mod tests {
             "one undo boundary recorded for the control's action"
         );
         // ...and dispatched the byte-identical action Ctrl+K would.
-        let dispatched = app.last_dispatched().expect("the control dispatched an action");
+        let dispatched = app
+            .last_dispatched()
+            .expect("the control dispatched an action");
         assert_eq!(dispatched.type_id, crate::actions::GIT_CLIENT_ACTION_TYPE);
         assert_eq!(
             dispatched, &palette_action,

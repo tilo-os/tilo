@@ -6,9 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use word_processor::{open_document, save_document, WordProcessorWidget, WpFormat};
 use qdoc::AttrVal;
 use ui::Widget;
+use word_processor::{WordProcessorWidget, WpFormat, open_document, save_document};
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -18,8 +18,15 @@ fn temp_path(name: &str) -> PathBuf {
 
 #[test]
 fn from_path_maps_docx_extension() {
-    assert_eq!(WpFormat::from_path(Path::new("/tmp/report.docx")), WpFormat::Docx);
-    assert_eq!(WpFormat::from_path(Path::new("/tmp/REPORT.DOCX")), WpFormat::Docx, "case-insensitive");
+    assert_eq!(
+        WpFormat::from_path(Path::new("/tmp/report.docx")),
+        WpFormat::Docx
+    );
+    assert_eq!(
+        WpFormat::from_path(Path::new("/tmp/REPORT.DOCX")),
+        WpFormat::Docx,
+        "case-insensitive"
+    );
 }
 
 #[test]
@@ -33,7 +40,8 @@ fn rich_document_round_trips_through_docx() {
 
     // 1. A heading.
     wp.model_mut().insert_str(&mut state.doc, "Heading");
-    wp.model_mut().set_paragraph_style(&mut state.doc, "heading", Some(1), None);
+    wp.model_mut()
+        .set_paragraph_style(&mut state.doc, "heading", Some(1), None);
 
     // 2. A paragraph with a bold run (select the whole text, toggle `strong`).
     wp.model_mut().enter(&mut state.doc);
@@ -47,7 +55,8 @@ fn rich_document_round_trips_through_docx() {
     // 3. A bullet (unordered) list item.
     wp.model_mut().enter(&mut state.doc);
     wp.model_mut().insert_str(&mut state.doc, "Bullet");
-    wp.model_mut().set_paragraph_style(&mut state.doc, "list_item", None, Some(false));
+    wp.model_mut()
+        .set_paragraph_style(&mut state.doc, "list_item", None, Some(false));
 
     // 4. A 2x2 table; the caret lands in the first cell, type into it.
     wp.model_mut().insert_table(&mut state.doc, 2, 2);
@@ -63,9 +72,17 @@ fn rich_document_round_trips_through_docx() {
     let snap = qdoc::model::materialize(&state2.doc, &c);
 
     // Heading survived with its level.
-    let heading = snap.blocks.iter().find(|b| b.kind == "heading").expect("heading survived");
+    let heading = snap
+        .blocks
+        .iter()
+        .find(|b| b.kind == "heading")
+        .expect("heading survived");
     assert_eq!(heading.text, "Heading");
-    assert_eq!(heading.attrs.get("level"), Some(&AttrVal::Int(1)), "heading level 1");
+    assert_eq!(
+        heading.attrs.get("level"),
+        Some(&AttrVal::Int(1)),
+        "heading level 1"
+    );
 
     // Bold run: a paragraph whose `bold` text carries a `strong` mark over it.
     let para = snap
@@ -73,19 +90,38 @@ fn rich_document_round_trips_through_docx() {
         .iter()
         .find(|b| b.kind == "paragraph" && b.text == "bold")
         .expect("bold paragraph survived");
-    let strong = para.marks.iter().find(|m| m.name == "strong").expect("strong mark survived");
-    assert_eq!((strong.start, strong.end), (0, 4), "strong covers the whole run");
+    let strong = para
+        .marks
+        .iter()
+        .find(|m| m.name == "strong")
+        .expect("strong mark survived");
+    assert_eq!(
+        (strong.start, strong.end),
+        (0, 4),
+        "strong covers the whole run"
+    );
 
     // Bullet list item, marked unordered.
-    let item = snap.blocks.iter().find(|b| b.kind == "list_item").expect("list item survived");
+    let item = snap
+        .blocks
+        .iter()
+        .find(|b| b.kind == "list_item")
+        .expect("list item survived");
     assert_eq!(item.text, "Bullet");
-    assert_eq!(item.attrs.get("ordered"), Some(&AttrVal::Bool(false)), "bullet (unordered)");
+    assert_eq!(
+        item.attrs.get("ordered"),
+        Some(&AttrVal::Bool(false)),
+        "bullet (unordered)"
+    );
 
     // 2x2 table: four `cell` blocks, the first holding "X".
     let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
     assert_eq!(cells.len(), 4, "2x2 = four cells: {snap:?}");
     assert_eq!(cells[0].text, "X", "first cell kept its text");
-    assert!(cells[1..].iter().all(|cell| cell.text.is_empty()), "remaining cells empty");
+    assert!(
+        cells[1..].iter().all(|cell| cell.text.is_empty()),
+        "remaining cells empty"
+    );
 
     std::fs::remove_file(&path).ok();
 }

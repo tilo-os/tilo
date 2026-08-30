@@ -16,18 +16,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::{BtDeviceInfo, Dispatcher};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card_with_action, caption, rows, El};
+use crate::widgets::{El, caption, card_with_action, rows};
 
 pub const BT_ENABLED_KEY: &str = "bluetooth.enabled";
 
@@ -80,7 +80,7 @@ impl Default for BluetoothPane {
 
 impl BluetoothPane {
     pub fn new() -> Self {
-        let lister: BtLister = Arc::new(|| os_actions::list_bt_devices());
+        let lister: BtLister = Arc::new(os_actions::list_bt_devices);
         let devices = lister().unwrap_or_default();
         let initial_bt = os_actions::get_bluetooth().unwrap_or(false);
         Self {
@@ -121,11 +121,7 @@ impl BluetoothPane {
     /// Test / `--shots` builder: inject the connect/disconnect control and,
     /// optionally, a lister that reflects the post-toggle device state, so the
     /// real connect path is exercised without touching `bluetoothctl`.
-    pub fn with_bt_control(
-        mut self,
-        bt: Arc<dyn BtControl>,
-        lister: BtLister,
-    ) -> Self {
+    pub fn with_bt_control(mut self, bt: Arc<dyn BtControl>, lister: BtLister) -> Self {
         self.bt = bt;
         self.lister = lister;
         self
@@ -142,7 +138,9 @@ impl BluetoothPane {
 
         let mut device_rows: Vec<El> = Vec::new();
         if self.devices.is_empty() {
-            device_rows.push(caption("No paired devices yet. Pair a device to see it here."));
+            device_rows.push(caption(
+                "No paired devices yet. Pair a device to see it here.",
+            ));
         } else {
             for dev in &self.devices {
                 let battery_str = if dev.battery > 0 {
@@ -152,7 +150,11 @@ impl BluetoothPane {
                 };
                 let key = connect_key(&dev.name);
                 let cta_id = format!("settings.bluetooth.connect.{}", dev.name);
-                let cta_label = if dev.connected { "Disconnect" } else { "Connect" };
+                let cta_label = if dev.connected {
+                    "Disconnect"
+                } else {
+                    "Connect"
+                };
                 // Name + action inline on the top line (a single leading Text
                 // keeps the button on the same line); the connection status on
                 // its own line beneath.
@@ -206,16 +208,14 @@ impl Widget for BluetoothPane {
             );
             self.needs_seed = false;
         }
-        if let Ok(Some((val, _))) = state.get(root, BT_ENABLED_KEY) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    if *b != self.last_bt_enabled {
-                        self.last_bt_enabled = *b;
-                        if let Err(e) = self.dispatcher.set_bluetooth(*b) {
-                            warn!(target: "qos::settings", op = "set_bluetooth", error = %e, "bluetooth pane dispatch failed");
-                        }
-                    }
-                }
+        if let Ok(Some((val, _))) = state.get(root, BT_ENABLED_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+            && *b != self.last_bt_enabled
+        {
+            self.last_bt_enabled = *b;
+            if let Err(e) = self.dispatcher.set_bluetooth(*b) {
+                warn!(target: "qos::settings", op = "set_bluetooth", error = %e, "bluetooth pane dispatch failed");
             }
         }
         // Per-device Connect / Disconnect clicks. The button writes its
@@ -227,7 +227,14 @@ impl Widget for BluetoothPane {
         let targets: Vec<(String, String, bool, String)> = self
             .devices
             .iter()
-            .map(|d| (d.name.clone(), d.mac.clone(), d.connected, connect_key(&d.name)))
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    d.mac.clone(),
+                    d.connected,
+                    connect_key(&d.name),
+                )
+            })
             .collect();
         let mut toggled_any = false;
         for (name, mac, connected, key) in targets {
@@ -287,24 +294,23 @@ impl Widget for BluetoothPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -333,22 +339,21 @@ impl Widget for BluetoothPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -368,7 +373,7 @@ impl Widget for BluetoothPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BluetoothPane"
     }
 
@@ -381,8 +386,7 @@ impl Widget for BluetoothPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -422,7 +426,10 @@ mod tests {
             Ok(())
         }
         fn disconnect(&self, mac: &str) -> Result<(), String> {
-            self.calls.lock().unwrap().push(format!("disconnect({mac})"));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("disconnect({mac})"));
             Ok(())
         }
     }
@@ -431,11 +438,8 @@ mod tests {
     fn bt_list_renders_each_paired_device() {
         let rec = Arc::new(RecordingDispatcher::default());
         let devs = sample_devices();
-        let pane = BluetoothPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            devs.clone(),
-        );
+        let pane =
+            BluetoothPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, devs);
         assert_eq!(pane.devices().len(), 2);
         let names: Vec<&str> = pane.devices().iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["AirPods Pro", "Magic Mouse"]);
@@ -452,7 +456,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, BT_ENABLED_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &root,
+            BT_ENABLED_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls(), vec!["set_bluetooth(false)"]);
     }
@@ -466,15 +474,25 @@ mod tests {
         let bt = Arc::new(RecordingBt::default());
         // After the disconnect the radio reports AirPods as no longer connected.
         let after = vec![
-            BtDeviceInfo { name: "AirPods Pro".into(), mac: "AA:BB:CC:DD:EE:01".into(), battery: 80, connected: false },
-            BtDeviceInfo { name: "Magic Mouse".into(), mac: "AA:BB:CC:DD:EE:02".into(), battery: 0, connected: false },
+            BtDeviceInfo {
+                name: "AirPods Pro".into(),
+                mac: "AA:BB:CC:DD:EE:01".into(),
+                battery: 80,
+                connected: false,
+            },
+            BtDeviceInfo {
+                name: "Magic Mouse".into(),
+                mac: "AA:BB:CC:DD:EE:02".into(),
+                battery: 0,
+                connected: false,
+            },
         ];
         let lister: BtLister = {
-            let a = after.clone();
+            let a = after;
             Arc::new(move || Ok(a.clone()))
         };
         let mut pane = BluetoothPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_devices(),
         )
@@ -491,9 +509,15 @@ mod tests {
             bt.calls.lock().unwrap().as_slice(),
             ["disconnect(AA:BB:CC:DD:EE:01)"]
         );
-        assert!(pane.take_structure_dirty(), "a toggle re-reads the list → rebuild");
         assert!(
-            !pane.devices().iter().any(|d| d.name == "AirPods Pro" && d.connected),
+            pane.take_structure_dirty(),
+            "a toggle re-reads the list → rebuild"
+        );
+        assert!(
+            !pane
+                .devices()
+                .iter()
+                .any(|d| d.name == "AirPods Pro" && d.connected),
             "the re-read reflects the disconnected state: {:?}",
             pane.devices()
         );
@@ -506,7 +530,7 @@ mod tests {
         let bt = Arc::new(RecordingBt::default());
         let lister: BtLister = Arc::new(|| Ok(Vec::new()));
         let mut pane = BluetoothPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            rec as Arc<dyn Dispatcher + Send + Sync>,
             true,
             sample_devices(),
         )

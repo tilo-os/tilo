@@ -87,7 +87,11 @@ pub struct Keyframe {
 
 impl Keyframe {
     pub fn new(t: f64, v: f64) -> Self {
-        Self { t, v, interp: Interp::Linear }
+        Self {
+            t,
+            v,
+            interp: Interp::Linear,
+        }
     }
     pub fn with_interp(t: f64, v: f64, interp: Interp) -> Self {
         Self { t, v, interp }
@@ -266,7 +270,10 @@ pub struct ParamTrack {
 
 impl ParamTrack {
     pub fn new(param: Param) -> Self {
-        Self { param, keys: Vec::new() }
+        Self {
+            param,
+            keys: Vec::new(),
+        }
     }
 
     /// Sample the curve at clip-local time `t`.
@@ -363,7 +370,11 @@ impl ParamTrack {
                 .unwrap_or_default()
         };
         if let Some(v) = self.sample(from) {
-            out.keys.push(Keyframe { t: 0.0, v, interp: edge_interp(from) });
+            out.keys.push(Keyframe {
+                t: 0.0,
+                v,
+                interp: edge_interp(from),
+            });
         }
         for k in &self.keys {
             if k.t > from && k.t < to {
@@ -484,7 +495,10 @@ mod tests {
         let t = track(&[(1.0, 0.0), (3.0, 1.0)]);
         assert_eq!(t.sample(0.0), Some(0.0), "before the first key it holds");
         assert_eq!(t.sample(1.0), Some(0.0));
-        assert!((t.sample(2.0).unwrap() - 0.5).abs() < 1e-9, "midpoint is the mean");
+        assert!(
+            (t.sample(2.0).unwrap() - 0.5).abs() < 1e-9,
+            "midpoint is the mean"
+        );
         assert!((t.sample(2.5).unwrap() - 0.75).abs() < 1e-9);
         assert_eq!(t.sample(3.0), Some(1.0));
         assert_eq!(t.sample(99.0), Some(1.0), "after the last key it holds");
@@ -542,8 +556,14 @@ mod tests {
         // Ramp 0 → 1 over 4 seconds; slice the middle two seconds.
         let t = track(&[(0.0, 0.0), (4.0, 1.0)]);
         let s = t.sliced(1.0, 3.0);
-        assert!((s.sample(0.0).unwrap() - 0.25).abs() < 1e-9, "left edge keeps its value");
-        assert!((s.sample(2.0).unwrap() - 0.75).abs() < 1e-9, "right edge too");
+        assert!(
+            (s.sample(0.0).unwrap() - 0.25).abs() < 1e-9,
+            "left edge keeps its value"
+        );
+        assert!(
+            (s.sample(2.0).unwrap() - 0.75).abs() < 1e-9,
+            "right edge too"
+        );
         // And the ramp between them is unchanged in shape.
         assert!((s.sample(1.0).unwrap() - 0.5).abs() < 1e-9);
     }

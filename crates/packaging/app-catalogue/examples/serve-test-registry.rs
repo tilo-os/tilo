@@ -14,6 +14,11 @@
 //!
 //! Writes `registries.toml` into `--config-dir` pointing at itself,
 //! prints the port, and serves until killed.
+//!
+//! Point `--payload` at a binary inside an installed package's payload
+//! root and the package's own `manifest.toml` is what gets published —
+//! see [`authoring`] for why serving a synthesised one instead ships an
+//! app that cannot collaborate. `--manifest` names one explicitly.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -21,9 +26,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use pkg::pack::{SigningIdentity, pack};
-use pkg::{Manifest, MemoryBlobStore};
+use pkg::pack::SigningIdentity;
 use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+
+#[path = "support/authoring.rs"]
+mod authoring;
 
 fn arg(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
@@ -47,7 +54,28 @@ fn main() {
     let corrupt = std::env::args().any(|a| a == "--corrupt");
 
     let identity = SigningIdentity::generate();
-    let mut qpkg = author(&package_id, &name, &payload_bin, &identity);
+    let authored = authoring::author(
+        &package_id,
+        &name,
+        &payload_bin,
+        arg("--manifest").map(PathBuf::from).as_deref(),
+        &identity,
+    );
+    match &authored.source {
+        authoring::ManifestSource::Package(path) => {
+            println!("publishing the package manifest at {}", path.display());
+        }
+        authoring::ManifestSource::Synthesised => {
+            println!(
+                "no manifest.toml found beside {} — publishing a synthesised one. \
+                 It declares no services, so the installed app will run without \
+                 collaboration.",
+                payload_bin.display()
+            );
+        }
+    }
+    let version = authored.version.clone();
+    let mut qpkg = authored.qpkg;
     let advertised_len = qpkg.len();
     if corrupt {
         qpkg.truncate(advertised_len / 2);
@@ -68,7 +96,9 @@ fn main() {
         homepage: None,
         publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
-            version: "1.4.0".into(),
+            // What the package says it is, not a number chosen here —
+            // the entry and the manifest have to agree.
+            version,
             qpkg_url: format!("{base_url}/app.qpkg"),
             qpkg_root_hash_hex: hex::encode([0u8; 32]),
             qpkg_size_bytes: advertised_len as u64,
@@ -97,58 +127,6 @@ fn main() {
         let Ok(stream) = stream else { continue };
         serve_one(stream, &entries, &bytes, delay_ms);
     }
-}
-
-fn author(
-    package_id: &str,
-    name: &str,
-    payload_bin: &std::path::Path,
-    identity: &SigningIdentity,
-) -> Vec<u8> {
-    let pubhex = hex::encode(identity.public_key_bytes());
-    let dir = tempfile::tempdir().expect("tempdir");
-    let payload = dir.path().join("payload");
-    std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::copy(payload_bin, payload.join("bin").join("app"))
-        .unwrap_or_else(|e| panic!("copy {payload_bin:?} into the payload: {e}"));
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(payload.join("bin").join("app"))
-            .unwrap()
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(payload.join("bin").join("app"), perms).unwrap();
-    }
-    let manifest_toml = format!(
-        r#"
-[package]
-id = "{package_id}"
-version = "1.4.0"
-kind = "app"
-name = "{name}"
-category = "Office"
-
-[publisher]
-identity = "ed25519:{pubhex}"
-signature = ""
-
-[sandbox]
-namespaces = ["user"]
-seccomp = "qos-default"
-landlock = "strict"
-
-[sandbox.net]
-mode = "off"
-
-[entrypoint]
-bin = "bin/app"
-type = "gui"
-"#
-    );
-    let manifest = Manifest::from_toml_str(&manifest_toml).expect("manifest parses");
-    let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store).expect("pack");
-    app_registry::qpkg::write_bytes(id, &store).expect("write qpkg bytes")
 }
 
 fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8], delay_ms: u64) {
@@ -182,7 +160,7 @@ fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8], delay_ms: u64) {
     if delay_ms > 0 && path.ends_with(".qpkg") {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }
-    eprintln!("[registry] {} -> {status}", path);
+    eprintln!("[registry] {path} -> {status}");
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()

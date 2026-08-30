@@ -165,7 +165,13 @@ mod tests {
 
     #[test]
     fn path_without_extension_is_unknown() {
-        assert_eq!(category_for_path(Path::new("/tmp/README")), FileCategory::Unknown);
-        assert_eq!(category_for_path(Path::new("/a/b/photo.PNG")), FileCategory::Image);
+        assert_eq!(
+            category_for_path(Path::new("/tmp/README")),
+            FileCategory::Unknown
+        );
+        assert_eq!(
+            category_for_path(Path::new("/a/b/photo.PNG")),
+            FileCategory::Image
+        );
     }
 }

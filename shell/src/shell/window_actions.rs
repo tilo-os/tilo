@@ -1,22 +1,16 @@
 //! Creating windows and tabs from the chrome.
 //!
-//! Until this module existed, a tab could only come into being two ways:
-//! a bootstrapped one already sitting in the tree, or a foreign Wayland
-//! client mapping a toplevel. There was no affordance — no button, no
-//! chord, no palette row — that made one. Closing your last terminal left
-//! searching for the app again as the only way back to a shell.
+//! `WorkspaceTree::bootstrap_default` supplies no windows on first boot —
+//! a window nobody opened is a window nobody opened — so these primitives
+//! are not a convenience on top of a pre-populated desktop: on a fresh
+//! machine they are the only way a first window exists at all, and they
+//! have to work from empty.
 //!
-//! `WorkspaceTree::bootstrap_default` no longer supplies the first kind:
-//! a first boot has no windows, because a window nobody opened is a
-//! window nobody opened. So these primitives are not a convenience on top
-//! of a pre-populated desktop — on a fresh machine they are the only way
-//! a first window exists at all, and they have to work from empty.
-//!
-//! These are the primitives behind the three surfaces that now can: the
-//! "+" chip on a group's tab strip, the `Super`-chords, and the palette's
-//! action rows. They all funnel here so "new terminal" means the same
-//! thing however it was asked for, and so placement stays a single
-//! decision made by [`crate::shell::placement`].
+//! These are the primitives behind the "+" chip on a group's tab strip,
+//! the `Super`-chords, and the palette's action rows. They all funnel
+//! here so "new terminal" means the same thing however it was asked for,
+//! and so placement stays a single decision made by
+//! [`crate::shell::placement`].
 
 use crate::compositor::tab_binding::{self, Placement};
 use crate::shell::chrome_state::ChromeState;
@@ -69,10 +63,8 @@ fn rule_placement(st: &ChromeState) -> Placement {
     crate::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
 }
 
-/// Open a terminal. The compositor hosts the terminal in-process (see
-/// `shell::to_ui_tile`), so this is a tree splice rather than a launch —
-/// which is what makes it a sane recovery path when the last terminal is
-/// gone.
+/// Hosted in-process, so this is a tree splice rather than a launch — a
+/// sane recovery path when the last terminal is gone.
 pub fn open_terminal(st: &mut ChromeState, dest: Destination) -> TabId {
     open_hosted(st, AppKind::Terminal, "Terminal", dest)
 }
@@ -98,10 +90,9 @@ pub fn open_hosted(
 pub enum DuplicateError {
     /// No tab is focused — nothing to copy.
     NoActiveTab,
-    /// The focused tab hosts a foreign Wayland client. Its window belongs
-    /// to another process; the compositor cannot clone one, and guessing
-    /// which package to relaunch from an `app_id` would as often start
-    /// the wrong thing as the right one.
+    /// A foreign Wayland client's window belongs to another process; the
+    /// compositor can't clone it, and guessing a package from `app_id`
+    /// would as often start the wrong thing.
     ForeignWindow,
 }
 
@@ -117,19 +108,12 @@ impl DuplicateError {
     }
 }
 
-/// Open a second instance of the focused tab's app, as a tab beside it in
-/// the same group.
-///
-/// A duplicate is a fresh instance, not a copy of state: the new tab gets
-/// the same app kind and title, and starts however that app starts. That
-/// is what "duplicate" means for a terminal (a second shell in the same
-/// place), which is the case this exists for.
+/// A fresh instance, not a copy of state — the new tab starts however that
+/// app starts (a second shell, for a terminal, the case this exists for).
 pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
-        let ws = tree
-            .active_workspace()
-            .ok_or(DuplicateError::NoActiveTab)?;
+        let ws = tree.active_workspace().ok_or(DuplicateError::NoActiveTab)?;
         let strip = tree
             .active_strip
             .get(&ws.id)
@@ -152,7 +136,11 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
-            TileContent::Foreign { .. } => return Err(DuplicateError::ForeignWindow),
+            // Neither can be duplicated: a live client's surface, or a
+            // window belonging to somebody else's machine.
+            TileContent::Foreign { .. } | TileContent::PeerWindow { .. } => {
+                return Err(DuplicateError::ForeignWindow);
+            }
         }
     };
     let placement = Placement::TabIn(group);
@@ -228,8 +216,7 @@ mod tests {
     fn open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab() {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        // Collapse the seeded group down to a single tab so the placement
-        // rule's "open beside" branch is the one under test.
+        // Collapse to a single tab so the "open beside" branch is under test.
         {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().unwrap();
@@ -240,7 +227,9 @@ mod tests {
         let group = focused_group(&st).unwrap();
         let groups_before = {
             let tree = st.tree();
-            tree.active_workspace().unwrap().strips[0].window_groups.len()
+            tree.active_workspace().unwrap().strips[0]
+                .window_groups
+                .len()
         };
         open_terminal(&mut st, Destination::Beside);
         let tree = st.tree();
@@ -259,8 +248,7 @@ mod tests {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
         let group = focused_group(&st).unwrap();
-        // Focus the Terminal tab explicitly so the duplicate has a known
-        // kind to copy.
+        // Focus the Terminal tab so the duplicate has a known kind to copy.
         let terminal_tab = {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().unwrap();

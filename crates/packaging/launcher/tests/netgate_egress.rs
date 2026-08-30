@@ -2,47 +2,36 @@
 //! `bwrap` sandbox.
 //!
 //! Everything here asserts on **connection outcomes from inside the
-//! sandbox** — bytes that arrived, or a refusal code that came back —
-//! never on the argv that built it. An argv assertion proves a string
-//! was constructed; these prove a packet did or did not go anywhere.
+//! sandbox** — bytes that arrived, or a refusal code — never the argv
+//! that built it: an argv assertion proves a string was constructed,
+//! these prove a packet did or did not go anywhere.
 //!
 //! ## The two kernel properties underneath
 //!
-//! Per-host filtering rests on two behaviours that are not obvious and
-//! are both load-bearing.
+//! Pinned by
 //! [`an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`]
-//! pins them, so a kernel or a `bwrap` that stops providing them fails
-//! the build instead of quietly turning the filter into a no-op:
-//!
-//! 1. **An unshared network namespace is genuinely empty.**
-//!    `connect(2)` to a public address fails `ENETUNREACH` before a
-//!    packet is built, and the loopback inside the sandbox is *its own*
-//!    — a host service on `127.0.0.1` is not reachable at that address
-//!    from inside. This is what makes the filter unbypassable: an app
-//!    that ignores the egress path it is given does not get a fallback,
-//!    it gets nothing.
-//! 2. **A bind-mounted `AF_UNIX` socket crosses the boundary anyway,**
-//!    because pathname sockets are addressed through the filesystem. So
-//!    one bind-mount is exactly one hole, and the process on its far
-//!    side is ours.
+//! so a kernel or `bwrap` regression fails the build instead of quietly
+//! turning the filter into a no-op: (1) an unshared network namespace
+//! is genuinely empty — `connect(2)` to a public address fails
+//! `ENETUNREACH` before a packet is built, and the sandbox's loopback
+//! is *its own*; (2) a bind-mounted `AF_UNIX` socket crosses the
+//! boundary anyway, addressed through the filesystem — one bind-mount
+//! is exactly one hole, and the process on its far side is ours.
 //!
 //! ## Where the sandbox shape comes from
 //!
-//! The tests below build a sandbox around a probe rather than launching
-//! a packaged app, but every security-relevant decision in that sandbox
-//! is made by the **production** functions: `EgressDecision::resolve`
-//! decides whether the namespace is shared, `push_net_gate` writes the
-//! socket bind and the proxy environment, `NetGate` is the process
-//! enforcing the allowlist, and `run_relay` is the in-sandbox hop. Only
-//! the boilerplate — binding `/usr`, binding the probe — is test-local.
+//! The tests build a sandbox around a probe rather than launching a
+//! packaged app, but every security-relevant decision is made by the
+//! **production** functions: `EgressDecision::resolve`, `push_net_gate`,
+//! `NetGate`, `run_relay`.
 //!
 //! ## How the in-sandbox side runs
 //!
-//! There is no separate probe binary to package. The test binary
-//! re-executes *itself* inside the sandbox, selecting one probe test by
-//! name. The probe writes `PROBE <key>=<value>` lines to stdout and the
-//! outer tests assert on those, so a probe that silently did nothing
-//! fails the outer assertions rather than passing them.
+//! There is no separate probe binary. The test binary re-executes
+//! *itself* inside the sandbox, selecting one probe test by name, and
+//! writes `PROBE <key>=<value>` lines to stdout that the outer tests
+//! assert on, so a probe that silently did nothing fails the outer
+//! assertions rather than passing them.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -52,8 +41,6 @@ use std::time::Duration;
 
 use launcher::netgate::{EgressDecision, EgressPolicy, NetGate, reply};
 use launcher::sandbox::NetGateBind;
-
-// ---------------------------------------------------------------- env
 
 /// Sandbox-side path of the bind-mounted gate socket. Absent when the
 /// launch has no gate.
@@ -65,34 +52,23 @@ const ENV_OTHER_PORT: &str = "QOS_NETGATE_PROBE_OTHER_PORT";
 /// Set when the probe should also exercise the loopback relay.
 const ENV_RELAY: &str = "QOS_NETGATE_PROBE_RELAY";
 
-/// Where the gate socket appears inside the sandbox.
-///
-/// Short on purpose: `sun_path` is 108 bytes, so a socket at a long
-/// host path cannot be connected to at all — and the failure surfaces
-/// as a confusing error at connect time rather than at bind time.
+/// Where the gate socket appears inside the sandbox. Short on purpose:
+/// `sun_path` is 108 bytes.
 const SANDBOX_SOCKET_PATH: &str = "/run/qos-gate.sock";
 
 /// Loopback port for the relay inside the sandbox.
 const PROBE_RELAY_PORT: u16 = 19050;
 
-/// The name the allowlist is written against in these tests.
-/// `localhost` resolves on every host, so the gate's *resolution* step
-/// runs for real rather than being stubbed.
+/// The name the allowlist is written against in these tests. `localhost`
+/// resolves on every host, so the gate's real resolution step runs.
 const ALLOWED_NAME: &str = "localhost";
 
 /// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for
-/// this name can only have come from the policy — the gate answers
-/// before it ever tries to resolve.
+/// this name can only be the policy.
 const BLOCKED_NAME: &str = "blocked.invalid";
 
-// -------------------------------------------------------------- probe
-
 /// The in-sandbox half. A no-op unless the outer test selected it —
-/// running the suite normally executes this as an empty test, and it
-/// asserts nothing in that case *by design*: every assertion about what
-/// the probe found lives in the outer tests, which read its stdout. An
-/// empty run here therefore cannot hide a regression, only fail the
-/// outer test.
+/// assertions live in the outer tests, which read its stdout.
 #[test]
 fn netns_probe() {
     let Ok(allowed_port) = std::env::var(ENV_ALLOWED_PORT) else {
@@ -104,9 +80,8 @@ fn netns_probe() {
         .parse()
         .expect("port parses");
 
-    // Raw TCP, no gate involved. Under an unshared namespace these hit
-    // the sandbox's own empty loopback; under `--share-net` they hit
-    // the host's and reach the servers.
+    // Raw TCP, no gate involved: under an unshared namespace these hit the
+    // sandbox's own empty loopback; under `--share-net` they reach the servers.
     println!("PROBE raw_allowed={}", describe(raw_get(allowed_port)));
     println!("PROBE raw_other={}", describe(raw_get(other_port)));
     println!(
@@ -130,10 +105,8 @@ fn netns_probe() {
         describe(socks_get(&socket, ALLOWED_NAME, allowed_port))
     );
 
-    // Through the gate, by address literal: the SAME server, spelled as
-    // an address. Reachability is identical, so a different outcome can
-    // only be the policy — this is the bypass where an app resolves an
-    // allowed name itself and then asks for the address.
+    // Through the gate, by address literal: the SAME server. Identical
+    // reachability, so a different outcome can only be the policy.
     println!(
         "PROBE gate_by_literal={}",
         describe(socks_get(&socket, "127.0.0.1", allowed_port))
@@ -145,9 +118,8 @@ fn netns_probe() {
         describe(socks_get(&socket, BLOCKED_NAME, 80))
     );
 
-    // The same three, over HTTP CONNECT rather than SOCKS5. This is the
-    // path an HTTP client takes without any opt-in feature, so it is
-    // the one most apps will actually use.
+    // The same three, over HTTP CONNECT rather than SOCKS5 — the path a
+    // client with no SOCKS support takes, and the one most apps use.
     println!(
         "PROBE http_by_name={}",
         describe(http_connect(&socket, ALLOWED_NAME, allowed_port))
@@ -254,15 +226,13 @@ fn describe(o: Outcome) -> String {
 }
 
 /// HTTP `CONNECT` through the gate, then an HTTP request down the
-/// tunnel. This is what an ordinary HTTP client does with
-/// `HTTPS_PROXY` set, with no SOCKS support compiled in.
+/// tunnel — what an ordinary client does with `HTTPS_PROXY` set.
 fn http_connect(socket: &str, host: &str, port: u16) -> Outcome {
     let mut s = match UnixStream::connect(socket) {
         Ok(s) => s,
         Err(e) => return Outcome::Failed(format!("connect gate: {:?}", e.kind())),
     };
-    if s
-        .write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+    if s.write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
         .is_err()
     {
         return Outcome::Failed("connect write".into());
@@ -332,9 +302,8 @@ fn socks_exchange<S: Read + Write>(s: &mut S, host: &str, port: u16) -> Outcome 
         return Outcome::Failed("greeting read".into());
     }
 
-    // CONNECT, by domain name — including for an address literal, so
-    // the gate sees exactly what the app asked for and the policy
-    // decision is made on that string.
+    // CONNECT, by domain name — including for an address literal, so the
+    // gate sees exactly what the app asked for.
     let mut req = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
     req.extend_from_slice(host.as_bytes());
     req.extend_from_slice(&port.to_be_bytes());
@@ -377,8 +346,6 @@ fn http_exchange<S: Read + Write>(s: &mut S) -> Outcome {
     }
 }
 
-// ------------------------------------------------------------ harness
-
 /// A tiny HTTP server on loopback answering every request with `body`.
 /// Returns the port it bound.
 fn serve(body: &'static str) -> u16 {
@@ -405,10 +372,10 @@ fn serve(body: &'static str) -> u16 {
 /// `$XDG_RUNTIME_DIR/qos-netgate-test`. Deliberately not a `TempDir`:
 /// the harness' scratch root is long enough to overflow `sun_path`.
 fn runtime_scratch_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        // SAFETY: getuid always succeeds.
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
+    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })),
+        PathBuf::from,
+    );
     let dir = base.join("qos-netgate-test");
     std::fs::create_dir_all(&dir).expect("create runtime scratch dir");
     dir
@@ -435,10 +402,8 @@ struct ProbeReport {
 }
 
 impl ProbeReport {
-    /// Echo everything the probe observed, tagged with the scenario.
-    /// Captured by libtest unless `--nocapture`, where it becomes the
-    /// packet-level record of what each sandbox could and could not
-    /// reach.
+    /// Echo everything the probe observed, tagged with the scenario — the
+    /// packet-level record under `--nocapture`.
     fn dump(&self, scenario: &str) -> &Self {
         for line in self.stdout.lines() {
             if let Some(idx) = line.find("PROBE ") {
@@ -449,9 +414,8 @@ impl ProbeReport {
     }
 
     fn get(&self, key: &str) -> String {
-        // libtest writes its own `test <name> ... ` prefix onto the
-        // same line as the first `println!`, so match the marker
-        // anywhere in the line rather than only at its start.
+        // libtest writes its own `test <name> ... ` prefix on the same line as
+        // the first `println!`, so match the marker anywhere in the line.
         let marker = format!("PROBE {key}=");
         self.stdout
             .lines()
@@ -463,6 +427,17 @@ impl ProbeReport {
                 )
             })
     }
+}
+
+/// The name `--exact` needs to select one of this file's probe tests
+/// when the binary re-executes itself, since this file is a module of
+/// `tests/it.rs` not its own binary and `module_path!` is one segment
+/// too long for libtest. Derived rather than written out so a stale
+/// name can't silently leave the probe running nothing.
+fn probe_test_name(probe: &str) -> String {
+    let module = module_path!();
+    let relative = module.split_once("::").map_or(module, |(_, rest)| rest);
+    format!("{relative}::{probe}")
 }
 
 /// Run the probe inside a sandbox whose network shape is decided by the
@@ -507,7 +482,7 @@ fn run_probe(
     argv.push(exe_s);
     argv.extend([
         "--exact".into(),
-        "netns_probe".into(),
+        probe_test_name("netns_probe"),
         "--nocapture".into(),
         "--test-threads".into(),
         "1".into(),
@@ -529,10 +504,22 @@ fn run_probe(
     }
 
     let output = cmd.output().expect("spawn bwrap");
-    ProbeReport {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    }
+    report_from(output)
+}
+
+/// Read the child's output, refusing one that selected no test —
+/// libtest exits 0 when its filter matches nothing, so a stale probe
+/// name looks like a probe that ran and found nothing to say.
+fn report_from(output: std::process::Output) -> ProbeReport {
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stdout.contains("PROBE "),
+        "the child reported nothing. If it says `running 0 tests`, the probe's \
+         name no longer selects it — see `probe_test_name`.\nstdout:\n{stdout}\n\
+         stderr:\n{stderr}"
+    );
+    ProbeReport { stdout, stderr }
 }
 
 /// Start a gate on a unique per-test socket path.
@@ -541,8 +528,6 @@ fn start_gate(name: &str, policy: EgressPolicy) -> (NetGate, PathBuf) {
     let gate = NetGate::start(&path, policy).expect("gate starts");
     (gate, path)
 }
-
-// -------------------------------------------------------------- tests
 
 #[test]
 fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host() {
@@ -584,7 +569,13 @@ fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host
             SANDBOX_SOCKET_PATH,
         ])
         .arg(&exe)
-        .args(["--exact", "proof_probe", "--nocapture", "--test-threads", "1"])
+        .args([
+            "--exact",
+            &probe_test_name("proof_probe"),
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
         .env("QOS_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
         .env("QOS_NETGATE_PROOF_PORT", host_port.to_string())
         .output()
@@ -643,9 +634,8 @@ fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
         "the loopback relay must carry the same traffic the direct socket does"
     );
 
-    // Does NOT reach the same server addressed as a literal. Identical
-    // reachability, different outcome — so the difference is the
-    // policy, and the resolve-it-yourself bypass is closed.
+    // Does NOT reach the same server addressed as a literal — identical
+    // reachability, so a different outcome can only be the policy.
     assert_eq!(
         report.get("gate_by_literal"),
         format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
@@ -659,20 +649,16 @@ fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
         "the relay must not be a way around the policy the direct socket enforces"
     );
 
-    // Does not reach an unlisted name — and the refusal is spelled
-    // `HOST_UNREACHABLE`, exactly as an unresolvable host would be. The
-    // app is told there is no route, which it already knows how to
-    // handle, rather than that it lacks a permission, which it would
-    // report to a user who cannot act on it.
+    // Does not reach an unlisted name; the refusal is `HOST_UNREACHABLE`,
+    // the same as an unresolvable host, a state the app already handles.
     assert_eq!(
         report.get("gate_by_other_name"),
         format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
         "an unlisted host must be refused as unreachable, not as forbidden"
     );
 
-    // The same three answers over HTTP CONNECT. This is the path a
-    // client with no SOCKS support takes, so a policy that only held
-    // for SOCKS would be a policy most apps never meet.
+    // The same three answers over HTTP CONNECT — the path a client with no
+    // SOCKS support takes, so the policy must hold there too.
     assert_eq!(
         report.get("http_by_name"),
         "BODY:ALLOWED-SERVER",
@@ -769,14 +755,10 @@ fn a_grant_of_star_reaches_both() {
     assert_eq!(report.get("raw_other"), "BODY:OTHER-SERVER");
 }
 
-/// (4) The negative case is not vacuous.
-///
-/// Same sandbox, same servers, same request — one variable changed: the
-/// allowlist. The connection that was refused in
+/// (4) The negative case is not vacuous: same sandbox, same servers,
+/// one variable changed (the allowlist). The connection refused in
 /// [`a_grant_naming_one_host_reaches_that_host_and_no_other`] now
-/// carries traffic. So the refusal there was the policy doing work, not
-/// a server that was down or a fixture that never connected to
-/// anything.
+/// carries traffic.
 #[test]
 fn widening_the_allowlist_lets_the_refused_connection_through() {
     let allowed_port = serve("ALLOWED-SERVER");
@@ -786,16 +768,21 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
     let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
     let (strict_gate, strict_socket) =
         start_gate("breakage-strict", strict.policy().unwrap().clone());
-    let refused = run_probe(&strict, Some(&strict_socket), allowed_port, other_port, false);
+    let refused = run_probe(
+        &strict,
+        Some(&strict_socket),
+        allowed_port,
+        other_port,
+        false,
+    );
     refused.dump("control: filter on");
     assert_eq!(
         refused.get("gate_by_literal"),
         format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE)
     );
-    // Exactly the two by-name requests — one per protocol — and
-    // exactly the four that named the literal or the unlisted host.
-    // The control run has the relay disabled, so this accounts for
-    // every connection the probe made.
+    // Exactly the two by-name requests plus the four naming the
+    // literal/unlisted host — the control run (relay disabled) accounts
+    // for every connection.
     assert_eq!(
         strict_gate.stats().allowed(),
         2,
@@ -807,11 +794,9 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
         "the literal and the unlisted name should have been denied on both protocols"
     );
 
-    // Filter disabled: the allowlist now permits everything. Nothing
-    // else about the sandbox, the servers or the request changed. The
-    // decision is spelled `Filtered(["*"])` rather than `Unrestricted`
-    // on purpose — an `Unrestricted` decision would take the
-    // `--share-net` path and change two variables at once.
+    // Filter disabled: allowlist permits everything, nothing else changed.
+    // Spelled `Filtered(["*"])`, not `Unrestricted`, which would take the
+    // `--share-net` path too.
     let (open_gate, open_socket) =
         start_gate("breakage-open", EgressPolicy::new(vec!["*".to_string()]));
     let open_decision = EgressDecision::Filtered(EgressPolicy::new(vec!["*".to_string()]));
@@ -830,11 +815,8 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
         "with the filter open, the previously-refused connection must carry traffic — if it \
          still failed, the negative assertion above was proving nothing"
     );
-    // A refused host and an unreachable one answer identically, on
-    // purpose: the app must not be able to tell a policy decision from an
-    // absence of network. What separates the two runs is not the code, it
-    // is whether the traffic flowed — which is what the assertions above
-    // and below measure.
+    // A refused host and an unreachable one answer identically — the app
+    // must not tell a policy decision from an absence of network.
     assert_eq!(
         passed.get("gate_by_other_name"),
         format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
@@ -862,17 +844,11 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
     );
 }
 
-/// (5) The degradation path.
-///
-/// The gate needs no privilege and no kernel feature `bwrap` does not
-/// already require, so there is no "unsupported kernel" branch to
-/// simulate — a kernel that cannot do this cannot run `bwrap`, and the
-/// launch has already failed for a clearer reason. What can fail is
-/// binding the socket, so that is what is simulated here.
-///
-/// The launcher refuses. Falling back to `--share-net` would apply a
-/// grant naming one host as "every host", which is the false assurance
-/// this work exists to remove.
+/// (5) The degradation path: the gate needs no privilege or kernel
+/// feature `bwrap` doesn't already require, so what's simulated here
+/// is a failed socket bind. The launcher refuses rather than falling
+/// back to `--share-net`, which would apply a grant naming one host as
+/// "every host".
 #[test]
 fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
     let policy = EgressPolicy::new(vec![ALLOWED_NAME.to_string()]);
@@ -905,24 +881,12 @@ fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
     );
 }
 
-// =====================================================================
-// Device-local is network
-//
-// The machine's own services are the interesting bypass, because they are
-// the ones an app can reach without leaving the box: qOS runs a
-// collaboration broker locally, and "no network" that still reaches the
-// broker is not "no network".
-//
-// Two routes have to be closed, and they are closed by different
-// mechanisms:
-//
-// 1. **Raw TCP from a sandbox with no network capability.** Closed by the
-//    empty namespace — the sandbox's `127.0.0.1` is its own, and the
-//    host's addresses are not routable from inside.
-// 2. **Through the gate, by name, from a sandbox that has *some* network
-//    capability.** Closed by `is_device_local`, because the gate resolves
-//    in the host namespace and a name can point anywhere.
-// =====================================================================
+// Device-local is network: qOS's own services (e.g. the collaboration
+// broker) are reachable without leaving the box, so "no network" must
+// also mean no device-local access. Two routes closed by different
+// mechanisms: raw TCP is closed by the empty namespace itself;
+// through-the-gate-by-name is closed by `is_device_local`, since the
+// gate resolves in the host namespace and a name can point anywhere.
 
 /// `IP:PORT` of a service on the host's loopback.
 const ENV_LOCAL_LOOPBACK: &str = "QOS_NETGATE_LOCAL_LOOPBACK";
@@ -969,12 +933,9 @@ fn raw_get_addr(addr: &str) -> Outcome {
     }
 }
 
-/// This host's own non-loopback address, if it has one.
-///
-/// Found by connecting a UDP socket, which sends no packet — it only makes
-/// the kernel pick a source address from the routing table. `None` on a
-/// machine with no network at all, which is a reason to skip that half of
-/// the assertion, not to fail.
+/// This host's own non-loopback address, if any — found via a
+/// UDP-socket connect that sends no packet, just picks a routing-table
+/// source address. `None` skips that half of the assertion.
 fn host_lan_addr() -> Option<std::net::IpAddr> {
     let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("198.51.100.9:9").ok()?;
@@ -1042,7 +1003,7 @@ fn run_device_local_probe(
     argv.push(exe_s);
     argv.extend([
         "--exact".into(),
-        "device_local_probe".into(),
+        probe_test_name("device_local_probe"),
         "--nocapture".into(),
         "--test-threads".into(),
         "1".into(),
@@ -1064,10 +1025,7 @@ fn run_device_local_probe(
     };
 
     let output = cmd.output().expect("spawn bwrap");
-    ProbeReport {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    }
+    report_from(output)
 }
 
 /// An app denied the network cannot reach a service on this device — not
@@ -1101,9 +1059,9 @@ fn an_app_denied_the_network_cannot_reach_a_device_local_service() {
         );
     }
 
-    // The negative case is not vacuous: the same probe, the same
-    // listeners, with the network shared reaches both. So the failures
-    // above are the namespace and not a service that never came up.
+    // Not vacuous: the same probe and listeners, with the network shared,
+    // reach both — so the failures above are the namespace, not a dead
+    // service.
     let shared = run_device_local_probe(
         &EgressDecision::Unrestricted,
         None,
@@ -1123,12 +1081,10 @@ fn an_app_denied_the_network_cannot_reach_a_device_local_service() {
     }
 }
 
-/// An app with a *host allowlist* has a gate, and the gate resolves names
-/// in the host namespace — so a name that points at this device is the
-/// bypass to close. It is closed unless the grant names that host exactly.
-///
-/// One variable changes between the two halves: the spelling of the grant.
-/// Same sandbox, same gate code, same service, same request.
+/// An app with a *host allowlist* has a gate resolving names in the
+/// host namespace, so a name pointing at this device is the bypass —
+/// closed unless the grant names that host exactly. One variable
+/// changes: the spelling of the grant.
 #[test]
 fn a_grant_that_merely_covers_a_local_name_does_not_reach_this_device() {
     let port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");

@@ -20,7 +20,10 @@ fn png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header().expect("header").write_image_data(rgba).expect("write");
+    enc.write_header()
+        .expect("header")
+        .write_image_data(rgba)
+        .expect("write");
     println!("wrote {}", path.display());
 }
 
@@ -114,7 +117,12 @@ fn main() {
         pos_y: 0.26,
         ..Transform::default()
     };
-    png(&out.join("01-pip-and-title.png"), w, h, &c.frame(&p, 2.0, w, h, &mut NoSources));
+    png(
+        &out.join("01-pip-and-title.png"),
+        w,
+        h,
+        &c.frame(&p, 2.0, w, h, &mut NoSources),
+    );
 
     // The same frame with the inset rotated and cropped, to see both.
     p.clip_mut(pip).unwrap().transform = Transform {
@@ -123,7 +131,12 @@ fn main() {
         crop_right: 0.12,
         ..Transform::pip(0.32, (1.0, -1.0), 0.04)
     };
-    png(&out.join("02-rotated-cropped-inset.png"), w, h, &c.frame(&p, 2.0, w, h, &mut NoSources));
+    png(
+        &out.join("02-rotated-cropped-inset.png"),
+        w,
+        h,
+        &c.frame(&p, 2.0, w, h, &mut NoSources),
+    );
 
     // Keyframes: the inset flies in and grows across four seconds. Three
     // instants of the same animated clip.

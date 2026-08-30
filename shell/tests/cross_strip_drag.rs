@@ -1,46 +1,12 @@
-//! Per-frame wire-up coverage for cross-strip tab drag-drop (#151).
+//! Per-frame wire-up coverage for cross-strip tab drag-drop.
 //!
-//! The cross-group case (drag a tab between two `WindowGroup`s inside
-//! the same strip's `GroupRow`) is fully covered by the unit tests in
-//! `ui/src/widget/group_row.rs`. The cross-*strip* case lives one
-//! level up — it can't resolve from inside a single `GroupRow` because
-//! that widget only sees its own siblings — so the broker has to live
-//! shell-side, where the [`ShellOverlayHost`] holds per-strip
-//! `GroupRow` pointers in `group_row_ptrs` and the [`WorkspaceTree`]
-//! tracks every strip's identity.
-//!
-//! What this file pins end-to-end:
-//!
-//!   1. Build a 2-strip tree with one group + 2 tabs in each strip.
-//!   2. Hand it to [`build_nirios_overlay_host_with_chrome`] so the
-//!      shell captures both strips' `GroupRow` pointers.
-//!   3. Drive a real layout pass against the host so each row's stored
-//!      `Rect` lands in screen-space coords (the cross-strip resolver
-//!      hit-tests release points against those rects).
-//!   4. Publish a synthetic `pending_detach` on a tab in strip-A's
-//!      group whose release point falls inside strip-B's vertical band
-//!      — same shape `TabBar::handle_event` writes when the user
-//!      releases a drag outside the bar's own rect.
-//!   5. Pump a no-op `CursorMoved` to drive the post-dispatch detach
-//!      sweep inside `GroupRow::handle_event`. The sweep notices the
-//!      release y-coord is outside its own row band, detaches the
-//!      `(TabDescriptor, TileHost)` pair, and stashes a
-//!      `CrossStripDetach` payload on the source row.
-//!   6. Tick the host's `tick_cross_strip_dispatch_for_tests` helper —
-//!      the production [`Widget::update`] runs the same dispatch each
-//!      frame.
-//!   7. Assert: source strip has 1 tab remaining (in 1 group),
-//!      destination strip has 3 tabs across 2 groups (its original
-//!      2-tab group + a new 1-tab group), and the moved tab id matches
-//!      what was dragged. Plus the persisted [`WorkspaceTree`] mirrors
-//!      the splice — the dropped tab now lives on strip-B in the
-//!      tree.
-//!
-//! Without the cross-strip dispatch hook the source row's local resolver
-//! would either (a) return the tab to the source group ("no target
-//! resolved" recovery) or (b) splice it into a new group on the source
-//! strip via `gap_index_for` — both of which silently lose the user's
-//! intent of "move this tab to the OTHER strip".
+//! The cross-group case is covered by unit tests in
+//! `ui/src/widget/group_row.rs`. Cross-*strip* can't resolve from inside
+//! a single `GroupRow` (which only sees its own siblings), so the broker
+//! lives shell-side: [`ShellOverlayHost`] holds per-strip `GroupRow`
+//! pointers and [`WorkspaceTree`] tracks every strip's identity. Without
+//! that hook the source row's local resolver silently loses the "move to
+//! the OTHER strip" case.
 
 use std::collections::HashMap;
 
@@ -60,11 +26,9 @@ use winit::event::WindowEvent;
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-/// Two strips in a single workspace, each holding one `WindowGroup` with
-/// two tabs. The smallest topology that exercises the cross-strip
-/// dispatch — one fewer strip and there's nothing to cross to; one
-/// fewer tab per group and the source group disappears mid-detach
-/// (which is fine for the widget side but it's a separate case).
+/// The smallest topology that exercises cross-strip dispatch: fewer
+/// strips leaves nothing to cross to, fewer tabs makes the source group
+/// disappear mid-detach (a separate case).
 fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64; 2]) {
     let ws_id = WorkspaceId::new();
     let s_a = StripId::new();
@@ -108,9 +72,9 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
     };
     let ws = Workspace {
         strips: vec![strip_a, strip_b],
-        // Everything else — including the workspace's durable
-        // collaboration room — comes from the builder, so a field added
-        // to `Workspace` does not break this fixture.
+        // Everything else, including the workspace's durable collaboration room,
+        // comes from the builder, so a field added to `Workspace` does not break
+        // this fixture.
         ..Workspace::test_default(ws_id, "Test")
     };
 
@@ -132,10 +96,8 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
     (tree, s_a, s_b, a_tabs, b_tabs)
 }
 
-/// Run a full `build_layout → compute_layout → apply_layout` pass against
-/// the host, sized to a desktop-ish W×H viewport. Mirrors what
-/// `App::layout` does inside the run loop so each `GroupRow.rect` and
-/// every group's stored rect lands in screen-space coords.
+/// Full build/layout/apply pass mirroring `App::layout`, so every rect
+/// lands in screen-space coords.
 struct Layout {
     taffy: TaffyTree<()>,
     root_node: NodeId,
@@ -186,10 +148,8 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
     }
 }
 
-/// Pump a no-op `CursorMoved` event through the host. Drives the widget
-/// tree's per-frame event handler so any pre-staged `pending_detach` on
-/// a child `TabBar` flows through `WindowGroup::handle_event` and lands
-/// in `GroupRow`'s post-dispatch detach sweep.
+/// Pump a no-op `CursorMoved` so a pre-staged `pending_detach` flows
+/// through `WindowGroup::handle_event` into `GroupRow`'s detach sweep.
 fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
     let event = WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
@@ -211,11 +171,8 @@ fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
         layout.child_node,
         &layout.taffy,
     );
-    // The harness above stops short of `Widget::update`, which is the
-    // production hook the cross-strip dispatcher rides on. Tests use the
-    // public `tick_cross_strip_dispatch_for_tests` helper to invoke the
-    // dispatch directly; pre-suppressing the unused-variable warning on
-    // `layout.root_node` keeps clippy happy without a `let _ = ...`.
+    // This harness stops short of `Widget::update`; tests invoke the
+    // cross-strip dispatch via `tick_cross_strip_dispatch_for_tests`.
     let _ = layout.root_node;
 }
 
@@ -224,14 +181,12 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     let (tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
 
-    // Drive a layout pass so each strip's `GroupRow.rect` is populated in
-    // screen-space. Without this the cross-strip resolver compares
-    // release points against `Rect::ZERO` rects and never matches.
+    // Without a layout pass the resolver compares release points against
+    // `Rect::ZERO` and never matches.
     let layout = lay_out_host(&mut host);
 
-    // Pre-condition: each strip has exactly 1 group; strip-A's group has
-    // tabs [11, 12], strip-B's has [21, 22]. The widget tree mirrors
-    // the persisted state at boot.
+    // Pre-condition: strip-A [11, 12], strip-B [21, 22], widget tree
+    // mirroring the persisted state at boot.
     let snap_pre = host.groups_per_strip();
     let snap_pre_a = snap_pre.iter().find(|(s, _)| *s == s_a).expect("strip A");
     let snap_pre_b = snap_pre.iter().find(|(s, _)| *s == s_b).expect("strip B");
@@ -240,65 +195,35 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     assert_eq!(snap_pre_a.1[0].1, vec![a_tabs[0], a_tabs[1]]);
     assert_eq!(snap_pre_b.1[0].1, vec![21, 22]);
 
-    // Read strip-B's row rect so we can pick a release y-coord inside
-    // its vertical band — that's how the cross-strip dispatcher tells
-    // "user is aiming at strip B" apart from "user dropped in their own
-    // strip's empty space".
+    // Release y inside strip-B's band, so the dispatcher reads "aiming at
+    // strip B" rather than "dropped in own strip".
     let dest_rect = host
         .group_row_rect_for_tests(s_b)
         .expect("strip B's GroupRow rect must be populated after apply_layout");
-    let drop_y = (dest_rect.y0 + dest_rect.y1) / 2.0;
-    // Drop x: middle of strip-B's row, so the destination row's
-    // gap-index resolver picks an unambiguous gap (left of the only
-    // existing group, or right of it — either is valid; the test only
-    // pins that the tab lands on strip B as a NEW group).
-    let drop_x = (dest_rect.x0 + dest_rect.x1) / 2.0;
+    let drop_y = f64::midpoint(dest_rect.y0, dest_rect.y1);
+    let drop_x = f64::midpoint(dest_rect.x0, dest_rect.x1);
     let release = Point::new(drop_x, drop_y);
 
-    // Publish a synthetic `pending_detach` on strip-A's group's TabBar.
-    // This is the same shape `TabBar::handle_event` writes when the
-    // user releases a left-click drag outside the bar's own rect; the
-    // wireup pinned by `ui/src/widget/tabs.rs` tests guarantees
-    // this is the only field the post-dispatch sweep reads to discover
-    // a detach. We pick tab `a_tabs[0]` (id 11) as the target so the
-    // assertion below has a stable id to check.
+    // Same shape `TabBar::handle_event` writes when a drag releases outside
+    // the bar's own rect.
     let dragged = a_tabs[0];
     {
         let g = host
             .group_at_for_tests(s_a, 0)
             .expect("strip A group 0 widget");
-        // The widget-side cross-group machinery already pins
-        // `pending_detach = Some((tab_id, release_point))` as the public
-        // contract for "a drag ended outside this bar's rect"; mirror
-        // that here.
         g.bar_mut_for_tests().pending_detach = Some((dragged, release));
     }
 
-    // Pump a no-op CursorMoved through the host. Inside the widget
-    // tree, `GroupRow::handle_event` drains the pending_detach and the
-    // post-dispatch sweep inspects the release point's y. Because
-    // `release.y` is outside strip-A's row band (it's in strip-B's),
-    // the new diversion path detaches the `(desc, host)` pair and
-    // stashes it on `pending_cross_strip_detach` for the shell to
-    // route.
+    // `GroupRow::handle_event` drains the pending_detach and, since
+    // `release.y` is outside strip-A's band, stashes the tab on
+    // `pending_cross_strip_detach` for the shell to route.
     pump_no_op(&mut host, &layout);
-
-    // Tick the cross-strip dispatcher. Production runs this each frame
-    // inside `Widget::update`; tests use the explicit helper so the
-    // failure mode (forgetting to wire the dispatcher into `update`)
-    // would still be caught by a separate "dispatch is wired into
-    // update" assertion below — but the direct call here proves the
-    // dispatcher itself routes correctly.
     host.tick_cross_strip_dispatch_for_tests();
 
-    // Post-condition: strip-A lost a tab; strip-B gained a new
-    // single-tab group carrying the dragged id.
     let snap_post = host.groups_per_strip();
     let snap_post_a = snap_post.iter().find(|(s, _)| *s == s_a).expect("strip A");
     let snap_post_b = snap_post.iter().find(|(s, _)| *s == s_b).expect("strip B");
 
-    // Strip A: the original group should still hold tab 12 only. Tab 11
-    // was the one we dragged out.
     let strip_a_total_tabs: usize = snap_post_a.1.iter().map(|(_, ts)| ts.len()).sum();
     assert_eq!(
         strip_a_total_tabs, 1,
@@ -309,9 +234,6 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
         "dragged tab id {dragged} must no longer live on strip A"
     );
 
-    // Strip B: original group is intact (tabs [21, 22]) and a new group
-    // carrying the dragged tab id was spliced in. Total 3 tabs across 2
-    // groups.
     let strip_b_total_tabs: usize = snap_post_b.1.iter().map(|(_, ts)| ts.len()).sum();
     assert_eq!(
         strip_b_total_tabs, 3,
@@ -332,11 +254,8 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
         snap_post_b.1
     );
 
-    // Persisted-tree mirror: the dispatcher writes the splice through
-    // to `WorkspaceTree`, so a hypothetical shell restart would see the
-    // tab on strip B in the persisted JSON. Without the writeback the
-    // tree-side state stays in its pre-drag shape and the tab pops
-    // back to strip A on the next reload.
+    // The splice must also reach the persisted tree, or the tab pops back to
+    // strip A on the next reload.
     let st = chrome.borrow();
     let tree = st.tree();
     let tree_strip_a = tree.workspaces[0]
@@ -377,24 +296,15 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     );
 }
 
-/// Companion test: a release that doesn't fall inside any other strip's
-/// rect (e.g. a click far above every strip's vertical band) returns
-/// the tab to the source row instead of vanishing into the void. Pins
-/// the v1 "no valid target → return to source" fallback documented in
-/// `dispatch_cross_strip_detaches`. Without the recovery branch the
-/// shell would silently drop the dragged tab.
 #[test]
 fn drag_outside_every_strip_returns_tab_to_source_row() {
     let (tree, s_a, _s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
     let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
-    // Release point far above strip-A's row (and strip-B's). With no
-    // other strip's rect containing this y, the dispatcher should fall
-    // back to delivering the payload to the source row — which splices
-    // it into a new group on strip A near `release.x` rather than the
-    // void.
-    let release = Point::new(W as f64 / 2.0, -100.0);
+    // Far above every strip's band: the fallback splices into a new group on
+    // strip A near `release.x`.
+    let release = Point::new(f64::from(W) / 2.0, -100.0);
     let dragged = a_tabs[0];
     {
         let g = host
@@ -405,9 +315,6 @@ fn drag_outside_every_strip_returns_tab_to_source_row() {
     pump_no_op(&mut host, &layout);
     host.tick_cross_strip_dispatch_for_tests();
 
-    // Strip A keeps both tabs (just possibly redistributed across two
-    // groups now). Specifically: the dragged tab id must still be on
-    // strip A, and total tab count is preserved.
     let snap = host.groups_per_strip();
     let strip_a_snap = snap.iter().find(|(s, _)| *s == s_a).expect("strip A");
     let total_tabs: usize = strip_a_snap.1.iter().map(|(_, ts)| ts.len()).sum();

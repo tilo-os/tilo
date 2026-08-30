@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use format_provider_wit::CodecError;
+use parking_lot::RwLock;
 use wasmtime::Engine;
 
 use crate::registry::{ProviderEntry, Registry};
@@ -47,23 +47,22 @@ impl Router {
         let mut next: HashMap<String, ActiveProvider> = HashMap::new();
         let current = self.providers.read().clone();
         for entry in &reg.providers {
-            if let Some(existing) = current.get(&entry.package) {
-                if existing.entry.wasm == entry.wasm {
-                    // Same wasm file → reuse the loaded component, refresh
-                    // the registry metadata.
-                    next.insert(
-                        entry.package.clone(),
-                        ActiveProvider {
-                            entry: entry.clone(),
-                            component: existing.component.clone(),
-                        },
-                    );
-                    continue;
-                }
+            if let Some(existing) = current.get(&entry.package)
+                && existing.entry.wasm == entry.wasm
+            {
+                // Same wasm file → reuse the loaded component, refresh
+                // the registry metadata.
+                next.insert(
+                    entry.package.clone(),
+                    ActiveProvider {
+                        entry: entry.clone(),
+                        component: existing.component.clone(),
+                    },
+                );
+                continue;
             }
-            let comp = LoadedComponent::from_path(&self.engine, &entry.wasm).map_err(|e| {
-                anyhow::anyhow!("loading provider {}: {e:#}", entry.package)
-            })?;
+            let comp = LoadedComponent::from_path(&self.engine, &entry.wasm)
+                .map_err(|e| anyhow::anyhow!("loading provider {}: {e:#}", entry.package))?;
             next.insert(
                 entry.package.clone(),
                 ActiveProvider {
@@ -104,26 +103,25 @@ impl Router {
         candidates.first().map(|p| (*p).clone())
     }
 
-    /// detect(): try the hinted MIME first; if no provider matches, ask each
+    /// `detect()`: try the hinted MIME first; if no provider matches, ask each
     /// loaded provider in package-id order and take the highest-scoring
     /// result. Returns `(detected, provider_id)` so the client knows which
     /// provider to route subsequent importAs calls to.
     pub fn detect(&self, head: &[u8], hint: &str) -> (format_provider_wit::Detected, String) {
-        if !hint.is_empty() {
-            if let Some(p) = self.best_for_mime(hint) {
-                if let Ok(d) = p.component.detect(head) {
-                    return (
-                        format_provider_wit::Detected {
-                            confidence: format_provider_wit::Confidence {
-                                tier: d.confidence.tier,
-                                score: d.confidence.score,
-                            },
-                            mime: d.mime,
-                        },
-                        p.entry.package.clone(),
-                    );
-                }
-            }
+        if !hint.is_empty()
+            && let Some(p) = self.best_for_mime(hint)
+            && let Ok(d) = p.component.detect(head)
+        {
+            return (
+                format_provider_wit::Detected {
+                    confidence: format_provider_wit::Confidence {
+                        tier: d.confidence.tier,
+                        score: d.confidence.score,
+                    },
+                    mime: d.mime,
+                },
+                p.entry.package,
+            );
         }
         let providers = self.providers.read().clone();
         let mut keys: Vec<&String> = providers.keys().collect();
@@ -140,7 +138,7 @@ impl Router {
                     },
                     mime: d.mime,
                 };
-                if best.as_ref().map(|(_, _, s)| score > *s).unwrap_or(true) {
+                if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
                     best = Some((detected, p.entry.package.clone(), score));
                 }
             }
@@ -149,7 +147,10 @@ impl Router {
             Some((d, id, _)) => (d, id),
             None => (
                 format_provider_wit::Detected {
-                    confidence: format_provider_wit::Confidence { tier: 0, score: 0.0 },
+                    confidence: format_provider_wit::Confidence {
+                        tier: 0,
+                        score: 0.0,
+                    },
                     mime: None,
                 },
                 String::new(),

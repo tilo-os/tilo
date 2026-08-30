@@ -48,7 +48,10 @@ impl CalDoc {
 
     /// True if the document has never been seeded.
     pub fn is_empty(doc: &AutoCommit) -> bool {
-        !matches!(doc.get(&ROOT, "events"), Ok(Some((Value::Object(ObjType::Map), _))))
+        !matches!(
+            doc.get(&ROOT, "events"),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
     }
 
     /// Mirror the whole in-memory model into the CRDT. Idempotent —
@@ -61,7 +64,7 @@ impl CalDoc {
             let m = Self::ensure_child(doc, &projects, &p.id.to_string());
             let _ = doc.put(&m, "name", p.name.as_str());
             let _ = doc.put(&m, "color", p.color.index() as i64);
-            let _ = doc.put(&m, "order", p.order as i64);
+            let _ = doc.put(&m, "order", i64::from(p.order));
         }
 
         let events = Self::map_at(doc, "events");
@@ -88,7 +91,11 @@ impl CalDoc {
         let _ = doc.put(m, "color", e.color.index() as i64);
         let _ = doc.put(m, "rrule", e.recurrence.to_rrule());
         let _ = doc.put(m, "reminder", e.reminder_min.unwrap_or(-1));
-        let _ = doc.put(m, "project", e.project.map(|p| p.to_string()).unwrap_or_default());
+        let _ = doc.put(
+            m,
+            "project",
+            e.project.map(|p| p.to_string()).unwrap_or_default(),
+        );
         let _ = doc.put(m, "cal", e.calendar_id.clone().unwrap_or_default());
     }
 
@@ -96,9 +103,17 @@ impl CalDoc {
         let _ = doc.put(m, "title", t.title.as_str());
         let _ = doc.put(m, "done", t.done);
         let _ = doc.put(m, "due", t.due.map(|d| d.to_string()).unwrap_or_default());
-        let _ = doc.put(m, "priority", t.priority.rank() as i64);
-        let _ = doc.put(m, "project", t.project.map(|p| p.to_string()).unwrap_or_default());
-        let _ = doc.put(m, "parent", t.parent.map(|p| p.to_string()).unwrap_or_default());
+        let _ = doc.put(m, "priority", i64::from(t.priority.rank()));
+        let _ = doc.put(
+            m,
+            "project",
+            t.project.map(|p| p.to_string()).unwrap_or_default(),
+        );
+        let _ = doc.put(
+            m,
+            "parent",
+            t.parent.map(|p| p.to_string()).unwrap_or_default(),
+        );
     }
 
     /// Update just an event's scalar fields (after an inline edit) so the
@@ -195,7 +210,11 @@ impl CalDoc {
             let block = doc
                 .insert_object(list, i, ObjType::Map)
                 .expect("insert notes block never fails");
-            let kind = if line.starts_with("# ") { "heading1" } else { "paragraph" };
+            let kind = if line.starts_with("# ") {
+                "heading1"
+            } else {
+                "paragraph"
+            };
             let body = line.strip_prefix("# ").unwrap_or(line);
             let _ = doc.put(&block, "kind", kind);
             let text_id = doc
@@ -231,10 +250,10 @@ impl CalDoc {
         let list = Self::outbox_list(doc);
         let target = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target) {
-                    return;
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && matches!(v.as_ref(), automerge::ScalarValue::Str(s) if s.as_str() == target)
+            {
+                return;
             }
         }
         let idx = doc.length(&list);
@@ -269,12 +288,11 @@ impl CalDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let automerge::ScalarValue::Str(s) = v.as_ref() {
-                    if let Ok(id) = s.as_str().parse::<Id>() {
-                        out.push(id);
-                    }
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let automerge::ScalarValue::Str(s) = v.as_ref()
+                && let Ok(id) = s.as_str().parse::<Id>()
+            {
+                out.push(id);
             }
         }
         out
@@ -305,12 +323,11 @@ impl CalDoc {
         let list = Self::del_outbox_list(doc);
         let uid = id.to_string();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let automerge::ScalarValue::Str(s) = v.as_ref() {
-                    if s.as_str().split('\t').nth(1) == Some(uid.as_str()) {
-                        return;
-                    }
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let automerge::ScalarValue::Str(s) = v.as_ref()
+                && s.as_str().split('\t').nth(1) == Some(uid.as_str())
+            {
+                return;
             }
         }
         let entry = format!("{calendar_id}\t{uid}");
@@ -347,14 +364,14 @@ impl CalDoc {
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let automerge::ScalarValue::Str(s) = v.as_ref() {
-                    let mut parts = s.as_str().splitn(2, '\t');
-                    if let (Some(cal), Some(uid)) = (parts.next(), parts.next()) {
-                        if let Ok(id) = uid.parse::<Id>() {
-                            out.push((cal.to_string(), id));
-                        }
-                    }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let automerge::ScalarValue::Str(s) = v.as_ref()
+            {
+                let mut parts = s.as_str().splitn(2, '\t');
+                if let (Some(cal), Some(uid)) = (parts.next(), parts.next())
+                    && let Ok(id) = uid.parse::<Id>()
+                {
+                    out.push((cal.to_string(), id));
                 }
             }
         }
@@ -456,17 +473,15 @@ fn get_int(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
 
 fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
     match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => matches!(
-            v.as_ref(),
-            automerge::ScalarValue::Boolean(true)
-        ),
+        Ok(Some((Value::Scalar(v), _))) => {
+            matches!(v.as_ref(), automerge::ScalarValue::Boolean(true))
+        }
         _ => false,
     }
 }
 
 fn parse_dt(s: &str) -> NaiveDateTime {
-    NaiveDateTime::parse_from_str(s, DT_FMT)
-        .unwrap_or_else(|_| chrono::Local::now().naive_local())
+    NaiveDateTime::parse_from_str(s, DT_FMT).unwrap_or_else(|_| chrono::Local::now().naive_local())
 }
 
 fn parse_opt_id(s: &str) -> Option<Id> {
@@ -494,7 +509,11 @@ mod tests {
         assert_eq!(back.tasks.len(), model.tasks.len());
 
         // Spot-check a known event survives the round trip.
-        let standup = back.events.iter().find(|e| e.title == "Team standup").unwrap();
+        let standup = back
+            .events
+            .iter()
+            .find(|e| e.title == "Team standup")
+            .unwrap();
         assert_eq!(standup.recurrence, Recurrence::Weekdays);
         assert_eq!(standup.reminder_min, Some(10));
 
@@ -525,7 +544,10 @@ mod tests {
         CalDoc::delete_event(&mut doc, victim);
         let after = CalDoc::read_model(&doc);
         assert_eq!(after.events.len(), before - 1);
-        assert!(!after.events.iter().any(|e| e.id == victim), "deleted event is gone");
+        assert!(
+            !after.events.iter().any(|e| e.id == victim),
+            "deleted event is gone"
+        );
         // Idempotent.
         CalDoc::delete_event(&mut doc, victim);
         assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
@@ -541,7 +563,10 @@ mod tests {
         CalDoc::delete_task(&mut doc, victim);
         let after = CalDoc::read_model(&doc);
         assert_eq!(after.tasks.len(), before - 1);
-        assert!(!after.tasks.iter().any(|t| t.id == victim), "deleted task is gone");
+        assert!(
+            !after.tasks.iter().any(|t| t.id == victim),
+            "deleted task is gone"
+        );
     }
 
     #[test]
@@ -554,10 +579,16 @@ mod tests {
         CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
         assert_eq!(
             CalDoc::delete_outbox(&doc),
-            vec![("work/default".to_string(), a), ("icloud/personal".to_string(), b)]
+            vec![
+                ("work/default".to_string(), a),
+                ("icloud/personal".to_string(), b)
+            ]
         );
         CalDoc::dequeue_delete(&mut doc, a);
-        assert_eq!(CalDoc::delete_outbox(&doc), vec![("icloud/personal".to_string(), b)]);
+        assert_eq!(
+            CalDoc::delete_outbox(&doc),
+            vec![("icloud/personal".to_string(), b)]
+        );
     }
 
     #[test]

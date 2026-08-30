@@ -1,12 +1,6 @@
 //! Editor provider — the Editor tab's own document, searchable from
-//! `Ctrl+K` while it is the focused app.
-//!
-//! Without this the Editor had no provider at all, so `owns_tab` matched
-//! nobody, `SearchScope::ActiveApp` fell back to allowing every provider,
-//! and the palette answered a search "in this app" with results from the
-//! whole machine while its scope pill said otherwise. The walk, the
-//! scoring and the body read are the shared ones in [`super::text_app`],
-//! so the Editor cannot drift from Notes on where a body lives.
+//! `Ctrl+K` while it is the focused app. The walk, scoring and body read
+//! are the shared ones in [`super::text_app`], so it can't drift from Notes.
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::editor_app::BODY_KEY;
@@ -15,17 +9,8 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 /// The `AppKind::Other` name an Editor tile carries.
 const APP: &str = "editor";
 
-/// An editor document rides the existing [`ResourceKind::Note`] — a
-/// document with a title, a body, and an Enter that focuses its tab is
-/// exactly what that kind describes, and the provider id is what tells
-/// the two apart where it matters (`SearchScope::ActiveApp` narrows by
-/// provider, not by kind).
-///
-/// A `Custom("Documents")` kind of its own was the first attempt, and it
-/// looked free because the chip strip is built from the registry. It is
-/// not: the strip stops painting chips before it reaches the scope
-/// switch, and at 1600 px the five existing kinds already fill it — so
-/// the new chip never appeared, which is a filter the user cannot reach.
+/// Rides [`ResourceKind::Note`]; the provider id tells the two apart where
+/// it matters (`SearchScope::ActiveApp` narrows by provider, not kind).
 const KIND: ResourceKind = ResourceKind::Note;
 
 pub struct EditorProvider;
@@ -43,10 +28,10 @@ impl Default for EditorProvider {
 }
 
 impl SearchProvider for EditorProvider {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "editor"
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Editor"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
@@ -61,7 +46,7 @@ impl SearchProvider for EditorProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", KIND)
+        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", &KIND)
     }
 }
 
@@ -116,10 +101,7 @@ mod tests {
         }))
     }
 
-    /// Seed a tab's body the way the app does: into the document that
-    /// tab holds — its own record — because that is where a hosted app
-    /// writes and therefore the only place the provider can honestly
-    /// read.
+    /// Seed a tab's body into its own record, where a hosted app writes.
     fn seed_tab_body(chrome: &ChromeState, tab_id: u64, seed: impl FnOnce(&mut AutoCommit)) {
         let record = crate::shell::tab_documents::scratch_tab_record(tab_id);
         let store = chrome.records();
@@ -127,9 +109,7 @@ mod tests {
         store.with(&record.id, seed);
     }
 
-    /// Ctrl+K in the Editor finds a word that only appears in the
-    /// document the *real* `EditorApp` wrote — and it reads it from the
-    /// Editor's own key, not the note's.
+    /// Reads from the Editor's own key, not the note's.
     #[test]
     fn finds_a_word_that_only_appears_in_the_editor_document() {
         let handle = tree_with_editor_tab(3, "Editor");
@@ -166,8 +146,6 @@ mod tests {
         );
     }
 
-    /// Notes and Editor keep separate bodies under separate keys, so
-    /// neither provider may answer with the other's content.
     #[test]
     fn does_not_read_the_notes_body() {
         let handle = tree_with_editor_tab(3, "Editor");

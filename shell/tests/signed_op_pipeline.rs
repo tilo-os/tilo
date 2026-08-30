@@ -1,34 +1,24 @@
-//! Phase 3 end-to-end: a `SignedOp` envelope flowing through the
-//! broker is validated against the per-artifact `ChannelState`. Valid
-//! envelopes fan out as `CollabEvent::SignedCRDTIncremental`; invalid
-//! envelopes are dropped and land in the audit log.
-//!
-//! This is the headline test the spec's Phase 3 promises: "the
-//! protocol actually enforces who's allowed to edit". The two
-//! scenarios exercised here are
-//!
-//! 1. A peer with a registered Editor attestation publishes an op →
-//!    the broker accepts and forwards it.
-//! 2. A peer with NO attestation in the channel's role table
-//!    publishes an op → the broker rejects, no other peer sees the
-//!    payload, the audit log records the rejection.
+//! A `SignedOp` envelope flowing through the broker is validated against
+//! the per-artifact `ChannelState`: valid envelopes fan out as
+//! `CollabEvent::SignedCRDTIncremental`, invalid ones are dropped and land
+//! in the audit log. Two scenarios — a registered Editor publishes and the
+//! broker forwards; a peer absent from the role table publishes, the
+//! broker rejects, no other peer sees the payload.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
-    generate_keypair, sign_event, sign_op,
-};
 use collab_fixtures::{role_attestation, signed_op};
-use ed25519_dalek::SigningKey;
+use collab_types::{
+    ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, OpClass, Role,
+    ValidationError, generate_keypair,
+};
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-/// Frame helpers — match the broker's wire framing exactly.
+// Frame helpers — match the broker's wire framing exactly.
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
     let bytes = serde_json::to_vec(v).expect("serialize");
     let len = (bytes.len() as u32).to_le_bytes();
@@ -50,29 +40,20 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-broker-{label}-{pid}-{nanos}.sock"))
 }
 
-/// The collaboration cluster every client in these scenarios joins.
-///
-/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
-/// client announces on its `Hello`, so peers that are meant to observe
-/// each other's edits must announce the same pair — these scenarios
-/// pair this cluster with a single app id per file. A per-client
-/// random uuid would put every client in a cluster of its own, which
-/// is how a real deployment keeps unrelated documents apart.
+/// The collaboration cluster every client here joins. The broker routes
+/// CRDT traffic by the `(app_id, cluster_id)` pair announced on `Hello`,
+/// so peers meant to observe each other must announce the same pair.
 fn test_cluster() -> uuid::Uuid {
     uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
 }
 
-/// Block until `n` clients have announced their route.
-///
-/// Connecting and saying `Hello` are separate steps, and only the
-/// second makes a client addressable — the broker routes CRDT traffic
-/// by the announced `(app_id, cluster_id)` pair. A send that races
-/// another client's `Hello` would reach nobody.
+/// Block until `n` clients have announced their route — only the `Hello`
+/// (not the connect) makes a client addressable, so a send that races it
+/// would reach nobody.
 fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -105,9 +86,8 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     let socket = unique_socket("valid-fans");
     let handle = collab_broker::spawn(socket.clone()).expect("spawn broker");
 
-    // Channel state: owner-trusts-themselves, one Editor attestation
-    // for `editor_pk`, artifact known as a Note. A second peer
-    // `outsider_pk` is *not* in the role table.
+    // Owner-trusts-themselves, one Editor attestation for `editor_pk`,
+    // artifact known as a Note; `outsider_pk` is *not* in the role table.
     let (owner_sk, owner_pk) = generate_keypair();
     let (editor_sk, editor_pk) = generate_keypair();
     let (outsider_sk, outsider_pk) = generate_keypair();
@@ -124,8 +104,8 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     state.register_attestation(editor_ra);
     handle.register_channel_state(artifact, state);
 
-    // Three peers connect: editor (sender of valid op), observer
-    // (receiver), outsider (sender of invalid op).
+    // editor (sends the valid op), observer (receives), outsider (sends the
+    // invalid one).
     let mut editor = wait_for_broker(&socket);
     let mut observer = wait_for_broker(&socket);
     let mut outsider = wait_for_broker(&socket);
@@ -143,8 +123,15 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     }
     wait_for_announced(&handle, 3);
 
-    // Editor publishes a valid signed op.
-    let valid_op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
+    let valid_op = signed_op(
+        &editor_sk,
+        editor_pk,
+        artifact,
+        editor_att_id,
+        OpClass::Splice,
+        b"hello from a valid peer".to_vec(),
+        1,
+    );
     write_frame(
         &mut editor,
         &CollabRequest::SignedSyncIncremental {
@@ -152,10 +139,8 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
         },
     );
 
-    // Observer should see it as a SignedCRDTIncremental.
     let event = read_event(&mut observer, Duration::from_millis(500));
     if event.is_none() {
-        // Diagnostic: print the audit log to see why the valid op was dropped.
         let audit = handle.audit_for(artifact);
         panic!(
             "observer should have received the valid op. \
@@ -173,28 +158,32 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
         other => panic!("expected SignedCRDTIncremental, got {other:?}"),
     }
 
-    // Outsider tries to publish an op with a forged attestation id
-    // that is NOT in the channel's role table.
-    let invalid_op = signed_op(&outsider_sk, outsider_pk, artifact, outsider_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
+    // A forged attestation id that is NOT in the channel's role table.
+    let invalid_op = signed_op(
+        &outsider_sk,
+        outsider_pk,
+        artifact,
+        outsider_att_id,
+        OpClass::Splice,
+        b"hello from a valid peer".to_vec(),
+        1,
+    );
     write_frame(
         &mut outsider,
         &CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(invalid_op.clone()),
+            envelope: Box::new(invalid_op),
         },
     );
 
-    // Observer should NOT see the invalid op. Reading with a short
-    // timeout — if anything comes through, the validator failed
-    // open. The observer's stream stays connected so a stray frame
-    // would surface here.
+    // Observer must NOT see it — short timeout; anything arriving means the
+    // validator failed open (the stream stays connected, so a stray frame surfaces).
     let stray = read_event(&mut observer, Duration::from_millis(200));
     assert!(
         stray.is_none(),
         "observer received an event but the broker should have dropped the invalid op: {stray:?}",
     );
 
-    // The audit log records the rejection with the matching
-    // ValidationError variant.
+    // The audit log records the matching ValidationError variant.
     let audit = handle.audit_for(artifact);
     assert_eq!(audit.len(), 1, "exactly one rejection logged");
     let entry = &audit[0];
@@ -212,7 +201,6 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
         ),
     }
 
-    // Cleanup.
     drop(editor);
     drop(observer);
     drop(outsider);
@@ -255,9 +243,16 @@ fn replay_of_same_signed_op_is_dropped() {
     }
     wait_for_announced(&handle, 2);
 
-    let op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
+    let op = signed_op(
+        &editor_sk,
+        editor_pk,
+        artifact,
+        editor_att_id,
+        OpClass::Splice,
+        b"hello from a valid peer".to_vec(),
+        1,
+    );
 
-    // First send — valid, observer sees it.
     write_frame(
         &mut editor,
         &CollabRequest::SignedSyncIncremental {
@@ -267,11 +262,11 @@ fn replay_of_same_signed_op_is_dropped() {
     let _ = read_event(&mut observer, Duration::from_millis(500))
         .expect("observer should see the first op");
 
-    // Second send — same op, same seq — must be dropped as replay.
+    // Same op, same seq — must be dropped as replay.
     write_frame(
         &mut editor,
         &CollabRequest::SignedSyncIncremental {
-            envelope: Box::new(op.clone()),
+            envelope: Box::new(op),
         },
     );
     let stray = read_event(&mut observer, Duration::from_millis(200));
@@ -280,7 +275,6 @@ fn replay_of_same_signed_op_is_dropped() {
         "observer received a replayed op — replay defence didn't fire: {stray:?}",
     );
 
-    // The audit log records exactly one rejection (the replay).
     let audit = handle.audit_for(artifact);
     let replays: Vec<_> = audit
         .iter()

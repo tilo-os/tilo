@@ -28,11 +28,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
-use ui::ImageStore;
 
 pub struct ChannelAvatar {
     /// Background loader/cache; `None` on the hermetic offline / `--shots` path
@@ -72,7 +72,13 @@ impl ChannelAvatar {
         self
     }
 
-    fn paint(&self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
@@ -82,8 +88,8 @@ impl ChannelAvatar {
             let radius = self.rect.width().min(self.rect.height()) * 0.5;
             let clip = Circle::new(centre, radius);
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
-            let iw = img.width.max(1) as f64;
-            let ih = img.height.max(1) as f64;
+            let iw = f64::from(img.width.max(1));
+            let ih = f64::from(img.height.max(1));
             let scale = (self.rect.width() / iw).max(self.rect.height() / ih);
             let dw = iw * scale;
             let dh = ih * scale;
@@ -91,13 +97,27 @@ impl ChannelAvatar {
             let dy = self.rect.y0 + (self.rect.height() - dh) * 0.5;
             let brush_transform = Affine::translate((dx, dy)) * Affine::scale(scale);
             let brush = ImageBrush::new(img.clone());
-            scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &self.rect);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &brush,
+                Some(brush_transform),
+                &self.rect,
+            );
             scene.pop_layer();
         } else {
             // Deterministic initials chip — identical colour + glyphs to
             // `ui::Avatar`, so a photo dropping in is the only visible change.
             let color = Avatar::color_for_initials(&self.initials, theme);
-            Avatar::draw_at(scene, transform, self.rect, &self.initials, color, theme, text_renderer);
+            Avatar::draw_at(
+                scene,
+                transform,
+                self.rect,
+                &self.initials,
+                color,
+                theme,
+                text_renderer,
+            );
         }
     }
 }
@@ -107,13 +127,13 @@ impl Widget for ChannelAvatar {
         // Lazily resolve the real avatar. Only touch the store until we have the
         // image (an `Arc` clone thereafter would be wasted work); a freshly
         // decoded photo flips `dirty` so the next frame repaints it — no rebuild.
-        if self.image.is_none() && !self.url.is_empty() {
-            if let Some(store) = &self.store {
-                if let Some(img) = store.get(&self.url) {
-                    self.image = Some(img);
-                    self.dirty = true;
-                }
-            }
+        if self.image.is_none()
+            && !self.url.is_empty()
+            && let Some(store) = &self.store
+            && let Some(img) = store.get(&self.url)
+        {
+            self.image = Some(img);
+            self.dirty = true;
         }
     }
 
@@ -123,28 +143,23 @@ impl Widget for ChannelAvatar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = super::leaf_node(
+            taffy,
+            Style {
                 size: Size {
                     width: Dimension::length(self.size),
                     height: Dimension::length(self.size),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        let new = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        let new = super::layout_rect(taffy, node, origin);
         if new != self.rect {
             self.dirty = true;
         }
@@ -176,7 +191,7 @@ impl Widget for ChannelAvatar {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ChannelAvatar"
     }
     fn needs_redraw(&self) -> bool {
@@ -229,8 +244,8 @@ mod tests {
         scene.encoding().draw_tags.clone()
     }
 
-    /// A resolved avatar paints a circle-clipped IMAGE (BEGIN_CLIP < IMAGE <
-    /// END_CLIP) — proof the real creator photo reaches the scene.
+    /// A resolved avatar paints a circle-clipped IMAGE (`BEGIN_CLIP` < IMAGE <
+    /// `END_CLIP`) — proof the real creator photo reaches the scene.
     #[test]
     fn resolved_avatar_paints_circle_clipped_image() {
         let mut av = ChannelAvatar::new(None, "http://x/a.png", "Blender", 40.0)
@@ -252,8 +267,11 @@ mod tests {
     fn unresolved_avatar_paints_initials_not_image() {
         let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
         let tags = draw_tags(&mut av);
-        assert!(!tags.iter().any(|t| *t == DrawTag::IMAGE), "no image → initials only");
-        assert!(tags.iter().any(|t| *t == DrawTag::COLOR), "initials chip fills a circle");
+        assert!(!tags.contains(&DrawTag::IMAGE), "no image → initials only");
+        assert!(
+            tags.contains(&DrawTag::COLOR),
+            "initials chip fills a circle"
+        );
     }
 
     /// A culled (never-drawn) avatar with a real rect reports it is NOT layout
@@ -262,7 +280,10 @@ mod tests {
     #[test]
     fn laid_out_but_never_drawn_avatar_is_not_layout_dirty() {
         let mut av = ChannelAvatar::new(None, "", "Blender", 40.0);
-        assert!(av.is_layout_dirty(), "a fresh avatar (rect ZERO) is layout-dirty");
+        assert!(
+            av.is_layout_dirty(),
+            "a fresh avatar (rect ZERO) is layout-dirty"
+        );
         // Give it a real rect (as `apply_layout` would) but never draw it.
         av.rect = Rect::new(0.0, 5000.0, 40.0, 5040.0);
         assert!(

@@ -134,7 +134,10 @@ impl MediaFrameSource {
                 continue;
             }
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
-            sources.insert(item.id, (crate::media::engine_source(&resolved.abs_path), fps));
+            sources.insert(
+                item.id,
+                (crate::media::engine_source(&resolved.abs_path), fps),
+            );
         }
         sources
     }
@@ -240,7 +243,9 @@ impl MediaFrameSource {
                     self.converters
                         .push(YuvConverter::new(device, wgpu::TextureFormat::Rgba8Unorm));
                 }
-                let texture = self.converters[slot].convert(device, queue, &planes).clone();
+                let texture = self.converters[slot]
+                    .convert(device, queue, &planes)
+                    .clone();
                 let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
                 Some(SourceTexture {
                     texture: Arc::new(texture),
@@ -250,7 +255,9 @@ impl MediaFrameSource {
                 })
             }
             // Software decode already landed in system memory.
-            FramePayload::Rgba(bytes) => upload_rgba(device, queue, frame.width, frame.height, bytes),
+            FramePayload::Rgba(bytes) => {
+                upload_rgba(device, queue, frame.width, frame.height, bytes)
+            }
             // GPU-resident and unimportable on this stack. Move the source to
             // a software session so its next frame arrives paintable, and
             // fall back for this one.
@@ -265,7 +272,13 @@ impl MediaFrameSource {
             }
         }?;
         self.slot += 1;
-        self.last.insert(media, LastGood { pts_ms: frame.pts_ms, texture: painted.clone() });
+        self.last.insert(
+            media,
+            LastGood {
+                pts_ms: frame.pts_ms,
+                texture: painted.clone(),
+            },
+        );
         Some(painted)
     }
 }

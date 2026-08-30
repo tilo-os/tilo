@@ -3,12 +3,11 @@
 //!
 //! `update` is how a widget that mirrors out-of-document state (the
 //! shell's top bar reading the chrome revision, a scrollable ticking
-//! momentum) notices a change between frames. A container that keeps
-//! the trait's default no-op silently freezes every descendant at its
-//! build-time state — the shell's workspace chevrons sat inside a
-//! `Stack` → `Column` chain and never learned the active workspace had
-//! moved. These tests pin the forwarding for each container so that
-//! cannot regress quietly.
+//! momentum) notices a change between frames. A container that keeps the
+//! trait's default no-op silently freezes every descendant at its
+//! build-time state, which is how the shell's workspace chevrons went
+//! stale inside a `Stack` → `Column` chain. These tests pin the
+//! forwarding for each container so that cannot regress quietly.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -45,7 +44,7 @@ impl Widget for Probe {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -76,7 +75,7 @@ impl Widget for Probe {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Probe"
     }
 
@@ -140,9 +139,9 @@ fn container_forwards_update_to_child() {
 #[test]
 fn update_reaches_through_nested_containers() {
     let (child, updates) = probe();
-    let mut root: Box<dyn Widget> = Box::new(
-        Stack::new().push(Box::new(Column::new().push(Box::new(Row::new().push(child))))),
-    );
+    let mut root: Box<dyn Widget> = Box::new(Stack::new().push(Box::new(
+        Column::new().push(Box::new(Row::new().push(child))),
+    )));
     let mut doc = AutoCommit::new();
     assert!(root.update(&mut doc, &ROOT));
     assert_eq!(updates.get(), 1);

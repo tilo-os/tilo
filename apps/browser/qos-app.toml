@@ -52,6 +52,12 @@ namespaces = [
 # lifted and nothing else changed — ptrace, mount, namespace manipulation, raw
 # sockets, bpf and keyctl are still refused. Every other package stays on
 # `qos-default`, where a writable-and-executable mapping is an EPERM.
+#
+# This line is a request, not a setting. Writing it does not obtain it: the
+# launcher checks the package id against /usr/lib/qos/jit-entitled.conf, which
+# the image owns, and applies the strict profile to anything not listed there.
+# `dev.qos.browser` is on that list. A package that could weaken its own filter
+# by describing itself would be the applicant filling in their own permit.
 seccomp    = "qos-jit"
 landlock   = "strict"
 

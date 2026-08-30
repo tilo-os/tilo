@@ -135,9 +135,9 @@ pub struct SmartInfo {
     pub power_on_hours: Option<i64>,
     pub power_cycles: Option<i64>,
     pub reallocated: Option<i64>,
-    /// NVMe wear indicator (0-100, "percentage used").
+    /// `NVMe` wear indicator (0-100, "percentage used").
     pub pct_used: Option<i64>,
-    /// Total host writes in GB (NVMe "Data Units Written" derived).
+    /// Total host writes in GB (`NVMe` "Data Units Written" derived).
     pub written_gb: Option<i64>,
     pub attrs: Vec<SmartAttr>,
     /// Human explanation shown when there is no usable telemetry — e.g. the
@@ -147,7 +147,7 @@ pub struct SmartInfo {
     pub detail: Option<String>,
 }
 
-/// Newtype wrapper so `SmartInfo` can derive `Default` (SmartStatus has
+/// Newtype wrapper so `SmartInfo` can derive `Default` (`SmartStatus` has
 /// no natural default otherwise).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmartStatusOpt(pub SmartStatus);
@@ -232,10 +232,10 @@ impl Partition {
 
     /// Display name for the filesystem (label preferred, then fstype).
     pub fn display_label(&self) -> String {
-        if let Some(l) = &self.label {
-            if !l.is_empty() {
-                return l.clone();
-            }
+        if let Some(l) = &self.label
+            && !l.is_empty()
+        {
+            return l.clone();
         }
         self.fstype.clone().unwrap_or_else(|| "—".to_string())
     }
@@ -275,8 +275,7 @@ impl Drive {
     pub fn smart_status(&self) -> SmartStatus {
         self.smart
             .as_ref()
-            .map(|s| s.status.0)
-            .unwrap_or(SmartStatus::Unknown)
+            .map_or(SmartStatus::Unknown, |s| s.status.0)
     }
 }
 
@@ -292,11 +291,11 @@ impl Topology {
     }
 
     pub fn total_used(&self) -> u64 {
-        self.drives.iter().map(|d| d.used_total()).sum()
+        self.drives.iter().map(Drive::used_total).sum()
     }
 
     /// A curated, fully-populated sample used for `--shots` and as the
-    /// instant-on seed before a live probe lands: an NVMe with
+    /// instant-on seed before a live probe lands: an `NVMe` with
     /// EFI + root + home + swap, a SATA SSD, a spinning HDD that needs
     /// attention, and a USB stick.
     pub fn sample() -> Self {
@@ -465,7 +464,9 @@ impl Topology {
                 pct_used: None,
                 written_gb: None,
                 attrs: vec![],
-                detail: Some("USB mass-storage bridges rarely pass through SMART telemetry.".into()),
+                detail: Some(
+                    "USB mass-storage bridges rarely pass through SMART telemetry.".into(),
+                ),
             }),
         };
 
@@ -542,7 +543,7 @@ mod tests {
     fn nvme_partitions_classify_correctly() {
         let t = Topology::sample();
         let nvme = &t.drives[0];
-        let roles: Vec<_> = nvme.partitions.iter().map(|p| p.role()).collect();
+        let roles: Vec<_> = nvme.partitions.iter().map(super::Partition::role).collect();
         assert_eq!(roles[0], PartRole::Efi);
         assert_eq!(roles[1], PartRole::Root);
         assert_eq!(roles[2], PartRole::Home);
@@ -610,16 +611,34 @@ mod tests {
     #[test]
     fn kind_from_lsblk_covers_media_and_virtual_devices() {
         // Physical media by transport / rotation.
-        assert_eq!(DriveKind::from_lsblk("nvme0n1", false, Some("nvme")), DriveKind::Nvme);
-        assert_eq!(DriveKind::from_lsblk("sda", false, Some("sata")), DriveKind::Ssd);
-        assert_eq!(DriveKind::from_lsblk("sdb", true, Some("sata")), DriveKind::Hdd);
-        assert_eq!(DriveKind::from_lsblk("sdc", false, Some("usb")), DriveKind::Usb);
+        assert_eq!(
+            DriveKind::from_lsblk("nvme0n1", false, Some("nvme")),
+            DriveKind::Nvme
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("sda", false, Some("sata")),
+            DriveKind::Ssd
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("sdb", true, Some("sata")),
+            DriveKind::Hdd
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("sdc", false, Some("usb")),
+            DriveKind::Usb
+        );
         // A zram swap device is non-rotational but must NOT read as an SSD.
         assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
         assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
         // Loop / device-mapper / MD are virtual.
-        assert_eq!(DriveKind::from_lsblk("loop0", false, None), DriveKind::Virtual);
-        assert_eq!(DriveKind::from_lsblk("dm-0", false, None), DriveKind::Virtual);
+        assert_eq!(
+            DriveKind::from_lsblk("loop0", false, None),
+            DriveKind::Virtual
+        );
+        assert_eq!(
+            DriveKind::from_lsblk("dm-0", false, None),
+            DriveKind::Virtual
+        );
         assert!(!DriveKind::from_lsblk("nvme0n1", false, Some("nvme")).is_virtual());
     }
 }

@@ -3,10 +3,12 @@
 //!
 //! `WorkspaceRuntime` is owned by the daemon and shared with the
 //! connection tasks via `Arc<Mutex<_>>`. Each connection task, on
-//! subscribe, registers a `mpsc::UnboundedSender<Envelope>` here;
+//! subscribe, registers a bounded `mpsc::Sender<Envelope>` here;
 //! on receive-a-delta, the daemon iterates every subscriber ≠
-//! author and calls `send`. Peers that are NOT connected but are
-//! members of the workspace get their delta enqueued to disk.
+//! author and calls `try_send`. A saturated subscriber is disconnected
+//! and its durable traffic is queued for replay on reconnect. Peers that
+//! are NOT connected but are members of the workspace get their delta
+//! enqueued to disk.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -52,9 +54,13 @@ pub struct Subscriber {
     /// as a federated relay — the fan-out rule skips it when the
     /// author is itself a `PeerRelay`, to prevent echo loops.
     pub role: PeerRole,
-    /// Outbound envelope channel. `send_err` = disconnected; the
-    /// runtime prunes on next fan-out.
-    pub tx: mpsc::UnboundedSender<Envelope>,
+    /// Bounded outbound envelope channel. Closed or full means the peer can
+    /// no longer keep up and is pruned immediately.
+    pub tx: mpsc::Sender<Envelope>,
+    /// Signals the owning peer task when this subscriber cannot keep up. A
+    /// reconnect replays its durable queue instead of growing RAM without
+    /// bound or leaving the connection silently stale.
+    pub disconnect: mpsc::Sender<()>,
 }
 
 /// Per-workspace runtime.
@@ -73,6 +79,10 @@ pub struct WorkspaceRuntime {
     /// gate subscribes AND to decide who gets store-and-forward
     /// on delta receive.
     pub membership: Membership,
+    /// Whether any connection already admitted by the relay's trust policy may
+    /// join this workspace. Enabled automatically for matching-user home hosts;
+    /// shared/multi-tenant hosts use an explicit membership list.
+    pub admit_authenticated: bool,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     /// Device pubkeys of peer relays this workspace has federated
@@ -93,16 +103,20 @@ impl WorkspaceRuntime {
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
+        let mut membership = membership;
+        for device in store.load_membership()? {
+            if !membership.contains(&device) {
+                membership.devices.push(device);
+            }
+        }
         let doc = if pinned {
             match store.load_snapshot()? {
-                Some(bytes) => Some(
-                    AutoCommit::load(&bytes).map_err(|e| {
-                        crate::store::StoreError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("automerge load: {e}"),
-                        ))
-                    })?,
-                ),
+                Some(bytes) => Some(AutoCommit::load(&bytes).map_err(|e| {
+                    crate::store::StoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("automerge load: {e}"),
+                    ))
+                })?),
                 None => Some(AutoCommit::new()),
             }
         } else {
@@ -112,6 +126,7 @@ impl WorkspaceRuntime {
             store,
             doc,
             membership,
+            admit_authenticated: false,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
         })
@@ -131,9 +146,24 @@ impl WorkspaceRuntime {
         self.subscribers.insert(sub.device_public_key, sub);
     }
 
+    /// Remember an authenticated device so deltas received while it is offline
+    /// are queued across daemon restarts.
+    pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
+        if !self.membership.contains(&device) {
+            self.membership.devices.push(device);
+            self.store.save_membership(&self.membership.devices)?;
+        }
+        Ok(())
+    }
+
     /// Drop a subscription for `device`. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         self.subscribers.remove(device);
+    }
+
+    /// Whether `device` currently holds a subscription here.
+    pub fn has_subscriber(&self, device: &[u8; 32]) -> bool {
+        self.subscribers.contains_key(device)
     }
 
     /// Route a delta envelope to every subscriber that is NOT the
@@ -156,7 +186,7 @@ impl WorkspaceRuntime {
         // 1. Live fan-out — prune closed subscribers as we go.
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
-        for (peer, sub) in self.subscribers.iter() {
+        for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }
@@ -165,7 +195,8 @@ impl WorkspaceRuntime {
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
                 continue;
             }
-            if sub.tx.send(envelope.clone()).is_err() {
+            if sub.tx.try_send(envelope.clone()).is_err() {
+                let _ = sub.disconnect.try_send(());
                 dead.push(*peer);
             } else {
                 delivered += 1;
@@ -177,18 +208,19 @@ impl WorkspaceRuntime {
         // 2. Store-and-forward for offline members. A member is any
         //    pubkey in `membership` that is not the author and not
         //    currently subscribed.
-        for member in self.membership.devices.iter() {
+        for member in &self.membership.devices {
             if member == author {
                 continue;
             }
             if self.subscribers.contains_key(member) {
                 continue;
             }
-            let raw = crate::transport::encode(&envelope)
-                .map_err(|e| crate::store::StoreError::Io(std::io::Error::new(
+            let raw = crate::transport::encode(&envelope).map_err(|e| {
+                crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("encode: {e}"),
-                )))?;
+                ))
+            })?;
             self.store.enqueue_pending(member, seq, &raw)?;
         }
         // 3. Store-and-forward for offline peer relays — reuses the
@@ -196,18 +228,19 @@ impl WorkspaceRuntime {
         //    Suppressed when the origin is itself a peer relay (echo
         //    prevention across a chain of federated relays).
         if from_role == PeerRole::Device {
-            for pr in self.known_peer_relays.iter() {
+            for pr in &self.known_peer_relays {
                 if pr == author {
                     continue;
                 }
                 if self.subscribers.contains_key(pr) {
                     continue;
                 }
-                let raw = crate::transport::encode(&envelope)
-                    .map_err(|e| crate::store::StoreError::Io(std::io::Error::new(
+                let raw = crate::transport::encode(&envelope).map_err(|e| {
+                    crate::store::StoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("encode: {e}"),
-                    )))?;
+                    ))
+                })?;
                 self.store.enqueue_pending(pr, seq, &raw)?;
             }
         }
@@ -219,6 +252,27 @@ impl WorkspaceRuntime {
             authored_at_ns: seq,
             delta_len: raw_delta_bytes.len() as u64,
         });
+        // Keep a transport-level bootstrap independent of the membership
+        // queue. A device can be invited while every existing device is
+        // offline, so it may have no per-device pending directory yet.
+        if let Some(payload) = crate::coedit::CoeditPayload::decode(raw_delta_bytes) {
+            let encoded = crate::transport::encode(&envelope).map_err(|error| {
+                crate::store::StoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("encode retained envelope: {error}"),
+                ))
+            })?;
+            match payload {
+                crate::coedit::CoeditPayload::Checkpoint { channel, .. } => {
+                    self.store.retain_checkpoint(&channel, &encoded)?;
+                }
+                crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
+                    self.store.retain_delta(&channel, seq, &encoded)?;
+                }
+                crate::coedit::CoeditPayload::Unsigned(_)
+                | crate::coedit::CoeditPayload::Signed(_) => {}
+            }
+        }
         // 4. Materialize into the pinned doc so the host holds
         //    authoritative current state (the source for anti-entropy
         //    resync), not just per-peer queues. Runs AFTER fan-out +
@@ -331,14 +385,15 @@ impl WorkspaceRuntime {
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
-        for (peer, sub) in self.subscribers.iter() {
+        for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
             }
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
                 continue;
             }
-            if sub.tx.send(envelope.clone()).is_err() {
+            if sub.tx.try_send(envelope.clone()).is_err() {
+                let _ = sub.disconnect.try_send(());
                 dead.push(*peer);
             } else {
                 delivered += 1;
@@ -377,17 +432,21 @@ mod tests {
         let mut rt = WorkspaceRuntime::open(tmp.path(), 42, false, membership).unwrap();
         // Peer 2 is live; peer 1 (author) is live too but should be
         // excluded; peer 3 is offline → gets store-and-forward.
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, _rx1) = mpsc::channel(8);
+        let (tx2, mut rx2) = mpsc::channel(8);
+        let (disconnect1, _disconnect_rx1) = mpsc::channel(1);
+        let (disconnect2, _disconnect_rx2) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: [1u8; 32],
             role: PeerRole::Device,
             tx: tx1,
+            disconnect: disconnect1,
         });
         rt.add_subscriber(Subscriber {
             device_public_key: [2u8; 32],
             role: PeerRole::Device,
             tx: tx2,
+            disconnect: disconnect2,
         });
         let env = env_delta(42, [1u8; 32]);
         let delivered = rt
@@ -404,19 +463,15 @@ mod tests {
     #[test]
     fn fanout_prunes_dead_subscribers() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(
-            tmp.path(),
-            5,
-            false,
-            Membership::default(),
-        )
-        .unwrap();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
         drop(rx); // channel closed immediately
         rt.add_subscriber(Subscriber {
             device_public_key: [9u8; 32],
             role: PeerRole::Device,
             tx,
+            disconnect,
         });
         let env = env_delta(5, [1u8; 32]);
         let delivered = rt
@@ -427,21 +482,61 @@ mod tests {
     }
 
     #[test]
+    fn fanout_disconnects_saturated_subscriber_and_queues_durable_delta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let author = [1u8; 32];
+        let slow_peer = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![author, slow_peer]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let (disconnect, mut disconnect_rx) = mpsc::channel(1);
+        tx.try_send(env_delta(6, [9u8; 32])).unwrap();
+        rt.add_subscriber(Subscriber {
+            device_public_key: slow_peer,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+
+        let delivered = rt
+            .fanout_delta(
+                &author,
+                PeerRole::Device,
+                env_delta(6, author),
+                b"durable",
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(delivered, 0);
+        assert!(!rt.subscribers.contains_key(&slow_peer));
+        disconnect_rx
+            .try_recv()
+            .expect("slow peer task must be told to disconnect");
+        assert_eq!(rt.store.count_pending(&slow_peer).unwrap(), 1);
+    }
+
+    #[test]
     fn fanout_from_peer_relay_skips_other_peer_relays() {
         let tmp = tempfile::tempdir().unwrap();
         let mut rt = WorkspaceRuntime::open(tmp.path(), 8, false, Membership::default()).unwrap();
         // A local device + two peer-relay subscribers.
-        let (tx_dev, mut rx_dev) = mpsc::unbounded_channel();
-        let (tx_pr, mut rx_pr) = mpsc::unbounded_channel();
+        let (tx_dev, mut rx_dev) = mpsc::channel(8);
+        let (tx_pr, mut rx_pr) = mpsc::channel(8);
+        let (disconnect_dev, _disconnect_rx_dev) = mpsc::channel(1);
+        let (disconnect_pr, _disconnect_rx_pr) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: [1u8; 32],
             role: PeerRole::Device,
             tx: tx_dev,
+            disconnect: disconnect_dev,
         });
         rt.add_subscriber(Subscriber {
             device_public_key: [2u8; 32],
             role: PeerRole::PeerRelay,
             tx: tx_pr,
+            disconnect: disconnect_pr,
         });
         // The originating peer relay (author, offline here).
         let author = [3u8; 32];
@@ -464,7 +559,8 @@ mod tests {
         // A local device authors — pr is offline, should be queued.
         let author = [1u8; 32];
         let env = env_delta(12, author);
-        rt.fanout_delta(&author, PeerRole::Device, env, b"x", 42).unwrap();
+        rt.fanout_delta(&author, PeerRole::Device, env, b"x", 42)
+            .unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 1);
     }
 
@@ -478,7 +574,8 @@ mod tests {
         // queued (that's the echo across a chain of relays).
         let author = [2u8; 32];
         let env = env_delta(13, author);
-        rt.fanout_delta(&author, PeerRole::PeerRelay, env, b"x", 42).unwrap();
+        rt.fanout_delta(&author, PeerRole::PeerRelay, env, b"x", 42)
+            .unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 0);
     }
 
@@ -559,11 +656,13 @@ mod tests {
         let mut rt = WorkspaceRuntime::open(tmp.path(), 77, true, membership).unwrap();
 
         // B is a LIVE subscriber — exactly what `run_peer` registers.
-        let (tx_b, rx_b) = mpsc::unbounded_channel();
+        let (tx_b, rx_b) = mpsc::channel(8);
+        let (disconnect_b, _disconnect_rx_b) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
             device_public_key: b,
             role: PeerRole::Device,
             tx: tx_b,
+            disconnect: disconnect_b,
         });
 
         // A authors a genuine Automerge edit and publishes it.
@@ -578,7 +677,9 @@ mod tests {
             delta: d1.clone(),
             signature: [0u8; 64],
         };
-        let delivered = rt.fanout_delta(&a, PeerRole::Device, env, &d1, 111).unwrap();
+        let delivered = rt
+            .fanout_delta(&a, PeerRole::Device, env, &d1, 111)
+            .unwrap();
         assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
 
         // The gap: a delivered delta is NOT queued, so the pending tier

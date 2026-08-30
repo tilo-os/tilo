@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "install"
 version = "0.1.0"
 edition = "2024"
@@ -36,3 +38,10 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand.workspace = true
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

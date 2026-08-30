@@ -1,23 +1,12 @@
 //! [`IconGrid`] — a responsive, selectable grid of icon + label cells.
 //!
-//! The toolkit had no wrap-flow grid: the file-explorer's "icon view" was
-//! hand-built as a `Column` of `Row`s with a hard-coded six-cells-per-row
-//! and no selection or keyboard support. `IconGrid` replaces that with a
-//! single measured leaf widget that:
+//! A single measured leaf widget that **reflows** to the available width
+//! (column count derived from cell size at layout time), **selects** via
+//! the shared [`SelectionModel`](crate::selection::SelectionModel), and
+//! **activates** items on double-click or Enter via `on_activate`.
 //!
-//! * **reflows** to the available width — the column count is derived from
-//!   the cell size at layout time, so the same grid adapts from a narrow
-//!   sidebar to a wide window;
-//! * **selects** via the shared [`SelectionModel`](crate::selection::SelectionModel)
-//!   (click / Ctrl-click / Shift-click, plus arrow-key navigation that
-//!   understands the 2-D layout);
-//! * **activates** items on double-click or Enter via `on_activate`;
-//! * renders each item's [`Icon`](crate::icons::Icon) as a crisp vector
-//!   glyph (not a font codepoint) with a truncated label beneath it.
-//!
-//! Like the file-explorer's other views it is designed to be rebuilt each
-//! frame by a stateless host: seed the selection with
-//! [`set_selection`](IconGrid::set_selection) and react to
+//! Designed to be rebuilt each frame by a stateless host: seed the
+//! selection with [`set_selection`](IconGrid::set_selection) and react to
 //! `on_item_click(index, ctrl, shift)`.
 
 use std::collections::HashMap;
@@ -28,14 +17,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::icons::{draw_icon, Icon, LUCIDE_DEFAULT_STROKE_PX};
+use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// One cell: a vector glyph and a label.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
     pub icon: Icon,
@@ -44,24 +33,28 @@ pub struct IconGridItem {
 
 impl IconGridItem {
     pub fn new(icon: Icon, label: impl Into<String>) -> Self {
-        Self { icon, label: label.into() }
+        Self {
+            icon,
+            label: label.into(),
+        }
     }
 }
 
-/// Responsive icon grid widget.
+/// `(index, ctrl, shift)`.
+type ItemClick = Box<dyn FnMut(usize, bool, bool)>;
+
 pub struct IconGrid {
     items: Vec<IconGridItem>,
     /// Per-cell box (icon + label) in logical px.
     cell_w: f64,
     cell_h: f64,
-    /// Gap between cells (both axes).
+    /// Both axes.
     gap: f64,
-    /// Icon glyph size within a cell.
     icon_px: f64,
 
     rect: Rect,
-    /// Column count resolved at the last layout, cached for hit-testing +
-    /// keyboard navigation. Always `>= 1`.
+    /// Resolved at the last layout, cached for hit-testing + keyboard
+    /// navigation. Always `>= 1`.
     columns: usize,
 
     selection: SelectionModel,
@@ -70,13 +63,13 @@ pub struct IconGrid {
     last_cursor: Point,
     last_click: Option<(usize, std::time::Instant)>,
 
-    on_item_click: Option<Box<dyn FnMut(usize, bool, bool)>>,
+    on_item_click: Option<ItemClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
 }
 
 impl IconGrid {
-    /// A grid with the default cell metrics (96×88 px cells, 12 px gap,
-    /// 40 px glyphs) — tuned for a file-manager icon view.
+    /// Default cell metrics (96×88 px cells, 12 px gap, 40 px glyphs)
+    /// are tuned for a file-manager icon view.
     pub fn new(items: Vec<IconGridItem>) -> Self {
         Self {
             items,
@@ -96,54 +89,49 @@ impl IconGrid {
         }
     }
 
-    /// Override the per-cell metrics.
     pub fn with_cell_size(mut self, w: f64, h: f64) -> Self {
         self.cell_w = w.max(8.0);
         self.cell_h = h.max(8.0);
         self
     }
 
-    /// Override the glyph size.
     pub fn with_icon_size(mut self, px: f64) -> Self {
         self.icon_px = px.max(4.0);
         self
     }
 
-    /// Seed the selection (host owns it across frames).
+    /// Host owns the selection across frames.
     pub fn set_selection(&mut self, sel: SelectionModel) {
         self.selection = sel;
     }
 
-    /// Builder form of [`set_selection`](IconGrid::set_selection).
     pub fn with_selection(mut self, sel: SelectionModel) -> Self {
         self.selection = sel;
         self
     }
 
-    /// Borrow the selection.
     pub fn selection(&self) -> &SelectionModel {
         &self.selection
     }
 
-    /// Number of columns resolved at the last layout (always `>= 1`).
     pub fn column_count(&self) -> usize {
         self.columns
     }
 
-    /// Per-click handler `(index, ctrl, shift)`.
+    /// `(index, ctrl, shift)`.
     pub fn on_item_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
         self.on_item_click = Some(Box::new(f));
         self
     }
 
-    /// Activation handler (double-click / Enter), given the item index.
+    /// Double-click or Enter.
     pub fn on_activate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
         self
     }
 
-    /// How many columns fit in `width` given the cell metrics. Always
-    /// at least one so a too-narrow grid still shows a single column.
+    /// Always at least one, so a too-narrow grid still shows a single
+    /// column.
     pub fn columns_for_width(&self, width: f64) -> usize {
         let stride = self.cell_w + self.gap;
         if stride <= 0.0 {
@@ -153,7 +141,6 @@ impl IconGrid {
         (((width + self.gap) / stride).floor() as usize).max(1)
     }
 
-    /// Total content height for `columns` columns of the current items.
     fn content_height(&self, columns: usize) -> f64 {
         let rows = if self.items.is_empty() {
             0
@@ -167,7 +154,6 @@ impl IconGrid {
         }
     }
 
-    /// Top-left origin of cell `i` within `self.rect`.
     fn cell_origin(&self, i: usize) -> Point {
         let col = i % self.columns;
         let row = i / self.columns;
@@ -182,7 +168,6 @@ impl IconGrid {
         Rect::new(o.x, o.y, o.x + self.cell_w, o.y + self.cell_h)
     }
 
-    /// Item index under a logical point, if any.
     pub fn item_at(&self, pt: Point) -> Option<usize> {
         if self.columns == 0 {
             return None;
@@ -207,7 +192,11 @@ impl IconGrid {
             return None;
         }
         let idx = row * self.columns + col;
-        if idx < self.items.len() { Some(idx) } else { None }
+        if idx < self.items.len() {
+            Some(idx)
+        } else {
+            None
+        }
     }
 }
 
@@ -220,8 +209,8 @@ impl Widget for IconGrid {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -231,12 +220,15 @@ impl Widget for IconGrid {
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        // Pick a width: known wins, else the definite available width,
-        // else fall back to enough for one cell.
-        let width = known.width.map(|w| w as f64).unwrap_or(match available.width {
-            taffy::AvailableSpace::Definite(w) => w as f64,
-            _ => self.cell_w,
-        });
+        // known wins, else the definite available width, else enough
+        // for one cell.
+        let width = known.width.map_or(
+            match available.width {
+                taffy::AvailableSpace::Definite(w) => f64::from(w),
+                _ => self.cell_w,
+            },
+            f64::from,
+        );
         let columns = self.columns_for_width(width);
         self.columns = columns;
         let height = self.content_height(columns);
@@ -247,15 +239,15 @@ impl Widget for IconGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        // Resolve columns from the actual allocated width (measure may have
-        // run against a different available width).
+        // Actual allocated width — measure may have run against a
+        // different available width.
         self.columns = self.columns_for_width(self.rect.width());
     }
 
@@ -282,50 +274,70 @@ impl Widget for IconGrid {
                 } else {
                     theme.bg_hover
                 };
-                let shape = RoundedRect::from_rect(cell, tokens.radii.md as f64);
+                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
-            // Icon: a centred square in the upper portion of the cell.
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
             let icon_y = cell.y0 + 10.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
             let glyph_color = if selected {
-                vello::peniko::Color::WHITE
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
             } else {
                 tokens.colors.text_primary
             };
-            draw_icon(scene, transform, icon_rect, self.items[i].icon, glyph_color, LUCIDE_DEFAULT_STROKE_PX);
+            draw_icon(
+                scene,
+                transform,
+                icon_rect,
+                self.items[i].icon,
+                glyph_color,
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
 
-            // Label: centred under the icon, truncated to the cell width.
-            let label = truncate_to_width(text_renderer, &self.items[i].label, label_size, self.cell_w - 8.0);
+            let label = truncate_to_width(
+                text_renderer,
+                &self.items[i].label,
+                label_size,
+                self.cell_w - 8.0,
+            );
             let (tw, _) = text_renderer.measure(&label, label_size, None);
-            let tx = cell.x0 + (self.cell_w - tw as f64) / 2.0;
+            let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + 8.0;
             let label_color = if selected {
-                vello::peniko::Color::WHITE
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else {
                 tokens.colors.text_primary
             };
-            text_renderer.draw_text(scene, &label, label_size, label_color, transform * Affine::translate((tx, ty)), None);
+            text_renderer.draw_text(
+                scene,
+                &label,
+                label_size,
+                label_color,
+                transform * Affine::translate((tx, ty)),
+                None,
+            );
         }
 
-        // Keyboard-focus ring: when the grid holds focus, draw the shared
-        // focus border around the active (primary) cell so arrow-key
-        // navigation is visible without relying on the selection fill alone.
-        if self.is_focused {
-            if let Some(i) = self.selection.primary() {
-                let cell = self.cell_rect(i);
-                if !presence.should_cull(cell) {
-                    let ring = RoundedRect::from_rect(cell, tokens.radii.md as f64);
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(2.0),
-                        transform,
-                        theme.border_focus,
-                        None,
-                        &ring,
-                    );
-                }
+        // So arrow-key navigation is visible without relying on the
+        // selection fill alone.
+        if self.is_focused
+            && let Some(i) = self.selection.primary()
+        {
+            let cell = self.cell_rect(i);
+            if !presence.should_cull(cell) {
+                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(2.0),
+                    transform,
+                    theme.border_focus,
+                    None,
+                    &ring,
+                );
             }
         }
     }
@@ -352,7 +364,11 @@ impl Widget for IconGrid {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if let Some(i) = self.item_at(self.last_cursor) {
                     let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
                     let shift = modifiers.state().shift_key();
@@ -364,7 +380,7 @@ impl Widget for IconGrid {
                     let now = std::time::Instant::now();
                     let is_double = matches!(
                         self.last_click,
-                        Some((pi, t)) if pi == i && now.duration_since(t) < std::time::Duration::from_millis(500)
+                        Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()
                     );
                     if is_double {
                         self.last_click = None;
@@ -389,10 +405,16 @@ impl Widget for IconGrid {
                 let cols = self.columns.max(1);
                 let cur = self.selection.primary();
                 let target = match &ke.logical_key {
-                    Key::Named(NamedKey::ArrowRight) => Some(cur.map(|c| (c + 1).min(len - 1)).unwrap_or(0)),
-                    Key::Named(NamedKey::ArrowLeft) => Some(cur.map(|c| c.saturating_sub(1)).unwrap_or(0)),
-                    Key::Named(NamedKey::ArrowDown) => Some(cur.map(|c| (c + cols).min(len - 1)).unwrap_or(0)),
-                    Key::Named(NamedKey::ArrowUp) => Some(cur.map(|c| c.saturating_sub(cols)).unwrap_or(0)),
+                    Key::Named(NamedKey::ArrowRight) => {
+                        Some(cur.map_or(0, |c| (c + 1).min(len - 1)))
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => Some(cur.map_or(0, |c| c.saturating_sub(1))),
+                    Key::Named(NamedKey::ArrowDown) => {
+                        Some(cur.map_or(0, |c| (c + cols).min(len - 1)))
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        Some(cur.map_or(0, |c| c.saturating_sub(cols)))
+                    }
                     Key::Named(NamedKey::Enter) => {
                         if let (Some(c), Some(cb)) = (cur, self.on_activate.as_mut()) {
                             cb(c);
@@ -400,7 +422,9 @@ impl Widget for IconGrid {
                         *handled = true;
                         None
                     }
-                    Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
+                    Key::Character(s)
+                        if (s == "a" || s == "A") && modifiers.state().control_key() =>
+                    {
                         self.selection.select_all(len);
                         *handled = true;
                         None
@@ -416,7 +440,7 @@ impl Widget for IconGrid {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "IconGrid"
     }
 
@@ -442,9 +466,8 @@ impl Widget for IconGrid {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A grid of icon cells is a list of items; the items are drawn (not
-        // child widgets), so the container carries the semantics. Surface the
-        // primary-selected cell's label as the current value.
+        // Items are drawn, not child widgets, so the container carries
+        // the semantics.
         let primary = self.selection.primary();
         let value = primary
             .and_then(|i| self.items.get(i))
@@ -456,11 +479,11 @@ impl Widget for IconGrid {
                 focused: self.is_focused(),
                 ..Default::default()
             });
-        // Surface the selected cell's ordinal so the reader can say "2 of 9".
-        if let Some(i) = primary {
-            if i < self.items.len() {
-                node = node.with_position(i + 1, self.items.len());
-            }
+        // So the reader can say "2 of 9".
+        if let Some(i) = primary
+            && i < self.items.len()
+        {
+            node = node.with_position(i + 1, self.items.len());
         }
         Some(node)
     }
@@ -472,7 +495,7 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -
         return String::new();
     }
     let (w, _) = tr.measure(text, size, None);
-    if (w as f64) <= max_w {
+    if f64::from(w) <= max_w {
         return text.to_string();
     }
     let chars: Vec<char> = text.chars().collect();
@@ -481,7 +504,7 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -
         keep -= 1;
         let candidate: String = chars[..keep].iter().collect::<String>() + "…";
         let (cw, _) = tr.measure(&candidate, size, None);
-        if (cw as f64) <= max_w {
+        if f64::from(cw) <= max_w {
             return candidate;
         }
     }
@@ -494,7 +517,9 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
-        (0..n).map(|i| IconGridItem::new(Icon::File, format!("f{i}"))).collect()
+        (0..n)
+            .map(|i| IconGridItem::new(Icon::File, format!("f{i}")))
+            .collect()
     }
 
     #[test]
@@ -545,7 +570,7 @@ mod tests {
         g.columns = 3;
 
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mods = winit::event::Modifiers::default();
         let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
         let mut doc = AutoCommit::new();
@@ -553,10 +578,25 @@ mod tests {
         let mut feed = |g: &mut IconGrid, ev: WindowEvent| {
             let mut h = false;
             let mut f = None;
-            g.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut h, &mut f, node, &tree);
+            g.handle_event(
+                &ev, 1.0, &mods, &mut doc, &root, &mut h, &mut f, node, &tree,
+            );
         };
-        feed(&mut g, WindowEvent::CursorMoved { device_id: device, position: (156.0, 144.0).into() });
-        feed(&mut g, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        feed(
+            &mut g,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (156.0, 144.0).into(),
+            },
+        );
+        feed(
+            &mut g,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert!(g.selection().is_selected(4));
         assert_eq!(*log.borrow(), vec![(4, false, false)]);
     }
@@ -570,7 +610,6 @@ mod tests {
         assert!(node.state.focusable);
         assert_eq!(node.value, None, "no selection → no value");
 
-        // Selecting an item surfaces its label as the value.
         g.selection.select_only(4);
         let node = Widget::accessibility(&g).unwrap();
         assert_eq!(node.value.as_deref(), Some("f4"));
@@ -584,14 +623,22 @@ mod tests {
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
         let node = g.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
-        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
         g.apply_layout(&taffy, node, Point::ZERO);
 
         let mut tr = TextRenderer::new();
         let presence = crate::presence::PresenceCtx::default();
         let mut scene = Scene::new();
-        g.draw(&mut scene, vello::kurbo::Affine::IDENTITY, &mut tr, theme, &presence);
+        g.draw(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &presence,
+        );
         scene
             .encoding()
             .draw_tags
@@ -600,9 +647,7 @@ mod tests {
             .count()
     }
 
-    /// A focused grid with a primary cell must paint a focus ring — one extra
-    /// stroke — that an unfocused grid does not. Asserts on the production
-    /// `draw` path via the scene encoding.
+    /// Asserts on the production `draw` path via the scene encoding.
     #[test]
     fn focused_grid_paints_a_focus_ring() {
         let theme = Theme::dark();

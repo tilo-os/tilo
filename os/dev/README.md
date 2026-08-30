@@ -47,6 +47,13 @@ If your host has qemu + tools natively, set `QOS_DISTROBOX=""` to skip the box.
 # untouched, so this is the build to use when the question is "does it boot?".
 QOS_WITH_BROWSER=0 ./os/dev/build-image.sh
 
+# …or don't build at all. The image builds in CI here, so the local half of
+# the pipeline is often just the disk step: pull what CI published and image
+# that. Needs `podman login code.sandbox.example` once.
+podman pull code.sandbox.example/qos/qos:<tag>
+podman tag  code.sandbox.example/qos/qos:<tag> localhost/qos:latest
+QOS_SKIP_BUILD=1 ./os/dev/build-image.sh
+
 # 2. Boot + greeter + login + desktop, screenshots into a dir:
 ./os/dev/vm.sh capture-boot ./vm-artifacts
 
@@ -69,11 +76,50 @@ compositor**, so pick per task:
 
 | Mode | qemu flags | `screendump` captures | Compositor (`shell`) |
 |------|-----------|----------------------|----------------------|
-| `--2d` (default) | `-device virtio-vga -display none` | GRUB, kernel console, **tuigreet greeter** | software GL only (may not run) |
+| `--2d` (default) | `-device virtio-vga -display none` | GRUB, kernel console, greeter, **and the desktop** | llvmpipe — slow, but it runs |
 | `--gl` | `-device virtio-vga-gl -display egl-headless,rendernode=<iGPU>` | **GL compositor scanout** (2D content → "no surface") | hardware GL via virgl |
 
-So: screenshot the **greeter in `--2d`**, screenshot the **desktop in `--gl`**.
 `vm.sh serial` works in both (the image boots with `console=ttyS0`).
+
+Two corrections to what this table used to say, both established by booting the
+image rather than by reading the flags:
+
+* **`--2d` does reach the desktop.** The compositor was described as possibly
+  not starting under software GL. It starts: `/usr/bin/shell --backend drm`
+  paints the full desktop through llvmpipe, just slowly. So `--2d` is the mode
+  that can capture a whole boot — firmware, bootloader, console, greeter, login
+  and desktop — in one continuous take, which no GL mode can, and it is what
+  `record-boot.py` defaults to.
+* **The greeter is not tuigreet.** greetd runs `cage -s -- qos-greeter` on vt1
+  (`/etc/greetd/config.toml`), a graphical Wayland session with a two-field
+  form. Return on the username submits, so anything driving it wants Tab
+  between the fields.
+
+`--gl` additionally needs `qemu-ui-egl-headless` installed in the VM
+environment; without it qemu exits with `Display 'egl-headless' is not
+available`. On the reference machine qemu 10.1.5 then **segfaults** in
+`hw-display-virtio-vga-gl.so` at startup, so GL headless is currently
+unavailable there — which costs nothing for boot capture, given the row above.
+
+## Recording a boot as video
+
+`vm.sh shot` gives stills, so a boot could only ever be shown as a
+before-and-after pair. `record-boot.py` films it:
+
+```bash
+./os/dev/record-boot.py --login --after-login 8 --out boot.mp4
+```
+
+It dumps the framebuffer on a timer, keeps each frame's wall-clock timestamp,
+and encodes at the rate the frames were really captured — so the clip runs at
+the speed the machine actually booted. `--login` types the credentials when
+greetd reports itself up rather than at a guessed offset.
+
+The table above is the constraint here too, and the script does not pretend
+otherwise: it reports how many frames came back empty, and warns with the
+window they span, because under `--mode gl` every dump before the compositor
+starts answers "no surface". A gap in that report is the honest shape of the
+capture.
 
 ## Testing the boot chain (TPM, encryption, Secure Boot)
 

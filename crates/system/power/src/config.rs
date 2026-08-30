@@ -80,12 +80,14 @@ pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
 pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
     let defaults = default_policy();
 
-    let auto_suspend = section.get("auto_suspend").and_then(|v| v.as_bool()).unwrap_or(true);
+    let auto_suspend = section
+        .get("auto_suspend")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let suspend_minutes = section
         .get("suspend_minutes")
-        .and_then(|v| v.as_u64())
-        .map(|m| m as u32)
-        .unwrap_or(DEFAULT_SUSPEND_MINUTES);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(DEFAULT_SUSPEND_MINUTES, |m| m as u32);
 
     // `auto_suspend` off, or a 0-minute timeout, disables idle-suspend.
     let idle_suspend = if auto_suspend && suspend_minutes > 0 {
@@ -104,9 +106,8 @@ pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
     let percent = |key: &str, fallback: u8| -> u8 {
         section
             .get(key)
-            .and_then(|v| v.as_u64())
-            .map(|p| p.min(100) as u8)
-            .unwrap_or(fallback)
+            .and_then(serde_json::Value::as_u64)
+            .map_or(fallback, |p| p.min(100) as u8)
     };
 
     PowerPolicy {
@@ -130,7 +131,7 @@ mod tests {
     fn missing_file_is_settings_defaults() {
         let p = policy_from_settings_json("");
         assert_eq!(p, default_policy());
-        assert_eq!(p.idle_suspend, Some(Duration::from_secs(15 * 60)));
+        assert_eq!(p.idle_suspend, Some(Duration::from_mins(15)));
     }
 
     #[test]
@@ -156,7 +157,7 @@ mod tests {
             }
         }"#;
         let p = policy_from_settings_json(json);
-        assert_eq!(p.idle_suspend, Some(Duration::from_secs(20 * 60)));
+        assert_eq!(p.idle_suspend, Some(Duration::from_mins(20)));
         assert_eq!(p.lid_close_action, PowerAction::Lock);
         assert_eq!(p.power_key_action, PowerAction::Ignore);
         assert_eq!(p.low_battery_percent, 20);

@@ -9,7 +9,7 @@
 
 use ui::portal::{FileFilter, PickRequest};
 
-pub use ui::portal::{inject_for_test, PortalChannel, PortalOutcome};
+pub use ui::portal::{PortalChannel, PortalOutcome, inject_for_test};
 
 fn epub_filter() -> FileFilter {
     FileFilter::new("EPUB books")
@@ -34,7 +34,9 @@ mod tests {
 
     #[test]
     fn the_open_dialog_is_configured_for_epubs() {
-        let r = PickRequest::open("Open a book", "Open").filter(epub_filter()).all_files();
+        let r = PickRequest::open("Open a book", "Open")
+            .filter(epub_filter())
+            .all_files();
         assert_eq!(r.title(), "Open a book");
         assert!(!r.is_multiple(), "opening a single book, not a batch");
         // The EPUB filter leads, with an "All files" escape hatch last so an

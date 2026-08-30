@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "channel-crypto"
 version = "0.1.0"
 edition = "2024"
@@ -49,3 +51,10 @@ collab-types = { path = "../collab-types" }
 # Outer-signature path in the SignedOp test needs a concrete
 # `SigningKey` type. Same major version qos-collab-types is on.
 ed25519-dalek = { workspace = true, features = ["serde"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

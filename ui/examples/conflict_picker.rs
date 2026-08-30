@@ -5,7 +5,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo run -p ui --example conflict_picker
+//! cargo run -p ui --example ui-lab -- conflict_picker
 //! ```
 //!
 //! Notes:
@@ -16,7 +16,7 @@
 //!   `[Review]` to see the picker pick path; click `[Dismiss]` to fire
 //!   the dismiss callback.
 //! - The picker emits one of the four `PickerOutcome` variants
-//!   (Picked, KeepCurrent, Cancel — PickedMerged needs a
+//!   (Picked, `KeepCurrent`, Cancel — `PickedMerged` needs a
 //!   `MergeOrPick` kind, which the kanban scenario doesn't produce).
 
 use std::sync::Arc;
@@ -35,7 +35,7 @@ fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     // Two writers concurrently moved the same kanban card to
     // different columns. Wrap that as a `PickOne` kind so the
     // picker shows them side-by-side.
@@ -62,14 +62,10 @@ fn main() {
     banner.set_conflict_count(2);
 
     let picker = ConflictPicker::new("Kanban move", kind)
-        .on_pick(|outcome| eprintln!("[picker] outcome: {:?}", outcome));
+        .on_pick(|outcome| eprintln!("[picker] outcome: {outcome:?}"));
 
     let state = State::new();
-    let root_widget = Box::new(
-        Column::new()
-            .push(Box::new(banner))
-            .push(Box::new(picker)),
-    );
+    let root_widget = Box::new(Column::new().push(Box::new(banner)).push(Box::new(picker)));
 
     let app = App::new(state, root_widget);
     app.run();

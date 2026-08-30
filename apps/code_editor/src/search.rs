@@ -14,9 +14,9 @@
 //! count in the find bar and the hits in the panel can never disagree.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::Arc;
 
 use crate::disk;
 
@@ -95,7 +95,15 @@ pub struct Hit {
 pub enum Msg {
     Hits(Vec<Hit>),
     /// The walk finished (or hit [`MAX_HITS`]).
-    Done { files: usize, truncated: bool },
+    Done {
+        /// How many files the walk covered. The worker reports it and the walk
+        /// test asserts on it; the panel's summary counts distinct files in the
+        /// rows it actually holds instead, so nothing on the draw path reads
+        /// this.
+        #[allow(dead_code)]
+        files: usize,
+        truncated: bool,
+    },
 }
 
 /// A running search. Dropping it cancels the worker.
@@ -180,19 +188,17 @@ pub fn start(root: &Path, query: Query) -> Job {
 ///
 /// `emit` returns `false` when the receiver is gone, which ends the walk — a
 /// closed window must not keep a thread scanning a repository.
-pub fn walk(
-    root: &Path,
-    query: &Query,
-    cancel: &AtomicBool,
-    emit: &mut dyn FnMut(Msg) -> bool,
-) {
+pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMut(Msg) -> bool) {
     let mut files = 0usize;
     let mut hits_total = 0usize;
     let mut batch: Vec<Hit> = Vec::with_capacity(BATCH);
     let mut truncated = false;
 
     if query.is_empty() {
-        emit(Msg::Done { files: 0, truncated: false });
+        emit(Msg::Done {
+            files: 0,
+            truncated: false,
+        });
         return;
     }
 
@@ -234,12 +240,18 @@ pub fn walk(
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let Ok(md) = std::fs::metadata(&path) else { continue };
+            let Ok(md) = std::fs::metadata(&path) else {
+                continue;
+            };
             if md.len() > disk::MAX_TEXT_BYTES {
                 continue;
             }
-            let Ok(bytes) = std::fs::read(&path) else { continue };
-            let Ok(text) = String::from_utf8(bytes) else { continue };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
             if text.as_bytes()[..text.len().min(8192)].contains(&0) {
                 continue;
             }
@@ -296,18 +308,24 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     let hay: Vec<char> = if query.case_sensitive {
         line.chars().collect()
     } else {
-        line.chars().flat_map(|c| c.to_lowercase()).collect()
+        line.chars().flat_map(char::to_lowercase).collect()
     };
     let needle: Vec<char> = if query.case_sensitive {
         query.needle.chars().collect()
     } else {
-        query.needle.chars().flat_map(|c| c.to_lowercase()).collect()
+        query.needle.chars().flat_map(char::to_lowercase).collect()
     };
     // Case folding can change length (`ß` → `ss`), which would desynchronise
     // the folded index from the caret index. When it does, fall back to a
     // case-sensitive scan rather than reporting a column that is a lie.
     if !query.case_sensitive && hay.len() != line.chars().count() {
-        return line_matches(line, &Query { case_sensitive: true, ..query.clone() });
+        return line_matches(
+            line,
+            &Query {
+                case_sensitive: true,
+                ..query.clone()
+            },
+        );
     }
     if needle.is_empty() || needle.len() > hay.len() {
         return Vec::new();
@@ -316,12 +334,12 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + needle.len() <= hay.len() {
-        if hay[i..i + needle.len()] == needle[..] {
-            if !query.whole_word || is_word_bounded(&hay, i, needle.len()) {
-                out.push((i, needle.len()));
-                i += needle.len();
-                continue;
-            }
+        if hay[i..i + needle.len()] == needle[..]
+            && (!query.whole_word || is_word_bounded(&hay, i, needle.len()))
+        {
+            out.push((i, needle.len()));
+            i += needle.len();
+            continue;
         }
         i += 1;
     }
@@ -347,7 +365,11 @@ fn clip_preview(line: &str, col: usize) -> (String, usize) {
     let chars: Vec<char> = line.chars().collect();
     // Drop leading indentation — every hit in a deeply nested block would
     // otherwise start with twenty spaces and no content.
-    let indent = chars.iter().take_while(|c| c.is_whitespace()).count().min(col);
+    let indent = chars
+        .iter()
+        .take_while(|c| c.is_whitespace())
+        .count()
+        .min(col);
     let mut start = indent;
     if col - start > PREVIEW_LIMIT / 2 {
         start = col - PREVIEW_LIMIT / 2;
@@ -360,9 +382,10 @@ fn clip_preview(line: &str, col: usize) -> (String, usize) {
 /// `path` written relative to `root`, for the results list. Falls back to the
 /// full path when the file is somehow outside the root.
 pub fn relative_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+    path.strip_prefix(root).map_or_else(
+        |_| path.to_string_lossy().to_string(),
+        |p| p.to_string_lossy().to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -458,7 +481,11 @@ mod tests {
         std::fs::create_dir_all(r.join("src")).unwrap();
         std::fs::create_dir_all(r.join("target/debug")).unwrap();
         std::fs::create_dir_all(r.join(".git")).unwrap();
-        std::fs::write(r.join("src/main.rs"), "fn main() {\n    let needle = 1;\n}\n").unwrap();
+        std::fs::write(
+            r.join("src/main.rs"),
+            "fn main() {\n    let needle = 1;\n}\n",
+        )
+        .unwrap();
         std::fs::write(r.join("src/lib.rs"), "// no match here\n").unwrap();
         std::fs::write(r.join("README.md"), "the needle and the haystack\n").unwrap();
         // Both of these contain the needle but must never be searched.
@@ -475,7 +502,10 @@ mod tests {
 
         let main_hit = hits.iter().find(|h| h.rel.ends_with("main.rs")).unwrap();
         assert_eq!(main_hit.line, 2, "line numbers are 1-based");
-        assert_eq!(main_hit.col, 8, "column is the character index of the match");
+        assert_eq!(
+            main_hit.col, 8,
+            "column is the character index of the match"
+        );
         assert_eq!(main_hit.len, 6);
         assert_eq!(main_hit.rel, "src/main.rs");
         assert_eq!(
@@ -501,9 +531,11 @@ mod tests {
         }
         // Proof the fixture really does contain the needle in those places, so
         // this test could fail if the skip regressed.
-        assert!(std::fs::read_to_string(d.path().join("target/debug/out.txt"))
-            .unwrap()
-            .contains("needle"));
+        assert!(
+            std::fs::read_to_string(d.path().join("target/debug/out.txt"))
+                .unwrap()
+                .contains("needle")
+        );
     }
 
     #[test]

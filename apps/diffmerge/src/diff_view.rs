@@ -44,6 +44,12 @@ pub struct DiffView {
     hovered_minimap: bool,
 }
 
+impl Default for DiffView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DiffView {
     pub fn new() -> Self {
         Self {
@@ -150,7 +156,11 @@ impl DiffView {
             }
             RowKind::Delete => {
                 if is_left {
-                    if side_present { Some(del) } else { Some(phantom) }
+                    if side_present {
+                        Some(del)
+                    } else {
+                        Some(phantom)
+                    }
                 } else {
                     Some(phantom)
                 }
@@ -179,17 +189,17 @@ impl Widget for DiffView {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -226,7 +236,13 @@ impl Widget for DiffView {
         // --- Body (clipped + scrolled) ---
         let body_top = r.y0 + HEADER_H;
         let body_clip = Rect::new(r.x0, body_top, r.x1 - MINIMAP_W, r.y1);
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &body_clip);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &body_clip,
+        );
 
         let first_row = (self.scroll_y / ROW_H).floor() as usize;
         let visible_rows = (self.body_height() / ROW_H).ceil() as usize + 2;
@@ -239,15 +255,11 @@ impl Widget for DiffView {
             let row_rect_r = Rect::new(right_col.x0, y, right_col.x1, y + ROW_H);
 
             // Left side tint.
-            if let Some(tint) =
-                Self::row_tint(row.kind, row.left.is_some(), true, theme)
-            {
+            if let Some(tint) = Self::row_tint(row.kind, row.left.is_some(), true, theme) {
                 scene.fill(Fill::NonZero, transform, tint, None, &row_rect_l);
             }
             // Right side tint.
-            if let Some(tint) =
-                Self::row_tint(row.kind, row.right.is_some(), false, theme)
-            {
+            if let Some(tint) = Self::row_tint(row.kind, row.right.is_some(), false, theme) {
                 scene.fill(Fill::NonZero, transform, tint, None, &row_rect_r);
             }
 
@@ -281,10 +293,26 @@ impl Widget for DiffView {
 
             // Line text, syntax-highlighted.
             if let Some(text) = &row.left {
-                draw_code_line(scene, transform, tr, theme, left_col.x0 + GUTTER_W + PAD_X, y, text);
+                draw_code_line(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    left_col.x0 + GUTTER_W + PAD_X,
+                    y,
+                    text,
+                );
             }
             if let Some(text) = &row.right {
-                draw_code_line(scene, transform, tr, theme, right_col.x0 + GUTTER_W + PAD_X, y, text);
+                draw_code_line(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    right_col.x0 + GUTTER_W + PAD_X,
+                    y,
+                    text,
+                );
             }
         }
 
@@ -331,7 +359,7 @@ impl Widget for DiffView {
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-*y as f64) * 60.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
                     MouseScrollDelta::PixelDelta(pp) => -pp.y,
                 };
                 // Only consume when the pointer is plausibly over us — but the
@@ -359,7 +387,7 @@ impl Widget for DiffView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DiffView"
     }
 
@@ -388,7 +416,13 @@ impl DiffView {
         let map_top = r.y0 + HEADER_H;
         let map_h = (r.y1 - map_top).max(1.0);
         let track = Rect::new(map_x0, map_top, r.x1, r.y1);
-        scene.fill(Fill::NonZero, transform, with_alpha(c.neutral[1], 200), None, &track);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            with_alpha(c.neutral[1], 200),
+            None,
+            &track,
+        );
 
         let total = self.model.rows.len().max(1) as f64;
         // Markers for each change block.
@@ -407,15 +441,10 @@ impl DiffView {
         // Viewport indicator.
         if self.content_height() > self.body_height() {
             let vt = map_top + (self.scroll_y / self.content_height()) * map_h;
-            let vb = map_top + ((self.scroll_y + self.body_height()) / self.content_height()) * map_h;
+            let vb =
+                map_top + ((self.scroll_y + self.body_height()) / self.content_height()) * map_h;
             let vp = RoundedRect::new(map_x0, vt, r.x1, vb.max(vt + 4.0), 2.0);
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                c.text_primary,
-                None,
-                &vp,
-            );
+            scene.stroke(&Stroke::new(1.5), transform, c.text_primary, None, &vp);
         }
     }
 }
@@ -437,7 +466,10 @@ fn draw_header(
         transform,
         c.border_standard,
         None,
-        &Line::new(Point::new(col.x0, col.y0 + HEADER_H), Point::new(col.x1, col.y0 + HEADER_H)),
+        &Line::new(
+            Point::new(col.x0, col.y0 + HEADER_H),
+            Point::new(col.x1, col.y0 + HEADER_H),
+        ),
     );
     if !label.is_empty() {
         tr.draw_text(
@@ -463,7 +495,13 @@ fn draw_gutter_number(
     let c = &theme.tokens.colors;
     // Gutter background.
     let g = Rect::new(x0, y, x0 + GUTTER_W, y + ROW_H);
-    scene.fill(Fill::NonZero, transform, with_alpha(c.neutral[1], 120), None, &g);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        with_alpha(c.neutral[1], 120),
+        None,
+        &g,
+    );
     if let Some(n) = no {
         let s = n.to_string();
         // Right-align within the gutter.
@@ -505,7 +543,7 @@ fn draw_code_line(
             None,
         );
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
-        x += w as f64;
+        x += f64::from(w);
     }
 }
 

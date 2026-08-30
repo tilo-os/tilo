@@ -2,11 +2,8 @@
 //!
 //! `TopBar` in `shell/topbar.rs` owns the logical state (workspace nav,
 //! center-widget cooldown, tooltip timing, collaborator helpers). This file
-//! provides a [`TopBarChrome`] that implements [`ui::widget::Widget`]
-//! and paints the bar onto the root scene. Phase 1 wires it into
-//! `build_nirios_root` so there is finally a visible top-bar surface; later
-//! phases will route clicks on its left/center/right clusters back into the
-//! logical `TopBar` for workspace switch / overview toggle / quick-settings.
+//! provides a [`TopBarChrome`] that implements [`ui::widget::Widget`] and
+//! paints the bar onto the root scene.
 
 use std::collections::HashMap;
 
@@ -19,7 +16,7 @@ use vello::peniko::{Brush, ColorStop, Extend, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::color_compat::ColorCompat;
-use ui::presence::{PresenceCtx, parse_hex_color, user_color};
+use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -30,37 +27,28 @@ use crate::shell::state::WorkspaceTree;
 
 pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 
-/// Concept §1.1 top-bar backdrop is `bg-black/80 backdrop-blur-xl`. Until the
-/// pinned Vello supports `push_blur_layer`, we honour just the alpha split
-/// (gap #3 in `docs/nirios/visual-gaps.md`): the top-bar surface is tinted
-/// at 0.80 over whatever sits beneath it. The `surfaces.overlay` token in
-/// `ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
-/// `204 / 255 ≈ 0.8` — so this constant is the single source of truth the
-/// `shell_chrome_test` suite pins the token against.
-pub const TOP_BAR_SURFACE_ALPHA: f32 = 0.80;
+/// The toolkit's shared chrome opacity, so the bar cannot drift from the
+/// popovers hanging off it. [`TopBarChrome::draw`] fills `surfaces.overlay`
+/// directly and never consults this constant, which is why the dark bar
+/// is darker than the desktop while a panel is lighter.
+pub const TOP_BAR_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
-/// Which center-widget variant is active in the top-bar carousel.
+/// Low enough that the sparkline reads as backdrop, not a fourth element
+/// competing with the three metric labels.
+const SPARKLINE_FILL_ALPHA: f32 = 0.30;
+
 /// Scroll-wheel over the center band cycles between these; a three-dot
-/// indicator on the left of the band shows the current position.
+/// indicator shows the current position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CenterWidget {
-    /// Default matches the constructor's seed value (the bar boots
-    /// into Clock mode). Letting `CacheFingerprint::default()` derive
-    /// `Default` for free keeps the cache machinery clean.
     #[default]
     Clock,
     SystemMonitor,
     Calendar,
 }
 
-/// Identifies a metric column in the SystemMonitor center-widget. The
-/// concept paints each metric in its own semantic colour (CPU emerald,
-/// RAM blue, TMP orange — see `nirios-concept/src/components/\
-/// TopBarWidgets.tsx:60-110`); routing through
-/// [`TopBarChrome::metric_label_color`] keeps the per-metric colour
-/// cue as a single source of truth so a future regression collapsing
-/// the strip back to a monotone token surfaces at the helper rather
-/// than scattered through the draw branch.
+/// Routes through [`TopBarChrome::metric_label_color`] so the per-metric
+/// colour (CPU emerald, RAM blue, TMP orange) has one source of truth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MetricKind {
     Cpu,
@@ -99,68 +87,29 @@ impl CenterWidget {
     }
 }
 
-/// Snapshot of the data the top bar renders. Cached at construction and
-/// refreshed when the shell calls [`TopBarChrome::sync_from_tree`] (e.g. in
-/// response to a workspace switch). Keeping the render widget off
-/// Snapshot of every input that affects the top-bar's painted pixels.
-/// Compared field-for-field against the previous frame's snapshot to
-/// decide whether [`TopBarChrome::cached`] can be reused or has to
-/// rebuild. Stored on the widget so the comparison is O(1) per frame.
-///
-/// The time fields are split by mode because each variant consumes a
-/// different slice of `chrono::Local::now()`: Clock paints `HH:MM`
-/// so the minute is the finest grain; SystemMonitor's bars + values
-/// are derived from `seconds % N`, so seconds drive invalidation;
-/// Calendar is fully static (`time_bucket = 0`).
+/// Compared field-for-field to decide whether [`TopBarChrome::cached`] can
+/// be reused. Time fields split by mode since each variant consumes a
+/// different grain of `chrono::Local::now()`.
 #[derive(Default, Clone, PartialEq, Eq)]
 struct CacheFingerprint {
-    /// Position + size of the bar's rect (`x0, y0, w, h` in integer
-    /// pixels). Every shape inside the bar is anchored to
-    /// `self.rect`'s corners *and* the per-frame draw repopulates
-    /// member-field hit rects (e.g. `self.overview_btn_rect`) from
-    /// those corners. Keying the cache on the full rect (not just
-    /// size) means cache hits also imply hit-rects are still valid.
-    /// The bar moves only on viewport resize / sidebar-width change,
-    /// so the rebuild cost is paid rarely.
+    /// Full rect, not just size — the per-frame draw repopulates hit
+    /// rects from `self.rect`'s corners, so a hit must imply those are
+    /// still valid.
     rect_px: (i64, i64, u64, u64),
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
-    /// Three avatar initials + overflow count. The actual colour
-    /// palette is stable for a given roster (derived from peer ids),
-    /// so the initials carry the colour signal too.
     collaborator_initials: Vec<char>,
     collaborator_overflow: usize,
     center_widget: CenterWidget,
-    /// Time bucket — see struct doc. `0` means "no time dependency"
-    /// (static center widget like Calendar).
     time_bucket: u64,
-    /// Quantised status reading. Not the [`SystemStatus`] itself: it
-    /// carries an `f32` volume level, and comparing floats frame to
-    /// frame would either never match (denying the cache) or need an
-    /// epsilon nobody would remember to keep in step with the number of
-    /// pixels the indicator actually moves. This is the reading *as
-    /// drawn* — the volume rounded to the percent the glyph switches on,
-    /// the battery percent, the signal bucket — so the cache is
-    /// invalidated exactly when the painted pixels would differ.
+    /// Quantised, not [`SystemStatus`] itself — it carries an `f32`
+    /// volume that would never match frame to frame at full precision.
     status_key: StatusKey,
 }
 
-/// The three pieces the centre band's calendar strip paints, given the
-/// current local time: weekday, date, and the note that fills the slot
-/// an event would occupy.
-///
-/// No calendar source is wired to the shell, so there is no next event
-/// to name. This follows the same rule as the tray pill: paint what is
-/// actually knowable and say plainly that nothing backs the rest. The
-/// strip used to read "Next: Design Sync 15:30" — a fixed string on
-/// every machine, which anyone glancing at the screen takes for the
-/// user's own diary and anyone watching a recording takes for a
-/// scheduling feature that exists.
-///
-/// Split out as a free function so the strip's content is assertable
-/// without a paint pass; when a real calendar lands, the note is what
-/// it replaces.
+/// No calendar source is wired to the shell, so this paints what's
+/// actually knowable rather than a plausible fixed string.
 fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'static str) {
     (
         now.format("%a").to_string(),
@@ -169,10 +118,8 @@ fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'stat
     )
 }
 
-/// Reduce a reading to what the tray paints. Free function so
-/// [`TopBarChrome::needs_redraw`] can key on the *chrome's* current
-/// status without first copying it onto the widget — `needs_redraw`
-/// takes `&self`, and the whole point is to answer before the copy.
+/// Free function so [`TopBarChrome::needs_redraw`] can key on the
+/// chrome's status without first copying it onto the widget.
 fn status_key_of(s: &crate::shell::status::SystemStatus) -> StatusKey {
     StatusKey {
         battery_percent: s.battery_percent(),
@@ -194,8 +141,6 @@ fn status_key_of(s: &crate::shell::status::SystemStatus) -> StatusKey {
     }
 }
 
-/// The status reading reduced to what the tray paints. See
-/// [`CacheFingerprint::status_key`].
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct StatusKey {
     battery_percent: Option<u8>,
@@ -207,77 +152,59 @@ struct StatusKey {
     muted: bool,
 }
 
-/// `WorkspaceTree` lets `build_nirios_root` stay a pure function of the
-/// tree and avoids a circular borrow against the shell's owned logical
-/// `TopBar`.
+/// `WorkspaceTree`, not `TopBar`, lets `build_nirios_root` stay a pure
+/// function of the tree and avoids a circular borrow against the
+/// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
     rect: Rect,
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
-    /// Scene cache — covers the entire top-bar paint. The bar is large
-    /// (full viewport width × 40 px) and most of its content is stable
-    /// across frames; the only per-frame mutators are the clock (per
-    /// minute), the SystemMonitor sparkline + values (per second when
-    /// in that variant), workspace nav state, and collaborator roster.
-    /// Caching the encoded scene cuts the draw budget at rest by an
-    /// order of magnitude (~12 fills + dozens of text glyphs avoided).
+    /// Most of the bar is stable across frames, so caching cuts the
+    /// draw budget at rest by an order of magnitude.
     cached: Scene,
-    /// Cache-validity fingerprint. The cache is reused iff every field
-    /// here matches its corresponding `self.*` field at draw time —
-    /// see [`TopBarChrome::current_fingerprint`] for what goes in. A
-    /// fresh widget (`Rect::ZERO` rect) yields a fingerprint whose
-    /// rect-width-zero immediately misses, forcing a first-frame paint.
+    /// Reused iff every field matches `self.*` at draw time. See
+    /// [`TopBarChrome::current_fingerprint`].
     cache_fp: CacheFingerprint,
     collaborator_initials: Vec<char>,
-    /// Per-peer fill colour for the avatar circles (one per entry in
-    /// `collaborator_initials`, same index). Resolved from the
-    /// collaborator's `cursor_color` override when present and otherwise
-    /// from [`ui::presence::user_color`], so the top-bar stack
-    /// matches the concept's `USERS[*].cursorColor` palette.
+    /// Same index as `collaborator_initials`. Resolved from
+    /// `cursor_color` when present, else [`ui::presence::user_color`].
     collaborator_colors: Vec<Color>,
-    /// Count of collaborators beyond the three rendered as avatars. When
-    /// nonzero the top bar paints a "+N" chip after the stack; concept
-    /// keeps the chip's visual weight lighter than a real avatar.
+    /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
     collaborator_overflow: usize,
-    /// Latest battery / network / volume reading, copied off the chrome
-    /// on each revision bump. Empty until something polls (see
-    /// [`crate::shell::status`]), and an empty reading paints no
-    /// indicator rather than a plausible-looking default.
+    /// Copied off the chrome on each revision bump. Empty until
+    /// something polls — an empty reading paints no indicator rather
+    /// than a plausible default.
     status: crate::shell::status::SystemStatus,
-    /// Shared chrome state; used to toggle overlays and switch workspaces
-    /// in response to clicks on the top bar's left/right clusters.
     chrome: Option<Chrome>,
-    /// Cached revision from `Chrome::revision` so `update` can detect when
-    /// the tree has mutated since the last sync.
     synced_revision: u64,
-    // Click geometry — recomputed every frame so it tracks DPI / resize.
+    // Click geometry — recomputed every frame so it tracks DPI/resize.
     overview_btn_rect: Rect,
     up_btn_rect: Rect,
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
     tray_pill_rect: Rect,
-    /// Bounding rect of the avatar stack (initials + overflow chip). Click
-    /// toggles `overlays.collaborators` so the shell can show the peer
-    /// dropdown — matches the concept's avatar-stack-as-trigger affordance.
+    /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
-    /// Active center-widget. Scroll-wheel over `center_rect` cycles the
-    /// variant; clicks on one of the three dot indicators jumps directly.
+    /// Scroll over `center_rect` cycles it, dots jump directly.
     center_widget: CenterWidget,
-    /// Hit region for the center band (dots + content). Populated every
-    /// draw so scroll + click hit-testing stays aligned with what's shown.
     center_rect: Rect,
-    /// Dot-indicator click targets (one per variant). Same populate-on-draw
-    /// contract as the other rect fields on this struct.
     center_dot_rects: [Rect; 3],
-    /// Scroll-wheel accumulator over the center band. Matches the
-    /// sidebar-wheel scroll contract so a single deliberate wheel tick
-    /// advances one variant.
+    /// Matches the sidebar-wheel's scroll contract.
     center_scroll_accum: f32,
-    /// Last cursor position in logical coords. Winit delivers the position
-    /// with `CursorMoved` but not `MouseInput`, so we cache it here to
-    /// hit-test click events.
+    /// winit delivers position with `CursorMoved` but not `MouseInput`,
+    /// so it's cached here for click hit-testing.
     last_cursor: Option<Point>,
+}
+
+/// `surfaces.raised` is `#ffffff` on light, same as the bar's own
+/// surface — invisible if used directly — so selection lift derives
+/// from luminance instead.
+fn bar_selector_body(
+    theme: &Theme,
+    state: ui::chrome::SelectionState,
+) -> ui::chrome::SelectionTier {
+    ui::chrome::selection_tier(theme, state)
 }
 
 impl TopBarChrome {
@@ -311,39 +238,25 @@ impl TopBarChrome {
         this
     }
 
-    /// Snapshot of the current frame's cache-affecting inputs. Compared
-    /// against `self.cache_fp` to decide whether `self.cached` can be
-    /// reused. See [`CacheFingerprint`] for what each field signals.
     fn current_fingerprint(&self) -> CacheFingerprint {
-        // Floating-point Rect coords → integer keys. The rect is
-        // taffy-derived from logical pixel coords; even at fractional-
-        // DPI the values that land here are integer-valued f64s.
-        // Casting via `as` after `.round()` keeps the fingerprint
-        // stable against benign floating-point noise.
+        // Rounded to integer keys so the fingerprint stays stable
+        // against benign float noise from fractional-DPI taffy layout.
         let x0 = self.rect.x0.round() as i64;
         let y0 = self.rect.y0.round() as i64;
         let w = self.rect.width().round() as u64;
         let h = self.rect.height().round() as u64;
         let time_bucket = match self.center_widget {
             CenterWidget::Clock => {
-                // Minute granularity — the Clock variant paints
-                // `HH:MM`, so we only need to invalidate once per
-                // minute. (Hour and date roll-over imply a minute
-                // change too, so a single timestamp slice covers all.)
+                // Minute granularity: Clock paints `HH:MM`.
                 let t = chrono::Local::now();
                 t.timestamp() as u64 / 60
             }
             CenterWidget::SystemMonitor => {
-                // Second granularity — the sparkline bars + CPU/RAM/TMP
-                // values are derived from `seconds % N`, so the strip
-                // visibly mutates once per second.
+                // Second granularity: sparkline derives from `seconds % N`.
                 chrono::Local::now().timestamp() as u64
             }
             CenterWidget::Calendar => {
-                // Day granularity — the Calendar variant paints today's
-                // date, so the cache has to drop at midnight or the
-                // strip keeps showing yesterday until something else
-                // dirties the fingerprint.
+                // Day granularity: cache must drop at midnight.
                 chrono::Local::now().timestamp() as u64 / 86_400
             }
         };
@@ -365,17 +278,11 @@ impl TopBarChrome {
         status_key_of(&self.status)
     }
 
-    /// The status the chrome is currently holding, or the last one this
-    /// bar copied when there is no chrome attached.
-    ///
-    /// Read at draw time rather than pushed in by an `update` pass,
-    /// because nothing pumps this widget: `Column` / `Stack` /
-    /// `Container` all inherit the default [`Widget::update`], which
-    /// returns `false` without recursing, so a leaf's `update` is only
-    /// reached if some ancestor explicitly forwards — and none of the
-    /// bar's do. Pulling on the frame the value is needed is the only
-    /// arrangement that cannot be defeated by where the widget happens
-    /// to sit in the tree.
+    /// The status the chrome currently holds, or the last one copied when
+    /// no chrome is attached. Read at draw time rather than pushed by
+    /// `update`: `Column`/`Stack`/`Container` inherit the default
+    /// [`Widget::update`], which doesn't recurse, so a leaf's `update`
+    /// only runs if some ancestor forwards — none of the bar's do.
     fn live_status(&self) -> crate::shell::status::SystemStatus {
         match self.chrome.as_ref() {
             Some(c) => c.borrow().status.clone(),
@@ -383,21 +290,11 @@ impl TopBarChrome {
         }
     }
 
-    /// Attach a shared chrome-state handle. The top bar uses it to toggle
-    /// overlays (quick-settings, workspace-settings, overview) and to
-    /// switch the active workspace via the up/down chevrons.
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.borrow().revision;
-        // Take the status here, not only on the next revision bump.
-        //
-        // Attaching the chrome also *declares this widget synced to it*
-        // at the current revision, so `update`'s sync branch does not
-        // run until the revision moves again. Everything else the bar
-        // reads was seeded by `from_tree`; the status was not, which is
-        // why the tray drew empty until the first bump. After this the
-        // bar stays current through [`Widget::update`], which the host
-        // reaches via the `Stack`/`Column` the bar sits in — a container
-        // that swallowed `update` would freeze every field below.
+        // Declares this widget synced at the current revision, so
+        // `update`'s sync branch won't re-run until it moves — status
+        // must be seeded now.
         self.status = chrome.borrow().status.clone();
         self.chrome = Some(chrome);
         self.synced_revision = rev;
@@ -412,232 +309,162 @@ impl TopBarChrome {
             .iter()
             .enumerate()
             .find(|(_, w)| w.id == tree.active)
-            .map(|(i, w)| (i, w.name.clone()))
-            .unwrap_or((0, String::from("Workspace")));
+            .map_or((0, String::from("Workspace")), |(i, w)| (i, w.name.clone()));
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Roster source: prefer the active workspace's own collaborators —
-        // people actually admitted to *this* workspace — and
-        // fall back to the tree-level roster only when the active workspace
-        // carries no peers — mirrors the precedence applied by
-        // `sidebar_wheel_chrome::sync_from_tree`. The local user (`id ==
-        // "me"`) is filtered out of the avatar stack: the right cluster
-        // shows *other* peers in the workspace, not the local user. Drop
-        // collaborators whose name has no starting char and take at most
-        // 3 — the rest flows into `collaborator_overflow`.
+        // Prefer the workspace's own collaborators, falling back to the
+        // tree-level roster only if empty (mirrors
+        // `sidebar_wheel_chrome::sync_from_tree`).
         let roster: &[crate::shell::state::Collaborator] = match active_ws {
             Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
             _ => &tree.collaborators,
         };
+        // An invited-but-not-arrived peer doesn't count as present.
+        let present = |c: &&crate::shell::state::Collaborator| c.id != "me" && !c.invited;
         self.collaborator_initials.clear();
         self.collaborator_colors.clear();
-        // Peer count flows through the shared helper so the top-bar
-        // overflow chip and the wheel-disc active-card dot count always
-        // agree (audit B-10).
+        // Shared helper so the overflow chip and the wheel-disc's
+        // active-card dot count agree.
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
-        for c in roster.iter().filter(|c| c.id != "me").take(3) {
+        // Settled over the whole room, so a peer's avatar matches the
+        // colour their cursor is drawn in elsewhere on the desktop.
+        let colors = crate::shell::state::roster_colors(roster);
+        for c in roster.iter().filter(present).take(3) {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
-            let (r, g, b) = c
-                .cursor_color
-                .as_deref()
-                .and_then(parse_hex_color)
+            let (r, g, b) = colors
+                .get(&c.id)
+                .copied()
                 .unwrap_or_else(|| user_color(&c.id));
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
         }
         self.collaborator_overflow = peer_count.saturating_sub(3);
     }
 
+    /// `QOS_CLOCK` pins it, for the same reason `QOS_SHOTS_THEME` pins
+    /// the palette: a screenshot harness that compares whole frames
+    /// needs to hold every part still, and a running clock would fail
+    /// that comparison once a minute. Unset (every real session) reads
+    /// the wall clock.
     fn current_clock_string() -> String {
-        Local::now().format("%H:%M").to_string()
+        match std::env::var("QOS_CLOCK") {
+            Ok(pinned) if !pinned.is_empty() => pinned,
+            _ => Local::now().format("%H:%M").to_string(),
+        }
     }
 
-    /// Initials painted as avatars (up to 3). Exposed for integration tests.
     pub fn collaborator_initials(&self) -> &[char] {
         &self.collaborator_initials
     }
 
-    /// Whether a workspace precedes the active one. The up-chevron is
-    /// painted live exactly when this holds — the same condition under
-    /// which `ChromeState::switch_workspace(-1)` actually moves — so the
-    /// affordance and the action cannot disagree.
+    /// The up-chevron paints live exactly when this holds — the same
+    /// condition under which `ChromeState::switch_workspace(-1)`
+    /// actually moves.
     pub fn can_switch_up(&self) -> bool {
         self.workspace_index > 0
     }
 
-    /// Whether a workspace follows the active one. Mirror of
-    /// [`Self::can_switch_up`] for the down-chevron.
     pub fn can_switch_down(&self) -> bool {
         self.workspace_index + 1 < self.workspace_total
     }
 
-    /// Resolved avatar fill colours (one per entry in
-    /// `collaborator_initials`, same index). Each peer's own
-    /// `cursor_color` takes precedence; otherwise the palette-pinned
-    /// [`ui::presence::user_color`] is used. Exposed so tests can
-    /// assert two different peers map to two different hues.
     pub fn collaborator_colors(&self) -> &[Color] {
         &self.collaborator_colors
     }
 
-    /// Count of collaborators beyond the three rendered as avatars.
-    /// Zero when three-or-fewer peers; otherwise shown as the "+N" chip.
     pub fn collaborator_overflow(&self) -> usize {
         self.collaborator_overflow
     }
 
-    /// Active center-widget variant. Exposed for integration tests so they
-    /// can verify the scroll-wheel and dot-click state transitions.
     pub fn center_widget(&self) -> CenterWidget {
         self.center_widget
     }
 
-    /// Test-only setter: jump the center-band widget directly to a
-    /// variant without driving the scroll-wheel event path. Used by the
-    /// concept-parity spec tests to put the bar into SystemMonitor mode
-    /// so they can assert the CPU/RAM label colours match the concept's
-    /// emerald-400/blue-400 semantic palette (visual-gap #11/#12 in the
-    /// concept-coverage audit). Production code mutates `center_widget`
-    /// only via `handle_event`'s scroll/click branches; this accessor is
-    /// gated to test/debug builds so it can't leak into release.
+    /// Bypasses the scroll/click event path.
     #[cfg(any(test, debug_assertions))]
     pub fn set_center_widget_for_tests(&mut self, w: CenterWidget) {
         self.center_widget = w;
     }
 
-    /// Base (unscaled) radius used for the center-band three-dot stack.
     pub const DOT_BASE_SIZE: f64 = 3.0;
-    /// Rendered radius of the *active* center-band dot. Sized 1.6× the
-    /// base so the saturated indigo fill reads as the focused indicator;
-    /// see gap #8 in `docs/nirios/visual-gaps.md`.
+    /// 1.6× the base so the saturated indigo fill reads as focused.
     pub const DOT_ACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.6;
-    /// Rendered radius of the two inactive center-band dots.
     pub const DOT_INACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.0;
 
-    /// Radius at which the active center-band dot is painted. Exposed so
-    /// tests can assert it is strictly larger than the inactive radius
-    /// (the contrast affordance is the scale-up + saturated indigo, not
-    /// the scale alone).
+    /// Strictly larger than inactive; the affordance is scale-up +
+    /// saturated indigo.
     pub fn active_dot_radius(&self) -> f64 {
         Self::DOT_ACTIVE_RADIUS
     }
 
-    /// Radius at which each inactive center-band dot is painted.
     pub fn inactive_dot_radius(&self) -> f64 {
         Self::DOT_INACTIVE_RADIUS
     }
 
-    /// Which lucide glyph is used for the top-bar overview button.
-    /// Pinned so the gap-#5 icon swap survives later refactors — if a
-    /// future change reverts the overview glyph back to the four-rect
-    /// quad, this accessor's test will fail loudly.
+    /// Pinned so a future revert to the old four-rect quad fails loudly
+    /// instead of silently regressing.
     pub fn overview_glyph_icon() -> ui::icons::Icon {
         ui::icons::Icon::LayoutGrid
     }
 
-    /// Typographic weight the top bar paints the clock with. Concept
-    /// `§2.2`: the center-band clock is `font-bold` / `font-mono`, so it
-    /// reads as the "focal glance value" of the chrome. Exposed so
-    /// integration tests can pin the contract — see visual-gap #7 in
-    /// `docs/nirios/visual-gaps.md`.
+    /// Bold, so it reads as the chrome's focal glance value.
     pub fn clock_text_weight(&self) -> TextWeight {
         TextWeight::Bold
     }
 
-    /// Typographic weight for the workspace-name pill (§2.1). Semibold so
-    /// it reads as a clickable title without tipping over into the h1/h2
-    /// weight tier the clock uses.
+    /// Semibold — a clickable title without tipping into the clock's
+    /// h1/h2 tier.
     pub fn workspace_name_text_weight(&self) -> TextWeight {
         TextWeight::Semibold
     }
 
-    /// Typographic weight for the system-monitor row's acronym labels ("CPU",
-    /// "RAM", "TMP"). Concept uses `font-mono font-semibold` for labels while
-    /// the numeric values take `font-bold` — [`Self::system_monitor_value_text_weight`]
-    /// exposes that tier. Splitting the two makes the strip scannable at a
-    /// glance without every label shouting.
+    /// Distinct from the bold values so the strip is scannable without
+    /// every label shouting.
     pub fn system_monitor_label_text_weight(&self) -> TextWeight {
         TextWeight::Semibold
     }
 
-    /// Typographic weight for the numeric values in the system-monitor row
-    /// (e.g. "12%", "40°"). Concept tier: `font-mono font-bold`.
     pub fn system_monitor_value_text_weight(&self) -> TextWeight {
         TextWeight::Bold
     }
 
-    /// Per-metric label colour used by the SystemMonitor center widget.
-    /// Concept reference (`nirios-concept/src/components/\
-    /// TopBarWidgets.tsx:60-110`): CPU is `text-emerald-400` (#4ade80),
-    /// RAM is `text-blue-400` (#60a5fa), TMP is `text-orange-400`
-    /// (#fb923c). Pinned through this helper so the draw branch never
-    /// hard-codes `theme.accent_primary` for these labels — that monotone
-    /// indigo collapsed the "different semantic colour per metric" cue
-    /// the concept relies on (audit row `concept-coverage.md:23,163-166`,
-    /// visual-gap #11/#12).
-    pub fn metric_label_color(&self, k: MetricKind) -> Color {
+    /// Routes through the theme's semantic colours rather than a
+    /// literal hex, so the cue tracks the theme under high-contrast.
+    pub fn metric_label_color(&self, theme: &Theme, k: MetricKind) -> Color {
+        let semantic = &theme.tokens.colors.semantic;
         match k {
-            // concept: text-emerald-400 (#4ade80)
-            MetricKind::Cpu => Color::from_rgba8(0x4a, 0xde, 0x80, 0xff),
-            // concept: text-blue-400 (#60a5fa)
-            MetricKind::Ram => Color::from_rgba8(0x60, 0xa5, 0xfa, 0xff),
-            // concept: text-orange-400 (#fb923c)
-            MetricKind::Tmp => Color::from_rgba8(0xfb, 0x92, 0x3c, 0xff),
+            MetricKind::Cpu => semantic.success,
+            MetricKind::Ram => semantic.info,
+            MetricKind::Tmp => semantic.warning,
         }
     }
 
-    /// Fill colour for the SystemMonitor sparkline bars. Concept paints
-    /// every bar at `bg-emerald-500/30` (Tailwind emerald-500 = `#10b981`
-    /// at 30% alpha, `0x4d` ≈ 0.30 × 255) regardless of the active
-    /// metric — the sparkline reads as the CPU history strip and stays
-    /// emerald even when the chip cluster on either side advertises
-    /// RAM/TMP. Audit row: `concept-coverage.md:23,160-162` — replaces
-    /// the previous `theme.accent_primary` (indigo-500) which was the
-    /// wrong colour family entirely. The `_k` parameter is reserved so
-    /// the per-metric switching variant from `TopBarWidgets.tsx` can be
-    /// wired in later without changing the helper signature.
-    pub fn sparkline_fill(&self, _k: MetricKind) -> Color {
-        // concept: bg-emerald-500/30 (#10b981 at 0x4d ≈ 30% alpha)
-        Color::from_rgba8(0x10, 0xb9, 0x81, 0x4d)
+    /// Always the CPU colour at low weight regardless of what the
+    /// chips show — a backdrop, not a competing element. `_k` kept so a
+    /// per-metric variant can be wired in later.
+    pub fn sparkline_fill(&self, theme: &Theme, _k: MetricKind) -> Color {
+        self.metric_label_color(theme, MetricKind::Cpu)
+            .with_alpha_factor(SPARKLINE_FILL_ALPHA)
     }
 
-    /// Bounding rect of the overview button. Populated during `draw`;
-    /// exposed so integration tests can hit-test click coordinates against
-    /// the exact geometry the widget uses internally.
     pub fn overview_btn_rect(&self) -> Rect {
         self.overview_btn_rect
     }
 
-    /// Translucent-tint fallback alpha for the top-bar surface. Concept
-    /// §1.1 uses `bg-black/80 backdrop-blur-xl`; without the `backdrop-blur`
-    /// primitive we at least honour the /80 alpha split (visual-gap #3 in
-    /// `docs/nirios/visual-gaps.md`). Pinned so a future regression that
-    /// reverts the topbar to an opaque fill fails the chrome-test suite.
+    /// See [`TOP_BAR_SURFACE_ALPHA`]; pinned by `shell_chrome_test` so
+    /// the bar can't drift from the constant the popovers share.
     pub fn top_bar_alpha() -> f32 {
         TOP_BAR_SURFACE_ALPHA
     }
 
-    /// Bounding rect of the quick-settings tray pill (three-dot widget on
-    /// the far right of the top bar). Populated during `draw`; exposed so
-    /// integration tests can hit-test click coordinates against the exact
-    /// geometry the widget uses internally.
     pub fn tray_pill_rect(&self) -> Rect {
         self.tray_pill_rect
     }
 
-    /// Paint the battery as a gauge, not a glyph.
-    ///
-    /// `ui::icons::Icon::Battery` is a fixed outline — it looks the same
-    /// at 4% as at 94%, which is exactly the thing the old tray got
-    /// wrong. A gauge whose fill tracks the charge is readable without
-    /// reading the number, which is the whole job of a tray indicator;
-    /// the percentage beside it is the confirmation, not the signal.
-    ///
-    /// Drawn as a rounded body + terminal nub + inset fill, in the same
-    /// proportions as lucide's battery so it sits in the icon row rather
-    /// than beside it.
+    /// A gauge, not a fixed glyph — the fill level is readable without
+    /// reading the number.
     fn draw_battery_gauge(
         scene: &mut Scene,
         transform: Affine,
@@ -682,7 +509,7 @@ impl TopBarChrome {
         let inset = stroke_w + 0.5;
         let x0 = px(2.0) + inset;
         let x1 = px(18.0) - inset;
-        let frac = (percent as f64 / 100.0).clamp(0.0, 1.0);
+        let frac = (f64::from(percent) / 100.0).clamp(0.0, 1.0);
         if frac > 0.0 {
             // A hairline at 1% would disappear; give any nonzero charge
             // at least a visible sliver so "nearly empty" and "empty"
@@ -699,9 +526,9 @@ impl TopBarChrome {
         }
 
         if charging {
-            // A bolt over the fill. Drawn in the surface colour with a
-            // faint outline rather than in an accent, so it reads on top
-            // of whatever the fill level happens to be underneath it.
+            // Drawn in the surface colour with a faint outline (not an
+            // accent) so the bolt reads on top of whatever fill level is
+            // underneath it.
             let mut bolt = vello::kurbo::BezPath::new();
             bolt.move_to((px(11.5), py(7.5)));
             bolt.line_to((px(8.0), py(12.6)));
@@ -726,18 +553,14 @@ impl Widget for TopBarChrome {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Re-sync when the shared chrome state has mutated since our last
-        // pass — typically after a workspace switch or overlay toggle
-        // triggered by a sibling widget.
         if let Some(chrome) = self.chrome.clone() {
             let rev = chrome.borrow().revision;
             if rev != self.synced_revision {
-                // Clone the tree to avoid re-borrowing chrome while calling
-                // `sync_from_tree` (which borrows &self mut).
+                // Clone the tree to avoid re-borrowing chrome while
+                // `sync_from_tree` borrows &self mut.
                 let tree_snap = chrome.borrow().tree().clone();
                 self.sync_from_tree(&tree_snap);
-                // The status poller bumps the same revision, so it rides
-                // in on the same edge as everything else.
+                // The status poller bumps the same revision.
                 self.status = chrome.borrow().status.clone();
                 self.synced_revision = rev;
                 return true;
@@ -752,10 +575,7 @@ impl Widget for TopBarChrome {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // A fullscreen surface covers the whole output, top bar included — so
-        // while any group holds the output fullscreen the top bar collapses to
-        // zero height and stops painting. Clearing the fullscreen state
-        // restores its normal 40 px band exactly.
+        // While any group holds fullscreen, collapse to zero height.
         let fullscreen = self
             .chrome
             .as_ref()
@@ -779,17 +599,17 @@ impl Widget for TopBarChrome {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -801,48 +621,22 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Cache fast-path. The top bar is the largest piece of *mostly-
-        // static* chrome in the shell — workspace nav, clock band,
-        // collaborator avatars — and re-encoding it every frame is
-        // expensive (~12 fills + several text measurements + lucide
-        // icon strokes). We fingerprint the inputs once per frame and
-        // replay the cached scene with the caller's transform if the
-        // fingerprint matches.
-        //
-        // The fingerprint covers rect, workspace identity/index/total,
-        // collaborator initials + overflow, center-widget variant, and
-        // a time bucket (minute for Clock, second for SystemMonitor,
-        // zero for static Calendar). Anything that affects the painted
-        // pixels lives in there; anything that doesn't (e.g. cursor
-        // position used for hit-testing) deliberately doesn't.
-        // Collapsed to zero height (a window holds the output fullscreen — see
-        // the `Display::None` branch in `build_layout`): paint nothing. Without
-        // this the encode below still ran and emitted the clock band / nav pill
-        // at their intrinsic sizes, which overflowed the zero-height rect and
-        // left a stray fragment floating over the fullscreen window.
+        // Zero-height (fullscreen) paints nothing; without this guard
+        // the encode below still runs at intrinsic size, overflowing
+        // into a stray fragment over the fullscreen window.
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
         }
-        // Take the machine's latest reading before fingerprinting, so a
-        // battery that just dropped a percent is both *drawn* and
-        // *counted as a change* in the same pass. See
-        // [`Self::live_status`] for why this is pulled here rather than
-        // pushed in by an update.
+        // Pulled here, not pushed by update, so a just-dropped battery
+        // percent is drawn and counted as a change in the same pass.
         self.status = self.live_status();
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && fp.rect_px.2 > 0 {
-            // Cache hit — `*_btn_rect` / `center_rect` / `avatar_stack_rect`
-            // / `center_dot_rects` were populated by the most recent
-            // cache-miss draw and remain valid because the rect, workspace
-            // state, and collaborator roster are unchanged.
             out_scene.append(&self.cached, Some(out_transform));
             return;
         }
 
-        // Cache miss — encode the topbar at `Affine::IDENTITY` into
-        // `self.cached`, then splice with `out_transform`. Same
-        // `std::mem::take` dance as `desktop_backdrop` so the encode
-        // body has an exclusive `&mut Scene` without aliasing `self`.
+        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
         let scene = &mut local;
@@ -868,14 +662,7 @@ impl Widget for TopBarChrome {
             &border_rect,
         );
 
-        // Soft bottom shadow — masks the abrupt translucent-topbar →
-        // exposed-backdrop transition that read as "noisy pixels"
-        // against the dotted-grid wallpaper. Concept-style top-bar
-        // has a subtle drop-shadow; we approximate with a 28-px
-        // vertical fade extending below the bar. Vello widgets
-        // aren't clipped to their rect, and the topbar paints
-        // after the backdrop and before the workspace content,
-        // so the band lays cleanly over the seam below.
+        // Masks the abrupt topbar → backdrop transition via a 28px fade.
         let shadow_h = 28.0_f64;
         let shadow_rect = Rect::new(
             self.rect.x0,
@@ -908,17 +695,13 @@ impl Widget for TopBarChrome {
             &shadow_rect,
         );
 
-        let pad_x = tokens.spacing.s3 as f64;
-        let center_y = (self.rect.y0 + self.rect.y1) / 2.0;
+        let pad_x = f64::from(tokens.spacing.s3);
+        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
         let icon_size = 14.0_f64;
 
         // --- Left cluster: overview icon + chevrons + workspace name ---
         let mut x = self.rect.x0 + pad_x;
 
-        // Overview glyph: lucide `LayoutGrid` (gap #5). Drawn as stroked
-        // rounded rects via `ui::icons::draw_icon` so it matches
-        // the concept's lucide-react lockup instead of the ad-hoc four
-        // filled squares we used before.
         self.overview_btn_rect = Rect::new(
             x - 4.0,
             center_y - icon_size / 2.0 - 4.0,
@@ -939,7 +722,7 @@ impl Widget for TopBarChrome {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += icon_size + tokens.spacing.s3 as f64;
+        x += icon_size + f64::from(tokens.spacing.s3);
 
         // Vertical divider
         let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
@@ -950,13 +733,8 @@ impl Widget for TopBarChrome {
             None,
             &divider,
         );
-        x += 1.0 + tokens.spacing.s2 as f64;
+        x += 1.0 + f64::from(tokens.spacing.s2);
 
-        // Up-chevron: lucide `ChevronUp` (gap #5). Drawn through
-        // `ui::icons::draw_icon` so the chrome's chevrons share
-        // stroke caps + joins with the rest of the lucide lockup
-        // (`LayoutGrid` / `Settings2` / `Wifi` / `Monitor`) instead of
-        // the previous hand-rolled BezPath polyline.
         let chev = 10.0_f64;
         self.up_btn_rect = Rect::new(
             x - 4.0,
@@ -977,10 +755,8 @@ impl Widget for TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += chev + tokens.spacing.s2 as f64;
+        x += chev + f64::from(tokens.spacing.s2);
 
-        // Down-chevron: lucide `ChevronDown` (gap #5). Same lockup
-        // rationale as the up-chevron above.
         self.down_btn_rect = Rect::new(
             x - 4.0,
             center_y - chev * 0.35 - 6.0,
@@ -1000,9 +776,8 @@ impl Widget for TopBarChrome {
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        x += chev + tokens.spacing.s3 as f64;
+        x += chev + f64::from(tokens.spacing.s3);
 
-        // Workspace-name button: text + gear glyph
         let ws_text_size = tokens.typography.scale.sm;
         let ws_label = format!(
             "{}  {}/{}",
@@ -1010,28 +785,34 @@ impl Widget for TopBarChrome {
             self.workspace_index + 1,
             self.workspace_total
         );
-        // Concept §2.1: workspace-name label is `font-semibold`. Measure with
-        // the same weight so the pill width tracks the glyph advance at
-        // Semibold, not at the Regular fallback — visual-gap #7.
+        // Measured at the same weight it's drawn at (Semibold), so the
+        // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
         let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
-        let ws_y = center_y - ws_h as f64 / 2.0;
-        // Subtle pill backdrop so the workspace name reads as clickable.
+        let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
             x - 6.0,
             center_y - 12.0,
-            x + ws_w as f64 + 28.0,
+            x + f64::from(ws_w) + 28.0,
             center_y + 12.0,
         );
         self.ws_pill_rect = ws_pill_outer;
-        let pill = RoundedRect::from_rect(ws_pill_outer, tokens.radii.sm as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &pill,
+        // A thing you choose between is a capsule (HIG §9.1, Selector).
+        let pill = RoundedRect::from_rect(
+            ws_pill_outer,
+            ui::chrome::ChromeRole::Selector.radius(theme, ws_pill_outer.height()),
         );
+        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+        scene.fill(Fill::NonZero, transform, body.fill, None, &pill);
+        if let Some(edge) = body.border {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &pill,
+            );
+        }
         text_renderer.draw_text_weighted(
             scene,
             &ws_label,
@@ -1041,10 +822,7 @@ impl Widget for TopBarChrome {
             None,
             ws_weight,
         );
-        let gear_x = x + ws_w as f64 + 6.0;
-        // Gear glyph: lucide `Settings2` (gap #5). The ad-hoc ring+dot
-        // placeholder read as generic rather than "open settings"; the
-        // lucide sliders+knobs glyph matches the concept's affordance.
+        let gear_x = x + f64::from(ws_w) + 6.0;
         let gear_rect = Rect::new(gear_x - 2.0, center_y - 6.0, gear_x + 10.0, center_y + 6.0);
         ui::icons::draw_icon(
             scene,
@@ -1058,7 +836,7 @@ impl Widget for TopBarChrome {
         // --- Center cluster: carousel band with 3 dots + active widget ---
         let band_w = 360.0_f64;
         let band_h = 28.0_f64;
-        let band_cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
             band_cx - band_w / 2.0,
             center_y - band_h / 2.0,
@@ -1066,17 +844,23 @@ impl Widget for TopBarChrome {
             center_y + band_h / 2.0,
         );
         self.center_rect = band;
-        // Subtle pill backdrop so the band reads as a scroll surface.
-        let band_rr = RoundedRect::from_rect(band, tokens.radii.sm as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &band_rr,
+        // A Selector: you scroll between its three widgets.
+        let band_rr = RoundedRect::from_rect(
+            band,
+            ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
         );
+        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+        scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
+        if let Some(edge) = body.border {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &band_rr,
+            );
+        }
 
-        // Three-dot indicator on the left of the band (vertical stack).
         let dot_x = band.x0 + 12.0;
         let dot_size = Self::DOT_BASE_SIZE;
         let dot_gap = 4.0_f64;
@@ -1085,11 +869,6 @@ impl Widget for TopBarChrome {
         for i in 0..3 {
             let cy = dot_top + i as f64 * (dot_size + dot_gap) + dot_size / 2.0;
             let active = self.center_widget.index() == i;
-            // Active dot is scaled up 1.6× and painted in the saturated
-            // indigo accent (`accent[5]` = indigo-500 in the token ramp).
-            // Inactive dots use `neutral[7]` (slate-300) so they sit clearly
-            // above `text_dim` (slate-400) but still read below
-            // `text_primary` — this is the contrast bump from gap #8.
             let r = if active {
                 Self::DOT_ACTIVE_RADIUS
             } else {
@@ -1100,7 +879,7 @@ impl Widget for TopBarChrome {
             } else {
                 colors.neutral[7]
             };
-            // Store dot hit region (generous 10 px square for clickability).
+            // Generous 10 px square hit region for clickability.
             self.center_dot_rects[i] = Rect::new(dot_x - 10.0, cy - 10.0, dot_x + 10.0, cy + 10.0);
             let c = vello::kurbo::Circle::new(Point::new(dot_x, cy), r);
             scene.fill(Fill::NonZero, transform, color, None, &c);
@@ -1109,19 +888,17 @@ impl Widget for TopBarChrome {
         // Widget content fills the band to the right of the dots.
         let content_x0 = dot_x + 24.0;
         let content_x1 = band.x1 - 12.0;
-        let content_cx = (content_x0 + content_x1) / 2.0;
+        let content_cx = f64::midpoint(content_x0, content_x1);
         match self.center_widget {
             CenterWidget::Clock => {
                 let s = Self::current_clock_string();
                 let size = tokens.typography.scale.base;
-                // Concept §2.2: clock is `font-bold`. Bold glyphs advance
-                // wider than Regular, so the measure call uses the same
-                // weight as the draw call — centering would drift by a few
-                // pixels otherwise. Visual-gap #7.
+                // Measured at the draw weight — Bold advances wider
+                // than Regular, so centering would drift otherwise.
                 let weight = self.clock_text_weight();
                 let (tw, th) = text_renderer.measure_weighted(&s, size, None, weight);
-                let tx = content_cx - tw as f64 / 2.0;
-                let ty = center_y - th as f64 / 2.0;
+                let tx = content_cx - f64::from(tw) / 2.0;
+                let ty = center_y - f64::from(th) / 2.0;
                 text_renderer.draw_text_weighted(
                     scene,
                     &s,
@@ -1133,10 +910,8 @@ impl Widget for TopBarChrome {
                 );
             }
             CenterWidget::SystemMonitor => {
-                // CPU % (left) • sparkline (stretch) • RAM / TMP (right).
-                // Concept uses live random data; here we render a stable
-                // snapshot derived from the clock seconds so nothing
-                // repaints every frame yet the values change over time.
+                // Values derive from clock seconds, so nothing repaints
+                // every frame yet values change over time.
                 let t = Local::now();
                 let secs = t.format("%S").to_string().parse::<u32>().unwrap_or(0);
                 let cpu = 12 + (secs % 20);
@@ -1146,19 +921,11 @@ impl Widget for TopBarChrome {
                 let cpu_str = format!("{cpu}%");
                 let ram_str = format!("{ram}%");
                 let tmp_str = format!("{tmp}°");
-                // Left: CPU label + value. Concept monitor labels are
-                // `font-mono font-semibold`; values are `font-mono font-bold`.
                 text_renderer.draw_text_weighted(
                     scene,
                     "CPU",
                     sm_size,
-                    // Concept paints each metric in its own semantic hue —
-                    // CPU is `text-emerald-400` (#4ade80). Routing through
-                    // `metric_label_color` keeps the per-metric colour cue
-                    // the concept relies on (audit `concept-coverage.md:\
-                    // 23,163-166`, visual-gap #11/#12) and prevents a
-                    // future drift back to monotone indigo.
-                    self.metric_label_color(MetricKind::Cpu),
+                    self.metric_label_color(theme, MetricKind::Cpu),
                     transform * Affine::translate((content_x0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1172,7 +939,6 @@ impl Widget for TopBarChrome {
                     None,
                     TextWeight::Bold,
                 );
-                // Sparkline: 20 bars between CPU label and RAM cluster.
                 let spark_x0 = content_x0 + 70.0;
                 let spark_x1 = content_x1 - 100.0;
                 let spark_w = (spark_x1 - spark_x0).max(40.0);
@@ -1180,38 +946,24 @@ impl Widget for TopBarChrome {
                 let bar_gap = 1.0;
                 let bar_w = (spark_w - (bars as f64 - 1.0) * bar_gap) / bars as f64;
                 for i in 0..bars {
-                    // Deterministic but varied heights driven by seconds so
-                    // the strip looks "live" on a re-render.
+                    // Deterministic but varied so the strip looks "live".
                     let seed = (secs as usize + i * 7) % 100;
                     let h = 4.0 + (seed as f64) * 0.08;
                     let bx = spark_x0 + i as f64 * (bar_w + bar_gap);
                     let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
-                    // Concept paints the sparkline at `bg-emerald-500/30`
-                    // (#10b981 at 30% alpha) — see `nirios-concept/src/\
-                    // components/TopBarWidgets.tsx:120-124`. The previous
-                    // `theme.accent_primary` (indigo-500) was the wrong
-                    // colour family entirely (audit `concept-coverage.md:\
-                    // 23,160-162`).
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        self.sparkline_fill(MetricKind::Cpu),
+                        self.sparkline_fill(theme, MetricKind::Cpu),
                         None,
                         &b,
                     );
                 }
-                // Right: RAM + TMP chips. Same Semibold label / Bold value
-                // tiering as the CPU cluster so the strip reads uniformly.
                 text_renderer.draw_text_weighted(
                     scene,
                     "RAM",
                     sm_size,
-                    // Concept: RAM label is `text-blue-400` (#60a5fa) —
-                    // see `nirios-concept/src/components/\
-                    // TopBarWidgets.tsx:60-110`. Previously `colors\
-                    // .accent[5]` (indigo-500), which collapsed the
-                    // per-metric semantic colour cue.
-                    self.metric_label_color(MetricKind::Ram),
+                    self.metric_label_color(theme, MetricKind::Ram),
                     transform * Affine::translate((content_x1 - 96.0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1229,12 +981,7 @@ impl Widget for TopBarChrome {
                     scene,
                     "TMP",
                     sm_size,
-                    // Concept: TMP label is `text-orange-400` (#fb923c) —
-                    // see `nirios-concept/src/components/\
-                    // TopBarWidgets.tsx:60-110`. Previously `colors\
-                    // .text_dim`, which dropped the temperature-warning
-                    // hue the concept relies on.
-                    self.metric_label_color(MetricKind::Tmp),
+                    self.metric_label_color(theme, MetricKind::Tmp),
                     transform * Affine::translate((content_x1 - 40.0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1255,8 +1002,7 @@ impl Widget for TopBarChrome {
                 let event = date.as_str();
                 let time = note;
                 let size = tokens.typography.scale.sm;
-                // Concept calendar-strip tiers: prefix + time as dim Medium
-                // pieces, the event name as a Semibold primary-colour anchor.
+                // prefix/time dim Medium, event a Semibold primary anchor.
                 let prefix_weight = TextWeight::Medium;
                 let event_weight = TextWeight::Semibold;
                 let time_weight = TextWeight::Medium;
@@ -1269,9 +1015,9 @@ impl Widget for TopBarChrome {
                     time_weight,
                 );
                 let gap = 8.0;
-                let total = pw as f64 + gap + ew as f64 + gap + tw as f64;
+                let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
                 let mut tx = content_cx - total / 2.0;
-                let ty = center_y - ph as f64 / 2.0;
+                let ty = center_y - f64::from(ph) / 2.0;
                 text_renderer.draw_text_weighted(
                     scene,
                     prefix,
@@ -1281,7 +1027,7 @@ impl Widget for TopBarChrome {
                     None,
                     prefix_weight,
                 );
-                tx += pw as f64 + gap;
+                tx += f64::from(pw) + gap;
                 text_renderer.draw_text_weighted(
                     scene,
                     event,
@@ -1291,7 +1037,7 @@ impl Widget for TopBarChrome {
                     None,
                     event_weight,
                 );
-                tx += ew as f64 + gap;
+                tx += f64::from(ew) + gap;
                 text_renderer.draw_text_weighted(
                     scene,
                     time,
@@ -1307,14 +1053,8 @@ impl Widget for TopBarChrome {
         // --- Right cluster: avatar stack + tray pill ---
         let mut rx = self.rect.x1 - pad_x;
 
-        // Tray pill — the machine's live state: audio, link, battery.
-        //
-        // These used to be three fixed lucide glyphs in dim text with no
-        // data behind them. Now the pill sizes itself to whatever is
-        // actually knowable: a reading that has not arrived (or a
-        // machine that has no battery) contributes nothing rather than a
-        // plausible-looking default, so the pill is narrower on a
-        // desktop than on a laptop and empty until the first poll.
+        // Sizes itself to what's actually knowable; an unarrived
+        // reading contributes nothing rather than a plausible default.
         let tray_h = 22.0_f64;
         let tray_slot = 18.0_f64;
         let tray_pad = 9.0_f64;
@@ -1322,20 +1062,17 @@ impl Widget for TopBarChrome {
         let icon_px = 14.0_f64;
         let pct_size = tokens.typography.scale.xs;
 
-        // Measure first: the pill's width is the sum of what it will
-        // actually paint.
         let has_volume = self.status.volume.is_some();
         let has_link = self.status.link.is_some();
         let battery_pct = self.status.battery_percent();
         let pct_label = battery_pct.map(|p| format!("{p}%"));
-        let pct_w = pct_label
-            .as_ref()
-            .map(|s| {
+        let pct_w = pct_label.as_ref().map_or(0.0, |s| {
+            f64::from(
                 text_renderer
                     .measure_weighted(s, pct_size, None, TextWeight::Semibold)
-                    .0 as f64
-            })
-            .unwrap_or(0.0);
+                    .0,
+            )
+        });
         let mut slots = 0usize;
         if has_volume {
             slots += 1;
@@ -1347,15 +1084,11 @@ impl Widget for TopBarChrome {
             slots += 1;
         }
         let mut tray_w = if slots == 0 {
-            // Nothing read yet. The pill still has to exist — it is the
-            // quick-settings trigger — so it keeps a single slot with the
-            // settings glyph, which is honest about what it opens rather
-            // than pretending to report hardware.
+            // Still the quick-settings trigger, so keep one slot for
+            // the settings glyph.
             tray_pad * 2.0 + tray_slot
         } else {
-            tray_pad * 2.0
-                + slots as f64 * tray_slot
-                + (slots.saturating_sub(1)) as f64 * tray_gap
+            tray_pad * 2.0 + slots as f64 * tray_slot + (slots.saturating_sub(1)) as f64 * tray_gap
         };
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
@@ -1367,16 +1100,14 @@ impl Widget for TopBarChrome {
             rx,
             center_y + tray_h / 2.0,
         );
-        let tray = RoundedRect::from_rect(self.tray_pill_rect, tray_h / 2.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &tray,
+        let tray = RoundedRect::from_rect(
+            self.tray_pill_rect,
+            ui::chrome::ChromeRole::Selector.radius(theme, tray_h),
         );
-        // A critical battery tints the whole pill rather than just its
-        // glyph: at 3% the user needs to notice the tray, not read it.
+        let tray_body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+        scene.fill(Fill::NonZero, transform, tray_body.fill, None, &tray);
+        // At 3% the user needs to notice the whole pill, not just read
+        // the glyph.
         if self.status.battery_is_critical() {
             scene.fill(
                 Fill::NonZero,
@@ -1394,7 +1125,7 @@ impl Widget for TopBarChrome {
             Rect::new(
                 x + (tray_slot - icon_px) / 2.0,
                 center_y - icon_px / 2.0,
-                x + (tray_slot + icon_px) / 2.0,
+                x + f64::midpoint(tray_slot, icon_px),
                 center_y + icon_px / 2.0,
             )
         };
@@ -1422,9 +1153,8 @@ impl Widget for TopBarChrome {
                 } else {
                     ui::icons::Icon::Volume2
                 },
-                // Silence is a state the user chose and may want undone,
-                // so it reads at full strength; a normal level is
-                // ambient and stays dim.
+                // Silence is chosen and may want undoing, so it reads
+                // full strength; a normal level stays dim.
                 if silent { bright } else { dim },
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
@@ -1447,9 +1177,8 @@ impl Widget for TopBarChrome {
                     );
                 }
                 os_actions::LinkKind::Offline => {
-                    // Offline is a fault, not an ambient state — it gets
-                    // the warning hue so "why is nothing loading" is
-                    // answerable at a glance.
+                    // Warning hue answers "why is nothing loading" at
+                    // a glance.
                     ui::icons::draw_icon(
                         scene,
                         transform,
@@ -1460,11 +1189,9 @@ impl Widget for TopBarChrome {
                     );
                 }
                 os_actions::LinkKind::Wifi => {
-                    // The arcs are a scale. `icon_subpaths(Wifi)` yields
-                    // [base dot, outer arc, middle arc, inner arc], so a
-                    // weak signal lights the dot and the inner arc and
-                    // leaves the outer ones at a fraction of the alpha —
-                    // the same glyph, read as a meter.
+                    // `icon_subpaths(Wifi)` yields [dot, outer, middle,
+                    // inner], so a weak signal lights fewer arcs — the
+                    // same glyph, read as a meter.
                     let bars = crate::shell::status::link_bars(&link);
                     let faint = dim.with_alpha_factor(0.25);
                     ui::icons::draw_icon_layered(
@@ -1474,9 +1201,8 @@ impl Widget for TopBarChrome {
                         ui::icons::Icon::Wifi,
                         ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                         |i| {
-                            // Subpath 0 is the base dot (always lit);
-                            // 1 = outer (needs 4 bars), 2 = middle (3),
-                            // 3 = inner (2).
+                            // 0 = base dot (always lit), 1 = outer
+                            // (needs 4 bars), 2 = middle (3), 3 = inner (2).
                             let needed = match i {
                                 0 => 1,
                                 1 => 4,
@@ -1506,9 +1232,8 @@ impl Widget for TopBarChrome {
             Self::draw_battery_gauge(scene, transform, slot_rect(sx), pct, charging, hue, colors);
             sx += tray_slot;
             if let Some(label) = pct_label.as_ref() {
-                // The number sits next to the gauge rather than replacing
-                // it: the gauge is the at-a-glance read, the number is
-                // the one you look at when the gauge worries you.
+                // The gauge is the at-a-glance read; the number is
+                // what you check when the gauge worries you.
                 let (_, lh) =
                     text_renderer.measure_weighted(label, pct_size, None, TextWeight::Semibold);
                 text_renderer.draw_text_weighted(
@@ -1520,32 +1245,26 @@ impl Widget for TopBarChrome {
                     } else {
                         bright
                     },
-                    transform * Affine::translate((sx + 3.0, center_y - lh as f64 / 2.0)),
+                    transform * Affine::translate((sx + 3.0, center_y - f64::from(lh) / 2.0)),
                     None,
                     TextWeight::Semibold,
                 );
             }
         }
 
-        rx -= tray_w + tokens.spacing.s4 as f64; // s4 = 16, ≥ 8 px after avatar radius
+        rx -= tray_w + f64::from(tokens.spacing.s4); // s4 = 16, ≥ 8 px after avatar radius
 
-        // Snapshot the rightmost x of the stack before drawing so we can
-        // populate `avatar_stack_rect` once we know how many circles we
-        // actually drew (including the overflow chip).
+        // Snapshotted before drawing, so `avatar_stack_rect` can be
+        // populated once the drawn circle count (incl. overflow) is known.
         let stack_right_x = rx;
 
-        // Avatar stack: up to 3 chips, overlapping by 4 px, newest on top.
-        // Each chip is the shared `ui::Avatar` painted through
-        // `draw_ringed_at` — the per-user fill (peer's own `cursor_color`, or
-        // the palette-pinned `user_color` fallback) plus a 1.5 px black
-        // separator ring so overlapping avatars stay distinct (concept's
-        // `border-2 border-black`). Routing through the toolkit keeps the
-        // desktop roster pixel-identical to the app rosters that back it.
+        // Up to 3 chips, overlapping by 4px, newest on top. Routed
+        // through `ui::Avatar` so the roster stays pixel-identical to
+        // app rosters.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
             let cx = rx - i as f64 * (14.0 - 4.0);
             let center = Point::new(cx - 7.0, center_y);
-            // 15 px chip (r = 7.5); the ring adds 1.5 px so the outer disc is
-            // r = 9, matching the previous hand-painted separator geometry.
+            // 15 px chip (r = 7.5); ring adds 1.5 px, outer disc r = 9.
             let rect = Rect::new(
                 center.x - 7.5,
                 center.y - 7.5,
@@ -1563,16 +1282,15 @@ impl Widget for TopBarChrome {
                 rect,
                 &initial.to_string(),
                 fill,
-                Color::from_rgb8(0, 0, 0),
+                // Must read against the bar it's drawn on — a literal
+                // black is a hard outline on a light bar.
+                colors.surfaces.overlay,
                 1.5,
                 theme,
                 text_renderer,
             );
         }
 
-        // Overflow chip: "+N" in the same avatar slot, painted through the
-        // shared `Avatar::draw_overflow_at` so it reads as "count of extras"
-        // (neutral raised surface + dim label) rather than another person.
         if self.collaborator_overflow > 0 {
             let i = self.collaborator_initials.len();
             let cx = rx - i as f64 * (14.0 - 4.0);
@@ -1596,27 +1314,66 @@ impl Widget for TopBarChrome {
             );
         }
 
-        // Avatar stack click target. Spans from the left-most circle to the
-        // right of the stack (rx before drawing). Empty collaborators still
-        // get a zero-sized rect so the click handler short-circuits.
         let slot_count =
-            self.collaborator_initials.len() + if self.collaborator_overflow > 0 { 1 } else { 0 };
+            self.collaborator_initials.len() + usize::from(self.collaborator_overflow > 0);
         if slot_count > 0 {
-            // Stack grows leftward from `stack_right_x`; each circle is 18 px
-            // wide with 4 px overlap, so step = 14 px.
+            // Stack grows leftward from `stack_right_x`; each circle is
+            // 18 px wide with 4 px overlap, so step = 14 px.
             let step = 14.0_f64;
             let leftmost_cx = stack_right_x - (slot_count as f64 - 1.0) * step;
             let y_mid = center_y;
             self.avatar_stack_rect =
                 Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
         } else {
-            self.avatar_stack_rect = Rect::ZERO;
+            // An empty roster is when inviting the first collaborator
+            // matters most. Dashed ring + unfilled chip: an empty seat
+            // isn't a person, so "Invite" is spelled out rather than `+`.
+            let label = "Invite";
+            let label_size = tokens.typography.scale.xs;
+            let (label_w, label_h) =
+                text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
+            let chip_r = 7.5_f64;
+            let pill_x1 = stack_right_x + 2.0;
+            let chip_cx = pill_x1 - 6.0 - chip_r;
+            let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
+            let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
+            let pill_rr = RoundedRect::from_rect(pill, f64::from(tokens.radii.sm));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &pill_rr,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                label_size,
+                colors.text_dim,
+                transform * Affine::translate((label_x, center_y - f64::from(label_h) / 2.0)),
+                None,
+                TextWeight::Medium,
+            );
+            let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                transform,
+                colors.border_standard,
+                None,
+                &chip,
+            );
+            let plus = Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0);
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                plus,
+                ui::icons::Icon::Plus,
+                colors.text_dim,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            self.avatar_stack_rect = pill;
         }
 
-        // End of cache build — splice the freshly-encoded local scene
-        // into the caller's `out_scene` with the host transform, then
-        // restore `self.cached` and record the fingerprint so the next
-        // matching frame takes the fast path above.
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_fp = fp;
@@ -1634,9 +1391,8 @@ impl Widget for TopBarChrome {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Track the cursor position so `MouseInput` (which doesn't carry a
-        // position) can still hit-test against the click geometry captured
-        // during the most recent draw pass.
+        // Cached so `MouseInput` (no position) can hit-test against
+        // the last draw's geometry.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(Point::new(
                 position.x / scale_factor,
@@ -1644,17 +1400,13 @@ impl Widget for TopBarChrome {
             ));
             return;
         }
-        // Scroll-wheel over the center band cycles the active center-widget
-        // variant (Clock → SystemMonitor → Calendar → …). Mirrors the
-        // sidebar-wheel accumulator contract so a single deliberate tick
-        // advances one variant.
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let Some(p) = self.last_cursor else { return };
             if !self.center_rect.contains(p) {
                 return;
             }
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f32,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
                 winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / 40.0,
             };
             self.center_scroll_accum += dy;
@@ -1677,8 +1429,7 @@ impl Widget for TopBarChrome {
         else {
             return;
         };
-        // Dot-indicator clicks: jump directly to that variant. These don't
-        // need the shared chrome handle — purely local widget state.
+        // Dot clicks jump directly — local widget state, no chrome needed.
         if let Some(p) = self.last_cursor {
             for (i, rect) in self.center_dot_rects.iter().enumerate() {
                 if rect.contains(p) {
@@ -1691,11 +1442,7 @@ impl Widget for TopBarChrome {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Need the cursor position — winit delivers MouseInput without it,
-        // so we reach into the last-known cursor via the Modifiers path.
-        // For now, fall back to a separate CursorMoved tracker stored on
-        // the widget. Without a cursor tracker we can't map; skip until a
-        // CursorMoved arrives to prime the click area.
+        // MouseInput has no position; rely on the last CursorMoved.
         let pos = match self.last_cursor {
             Some(p) => p,
             None => return,
@@ -1740,7 +1487,7 @@ impl Widget for TopBarChrome {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TopBarChrome"
     }
 
@@ -1748,26 +1495,30 @@ impl Widget for TopBarChrome {
         self.rect
     }
 
-    /// The bar's own affordances, so a harness clicks the pill the
-    /// renderer painted instead of a guessed coordinate.
+    /// So a harness clicks the pill the renderer painted instead of a
+    /// guessed coordinate.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         vec![
             ("topbar_overview_button".to_string(), self.overview_btn_rect),
             ("topbar_workspace_up".to_string(), self.up_btn_rect),
             ("topbar_workspace_down".to_string(), self.down_btn_rect),
-            // State as well as geometry. The chevron rects above are
-            // always published (they are the click targets); these two
-            // carry the same rect only while the switch would actually
-            // move. `walk_widget` drops zero-area entries, so a scenario
-            // asks "is the up chevron live?" by asking whether the name
-            // resolves at all.
+            // Carries the same rect only while the switch would
+            // actually move (`walk_widget` drops zero-area entries).
             (
                 "topbar_workspace_up_enabled".to_string(),
-                if self.can_switch_up() { self.up_btn_rect } else { Rect::ZERO },
+                if self.can_switch_up() {
+                    self.up_btn_rect
+                } else {
+                    Rect::ZERO
+                },
             ),
             (
                 "topbar_workspace_down_enabled".to_string(),
-                if self.can_switch_down() { self.down_btn_rect } else { Rect::ZERO },
+                if self.can_switch_down() {
+                    self.down_btn_rect
+                } else {
+                    Rect::ZERO
+                },
             ),
             ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
             ("topbar_tray_pill".to_string(), self.tray_pill_rect),
@@ -1775,43 +1526,22 @@ impl Widget for TopBarChrome {
         ]
     }
 
-    /// The top bar reports clean-after-first-frame. Subsequent
-    /// invalidations flow through:
-    ///   - [`Widget::update`] when the shared `Chrome` revision bumps
-    ///     (workspace switch / overlay toggle); `update` returning
-    ///     `true` is the standing contract for "redraw me".
-    ///   - The cache fingerprint check inside `draw` itself, which
-    ///     detects clock/SystemMonitor time-bucket transitions on the
-    ///     next frame the App pumps (typically driven by some other
-    ///     event — same as the pre-cache behaviour where the clock
-    ///     lagged at idle).
-    ///
-    /// We must keep returning `true` until the first successful draw
-    /// fills the cache (`rect_px.2 == 0` for the default fingerprint),
-    /// otherwise the very first frame after layout never paints.
+    /// Must keep returning `true` until the first successful draw
+    /// fills the cache, or the first frame after layout never paints.
     fn needs_redraw(&self) -> bool {
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
             return true;
         }
-        // A status change has to reach the screen without waiting for
-        // some unrelated event to force a frame. The ancestors cache
-        // this subtree's scene and only rebuild when a descendant
-        // reports dirty, so a battery that drains while the desktop
-        // sits idle would otherwise keep painting the old figure until
-        // the user happened to move the mouse.
+        // A status change must reach the screen without waiting for an
+        // unrelated event — ancestors only rebuild on a dirty descendant.
         status_key_of(&self.live_status()) != self.cache_fp.status_key
     }
 
-    fn mark_drawn(&mut self) {
-        // Leaf widget — `cache_fp` is updated inside `draw` itself, so
-        // there is nothing to clear here. Mirrors `Button::mark_drawn`.
-    }
+    fn mark_drawn(&mut self) {}
 
-    /// The bar's intrinsic size is fixed at `(100%, TOPBAR_HEIGHT_PX)`
-    /// in `build_layout`, so its taffy node never needs recomputing
-    /// after the first pass. Returning `false` after that pass spares
-    /// the App a `compute_layout_with_measure` on every CursorMoved.
+    /// Fixed intrinsic size, so the taffy node never needs recomputing
+    /// after the first pass.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -1822,9 +1552,7 @@ mod calendar_strip_tests {
     use super::*;
     use chrono::TimeZone;
 
-    /// The strip reports the day it is actually run on. The previous
-    /// implementation returned the same three strings forever, so this
-    /// is what tells the two apart.
+    /// The strip reports the day it is actually run on.
     #[test]
     fn the_strip_reads_the_clock() {
         let day = Local.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
@@ -1838,9 +1566,6 @@ mod calendar_strip_tests {
         assert_eq!(date, "25 December");
     }
 
-    /// Nothing feeds the event slot, so it says so rather than naming
-    /// a meeting nobody scheduled. Pinned by name: a stand-in that
-    /// reads as a real appointment is the defect this closes.
     #[test]
     fn the_event_slot_names_no_meeting() {
         let (_, _, note) = calendar_strip_parts(Local::now());
@@ -1870,10 +1595,6 @@ mod tests {
         TopBarChrome::from_tree(&tree)
     }
 
-    /// Gap #8: the active center-band dot must be strictly larger than an
-    /// inactive dot. The indigo-500 fill plus the scale-up together give
-    /// the "where are we in the carousel" affordance; losing the scale
-    /// delta would collapse the indicator into three same-size circles.
     #[test]
     fn active_center_dot_radius_is_strictly_larger_than_inactive() {
         let chrome = sample_chrome();
@@ -1883,67 +1604,110 @@ mod tests {
             chrome.active_dot_radius(),
             chrome.inactive_dot_radius(),
         );
-        // Guard the specific 1.6× ratio from the concept so a future tweak
-        // is an intentional decision, not a silent regression.
+        // Guards the specific 1.6× ratio against a silent regression.
         assert!(
             (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
             "active dot radius should be 1.6× the base size",
         );
     }
 
-    /// Gap #11/#12: the SystemMonitor strip must use a different semantic
-    /// colour for each metric — emerald-400 for CPU, blue-400 for RAM,
-    /// orange-400 for TMP — matching `nirios-concept/src/components/\
-    /// TopBarWidgets.tsx:60-110`. The previous implementation rendered
-    /// every label in `theme.accent_primary` (indigo-500), collapsing the
-    /// per-metric colour cue. Pin the helper that the draw branch consults
-    /// so a future regression that reroutes any of the three back to a
-    /// monotone token fails this test loudly.
+    /// Asserts the colours differ AND move with the theme, which a
+    /// hardcoded hex could never catch.
     #[test]
-    fn system_monitor_metric_label_colors_are_semantic() {
+    fn system_monitor_metric_labels_are_distinct_and_theme_driven() {
         let chrome = sample_chrome();
-        let cpu = chrome.metric_label_color(MetricKind::Cpu);
-        let ram = chrome.metric_label_color(MetricKind::Ram);
-        let tmp = chrome.metric_label_color(MetricKind::Tmp);
-        // emerald-400
-        assert_eq!(cpu, Color::from_rgba8(0x4a, 0xde, 0x80, 0xff));
-        // blue-400
-        assert_eq!(ram, Color::from_rgba8(0x60, 0xa5, 0xfa, 0xff));
-        // orange-400
-        assert_eq!(tmp, Color::from_rgba8(0xfb, 0x92, 0x3c, 0xff));
-        // Guard rail: none of the three may be indigo-500 again.
-        let indigo = Color::from_rgba8(0x63, 0x66, 0xf1, 0xff);
-        assert_ne!(cpu, indigo);
-        assert_ne!(ram, indigo);
-        assert_ne!(tmp, indigo);
+        let kinds = [MetricKind::Cpu, MetricKind::Ram, MetricKind::Tmp];
+
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let c: Vec<Color> = kinds
+                .iter()
+                .map(|k| chrome.metric_label_color(&theme, *k))
+                .collect();
+            for i in 0..c.len() {
+                for j in (i + 1)..c.len() {
+                    assert_ne!(
+                        c[i].to_rgba8().to_u32(),
+                        c[j].to_rgba8().to_u32(),
+                        "{name}: {:?} and {:?} render in the same colour, collapsing the cue",
+                        kinds[i],
+                        kinds[j]
+                    );
+                }
+            }
+            // The accent means live state, not "this is a CPU reading".
+            let accent = theme.tokens.colors.accent[5];
+            for (k, col) in kinds.iter().zip(&c) {
+                assert_ne!(
+                    col.to_rgba8().to_u32(),
+                    accent.to_rgba8().to_u32(),
+                    "{name}: {k:?} label reuses the accent"
+                );
+            }
+            let sem = &theme.tokens.colors.semantic;
+            assert_eq!(
+                c[0].to_rgba8().to_u32(),
+                sem.success.to_rgba8().to_u32(),
+                "{name}: CPU"
+            );
+            assert_eq!(
+                c[1].to_rgba8().to_u32(),
+                sem.info.to_rgba8().to_u32(),
+                "{name}: RAM"
+            );
+            assert_eq!(
+                c[2].to_rgba8().to_u32(),
+                sem.warning.to_rgba8().to_u32(),
+                "{name}: TMP"
+            );
+        }
+
+        // A hard-coded palette passes every assertion above and fails this one.
+        let dark = chrome.metric_label_color(&Theme::dark(), MetricKind::Cpu);
+        let hc = chrome.metric_label_color(&Theme::high_contrast(), MetricKind::Cpu);
+        assert_ne!(
+            dark.to_rgba8().to_u32(),
+            hc.to_rgba8().to_u32(),
+            "the CPU label paints the same pixel on dark and high-contrast"
+        );
     }
 
-    /// Gap #11/#12 — sparkline pair test. Concept paints the sparkline
-    /// bars at `bg-emerald-500/30` (Tailwind emerald-500 = `#10b981`
-    /// at 30% alpha = `0x4d`). Pin the helper so the bar paint loop in
-    /// `draw` cannot drift back to indigo-500 without flipping this test.
     #[test]
-    fn sparkline_fill_is_emerald_500_at_30_percent_alpha() {
+    fn sparkline_shares_the_cpu_colour_at_a_backdrop_weight() {
         let chrome = sample_chrome();
-        let fill = chrome.sparkline_fill(MetricKind::Cpu);
-        // Tailwind emerald-500 (#10b981) at 30% alpha (0x4d ≈ 0.30 × 255).
-        // The integration spec test pairs with this — see
-        // `concept_parity_spec::topbar_system_monitor_sparkline_is_\
-        // emerald_500_not_indigo`.
-        assert_eq!(fill, Color::from_rgba8(0x10, 0xb9, 0x81, 0x4d));
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let cpu = chrome.metric_label_color(&theme, MetricKind::Cpu);
+            let fill = chrome.sparkline_fill(&theme, MetricKind::Cpu);
+            let rgb = |c: Color| {
+                let p = c.to_rgba8();
+                (p.r, p.g, p.b)
+            };
+            assert_eq!(
+                rgb(fill),
+                rgb(cpu),
+                "{name}: sparkline hue drifted off the CPU label"
+            );
+            assert!(
+                fill.components[3] < cpu.components[3],
+                "{name}: the sparkline must sit behind the numbers, not compete with them"
+            );
+            assert_ne!(
+                fill.to_rgba8().to_u32(),
+                theme.tokens.colors.accent[5].to_rgba8().to_u32(),
+                "{name}: sparkline reuses the accent"
+            );
+        }
     }
 
-    /// Audit #3 / Wave 3 unit 3-D: the rightmost avatar must sit ≥ 8 px
-    /// to the left of the tray pill so the two clusters read as separate
-    /// affordances. Pre-fix the spacer was `s3 = 12 px` measured from
-    /// avatar centre, leaving roughly 3 px to the pill edge after the
-    /// 9 px avatar disc radius. Bumping to `s4 = 16 px` recovers the
-    /// breathing room.
     #[test]
     fn avatar_stack_has_breathing_room_to_tray_pill() {
-        // Workspace seeded with one explicit collaborator (other than the
-        // local user) so `collaborator_initials` is non-empty and the
-        // avatar disc is actually painted.
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
@@ -2002,14 +1766,113 @@ mod tests {
         );
     }
 
-    /// Regression: the topbar must paint a soft drop-shadow band below
-    /// its rect so the seam between the translucent overlay surface and
-    /// the dotted-grid backdrop doesn't read as "noisy pixels". The
-    /// shadow is the only linear-gradient fill the topbar emits, so
-    /// pinning a `LINEAR_GRADIENT` draw tag shows up after `draw` is a
-    /// load-bearing signal — if a future refactor drops the gradient
-    /// brush back to a solid fill (or removes the band entirely) this
-    /// test fails loudly.
+    #[test]
+    fn empty_roster_still_offers_a_clickable_invite_affordance() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+
+        let mut bar = TopBarChrome::from_tree(&tree);
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree);
+        bar = bar.with_chrome(chrome.clone());
+
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        assert!(
+            bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
+            "this test is about the empty case and the roster is not empty",
+        );
+        let stack = bar.avatar_stack_rect;
+        assert!(
+            stack.area() > 0.0,
+            "an empty roster still has to offer a control to click",
+        );
+        let bar_rect = bar.get_rect();
+        assert!(
+            stack.y0 >= bar_rect.y0 && stack.y1 <= bar_rect.y1,
+            "the affordance sits inside the bar: {stack:?} vs {bar_rect:?}",
+        );
+        let tray = bar.tray_pill_rect();
+        assert!(
+            stack.x1 <= tray.x0,
+            "the affordance stays left of the tray pill: stack.x1={}, tray.x0={}",
+            stack.x1,
+            tray.x0,
+        );
+
+        assert!(!chrome.borrow().overlays.collaborators);
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = winit::event::Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(stack.center().x, stack.center().y),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            let mut handled = false;
+            bar.handle_event(
+                &event,
+                1.0,
+                &modifiers,
+                &mut doc,
+                &doc_root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+        assert!(
+            chrome.borrow().overlays.collaborators,
+            "clicking the empty-roster affordance opened the collaborators panel",
+        );
+    }
+
+    /// The topbar's shadow is its only linear-gradient fill, so pinning
+    /// `LINEAR_GRADIENT` guards against a refactor silently dropping it.
     #[test]
     fn topbar_paints_a_bottom_shadow_below_its_rect() {
         use vello_encoding::DrawTag;
@@ -2069,17 +1932,72 @@ mod tests {
              drop-shadow band below its rect); got {gradient_fills}",
         );
 
-        // Pin the band's vertical extent so a future tweak that shrinks
-        // it to zero (or moves it above the bar) can't pass this test.
-        // The shadow rect spans `[rect.y1, rect.y1 + 28]`.
+        // Shadow rect spans `[rect.y1, rect.y1 + 28]`.
         let bar_bottom = bar.rect.y1;
         assert!(bar_bottom > 0.0, "topbar rect must have non-zero y1");
-        // Sanity: bar height matches the public TOPBAR_HEIGHT_PX constant
-        // so the y1 the shadow attaches to is the one downstream code
-        // (overlay_host, sidebar_wheel) lays out below.
         assert!(
-            (bar_bottom - TOPBAR_HEIGHT_PX as f64).abs() < 0.5,
+            (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
+        );
+    }
+
+    /// Both states asserted together, since a stack that's empty (or
+    /// full) in both cases would pass only half.
+    #[test]
+    fn a_peer_in_the_room_replaces_the_invite_slot_with_their_avatar() {
+        let empty = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        let mut empty = empty;
+        empty.active = empty.workspaces[0].id;
+        let bar = TopBarChrome::from_tree(&empty);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "a room nobody is in has nobody to show, so the slot offers \
+             the invite instead",
+        );
+
+        let mut joined = empty.clone();
+        joined.collaborators = vec![crate::shell::state::Collaborator::new(
+            "peer@11895642303397647149",
+            "bob",
+        )];
+        let bar = TopBarChrome::from_tree(&joined);
+        assert_eq!(
+            bar.collaborator_initials(),
+            &['X'],
+            "with somebody in the room the bar must show them, not an \
+             offer to invite the first person",
+        );
+        assert_eq!(
+            bar.collaborator_overflow(),
+            0,
+            "one peer is not an overflow",
+        );
+
+        // Invited but not redeemed: an avatar here would falsely claim
+        // he's in the workspace.
+        let mut asked = empty;
+        asked.collaborators = vec![
+            crate::shell::state::Collaborator::new("peer@11895642303397647149", "bob")
+                .as_invited(),
+        ];
+        let bar = TopBarChrome::from_tree(&asked);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "somebody invited and not yet arrived is not an avatar in the \
+             cluster: {:?}",
+            bar.collaborator_initials(),
+        );
+        assert_eq!(
+            bar.collaborator_overflow(),
+            0,
+            "and does not show up in the +N chip either",
         );
     }
 }

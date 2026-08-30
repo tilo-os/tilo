@@ -1,7 +1,5 @@
-//! Version history derived from the automerge change graph: who/when per
-//! change + time-travel (`materialize_at`). The *durable* change-blob chain and
-//! the retention coarsening live in the FS layer; this is the read model over a
-//! live document.
+//! Version history derived from the automerge change graph: who/when per change + time-travel
+//! (`materialize_at`). The durable change-blob chain and retention coarsening live in the FS layer; this is the read model over a live document.
 
 use crate::document::DocError;
 use crate::model::{materialize, open};
@@ -17,45 +15,34 @@ pub struct VersionMeta {
     pub index: usize,
     /// Hex of the authoring automerge actor (bound to the keypair identity).
     pub actor_hex: String,
-    /// Wall-clock time of the change, in milliseconds since the Unix epoch.
-    ///
-    /// Automerge stores a change's advisory timestamp in *seconds* and leaves
-    /// it at `0` unless the committer supplies one, so this is
-    /// `Change::timestamp() * 1000` and `0` means "this change carries no
-    /// recorded wall clock". Commit through [`commit_stamped`] to get a real
-    /// one; a change authored by a peer that does not stamp stays at `0`, and
-    /// consumers must render that as "time unknown" rather than as 1970.
+    /// Wall-clock time of the change, in milliseconds since the Unix epoch. Automerge stores a
+    /// change's advisory timestamp in *seconds* and leaves it at `0` unless the committer supplies
+    /// one, so `0` means "this change carries no recorded wall clock" — commit through
+    /// [`commit_stamped`] for a real one; consumers must render an unstamped peer's change as "time unknown" rather than as 1970.
     pub time_ms: i64,
     pub change_hash: String,
 }
 
-/// Commit the open transaction with a wall-clock timestamp attached.
-///
-/// `AutoCommit::commit()` leaves the change's advisory `time` field at `0`,
-/// which is why every version in a document built with it reads as "no
-/// recorded time". Routing commits through here is what makes
-/// [`VersionMeta::time_ms`] — and therefore any date-range filter over the
-/// history — mean something. Returns `None` when there was nothing to commit,
-/// exactly like `AutoCommit::commit`.
+/// Commit the open transaction with a wall-clock timestamp attached. `AutoCommit::commit()`
+/// leaves the change's advisory `time` field at `0`, which is why routing commits through here is
+/// what makes [`VersionMeta::time_ms`] — and any date-range filter over the history — mean
+/// something. Returns `None` when there was nothing to commit, exactly like `AutoCommit::commit`.
 pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
     commit_stamped_at(doc, secs)
 }
 
-/// As [`commit_stamped`], but with a caller-supplied Unix time in **seconds**
-/// — automerge's own unit for a change's advisory timestamp.
-///
-/// Hosts that own a clock (the FS layer replaying a durable change chain, a
-/// test that needs versions spread across a day) use this so the recorded time
-/// is the time the edit happened rather than the time it was written down.
+/// As [`commit_stamped`], but with a caller-supplied Unix time in **seconds** (automerge's own
+/// unit). For hosts that own a clock (the FS layer replaying a durable change chain, a test spreading versions across a day) so the recorded time is when the edit happened.
 pub fn commit_stamped_at(doc: &mut AutoCommit, unix_secs: i64) -> Option<ChangeHash> {
     doc.commit_with(CommitOptions::default().with_time(unix_secs))
 }
 
-/// Enumerate the document's history in causal order (oldest first).
+/// Enumerate the document's history in causal order (oldest first), including the schema genesis:
+/// the list is positional and [`materialize_at`]/[`prefix_heads`] address a version by its place
+/// in it, so nothing may be skipped here. A view of *authored revisions* filters the genesis out itself with [`is_schema_genesis`].
 pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
     doc.get_changes(&[])
         .into_iter()
@@ -69,36 +56,41 @@ pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
         .collect()
 }
 
-/// Heads of the document as of the first `upto + 1` changes in causal order.
-///
-/// `get_changes(&[])` yields a dependency-closed causal order, so any prefix is
-/// a valid document state — but with two collaborators that prefix can have
-/// several concurrent frontiers, so "the heads" is a set, not the last hash.
-/// A change is a head of the prefix iff no other change *in the prefix* names
-/// it as a dependency.
-///
-/// This is what lets a caller address a historical version with
-/// `AutoCommit::diff` (and hence replay it forward) instead of only with
-/// `materialize_at`.
+/// Whether `meta` describes the schema genesis rather than something a person
+/// wrote. See [`crate::model::is_schema_genesis_actor`].
+pub fn is_schema_genesis(meta: &VersionMeta) -> bool {
+    meta.actor_hex == crate::model::schema_genesis_actor_hex()
+}
+
+/// Heads of the document as of the first `upto + 1` changes in causal order. `get_changes(&[])`
+/// yields a dependency-closed causal order, so any prefix is a valid document state — but with two
+/// collaborators that prefix can have several concurrent frontiers, so "the heads" is a set, not
+/// the last hash (a change is a head of the prefix iff no other change *in the prefix* names it as
+/// a dependency). Lets a caller address a historical version with `AutoCommit::diff` instead of only with `materialize_at`.
 pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
     let changes = doc.get_changes(&[]);
-    let take = (upto + 1).min(changes.len());
-    let prefix = &changes[..take];
-    let depended_on: std::collections::HashSet<ChangeHash> =
-        prefix.iter().flat_map(|c| c.deps().iter().copied()).collect();
+    let take = upto.saturating_add(1).min(changes.len());
+    // `take` is clamped to the length, so the prefix always exists.
+    let prefix = changes.get(..take).unwrap_or(&[]);
+    let depended_on: std::collections::HashSet<ChangeHash> = prefix
+        .iter()
+        .flat_map(|c| c.deps().iter().copied())
+        .collect();
     prefix
         .iter()
-        .map(|c| c.hash())
+        .map(automerge::Change::hash)
         .filter(|h| !depended_on.contains(h))
         .collect()
 }
 
-/// Reconstruct the document as of `version` by replaying the first `version + 1`
-/// changes into a fresh replica. `get_changes` returns a valid causal order, so
-/// any prefix is dependency-closed.
+/// Reconstruct the document as of `version` by replaying the first `version + 1` changes into a fresh replica (`get_changes` returns a valid causal order, so any prefix is dependency-closed).
+///
+/// # Errors
+/// Returns [`DocError`] if automerge rejects the replayed prefix, or if the
+/// rebuilt replica has no readable document root.
 pub fn materialize_at(doc: &mut AutoCommit, version: usize) -> Result<DocSnapshot, DocError> {
     let changes = doc.get_changes(&[]);
-    let take = (version + 1).min(changes.len());
+    let take = version.saturating_add(1).min(changes.len());
     let mut rebuilt = AutoCommit::new();
     rebuilt
         .apply_changes(changes.into_iter().take(take))
@@ -122,19 +114,27 @@ mod tests {
 
         let vers = d.versions();
         // schema-init + 5 edits → several authored changes.
-        assert!(vers.len() >= 4, "expected a multi-entry timeline, got {}", vers.len());
-        assert!(vers.iter().all(|v| !v.actor_hex.is_empty()), "every change has an author");
+        assert!(
+            vers.len() >= 4,
+            "expected a multi-entry timeline, got {}",
+            vers.len()
+        );
+        assert!(
+            vers.iter().all(|v| !v.actor_hex.is_empty()),
+            "every change has an author"
+        );
 
-        // Time-travel endpoints.
         let latest = d.materialize_at(vers.len() - 1).unwrap();
         assert_eq!(latest.blocks.len(), 2, "latest has both paragraphs");
         let v0 = d.materialize_at(0).unwrap();
         assert_eq!(v0.blocks.len(), 0, "version 0 is just the schema init");
 
-        // Some intermediate version has exactly one block (after the first
-        // insert, before the second).
+        // Some intermediate version has exactly one block (after the first insert, before the second).
         let saw_one = (0..vers.len()).any(|i| d.materialize_at(i).unwrap().blocks.len() == 1);
-        assert!(saw_one, "an intermediate version should have a single block");
+        assert!(
+            saw_one,
+            "an intermediate version should have a single block"
+        );
     }
 
     #[test]

@@ -9,9 +9,7 @@ use registry_types::RegistryVersion;
 
 use crate::flathub_client::{AppStreamRecord, PopularEntry};
 use crate::installed::InstalledEntry;
-use crate::model::{
-    InstalledState, StoreItem, StoreItemVersion, StoreSource,
-};
+use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource};
 use crate::registry_client::VerifiedEntry;
 
 /// Convert a qOS registry entry into the unified store item shape.
@@ -29,23 +27,21 @@ pub fn qos_to_store_item(
     installed_index: &[InstalledEntry],
 ) -> StoreItem {
     let entry = &verified.entry;
-    let versions: Vec<StoreItemVersion> = entry
-        .versions
-        .iter()
-        .map(qos_version_to_store)
-        .collect();
-    let latest = versions.first().map(|v| v.version.clone()).unwrap_or_default();
+    let versions: Vec<StoreItemVersion> = entry.versions.iter().map(qos_version_to_store).collect();
+    let latest = versions
+        .first()
+        .map(|v| v.version.clone())
+        .unwrap_or_default();
     let installed = installed_index
         .iter()
         .find(|e| e.id == entry.package_id)
-        .map(|e| InstalledState::Installed {
+        .map_or(InstalledState::Not, |e| InstalledState::Installed {
             version: e.version.clone(),
             available: latest.clone(),
             pinned: e.pinned,
-        })
-        .unwrap_or(InstalledState::Not);
+        });
     let _ = verified.trust; // TrustLevel surfaces on the detail sheet;
-                            // not part of the item shape yet.
+    // not part of the item shape yet.
     StoreItem {
         id: entry.package_id.clone(),
         name: entry.name.clone(),
@@ -54,6 +50,7 @@ pub fn qos_to_store_item(
         icon_url: entry.icon_url.clone(),
         homepage_url: entry.homepage.clone(),
         source_url: entry.source_url.clone(),
+        install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: registry_name.to_string(),
         },
@@ -86,12 +83,11 @@ pub fn flathub_placeholder_to_item(
     let installed = installed_flatpaks
         .iter()
         .find(|(id, _)| id == &p.app_id)
-        .map(|(_, v)| InstalledState::Installed {
+        .map_or(InstalledState::Not, |(_, v)| InstalledState::Installed {
             version: v.clone(),
-            available: "".to_string(),
+            available: String::new(),
             pinned: false,
-        })
-        .unwrap_or(InstalledState::Not);
+        });
     StoreItem {
         id: p.app_id.clone(),
         name: p.name.clone().unwrap_or_else(|| p.app_id.clone()),
@@ -100,6 +96,7 @@ pub fn flathub_placeholder_to_item(
         icon_url: None,
         homepage_url: None,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Flathub,
         versions: vec![StoreItemVersion {
             version: String::new(),
@@ -125,19 +122,15 @@ pub fn flathub_record_to_item(
         .filter(|c| !c.name.trim().is_empty())
         .map(|c| c.name.clone())
         .collect();
-    let latest = r
-        .current_release_version
-        .clone()
-        .unwrap_or_default();
+    let latest = r.current_release_version.clone().unwrap_or_default();
     let installed = installed_flatpaks
         .iter()
         .find(|(id, _)| id == &r.app_id)
-        .map(|(_, v)| InstalledState::Installed {
+        .map_or(InstalledState::Not, |(_, v)| InstalledState::Installed {
             version: v.clone(),
             available: latest.clone(),
             pinned: false,
-        })
-        .unwrap_or(InstalledState::Not);
+        });
     let homepage_url = r
         .homepage
         .clone()
@@ -149,15 +142,16 @@ pub fn flathub_record_to_item(
         } else {
             r.name.clone()
         },
-        description: if !r.summary.is_empty() {
+        description: if r.description.is_empty() {
             r.summary.clone()
         } else {
-            r.description.clone()
+            plain_text(&r.description)
         },
         categories,
         icon_url: r.icon.clone(),
         homepage_url,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Flathub,
         versions: vec![StoreItemVersion {
             version: latest,
@@ -169,6 +163,20 @@ pub fn flathub_record_to_item(
         publisher_pubkey_hex: None,
         installed,
     }
+}
+
+fn plain_text(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for character in input.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => output.push(character),
+            _ => {}
+        }
+    }
+    output.trim().to_string()
 }
 
 /// Merge a qOS pile and a Flathub pile into one deduped list.
@@ -213,7 +221,7 @@ mod tests {
         let mut e = RegistryEntry {
             package_id: id.into(),
             name: name.into(),
-            description: format!("Description of {}", name),
+            description: format!("Description of {name}"),
             categories: vec!["Productivity".into()],
             icon_url: None,
             source_url: None,
@@ -221,7 +229,7 @@ mod tests {
             publisher_pubkey_hex: hex::encode(publisher),
             versions: vec![RegistryVersion {
                 version: version.into(),
-                qpkg_url: format!("https://apps.qos.dev/{}/{}.qpkg", id, version),
+                qpkg_url: format!("https://apps.qos.dev/{id}/{version}.qpkg"),
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 100,
                 released_at_unix: 200,
@@ -286,7 +294,7 @@ mod tests {
             name: Some("Notes".into()),
         };
         let fh_item = flathub_placeholder_to_item(&fh, &[]);
-        let merged = merge(vec![qos.clone()], vec![fh_item]);
+        let merged = merge(vec![qos], vec![fh_item]);
         assert_eq!(merged.len(), 1);
         assert!(matches!(merged[0].source, StoreSource::Qos { .. }));
     }
@@ -311,18 +319,30 @@ mod tests {
 
     #[test]
     fn distinct_categories_sorted_and_deduped() {
-        let a = qos_to_store_item(
-            &verified(qos_entry("a", "A", "1", [2u8; 32])),
-            "qOS",
-            &[],
-        );
-        let mut b = qos_to_store_item(
-            &verified(qos_entry("b", "B", "1", [3u8; 32])),
-            "qOS",
-            &[],
-        );
+        let a = qos_to_store_item(&verified(qos_entry("a", "A", "1", [2u8; 32])), "qOS", &[]);
+        let mut b = qos_to_store_item(&verified(qos_entry("b", "B", "1", [3u8; 32])), "qOS", &[]);
         b.categories = vec!["Games".into(), "Productivity".into()];
         let cats = distinct_categories(&[a, b]);
         assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);
+    }
+
+    #[test]
+    fn appstream_detail_prefers_plain_long_description() {
+        let record = AppStreamRecord {
+            app_id: "org.example.App".into(),
+            name: "Example".into(),
+            summary: "Short".into(),
+            description: "<p>Long description</p>".into(),
+            icon: None,
+            current_release_version: Some("2".into()),
+            categories: Vec::new(),
+            homepage: None,
+            urls: None,
+            screenshots: Vec::new(),
+        };
+        assert_eq!(
+            flathub_record_to_item(&record, &[]).description,
+            "Long description"
+        );
     }
 }

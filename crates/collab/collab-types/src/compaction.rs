@@ -1,39 +1,27 @@
-//! Phase 6: host-driven compaction checkpoint.
+//! Host-driven compaction checkpoint.
 //!
-//! A `CompactionCheckpoint` is the payload carried by a
-//! [`crate::op::SignedOp`] whose `op_class` is
-//! [`crate::role::OpClass::Compaction`]. The channel's host (initial:
-//! the channel owner's primary device) emits one of these every N ops
-//! or M bytes; recipients use the checkpoint to evict older op-log
-//! entries from in-memory storage so memory doesn't grow forever.
+//! A `CompactionCheckpoint` is the payload of a [`crate::op::SignedOp`]
+//! whose `op_class` is [`crate::role::OpClass::Compaction`]. The
+//! channel's host (initially the owner's primary device) emits one every
+//! N ops or M bytes; recipients use it to evict older op-log entries so
+//! memory doesn't grow forever.
 //!
 //! ## Verification
 //!
-//! The checkpoint carries a `prefix_hash` of the canonical-bytes of
+//! The checkpoint carries a `prefix_hash` over the canonical bytes of
 //! every op with `seq <= up_to_seq`, concatenated in `seq` order.
-//! Recipients recompute the hash from their own log; mismatch =>
-//! either the checkpoint is forged or the recipient saw a different
-//! op stream than the host. Either case is a hard error — we refuse
-//! to evict.
+//! Recipients recompute it from their own log; a mismatch means the
+//! checkpoint is forged or the recipient saw a different op stream — a
+//! hard error either way, and eviction is refused.
 //!
-//! ## Why not store the artifact + seq inside the SignedOp directly?
+//! `SignedOp` already carries `artifact`/`seq` on its envelope, but those
+//! describe the checkpoint op itself, not the range it covers — keeping
+//! `up_to_seq` inside the payload avoids baking the envelope's seq
+//! semantics into the eviction contract.
 //!
-//! `SignedOp` already carries `artifact` and `seq` fields on its
-//! envelope, but those describe the checkpoint *op itself* (i.e. "the
-//! checkpoint mutation lands on this artifact, at this seq, by this
-//! author"), not the range it covers. The `up_to_seq` inside the
-//! payload is "evict every prior op up to and including seq N", which
-//! is logically distinct from "this checkpoint op has seq N+1". By
-//! keeping the range inside the payload, we don't bake the wire
-//! envelope's seq semantics into the eviction contract.
-//!
-//! ## Wire stability
-//!
-//! Like every other wire type in this crate, the struct uses
-//! `#[serde(deny_unknown_fields)]` so a forgotten field on an old
-//! peer is a hard decode error rather than a silently-dropped value.
-//! Postcard is the canonical encoder
-//! ([`crate::canonical::canonical_bytes`]).
+//! Like every other wire type in this crate the struct uses
+//! `#[serde(deny_unknown_fields)]`, so a forgotten field on an old peer
+//! is a hard decode error, not a silently-dropped value.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -43,103 +31,79 @@ use crate::channel::ArtifactId;
 use crate::op::SignedOp;
 use crate::role::OpClass;
 
-/// A signed compaction checkpoint payload.
-///
-/// `(artifact, up_to_seq)` jointly identify "every op with this
-/// artifact id and seq ≤ up_to_seq is eligible for eviction".
-/// `prefix_hash` lets a recipient verify the checkpoint matches the
-/// op stream they observed.
+/// A signed compaction checkpoint payload. `(artifact, up_to_seq)`
+/// jointly identify "every op with this artifact id and seq ≤ `up_to_seq`
+/// is eligible for eviction"; `prefix_hash` lets a recipient verify it
+/// matches the op stream they observed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompactionCheckpoint {
-    /// The artifact whose op log this checkpoint covers. Same id as
-    /// the enclosing `SignedOp::artifact` — recipients can short-
-    /// circuit "which log to evict from" without parsing the payload,
-    /// but the field stays inside the payload too so the checkpoint's
-    /// scope is self-describing.
+    /// The artifact whose op log this checkpoint covers — same id as the
+    /// enclosing `SignedOp::artifact`, kept in the payload too so the
+    /// checkpoint's scope is self-describing.
     pub artifact: ArtifactId,
-    /// The inclusive upper bound: every op in the artifact's log with
-    /// `seq <= up_to_seq` is eligible for eviction. Lower bound is
-    /// "everything stored locally". The host picks this at minting
-    /// time — typically the last seq observed before deciding to
-    /// emit a checkpoint.
+    /// Inclusive upper bound: every op with `seq <= up_to_seq` is eligible
+    /// for eviction. Lower bound is "everything stored locally". The host
+    /// picks this at minting time — typically the last seq observed.
     pub up_to_seq: u64,
-    /// Blake3-style digest over the canonical-bytes of every op the
-    /// checkpoint covers, concatenated in `seq` order. The hash is
-    /// 32 bytes — the same shape every other digest in this stack
-    /// uses (FUSE iroh-blobs, identity attestation ids, …).
+    /// SHA-256 digest over the canonical bytes of every op the checkpoint
+    /// covers, concatenated in `seq` order, 32 bytes (same shape every other
+    /// digest in this stack uses).
     ///
-    /// Recomputation: receivers gather their own ops with seq in
-    /// `[lower, up_to_seq]`, canonical-encode each `SignedOp`,
-    /// concatenate the byte vectors, then SHA-256 (we pick SHA-256
-    /// for v1; iroh-blobs uses blake3, but adding a dep on blake3
-    /// purely for the checkpoint isn't worth it — postcard +
-    /// `[u8; 32]` already satisfies the determinism requirement).
+    /// Recomputation: gather ops with seq in `[lower, up_to_seq]`,
+    /// canonical-encode each, concatenate, SHA-256. (SHA-256 for v1 —
+    /// iroh-blobs uses blake3, but adding that dep purely for the checkpoint
+    /// isn't worth it; postcard + `[u8; 32]` already satisfies determinism.)
     pub prefix_hash: [u8; 32],
 }
 
 /// Reasons compacting an op log can fail.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum CompactionError {
-    /// The hash recomputed from the recipient's local op log does
-    /// not match the checkpoint's `prefix_hash`. Either the checkpoint
-    /// is forged, the recipient is missing ops, or the recipient
-    /// has *extra* ops the host has not seen. Either way: do not
-    /// evict.
+    /// The hash recomputed from the recipient's local op log doesn't match
+    /// `prefix_hash` — the checkpoint is forged, or ops differ between host
+    /// and recipient. Either way: do not evict.
     #[error("checkpoint prefix hash does not match local op log")]
     PrefixHashMismatch,
-    /// The checkpoint's payload could not be decoded as a
-    /// `CompactionCheckpoint`. Either the payload was forged for a
-    /// different schema, or the op was misclassified by the author.
+    /// The checkpoint's payload didn't decode as a `CompactionCheckpoint` —
+    /// forged for a different schema, or the op was misclassified.
     #[error("malformed compaction payload: {0}")]
     Malformed(#[source] CanonicalError),
-    /// The op claimed `op_class == Compaction` but the payload didn't
-    /// match the expected wire shape — surfaced as a `Malformed`
-    /// inside a hosting context. Kept as a separate variant so audit
-    /// logs can distinguish "valid postcard, wrong type" from
-    /// "garbage bytes".
+    /// The op claimed `op_class == Compaction` but the payload didn't match
+    /// the expected shape. Kept distinct so audit logs can tell "valid
+    /// postcard, wrong type" from "garbage bytes".
     #[error("compaction op had the wrong op_class: {actual:?}")]
     WrongOpClass {
-        /// The op_class the envelope actually carried. Surfaced for
-        /// audit-log triage.
+        /// The `op_class` the envelope actually carried, for audit-log triage.
         actual: OpClass,
     },
 }
 
 /// Encode a `CompactionCheckpoint` to canonical bytes — the format an
 /// op's payload field should carry when `op_class == Compaction`.
-pub fn encode_compaction_payload(
-    cp: &CompactionCheckpoint,
-) -> Result<Vec<u8>, CanonicalError> {
+pub fn encode_compaction_payload(cp: &CompactionCheckpoint) -> Result<Vec<u8>, CanonicalError> {
     canonical_bytes(cp)
 }
 
-/// Decode a `SignedOp::payload` as a `CompactionCheckpoint`.
-///
-/// Verifies `op.op_class == Compaction` so a caller can pass any
-/// `SignedOp` and get a precise error rather than a silently-decoded
-/// random struct. The returned struct is owned (no borrow on `op`)
-/// so callers can drop the original envelope and keep the checkpoint
-/// around.
-pub fn parse_compaction_payload(
-    op: &SignedOp,
-) -> Result<CompactionCheckpoint, CompactionError> {
+/// Decode a `SignedOp::payload` as a `CompactionCheckpoint`. Verifies
+/// `op.op_class == Compaction` so a caller gets a precise error rather
+/// than a silently-decoded random struct. The returned struct is owned,
+/// so callers can drop the original envelope.
+pub fn parse_compaction_payload(op: &SignedOp) -> Result<CompactionCheckpoint, CompactionError> {
     if op.op_class != OpClass::Compaction {
-        return Err(CompactionError::WrongOpClass { actual: op.op_class });
+        return Err(CompactionError::WrongOpClass {
+            actual: op.op_class,
+        });
     }
-    from_canonical_bytes::<CompactionCheckpoint>(&op.payload)
-        .map_err(CompactionError::Malformed)
+    from_canonical_bytes::<CompactionCheckpoint>(&op.payload).map_err(CompactionError::Malformed)
 }
 
-/// Compute the 32-byte digest of an op-log prefix.
+/// Compute the 32-byte digest of an op-log prefix: concatenates the
+/// canonical bytes of each [`SignedOp`] in argument order (callers feed
+/// ops in `seq` order) and SHA-256s the result.
 ///
-/// Concatenates the canonical bytes of each [`SignedOp`] in the input
-/// (in argument order — callers are expected to feed ops in `seq`
-/// order) and SHA-256 the result.
-///
-/// The function is exposed so a host can mint a checkpoint with the
-/// same hashing rule receivers use to verify it — sharing the function
-/// is the easiest way to avoid drift.
+/// Exposed so a host can mint a checkpoint with the same hashing rule
+/// receivers use, avoiding drift.
 pub fn hash_op_prefix(ops: &[SignedOp]) -> Result<[u8; 32], CanonicalError> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -201,10 +165,9 @@ mod tests {
     #[test]
     fn parse_compaction_payload_rejects_wrong_op_class() {
         // A SignedOp with op_class=Splice carrying a checkpoint-shaped
-        // payload still has to be rejected, because the role table
-        // gives Editors Splice but NOT Compaction. Surfacing this as
-        // a typed error lets the audit log distinguish forgery
-        // attempts from genuine malformed payloads.
+        // payload still must be rejected — the role table gives Editors
+        // Splice but NOT Compaction, and a typed error here lets the audit
+        // log distinguish forgery from a genuine malformed payload.
         let cp = CompactionCheckpoint {
             artifact: ArtifactId::new(),
             up_to_seq: 5,
@@ -251,9 +214,8 @@ mod tests {
 
     #[test]
     fn hash_op_prefix_empty_is_stable() {
-        // Edge case: an empty prefix (the host issues a checkpoint
-        // before any ops). The hash must be the SHA-256 of the empty
-        // string, not panic.
+        // Edge case: an empty prefix (a checkpoint before any ops) — the
+        // hash must be SHA-256 of the empty string, not a panic.
         let h = hash_op_prefix(&[]).unwrap();
         // SHA-256("") = e3b0c4...
         assert_eq!(h[0], 0xe3);

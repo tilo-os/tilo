@@ -1,22 +1,16 @@
 //! `SearchResultsView` — the shared results overlay for qOS global search.
 //!
-//! It renders the ranked, kind-grouped [`SearchResult`](crate::search::SearchResult)s
+//! Renders the ranked, kind-grouped [`SearchResult`](crate::search::SearchResult)s
 //! that a [`SearchRegistry`](crate::search::SearchRegistry) produces: one
-//! section per kind (a dim uppercase header with a count), then keyboard- and
-//! pointer-navigable rows. Activating a row (Enter, or a click) latches its
-//! opaque `action_id`, which the host drains with
-//! [`SearchResultsView::take_activated`] and dispatches on — the framework never
-//! interprets it.
+//! section per kind, then keyboard- and pointer-navigable rows. Activating a
+//! row latches its opaque `action_id`, which the host drains with
+//! [`SearchResultsView::take_activated`] and dispatches on — the framework
+//! never interprets it.
 //!
-//! Pair it with a [`SearchField`](crate::widget::SearchField) for the input and
-//! the registry for the data, and an app has a complete, OS-consistent search
-//! surface without hand-rolling a list, a highlight, or a ranker. The same
-//! overlay backs a future shell-level Ctrl+K driving every app's providers.
-//!
-//! The view is **self-laid-out** (like the command palette): the host gives it
-//! a rect — via the layout pass, or directly with [`SearchResultsView::set_rect`]
-//! for a free-floating overlay — and it lays its own headers and rows top-down
-//! from the current groups.
+//! The view is **self-laid-out** (like the command palette): the host gives
+//! it a rect — via the layout pass, or directly with
+//! [`SearchResultsView::set_rect`] for a free-floating overlay — and it lays
+//! its own headers and rows top-down from the current groups.
 
 use std::collections::HashMap;
 
@@ -33,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::search::{SearchGroup, SearchResult};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 const PAD: f64 = 8.0; // card inner padding
@@ -45,8 +40,7 @@ const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
 
-/// Where one selectable row lands, plus its flat index and its (group, result)
-/// coordinates — used by both `draw` and hit-testing so they never disagree.
+/// Used by both `draw` and hit-testing so they never disagree.
 struct RowGeom {
     rect: Rect,
     flat: usize,
@@ -54,8 +48,6 @@ struct RowGeom {
     ri: usize,
 }
 
-/// A laid-out plan for the current groups against [`SearchResultsView::rect`]:
-/// section headers and selectable rows, computed once and shared.
 struct LayoutPlan {
     headers: Vec<(Rect, String, usize)>, // (header rect, kind, result count)
     rows: Vec<RowGeom>,
@@ -104,8 +96,8 @@ impl SearchResultsView {
         self
     }
 
-    /// Replace the displayed results. Rebuilds the flat selection index and
-    /// clamps the cursor so it always points at a real row (or `0` when empty).
+    /// Rebuilds the flat selection index and clamps the cursor so it always
+    /// points at a real row (or `0` when empty).
     pub fn set_groups(&mut self, groups: Vec<SearchGroup>) {
         self.flat.clear();
         for (gi, g) in groups.iter().enumerate() {
@@ -121,54 +113,50 @@ impl SearchResultsView {
         self.hover = None;
     }
 
-    /// Convenience: set from a flat result list, bucketing by kind in first-seen
-    /// order (for callers that don't go through the registry's grouping).
+    /// Buckets by kind in first-seen order, for callers not going through the registry's grouping.
     pub fn set_results(&mut self, results: Vec<SearchResult>) {
         let mut groups: Vec<SearchGroup> = Vec::new();
         for r in results {
             if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
                 g.results.push(r);
             } else {
-                groups.push(SearchGroup { kind: r.kind.clone(), results: vec![r] });
+                groups.push(SearchGroup {
+                    kind: r.kind.clone(),
+                    results: vec![r],
+                });
             }
         }
         self.set_groups(groups);
     }
 
-    /// The groups currently displayed.
     pub fn groups(&self) -> &[SearchGroup] {
         &self.groups
     }
 
-    /// Whether there are no selectable rows.
     pub fn is_empty(&self) -> bool {
         self.flat.is_empty()
     }
 
-    /// Number of selectable rows across all groups.
     pub fn len(&self) -> usize {
         self.flat.len()
     }
 
-    /// The highlighted flat row index.
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
-    /// Move the highlight to `index` (clamped to the row range).
+    /// Clamped to the row range.
     pub fn set_cursor(&mut self, index: usize) {
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len() - 1);
         }
     }
 
-    /// The currently-highlighted result, if any.
     pub fn selected(&self) -> Option<&SearchResult> {
         let (gi, ri) = *self.flat.get(self.cursor)?;
         self.groups.get(gi)?.results.get(ri)
     }
 
-    /// The highlighted row's `action_id`, if any.
     pub fn selected_action_id(&self) -> Option<&str> {
         self.selected().map(|r| r.action_id.as_str())
     }
@@ -189,28 +177,24 @@ impl SearchResultsView {
         self.cursor = (self.cursor + self.flat.len() - 1) % self.flat.len();
     }
 
-    /// Latch the highlighted row's `action_id` for the host to drain. No-op when
-    /// there is no selection.
+    /// No-op when there is no selection.
     pub fn activate_selected(&mut self) {
         if let Some(id) = self.selected().map(|r| r.action_id.clone()) {
             self.activated = Some(id);
         }
     }
 
-    /// One-shot read of the last activated `action_id`; `None` until a row is
-    /// activated, and drains after one read.
+    /// `None` until a row is activated; drains after one read.
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
 
-    /// Position the overlay directly (for a free-floating overlay not driven by
-    /// the layout pass).
+    /// For a free-floating overlay not driven by the layout pass.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
     }
 
-    /// The overlay's natural height for the current groups — the height the host
-    /// should give it. Falls back to an empty-state height with no results.
+    /// Falls back to an empty-state height with no results.
     pub fn desired_height(&self) -> f64 {
         if self.groups.is_empty() {
             return EMPTY_H;
@@ -233,9 +217,8 @@ impl SearchResultsView {
         }
     }
 
-    /// Lay out headers + rows against the current rect. Single source of truth
-    /// shared by `draw` and `row_at`, so a click always lands on the row that
-    /// was drawn.
+    /// Single source of truth shared by `draw` and `row_at`, so a click
+    /// always lands on the row that was drawn.
     fn plan(&self) -> LayoutPlan {
         let mut headers = Vec::new();
         let mut rows = Vec::new();
@@ -265,7 +248,6 @@ impl SearchResultsView {
         LayoutPlan { headers, rows }
     }
 
-    /// The flat row index at `p`, if a row is under it.
     pub fn row_at(&self, p: Point) -> Option<usize> {
         self.plan()
             .rows
@@ -287,14 +269,13 @@ impl SearchResultsView {
         let selected = row.flat == self.cursor;
         let hovered = self.hover == Some(row.flat);
 
-        // Selection / hover backing. Selection = a filled indigo row (the
-        // toolkit's active-row convention, per the command palette); hover = a
-        // barely-there veneer so pointer feedback is distinct from selection.
+        // Selection = a filled row (per the command palette convention);
+        // hover = a barely-there veneer, distinct from selection.
         if selected {
-            let hl = RoundedRect::from_rect(row.rect, theme.tokens.radii.sm as f64);
+            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &hl);
         } else if hovered {
-            let hl = RoundedRect::from_rect(row.rect, theme.tokens.radii.sm as f64);
+            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
             scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &hl);
         }
 
@@ -306,7 +287,11 @@ impl SearchResultsView {
                 Point::new(text_x + ICON_D / 2.0, row.rect.center().y),
                 (ICON_D, ICON_D),
             );
-            let icon_col = if selected { colors.text_primary } else { colors.text_dim };
+            let icon_col = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
             icon.draw_with_stroke(scene, transform, icon_rect, icon_col, 1.6);
             text_x += ICON_COL;
         }
@@ -316,11 +301,10 @@ impl SearchResultsView {
         let sub_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
-        // Title.
         let title_y = if has_sub {
             row.rect.y0 + 8.0
         } else {
-            row.rect.y0 + (row.rect.height() - title_size as f64) / 2.0
+            row.rect.y0 + (row.rect.height() - f64::from(title_size)) / 2.0
         };
         tr.draw_text_weighted(
             scene,
@@ -334,8 +318,12 @@ impl SearchResultsView {
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
         if let Some(sub) = &result.subtitle {
-            let sy = row.rect.y1 - sub_size as f64 - 9.0;
-            let sub_col = if selected { colors.text_primary } else { colors.text_dim };
+            let sy = row.rect.y1 - f64::from(sub_size) - 9.0;
+            let sub_col = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
             tr.draw_text(
                 scene,
                 sub,
@@ -357,8 +345,8 @@ impl SearchResultsView {
         let _ = scene;
         let size = theme.tokens.typography.scale.sm;
         let (tw, th) = tr.measure(&self.empty_text, size, None);
-        let cx = self.rect.center().x - tw as f64 / 2.0;
-        let cy = self.rect.center().y - th as f64 / 2.0;
+        let cx = self.rect.center().x - f64::from(tw) / 2.0;
+        let cy = self.rect.center().y - f64::from(th) / 2.0;
         tr.draw_text(
             scene,
             &self.empty_text,
@@ -385,27 +373,25 @@ impl Widget for SearchResultsView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: taffy::Size {
-                    width: percent(1.0),
-                    height: length(self.desired_height() as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(self.desired_height() as f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -420,9 +406,14 @@ impl Widget for SearchResultsView {
         if self.rect.width() <= 0.0 {
             return;
         }
-        // Overlay card.
-        let card = RoundedRect::from_rect(self.rect, theme.tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
+        let card = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -441,7 +432,7 @@ impl Widget for SearchResultsView {
         let header_size = (theme.tokens.typography.scale.xs).max(10.0);
         for (hrect, kind, count) in &plan.headers {
             let label = kind.to_uppercase();
-            let hy = hrect.y1 - header_size as f64 - 6.0;
+            let hy = hrect.y1 - f64::from(header_size) - 6.0;
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
@@ -458,7 +449,7 @@ impl Widget for SearchResultsView {
                 &count_str,
                 header_size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((hrect.x1 - cw as f64 - 4.0, hy)),
+                transform * Affine::translate((hrect.x1 - f64::from(cw) - 4.0, hy)),
                 None,
             );
         }
@@ -496,7 +487,12 @@ impl Widget for SearchResultsView {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 if self.flat.is_empty() {
@@ -522,7 +518,7 @@ impl Widget for SearchResultsView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SearchResultsView"
     }
 
@@ -608,18 +604,52 @@ mod tests {
         };
 
         assert_eq!(v.cursor(), 0);
-        v.handle_event(&key(NamedKey::ArrowDown), 1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        v.handle_event(
+            &key(NamedKey::ArrowDown),
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         assert!(handled, "arrow-down consumed");
         assert_eq!(v.cursor(), 1);
         // Wrap: up from the top lands on the last row.
         v.set_cursor(0);
-        v.handle_event(&key(NamedKey::ArrowUp), 1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        v.handle_event(
+            &key(NamedKey::ArrowUp),
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
         // Enter activates the highlighted row and drains once.
         v.set_cursor(0);
-        v.handle_event(&key(NamedKey::Enter), 1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy);
-        assert_eq!(v.take_activated().as_deref(), Some("c:alice"), "enter fires the selected action-id");
+        v.handle_event(
+            &key(NamedKey::Enter),
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
+        assert_eq!(
+            v.take_activated().as_deref(),
+            Some("c:alice"),
+            "enter fires the selected action-id"
+        );
         assert_eq!(v.take_activated(), None, "activation drains after one read");
     }
 
@@ -644,7 +674,14 @@ mod tests {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(target.x, target.y),
             },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
         );
         v.handle_event(
             &WindowEvent::MouseInput {
@@ -652,11 +689,26 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut ft, node, &taffy,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
         );
         assert!(handled, "row click consumed");
-        assert_eq!(v.cursor(), 2, "click moves the highlight to the clicked row");
-        assert_eq!(v.take_activated().as_deref(), Some("app:calc"), "click fires that row's action-id");
+        assert_eq!(
+            v.cursor(),
+            2,
+            "click moves the highlight to the clicked row"
+        );
+        assert_eq!(
+            v.take_activated().as_deref(),
+            Some("app:calc"),
+            "click fires that row's action-id"
+        );
     }
 
     #[test]
@@ -674,6 +726,9 @@ mod tests {
     fn desired_height_grows_with_content() {
         let empty = SearchResultsView::new().desired_height();
         let full = view_from("").desired_height();
-        assert!(full > empty, "populated overlay is taller than the empty state");
+        assert!(
+            full > empty,
+            "populated overlay is taller than the empty state"
+        );
     }
 }

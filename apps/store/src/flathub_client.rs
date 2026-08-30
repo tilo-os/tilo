@@ -6,12 +6,13 @@
 //!     The v2 API paginates so `/1` is the first page (~30 apps); we may
 //!     walk further pages later. `~200` is the ceiling the task asks for,
 //!     which the caller enforces via `max_apps`.
-//!   * `GET /appstream/<app-id>`             — full AppStream record for
+//!   * `GET /appstream/<app-id>`             — full `AppStream` record for
 //!     the detail sheet (categories, screenshots, descriptions).
 //!
 //! Every request runs on the worker thread with a bounded timeout so a
 //! flaky Flathub does not stall the UI.
 
+use std::process::Command;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -21,16 +22,17 @@ use thiserror::Error;
 const DEFAULT_TIMEOUT_SECS: u64 = 8;
 
 pub fn api_base() -> String {
-    std::env::var("FLATHUB_API_BASE")
-        .unwrap_or_else(|_| "https://flathub.org/api/v2".to_string())
+    std::env::var("FLATHUB_API_BASE").unwrap_or_else(|_| "https://flathub.org/api/v2".to_string())
 }
 
 fn http_timeout() -> Duration {
     std::env::var("QOS_STORE_HTTP_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
 }
 
 #[derive(Debug, Error)]
@@ -52,7 +54,16 @@ pub struct PopularEntry {
     pub name: Option<String>,
 }
 
-/// Trimmed AppStream record — only the fields the store surfaces.
+/// A configured Flatpak remote, as reported by the machine-readable CLI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remote {
+    pub name: String,
+    pub url: String,
+    pub title: String,
+    pub disabled: bool,
+}
+
+/// Trimmed `AppStream` record — only the fields the store surfaces.
 ///
 /// The real response has ~30 fields; declaring only the ones we
 /// need keeps this stable against Flathub's ongoing shape changes
@@ -126,12 +137,12 @@ pub fn fetch_popular(max_apps: usize) -> Result<Vec<PopularEntry>, FlathubError>
         if out.len() >= max_apps {
             break;
         }
-        let url = format!("{}/collection/popular/last-week/{}", base, page);
+        let url = format!("{base}/collection/popular/last-week/{page}");
         let text = c
             .get(&url)
             .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.text())
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(reqwest::blocking::Response::text)
             .map_err(|e| FlathubError::Http(e.to_string()))?;
         // Flathub sometimes wraps in `{ "hits": [...] }`, sometimes
         // returns a bare array. Accept both.
@@ -152,10 +163,133 @@ pub fn fetch_appstream(app_id: &str) -> Result<AppStreamRecord, FlathubError> {
     let text = c
         .get(&url)
         .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.text())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
         .map_err(|e| FlathubError::Http(e.to_string()))?;
-    serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))
+    let mut value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))?;
+    // `/appstream/<id>` has shipped responses both with and without a repeated
+    // id field. The path remains authoritative, so don't reject the latter.
+    if let Some(object) = value.as_object_mut()
+        && !object.contains_key("flatpakAppId")
+        && !object.contains_key("app_id")
+        && !object.contains_key("id")
+    {
+        object.insert("id".into(), serde_json::Value::String(app_id.into()));
+    }
+    let mut record = record_from_value(&value)?;
+    record.app_id = app_id.to_string();
+    Ok(record)
+}
+
+/// Full-text search. Flathub's response has changed between a bare array and
+/// a `{ "hits": [...] }` envelope; accept both and normalize summary records
+/// into the same shape used by collection/detail enrichment.
+pub fn search(query: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let url = format!("{}/search", api_base());
+    let text = client()?
+        .post(url)
+        .json(&serde_json::json!({ "query": query }))
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
+        .map_err(|e| FlathubError::Http(e.to_string()))?;
+    decode_records(&text)
+}
+
+fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
+    let rows = value
+        .as_array()
+        .or_else(|| value.get("hits").and_then(serde_json::Value::as_array))
+        .ok_or_else(|| FlathubError::Decode("expected an array or hits array".into()))?;
+    rows.iter().map(record_from_value).collect()
+}
+
+fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, FlathubError> {
+    let app_id = value
+        .get("flatpakAppId")
+        .or_else(|| value.get("app_id"))
+        .or_else(|| value.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| FlathubError::Decode("search hit has no app id".into()))?
+        .to_string();
+    let categories = value
+        .get("categories")
+        .or_else(|| value.get("main_categories"))
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|category| {
+                    category
+                        .as_str()
+                        .or_else(|| category.get("name").and_then(serde_json::Value::as_str))
+                        .map(|name| CategoryRef { name: name.into() })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let current_release_version =
+        string_field(value, &["currentReleaseVersion", "current_release_version"]).or_else(|| {
+            value
+                .get("releases")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|releases| releases.first())
+                .and_then(|release| release.get("version"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    let screenshots = value
+        .get("screenshots")
+        .and_then(serde_json::Value::as_array)
+        .map(|screenshots| {
+            screenshots
+                .iter()
+                .filter_map(|shot| {
+                    let desktop = string_field(shot, &["imgDesktopUrl", "url"]).or_else(|| {
+                        shot.get("sizes")?
+                            .as_array()?
+                            .first()?
+                            .get("src")?
+                            .as_str()
+                            .map(str::to_string)
+                    });
+                    let mobile = string_field(shot, &["imgMobileUrl"]);
+                    (desktop.is_some() || mobile.is_some()).then_some(ScreenshotRef {
+                        img_desktop_url: desktop,
+                        img_mobile_url: mobile,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(AppStreamRecord {
+        app_id: app_id.clone(),
+        name: string_field(value, &["name"]).unwrap_or(app_id),
+        summary: string_field(value, &["summary"]).unwrap_or_default(),
+        description: string_field(value, &["description"]).unwrap_or_default(),
+        icon: string_field(value, &["icon", "icon_url"]),
+        current_release_version,
+        categories,
+        homepage: string_field(value, &["homepage"]),
+        urls: None,
+        screenshots,
+    })
+}
+
+fn string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        value
+            .get(*name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 /// The pure decode: kept a free fn so tests can feed fixtures without
@@ -169,8 +303,7 @@ pub fn decode_popular(text: &str) -> Result<Vec<PopularEntry>, FlathubError> {
         StringIds(Vec<String>),
         HitStrings { hits: Vec<String> },
     }
-    let wire: Wire =
-        serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
+    let wire: Wire = serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
     let out = match wire {
         Wire::Bare(v) => v,
         Wire::Hits { hits } => hits,
@@ -196,12 +329,12 @@ pub fn decode_popular(text: &str) -> Result<Vec<PopularEntry>, FlathubError> {
 /// host and return `(app_id, version)` pairs. Missing binary →
 /// empty vec (the caller degrades to "nothing installed").
 pub fn installed_flatpaks() -> Vec<(String, String)> {
-    let out = match std::process::Command::new("flatpak")
-        .args(["list", "--app", "--columns=application,version"])
-        .output()
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        _ => return Vec::new(),
+    let Some(out) = run_with_timeout(
+        "flatpak",
+        &["list", "--app", "--columns=application,version"],
+        Duration::from_millis(1500),
+    ) else {
+        return Vec::new();
     };
     out.lines()
         .filter_map(|line| {
@@ -219,11 +352,65 @@ pub fn installed_flatpaks() -> Vec<(String, String)> {
 
 /// Whether a usable `flatpak` binary is on PATH.
 pub fn flatpak_available() -> bool {
-    std::process::Command::new("flatpak")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    run_with_timeout("flatpak", &["--version"], Duration::from_millis(1500)).is_some()
+}
+
+/// Run a host probe with a hard wait bound. A timed-out child is killed and
+/// reaped so repeated probes cannot accumulate detached host processes.
+pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let output = child.wait_with_output().ok()?;
+                return Some(String::from_utf8_lossy(&output.stdout).into_owned());
+            }
+            Ok(Some(_)) | Err(_) => return None,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+pub fn list_remotes() -> Vec<Remote> {
+    let Some(output) = run_with_timeout(
+        "flatpak",
+        &["remotes", "--columns=name,url,title,options"],
+        Duration::from_millis(1500),
+    ) else {
+        return Vec::new();
+    };
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            let name = columns.next()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let url = columns.next().unwrap_or("").trim().to_string();
+            let title = columns.next().unwrap_or("").trim();
+            let options = columns.next().unwrap_or("");
+            Some(Remote {
+                name: name.to_string(),
+                url,
+                title: if title.is_empty() { name } else { title }.to_string(),
+                disabled: options.contains("disabled"),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -258,5 +445,43 @@ mod tests {
         let out = decode_popular(text).unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].app_id, "org.gnome.Calculator");
+    }
+
+    #[test]
+    fn search_decoder_accepts_current_hit_shape() {
+        let out = decode_records(
+            r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(out[0].app_id, "org.example.App");
+        assert_eq!(out[0].categories[0].name, "Utility");
+    }
+
+    #[test]
+    fn detail_decoder_accepts_path_authoritative_shape() {
+        let mut record = record_from_value(&serde_json::json!({
+            "id": "placeholder",
+            "name": "Example",
+            "description": "Long description",
+            "categories": ["Utility"],
+            "releases": [{"version": "2.0"}],
+            "screenshots": [{"url": "https://example.test/shot.png"}]
+        }))
+        .unwrap();
+        record.app_id = "org.example.App".into();
+        assert_eq!(record.current_release_version.as_deref(), Some("2.0"));
+        assert_eq!(record.screenshots.len(), 1);
+    }
+
+    #[test]
+    fn remotes_parser_contract_is_bounded_on_missing_binary() {
+        assert!(
+            run_with_timeout(
+                "definitely-not-a-real-flatpak-binary",
+                &["--version"],
+                Duration::from_millis(100)
+            )
+            .is_none()
+        );
     }
 }

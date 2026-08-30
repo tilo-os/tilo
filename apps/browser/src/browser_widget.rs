@@ -3,7 +3,7 @@
 //! Chrome around the toolkit's [`ui::widget::WebView`]: a navigation
 //! toolbar (back / forward / reload + address input), a thin progress
 //! bar while a page loads, and the live page surface. There is no tab
-//! strip — tabbing is the compositor's WindowGroup frame primitive, so
+//! strip — tabbing is the compositor's `WindowGroup` frame primitive, so
 //! one browser window shows exactly one page.
 //!
 //! State model:
@@ -98,13 +98,13 @@ pub struct BrowserWidget {
     /// Debug/`--shots-overlay`: keep forced suggestions visible without a
     /// real focus + query, so the overlay can be rendered headlessly.
     force_suggestions: bool,
-    /// The WebView content rect as window fractions `[x0,y0,x1,y1]`,
+    /// The `WebView` content rect as window fractions `[x0,y0,x1,y1]`,
     /// published each layout for the zero-copy compositor to blit into.
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
 }
 
 impl BrowserWidget {
-    /// Live-mode widget with the default engine (WPE WebKit where the
+    /// Live-mode widget with the default engine (WPE `WebKit` where the
     /// backend is available, the deterministic test engine otherwise).
     pub fn new() -> Self {
         Self::with_engine(default_engine(), false)
@@ -130,8 +130,16 @@ impl BrowserWidget {
     pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
         // Persisted state; `load()` returns defaults/empty when absent, so
         // `--shots` runs are unaffected by (and don't write) real files.
-        let settings = if headless { Settings::default() } else { Settings::load() };
-        let history = if headless { History::default() } else { History::load() };
+        let settings = if headless {
+            Settings::default()
+        } else {
+            Settings::load()
+        };
+        let history = if headless {
+            History::default()
+        } else {
+            History::load()
+        };
         Self {
             rect: Rect::ZERO,
             engine,
@@ -162,7 +170,7 @@ impl BrowserWidget {
         self.force_suggestions = true;
     }
 
-    /// Handle to the live WebView content rect (window fractions), for the
+    /// Handle to the live `WebView` content rect (window fractions), for the
     /// zero-copy compositor. Updated every layout.
     pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
         self.content_rect.clone()
@@ -229,10 +237,10 @@ impl BrowserWidget {
     /// One-shot CRDT bootstrap so children can read/write their paths
     /// on the first frame.
     fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if state.get(root, URL_PATH).ok().flatten().is_none() {
-            if let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text) {
-                let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
-            }
+        if state.get(root, URL_PATH).ok().flatten().is_none()
+            && let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
         }
         for flag in [BACK_FLAG, FORWARD_FLAG, RELOAD_FLAG, SETTINGS_FLAG] {
             if state.get(root, flag).ok().flatten().is_none() {
@@ -305,9 +313,7 @@ impl BrowserWidget {
                     self.progress = 1.0;
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
-                    if !self.headless
-                        && self.current_uri.starts_with("http")
-                    {
+                    if !self.headless && self.current_uri.starts_with("http") {
                         self.history.record(&self.current_uri, &self.title);
                         let _ = self.history.save();
                     }
@@ -343,13 +349,16 @@ impl BrowserWidget {
     fn set_adblock(&self, enabled: bool) {
         if enabled {
             crate::blocker::spawn_filter_loader(self.engine.clone());
-            self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                crate::blocker::user_scripts(),
-            )));
+            self.engine
+                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                    crate::blocker::user_scripts(),
+                )));
         } else {
             self.engine.send(WebViewCommand::SetContentFilter(None));
             self.engine
-                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(Vec::new())));
+                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                    Vec::new(),
+                )));
         }
     }
 
@@ -370,18 +379,18 @@ impl BrowserWidget {
             self.last_query = None;
         }
         let mut changed = false;
-        if let Some(v) = intents.adblock_enabled {
-            if v != self.settings.adblock_enabled {
-                self.settings.adblock_enabled = v;
-                self.set_adblock(v);
-                changed = true;
-            }
+        if let Some(v) = intents.adblock_enabled
+            && v != self.settings.adblock_enabled
+        {
+            self.settings.adblock_enabled = v;
+            self.set_adblock(v);
+            changed = true;
         }
-        if let Some(v) = intents.clear_on_exit {
-            if v != self.settings.clear_on_exit {
-                self.settings.clear_on_exit = v;
-                changed = true;
-            }
+        if let Some(v) = intents.clear_on_exit
+            && v != self.settings.clear_on_exit
+        {
+            self.settings.clear_on_exit = v;
+            changed = true;
         }
         if changed && !self.headless {
             self.settings.save();
@@ -443,7 +452,7 @@ impl BrowserWidget {
         self.composed.as_ref().and_then(|c| walk(c.as_ref(), id))
     }
 
-    /// Publish the WebView surface rect as window fractions for the
+    /// Publish the `WebView` surface rect as window fractions for the
     /// zero-copy compositor.
     fn publish_content_rect(&self) {
         let full = self.rect;
@@ -468,7 +477,7 @@ impl Default for BrowserWidget {
     }
 }
 
-/// The engine a live browser window runs on: WPE WebKit when the `wpe`
+/// The engine a live browser window runs on: WPE `WebKit` when the `wpe`
 /// feature is compiled in (and its libraries boot), the deterministic
 /// test engine otherwise — so the chrome stays fully drivable in
 /// hermetic builds.
@@ -500,9 +509,10 @@ impl Widget for BrowserWidget {
                     crate::blocker::spawn_filter_loader(self.engine.clone());
                     // Scriptlet-style blocking (YouTube ad-skip etc.) the
                     // declarative content filter can't express.
-                    self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                        crate::blocker::user_scripts(),
-                    )));
+                    self.engine
+                        .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+                            crate::blocker::user_scripts(),
+                        )));
                 }
                 self.engine
                     .send(WebViewCommand::Navigate(self.initial_url.to_string()));
@@ -555,24 +565,23 @@ impl Widget for BrowserWidget {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&child_node) = children.first() {
-                    c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&child_node) = children.first()
+        {
+            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
         // Anchor the suggestion dropdown flush under the address input.
         if let Some(r) = self.address_input_rect() {
@@ -622,7 +631,10 @@ impl Widget for BrowserWidget {
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
         std::mem::take(&mut self.structure_dirty)
-            || self.composed.as_mut().is_some_and(|c| c.take_structure_dirty())
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|c| c.take_structure_dirty())
     }
 
     fn handle_event(
@@ -668,35 +680,33 @@ impl Widget for BrowserWidget {
             }
         }
 
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&child_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        child_node,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&child_node) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
         }
 
         // Enter in the focused address bar submits it (no suggestion picked).
-        if let WindowEvent::KeyboardInput { event: key, .. } = event {
-            if key.state == ElementState::Pressed
-                && key.logical_key == WKey::Named(WNamedKey::Enter)
-                && self.url_input_focused()
-            {
-                self.navigate_to_input(state, path);
-                self.suggestions.clear();
-                self.last_query = None;
-                *handled = true;
-            }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && key.logical_key == WKey::Named(WNamedKey::Enter)
+            && self.url_input_focused()
+        {
+            self.navigate_to_input(state, path);
+            self.suggestions.clear();
+            self.last_query = None;
+            *handled = true;
         }
     }
 
@@ -716,7 +726,7 @@ impl Widget for BrowserWidget {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BrowserWidget"
     }
 
@@ -791,7 +801,7 @@ mod tests {
     fn bootstrap_seeds_address_bar() {
         let engine = TestEngine::new();
         // Headless so the test never spawns the network filter loader.
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let mut w = BrowserWidget::with_engine(engine, true);
         let (state, root) = synced(&mut w);
         assert_eq!(
             BrowserWidget::read_url(&state, &root).as_deref(),

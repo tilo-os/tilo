@@ -9,8 +9,7 @@ use iroh::endpoint::{Endpoint, presets};
 use tempfile::TempDir;
 
 use qos_user_identity::{
-    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
-    sign_device_cert,
+    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
 
 use qos_relay::{
@@ -109,8 +108,7 @@ pub async fn spawn_relay_on(
         ..Default::default()
     };
     for id in workspaces {
-        cfg.workspaces
-            .push(WorkspaceBinding { id: *id, pin: true });
+        cfg.workspaces.push(WorkspaceBinding { id: *id, pin: true });
     }
     let identity = RelayIdentity {
         user_public_key: user.user_pk,

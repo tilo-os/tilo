@@ -2,8 +2,7 @@
 //! Pinned ones. Uses real .qpkg installs so both the payload tree and
 //! the blob store contribute to reported disk usage.
 
-mod common;
-
+use crate::common;
 use app_host::gc;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
@@ -37,7 +36,10 @@ fn sweep_evicts_tried_and_preserves_pinned() {
     let report = gc::sweep(&store, 10 * 1024).unwrap();
 
     // Some Tried must have been evicted.
-    assert!(report.touched(), "sweep should have evicted at least one Tried");
+    assert!(
+        report.touched(),
+        "sweep should have evicted at least one Tried"
+    );
     // Pinned must be untouched.
     assert!(
         store.resolve(pinned_id).is_ok(),

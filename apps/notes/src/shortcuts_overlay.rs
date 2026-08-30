@@ -180,9 +180,15 @@ impl ShortcutsOverlay {
         );
 
         // Card.
-        let radius = tokens.radii.md as f64;
+        let radius = f64::from(tokens.radii.md);
         let card = RoundedRect::from_rect(self.card, radius);
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &card);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &card,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -191,7 +197,7 @@ impl ShortcutsOverlay {
             &card,
         );
 
-        let pad = tokens.spacing.s6 as f64;
+        let pad = f64::from(tokens.spacing.s6);
         let inner_x0 = self.card.x0 + pad;
         let inner_y0 = self.card.y0 + pad;
         let inner_x1 = self.card.x1 - pad;
@@ -212,7 +218,7 @@ impl ShortcutsOverlay {
         // Hint row below the title — small dim line telling the user
         // how to close.
         let hint_size = tokens.typography.scale.xs;
-        let hint_y = inner_y0 + title_size as f64 + 2.0;
+        let hint_y = inner_y0 + f64::from(title_size) + 2.0;
         text_renderer.draw_text(
             scene,
             "Press Esc or click outside to close",
@@ -224,9 +230,9 @@ impl ShortcutsOverlay {
 
         // Groups: 2-column grid. Each column gets half the inner width
         // (minus a spacing.s6 gutter).
-        let gutter = tokens.spacing.s6 as f64;
+        let gutter = f64::from(tokens.spacing.s6);
         let col_w = ((inner_w - gutter) / 2.0).max(0.0);
-        let groups_top = hint_y + hint_size as f64 + tokens.spacing.s4 as f64;
+        let groups_top = hint_y + f64::from(hint_size) + f64::from(tokens.spacing.s4);
         let col_left_x = inner_x0;
         let col_right_x = inner_x0 + col_w + gutter;
 
@@ -242,12 +248,16 @@ impl ShortcutsOverlay {
             } else {
                 let h0 = group_block_height(GROUPS[0].rows.len(), group_size, row_size);
                 let h1 = group_block_height(GROUPS[1].rows.len(), group_size, row_size);
-                groups_top + h0.max(h1) + tokens.spacing.s6 as f64
+                groups_top + h0.max(h1) + f64::from(tokens.spacing.s6)
             }
         };
 
         for (idx, group) in GROUPS.iter().enumerate() {
-            let x = if idx % 2 == 0 { col_left_x } else { col_right_x };
+            let x = if idx % 2 == 0 {
+                col_left_x
+            } else {
+                col_right_x
+            };
             let y = column_top_for(idx);
 
             // Group heading.
@@ -260,7 +270,7 @@ impl ShortcutsOverlay {
                 None,
             );
 
-            let rows_top = y + group_size as f64 + GROUP_HEADING_TO_ROWS_GAP;
+            let rows_top = y + f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP;
             for (i, (label, key)) in group.rows.iter().enumerate() {
                 let row_y = rows_top + (i as f64) * ROW_HEIGHT;
                 text_renderer.draw_text(
@@ -273,7 +283,7 @@ impl ShortcutsOverlay {
                 );
                 // Shortcut chip: right-aligned in the column.
                 let (kw, _) = text_renderer.measure(key, row_size, None);
-                let kx = x + col_w - kw as f64;
+                let kx = x + col_w - f64::from(kw);
                 // Soft chip background — translucent white for a "kbd"
                 // affordance without needing per-theme tinting.
                 let chip_pad_x = 6.0;
@@ -282,10 +292,10 @@ impl ShortcutsOverlay {
                     Rect::new(
                         kx - chip_pad_x,
                         row_y - chip_pad_y,
-                        kx + kw as f64 + chip_pad_x,
-                        row_y + row_size as f64 + chip_pad_y,
+                        kx + f64::from(kw) + chip_pad_x,
+                        row_y + f64::from(row_size) + chip_pad_y,
                     ),
-                    tokens.radii.sm as f64,
+                    f64::from(tokens.radii.sm),
                 );
                 scene.fill(
                     Fill::NonZero,
@@ -314,8 +324,7 @@ impl ShortcutsOverlay {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 false
             }
             WindowEvent::KeyboardInput {
@@ -357,9 +366,7 @@ impl Default for ShortcutsOverlay {
 }
 
 fn group_block_height(row_count: usize, group_size: f32, _row_size: f32) -> f64 {
-    group_size as f64
-        + GROUP_HEADING_TO_ROWS_GAP
-        + (row_count as f64) * ROW_HEIGHT
+    f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP + (row_count as f64) * ROW_HEIGHT
 }
 
 impl Widget for ShortcutsOverlay {
@@ -383,7 +390,7 @@ impl Widget for ShortcutsOverlay {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -418,7 +425,7 @@ impl Widget for ShortcutsOverlay {
         // Use `handle_key` from the host.
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ShortcutsOverlay"
     }
 

@@ -79,11 +79,21 @@ pub enum ApiTesterAction {
     /// [`Request`] — method, url, params, headers, auth, body — is carried, so
     /// this one action covers "save a request" and "set method/url/headers/body/
     /// params" as a single deterministic write.
-    SaveRequest { collection_id: String, request: Request },
+    SaveRequest {
+        collection_id: String,
+        request: Request,
+    },
     /// Rename a saved request by id within its collection.
-    RenameRequest { collection_id: String, request_id: String, name: String },
+    RenameRequest {
+        collection_id: String,
+        request_id: String,
+        name: String,
+    },
     /// Delete a saved request by id from its collection.
-    DeleteRequest { collection_id: String, request_id: String },
+    DeleteRequest {
+        collection_id: String,
+        request_id: String,
+    },
 
     // --- Environments --------------------------------------------------------
     /// Add a new, empty environment. `id` minted at authoring time; an existing
@@ -101,7 +111,11 @@ pub enum ApiTesterAction {
     // --- Variables (within an environment) -----------------------------------
     /// Add or update a `{{variable}}` in an environment, keyed by name: an
     /// existing key has its value replaced in place, a new key is appended.
-    SetVariable { env_id: String, key: String, value: String },
+    SetVariable {
+        env_id: String,
+        key: String,
+        value: String,
+    },
     /// Delete a variable by key from an environment.
     DeleteVariable { env_id: String, key: String },
 }
@@ -154,7 +168,10 @@ impl ApiTesterAction {
             ApiTesterAction::DeleteCollection { id } => {
                 cols.retain(|c| c.id.to_string() != *id);
             }
-            ApiTesterAction::SaveRequest { collection_id, request } => {
+            ApiTesterAction::SaveRequest {
+                collection_id,
+                request,
+            } => {
                 if let Some(c) = find_collection_mut(cols, collection_id) {
                     if let Some(existing) = c.requests.iter_mut().find(|r| r.id == request.id) {
                         *existing = request.clone(); // edit in place
@@ -163,14 +180,24 @@ impl ApiTesterAction {
                     }
                 }
             }
-            ApiTesterAction::RenameRequest { collection_id, request_id, name } => {
-                if let Some(c) = find_collection_mut(cols, collection_id) {
-                    if let Some(r) = c.requests.iter_mut().find(|r| r.id.to_string() == *request_id) {
-                        r.name = name.clone();
-                    }
+            ApiTesterAction::RenameRequest {
+                collection_id,
+                request_id,
+                name,
+            } => {
+                if let Some(c) = find_collection_mut(cols, collection_id)
+                    && let Some(r) = c
+                        .requests
+                        .iter_mut()
+                        .find(|r| r.id.to_string() == *request_id)
+                {
+                    r.name = name.clone();
                 }
             }
-            ApiTesterAction::DeleteRequest { collection_id, request_id } => {
+            ApiTesterAction::DeleteRequest {
+                collection_id,
+                request_id,
+            } => {
                 if let Some(c) = find_collection_mut(cols, collection_id) {
                     c.requests.retain(|r| r.id.to_string() != *request_id);
                 }
@@ -275,15 +302,23 @@ pub fn encode(action: &ApiTesterAction) -> EncodedAction {
 // ===========================================================================
 
 pub fn set_active_environment_action(id: Option<Uuid>) -> ApiTesterAction {
-    ApiTesterAction::SetActiveEnvironment { id: id.map(|i| i.to_string()) }
+    ApiTesterAction::SetActiveEnvironment {
+        id: id.map(|i| i.to_string()),
+    }
 }
 
 pub fn create_collection_action(id: Uuid, name: &str) -> ApiTesterAction {
-    ApiTesterAction::CreateCollection { id: id.to_string(), name: name.to_string() }
+    ApiTesterAction::CreateCollection {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 pub fn rename_collection_action(id: Uuid, name: &str) -> ApiTesterAction {
-    ApiTesterAction::RenameCollection { id: id.to_string(), name: name.to_string() }
+    ApiTesterAction::RenameCollection {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 pub fn delete_collection_action(id: Uuid) -> ApiTesterAction {
@@ -291,7 +326,10 @@ pub fn delete_collection_action(id: Uuid) -> ApiTesterAction {
 }
 
 pub fn save_request_action(collection_id: Uuid, request: Request) -> ApiTesterAction {
-    ApiTesterAction::SaveRequest { collection_id: collection_id.to_string(), request }
+    ApiTesterAction::SaveRequest {
+        collection_id: collection_id.to_string(),
+        request,
+    }
 }
 
 pub fn rename_request_action(collection_id: Uuid, request_id: Uuid, name: &str) -> ApiTesterAction {
@@ -310,11 +348,17 @@ pub fn delete_request_action(collection_id: Uuid, request_id: Uuid) -> ApiTester
 }
 
 pub fn create_environment_action(id: Uuid, name: &str) -> ApiTesterAction {
-    ApiTesterAction::CreateEnvironment { id: id.to_string(), name: name.to_string() }
+    ApiTesterAction::CreateEnvironment {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 pub fn rename_environment_action(id: Uuid, name: &str) -> ApiTesterAction {
-    ApiTesterAction::RenameEnvironment { id: id.to_string(), name: name.to_string() }
+    ApiTesterAction::RenameEnvironment {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 pub fn delete_environment_action(id: Uuid) -> ApiTesterAction {
@@ -330,7 +374,10 @@ pub fn set_variable_action(env_id: Uuid, key: &str, value: &str) -> ApiTesterAct
 }
 
 pub fn delete_variable_action(env_id: Uuid, key: &str) -> ApiTesterAction {
-    ApiTesterAction::DeleteVariable { env_id: env_id.to_string(), key: key.to_string() }
+    ApiTesterAction::DeleteVariable {
+        env_id: env_id.to_string(),
+        key: key.to_string(),
+    }
 }
 
 /// Split a prompted `"key=value"` argument into its two halves (value may hold
@@ -354,7 +401,11 @@ fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> Ac
 
 /// One-line label for a saved request: its method and name.
 fn request_label(r: &Request) -> String {
-    let name = if r.name.trim().is_empty() { "Untitled request" } else { r.name.trim() };
+    let name = if r.name.trim().is_empty() {
+        "Untitled request"
+    } else {
+        r.name.trim()
+    };
     format!("{} {}", r.method.as_str(), name)
 }
 
@@ -376,7 +427,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let active_env = ApiDoc::active_env(doc, &root_obj);
     let active_request = ApiDoc::request(doc, &root_obj);
 
-    let mut root = Resource::new("api_tester.workspace", "api_tester.workspace", "API workspace");
+    let mut root = Resource::new(
+        "api_tester.workspace",
+        "api_tester.workspace",
+        "API workspace",
+    );
 
     // Workspace-level: create a collection / environment (prompted for a name;
     // the id is minted once when the argument is committed, then baked into the
@@ -414,7 +469,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             ExecutionLocus::ClientLocal,
             move |name: &str| encode(&rename_collection_action(cid, name.trim())),
         ));
-        node = node.with_action(immediate("delete", "Delete collection", &delete_collection_action(cid)));
+        node = node.with_action(immediate(
+            "delete",
+            "Delete collection",
+            &delete_collection_action(cid),
+        ));
         // Add a new blank request (a fresh GET named by the argument).
         node = node.with_action(ActionSpec::prompted(
             "add-request",
@@ -459,7 +518,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 ExecutionLocus::ClientLocal,
                 move |name: &str| encode(&rename_request_action(cid, rid, name.trim())),
             ))
-            .with_action(immediate("delete", "Delete request", &delete_request_action(cid, rid)));
+            .with_action(immediate(
+                "delete",
+                "Delete request",
+                &delete_request_action(cid, rid),
+            ));
             node = node.with_child(child);
         }
         root = root.with_child(node);
@@ -467,8 +530,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 
     // Environments → grouped under one env node, each owning its variables.
     if !environments.is_empty() {
-        let mut env_root =
-            Resource::new("api_tester.environments", "api_tester.environments", "Environments");
+        let mut env_root = Resource::new(
+            "api_tester.environments",
+            "api_tester.environments",
+            "Environments",
+        );
         for e in &environments {
             let eid = e.id;
             let is_active = active_env.as_deref() == Some(eid.to_string().as_str());
@@ -579,7 +645,8 @@ mod tests {
 
         let mut env = Environment::new("Production");
         let eid = env.id;
-        env.variables.push(KeyValue::new("base_url", "https://api.example.com"));
+        env.variables
+            .push(KeyValue::new("base_url", "https://api.example.com"));
         ApiDoc::set_environments(&mut doc, &root, &[env]);
 
         (doc, cid, rid, eid)
@@ -599,7 +666,10 @@ mod tests {
 
         let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(root_actions.contains(&"new-collection"), "{root_actions:?}");
-        assert!(root_actions.contains(&"new-environment"), "{root_actions:?}");
+        assert!(
+            root_actions.contains(&"new-environment"),
+            "{root_actions:?}"
+        );
 
         let col = root
             .children
@@ -639,7 +709,10 @@ mod tests {
             .iter()
             .find(|r| r.kind == "api_tester.variable")
             .expect("a variable nested under the environment");
-        assert!(var.actions.iter().any(|a| a.id == "delete"), "variable exports delete");
+        assert!(
+            var.actions.iter().any(|a| a.id == "delete"),
+            "variable exports delete"
+        );
 
         // The one palette surfaces the tree's actions as rows (the Actions group
         // is capped, so assert on the leading, always-present ones).
@@ -647,9 +720,18 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New collection")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete collection")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Add request")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("New collection")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete collection")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Add request")),
+            "{labels:?}"
+        );
     }
 
     /// An empty document still publishes the workspace root with the create
@@ -664,7 +746,10 @@ mod tests {
         assert_eq!(root.kind, "api_tester.workspace");
         assert!(root.actions.iter().any(|a| a.id == "new-collection"));
         assert!(root.actions.iter().any(|a| a.id == "new-environment"));
-        assert!(root.children.is_empty(), "no fabricated collections or environments");
+        assert!(
+            root.children.is_empty(),
+            "no fabricated collections or environments"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -690,26 +775,20 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert!(
-            ApiDoc::collections(&state.doc, &root)[0].requests.is_empty(),
+            ApiDoc::collections(&state.doc, &root)[0]
+                .requests
+                .is_empty(),
             "the action deleted the saved request"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             ApiDoc::collections(&state.doc, &root)[0].requests.len(),
             1,
@@ -727,7 +806,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // A create carrying a pre-minted id so `apply` needs no RNG.
         let mut req = Request::new("Create user");
@@ -739,13 +822,20 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(
             ApiDoc::collections(&a, &root)[0].requests.len(),
             ApiDoc::collections(&b, &root)[0].requests.len(),
         );
         assert!(
-            ApiDoc::collections(&b, &root)[0].requests.iter().any(|r| r.name == "Create user"),
+            ApiDoc::collections(&b, &root)[0]
+                .requests
+                .iter()
+                .any(|r| r.name == "Create user"),
             "the saved request landed on the replica"
         );
     }
@@ -774,18 +864,32 @@ mod tests {
         let (doc, cid, rid, _eid) = seeded();
         let resources = provide_resources(&doc);
         let root = &resources[0];
-        let col = root.children.iter().find(|r| r.kind == "api_tester.collection").unwrap();
+        let col = root
+            .children
+            .iter()
+            .find(|r| r.kind == "api_tester.collection")
+            .unwrap();
 
-        let req = col.children.iter().find(|r| r.kind == "api_tester.request").unwrap();
+        let req = col
+            .children
+            .iter()
+            .find(|r| r.kind == "api_tester.request")
+            .unwrap();
         let del = req.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(del);
         let from_builder = encode(&delete_request_action(cid, rid));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         let rename = col.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename, "Accounts API");
         let from_builder = encode(&rename_collection_action(cid, "Accounts API"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
     }
 }

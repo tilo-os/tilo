@@ -11,10 +11,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Avatar;
-use ui::ColorCompat;
 
 use crate::model::ChangeKind;
 
@@ -30,7 +30,14 @@ pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
 }
 
 /// Stroke a rounded rectangle outline.
-pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, width: f64, color: Color) {
+pub fn stroke_round(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    width: f64,
+    color: Color,
+) {
     let r = RoundedRect::from_rect(rect, radius);
     scene.stroke(&Stroke::new(width), t, color, None, &r);
 }
@@ -76,7 +83,15 @@ pub fn text_weighted(
     max_w: Option<f32>,
     weight: TextWeight,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, y)), max_w, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        max_w,
+        weight,
+    );
 }
 
 /// Monospace styled text (for code, hashes, diff bodies).
@@ -106,7 +121,8 @@ pub fn mono(
 
 /// Measure a monospace string's advance width.
 pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
-    tr.measure_styled(s, size, None, TextWeight::Regular, false, true).0
+    tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
+        .0
 }
 
 /// A small rounded "pill" with a label — used for ref decorations, badges,
@@ -126,7 +142,7 @@ pub fn pill(
 ) -> f64 {
     let pad = 6.0;
     let size = (height - 6.0).max(9.0) as f32;
-    let tw = tr.measure_weighted(label, size, None, TextWeight::Medium).0 as f64;
+    let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
     let w = tw + pad * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
     fill_round(scene, t, rect, height / 2.0, bg);
@@ -141,7 +157,7 @@ pub fn pill(
         size,
         fg,
         x + pad,
-        y + (height - size as f64) / 2.0 - 1.0,
+        y + (height - f64::from(size)) / 2.0 - 1.0,
         None,
         TextWeight::Medium,
     );

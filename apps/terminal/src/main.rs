@@ -1,3 +1,19 @@
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports two modes:
@@ -13,14 +29,14 @@
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use terminal::TerminalWidget;
 use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
-use ui::theme::Theme;
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -49,7 +65,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // on a null backend to keep the frame deterministic. `empty` captures
         // the first-run watermark (a headless widget that never gets output).
         let mut widget = match scenario.as_deref() {
-            Some("shell") | Some("shell-select") | None => TerminalWidget::spawn_default()?,
+            Some("shell" | "shell-select") | None => TerminalWidget::spawn_default()?,
             Some(_) => TerminalWidget::spawn_headless()?,
         };
         render_shot_to_png(&mut widget, viewport, &out, scenario.as_deref())?;
@@ -65,7 +81,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.terminal"));
+        std::process::exit(ui::headless::run(
+            spec,
+            Box::new(widget),
+            "dev.qos.terminal",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.terminal");
@@ -286,16 +306,22 @@ fn run_scenario(
             let mut s = String::new();
             s.push_str("\x1b[1mqOS terminal — SGR palette\x1b[0m\r\n\r\n");
             s.push_str(" 16-color ANSI:  ");
-            for n in 0..8 { s.push_str(&format!("\x1b[4{}m  \x1b[0m", n)); }
+            for n in 0..8 {
+                s.push_str(&format!("\x1b[4{n}m  \x1b[0m"));
+            }
             s.push(' ');
-            for n in 0..8 { s.push_str(&format!("\x1b[48;5;{}m  \x1b[0m", n + 8)); }
+            for n in 0..8 {
+                s.push_str(&format!("\x1b[48;5;{}m  \x1b[0m", n + 8));
+            }
             s.push_str("\r\n\r\n 256-color:      ");
-            for n in (16..232).step_by(6) { s.push_str(&format!("\x1b[48;5;{}m \x1b[0m", n)); }
+            for n in (16..232).step_by(6) {
+                s.push_str(&format!("\x1b[48;5;{n}m \x1b[0m"));
+            }
             s.push_str("\r\n\r\n truecolor:      ");
             for i in 0..48 {
                 let r = (i * 255 / 47) as u8;
                 let g = (255 - i * 255 / 47) as u8;
-                s.push_str(&format!("\x1b[48;2;{};{};128m \x1b[0m", r, g));
+                s.push_str(&format!("\x1b[48;2;{r};{g};128m \x1b[0m"));
             }
             s.push_str("\r\n\r\n styles:         ");
             s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
@@ -321,7 +347,12 @@ fn run_scenario(
             ];
             for (i, line) in lines.iter().enumerate() {
                 // Line-number gutter in a dim color, then source text.
-                s.push_str(&format!("\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}", i + 3, i + 1, line));
+                s.push_str(&format!(
+                    "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
+                    i + 3,
+                    i + 1,
+                    line
+                ));
             }
             // A status line near the bottom in reverse video.
             s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
@@ -332,7 +363,7 @@ fn run_scenario(
         "scrollback" => {
             let mut s = String::new();
             for i in 0..80 {
-                s.push_str(&format!("\x1b[38;5;250m{:>4}\x1b[0m  log entry {:03}: the quick brown fox jumps over the lazy dog\r\n", i, i));
+                s.push_str(&format!("\x1b[38;5;250m{i:>4}\x1b[0m  log entry {i:03}: the quick brown fox jumps over the lazy dog\r\n"));
             }
             widget.feed(doc, root, s.as_bytes());
             widget.sync(doc, root);

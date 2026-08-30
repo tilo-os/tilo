@@ -6,55 +6,28 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-/// Synthetic input events that can be injected into a running `App` via
-/// `EventLoopProxy`. Each variant is translated back into the exact
-/// `WindowEvent`(s) winit would deliver from real hardware, then routed
-/// through the SAME `window_event` handler — so injected and hardware
-/// events take the IDENTICAL code path. This is the foundation for the
-/// hosted-mode `QOS_TEST_CONTROL` socket; the socket-listener thread
-/// reads JSON commands and pumps the equivalent `UserEvent`s via the
-/// proxy.
-///
-/// v1 covers mouse input — enough to reproduce the immediate
-/// hosted-mode click bug. Keyboard injection is a follow-up (winit's
-/// `KeyEvent` constructor isn't pub, so we'd need a forwarder helper).
-///
-/// Defined in `ui` (not `shell`) because the `App` owns the event loop
-/// and proxy; `shell` depends on `ui`, not the other way around.
+/// Synthetic input for `EventLoopProxy`: each variant becomes the real
+/// `WindowEvent`(s) and routes through the same handler, so injected and
+/// real-hardware events take the identical code path.
 #[derive(Debug, Clone)]
 pub enum UserEvent {
-    /// Move the cursor only (no click). For hover tests.
-    Hover { x: f64, y: f64 },
-    /// Full click sequence at the given coords: CursorMoved → Pressed → Released.
-    /// One UserEvent dispatches THREE `WindowEvent`s through the same path
-    /// a real click would take.
-    Click { x: f64, y: f64 },
-    /// Synthesise a `MouseWheel { LineDelta(dx, dy) }` at the cursor's
-    /// most-recent position. Used by the hosted-mode test_control socket
-    /// so an external script can drive strip-pan / overview-scroll /
-    /// wheel-disc gestures without a real mouse.
-    Wheel { dx: f32, dy: f32 },
-    /// A free-form string payload delivered straight to the root widget's
-    /// [`crate::widget::Widget::on_external_event`]. Unlike the pointer /
-    /// wheel variants this is NOT translated into a `WindowEvent` — it is
-    /// the channel a host app uses to pump out-of-band data (e.g. the qOS
-    /// installer streaming `qos-install` progress lines from a worker
-    /// thread) back into the App for rendering. The App requests a redraw
-    /// + re-sync after dispatch so the new state surfaces next frame.
+    Hover {
+        x: f64,
+        y: f64,
+    },
+    /// `CursorMoved` → Pressed → Released, dispatched as one unit.
+    Click {
+        x: f64,
+        y: f64,
+    },
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
+    /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
+    /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
-    /// An accessibility event from the `accesskit_winit::Adapter`, delivered
-    /// through the same winit event-loop proxy the synthetic-input variants
-    /// use. Carries one of:
-    /// - `InitialTreeRequested` — an AT just connected; the App must push a
-    ///   full [`accesskit::TreeUpdate`] via `update_if_active`.
-    /// - `ActionRequested(req)` — the AT asks us to perform an action on a
-    ///   node; the App maps it back to our [`crate::a11y::Action`] and
-    ///   dispatches via [`crate::widget::Widget::perform_action`] (falling
-    ///   back to a synthetic click through the existing input path).
-    /// - `AccessibilityDeactivated` — all ATs disconnected.
-    ///
-    /// Defined as its own variant (rather than translated to a `WindowEvent`)
-    /// because accesskit events have no `WindowEvent` analogue.
+    /// No `WindowEvent` analogue, so accesskit events get their own variant.
     AccessKit(accesskit_winit::WindowEvent),
 }
 
@@ -63,47 +36,40 @@ impl From<accesskit_winit::Event> for UserEvent {
         UserEvent::AccessKit(e.window_event)
     }
 }
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
-use taffy::{TaffyTree, AvailableSpace, NodeId};
+use crate::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
+use crate::gpu::RenderContext;
+use crate::permissions::PermissionContext;
+use crate::presence::{PresenceCtx, PresenceKey};
+use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spawn_render_thread};
 use crate::state::State;
-use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest, PresencePayload};
-use crate::presence::{PresenceCtx, PresenceKey};
-use crate::permissions::PermissionContext;
-use crate::render_thread::{spawn_render_thread, FrameOutcome, RenderRequest, RenderThreadHandle};
+use crate::widget::Widget;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use taffy::{AvailableSpace, NodeId, TaffyTree};
+use vello::{
+    Renderer, RendererOptions, Scene, kurbo::Affine, kurbo::Point, kurbo::Rect as KurboRect,
+    peniko::Color,
+};
 
-/// Cached `QUICK_UI_PERF=1` env-var check. Returns `true` once the env
-/// var is non-empty; the lookup happens once and the boolean is cached
-/// for the rest of the process. The `RedrawRequested` handler reads
-/// this once per frame so the typical (perf-off) hot path pays zero.
+/// Cached `QUICK_UI_PERF=1` check, so the per-frame read costs nothing.
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_PERF").map(|s| !s.is_empty()).unwrap_or(false)
-    })
+    *FLAG.get_or_init(|| std::env::var("QUICK_UI_PERF").is_ok_and(|s| !s.is_empty()))
 }
 
-/// Cached `QUICK_UI_NO_SCROLL_OPT=1` escape hatch. When set, the frame loop
-/// always runs a full `compute_layout` on any `layout_dirty` frame (the pre-
-/// optimisation behaviour), disabling the scroll-reposition fast path. Kept as
-/// a safety valve for the shared toolkit: if a subtree ever repositions in a
-/// way that genuinely needs a re-solve without reporting `layout_needs_measure`,
-/// this restores the always-solve semantics with one env var.
+/// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
+/// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
+/// valve if a subtree ever needs a re-solve without reporting
+/// `layout_needs_measure`.
 fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("QUICK_UI_NO_SCROLL_OPT").map(|s| !s.is_empty()).unwrap_or(false)
-    })
+    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SCROLL_OPT").is_ok_and(|s| !s.is_empty()))
 }
 
-/// The next UTF-8 char boundary at or after `byte` in `s` (clamped to the
-/// length). Used by caret-review to recognise a single-character move.
 fn next_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -117,7 +83,6 @@ fn next_boundary(s: &str, byte: usize) -> usize {
     }
 }
 
-/// The previous UTF-8 char boundary before `byte` in `s` (clamped to 0).
 fn prev_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -131,21 +96,16 @@ fn prev_boundary(s: &str, byte: usize) -> usize {
     }
 }
 
-/// The whitespace-delimited word the caret at `byte` sits in (or just after),
-/// for caret-review word announcements. Returns `None` when the caret is in
-/// whitespace / at a gap with no adjacent word.
+/// `None` when the caret is in whitespace / at a gap with no adjacent word.
 fn word_at(s: &str, byte: usize) -> Option<String> {
     let b = byte.min(s.len());
-    // A word spans the run of non-whitespace bytes covering the caret. When the
-    // caret is exactly on a boundary (between two words or at the end), prefer
-    // the word immediately to the left so Home/End reads a real word.
+    // On a boundary (between words or at the end), prefer the word to the
+    // left so Home/End reads a real word.
     let is_ws = |c: char| c.is_whitespace();
     let on_word = s[b..].chars().next().is_some_and(|c| !is_ws(c));
     let anchor = if on_word {
         b
     } else {
-        // Caret not on a word char (gap or end) — back up to the word on the
-        // left, if any.
         let left = prev_boundary(s, b);
         if s[left..].chars().next().is_some_and(|c| !is_ws(c)) {
             left
@@ -153,7 +113,6 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
             return None;
         }
     };
-    // Expand left to the word start.
     let mut start = anchor;
     while start > 0 {
         let prev = prev_boundary(s, start);
@@ -162,7 +121,6 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
         }
         start = prev;
     }
-    // Expand right to the word end.
     let mut end = anchor;
     while end < s.len() {
         let next = next_boundary(s, end);
@@ -172,21 +130,21 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
         end = next;
     }
     let word = &s[start..end];
-    if word.is_empty() { None } else { Some(word.to_string()) }
+    if word.is_empty() {
+        None
+    } else {
+        Some(word.to_string())
+    }
 }
 
-/// Minimum gap between two outbound pointer presence broadcasts, in
-/// milliseconds. Winit delivers `CursorMoved` at vsync rate or higher; at
-/// 120 Hz the raw event stream is ~8 ms per delta, which would saturate
-/// the Unix socket for no visual gain. 33 ms caps the wire rate at ~30 Hz
-/// — fast enough that remote cursors read as fluid, slow enough that the
-/// collab socket never becomes the bottleneck.
+/// Minimum gap between outbound pointer presence broadcasts, in
+/// milliseconds. Winit delivers `CursorMoved` at up to 120 Hz (~8 ms/delta),
+/// which would saturate the Unix socket for no visual gain; 33 ms caps the
+/// wire rate at ~30 Hz, fluid enough without becoming the bottleneck.
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
-/// Pure throttle decision: given the timestamp of the last broadcast and
-/// the current instant, return `true` iff a new broadcast is allowed. Kept
-/// public-in-crate so the throttle logic can be unit-tested without a
-/// real event loop.
+/// Public-in-crate so the throttle decision is unit-testable without a real
+/// event loop.
 pub(crate) fn pointer_broadcast_allowed(
     last: Option<Instant>,
     now: Instant,
@@ -198,28 +156,18 @@ pub(crate) fn pointer_broadcast_allowed(
     }
 }
 
-/// Pure decision for the fullscreen reconcile loop: given what the App last
-/// *requested* from the window and what the root widget now *wants*
-/// ([`crate::widget::Widget::fullscreen_intent`]), return `Some(new_state)`
-/// to push to the window via `set_fullscreen`, or `None` to leave it as-is.
-///
-/// Kept as a free function so the reconcile decision is unit-testable without
-/// a live winit window (real OS fullscreen can't be exercised headlessly).
-pub(crate) fn fullscreen_request_decision(
-    requested: bool,
-    want: Option<bool>,
-) -> Option<bool> {
+/// Free function so the fullscreen reconcile decision is unit-testable
+/// without a live winit window (real OS fullscreen can't be exercised
+/// headlessly).
+pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -> Option<bool> {
     match want {
         Some(w) if w != requested => Some(w),
         _ => None,
     }
 }
 
-/// Depth-first search for the first widget in the tree that expresses an
-/// [`crate::widget::Widget::appearance_intent`]. Used by the App's live
-/// re-theme path so a settings/appearance pane nested anywhere under the root
-/// can drive the running app's global appearance without a back-channel. The
-/// first `Some` wins (a settings app has at most one appearance surface open).
+/// Lets a nested settings/appearance pane drive the app's global appearance
+/// without a back-channel.
 fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
     if let Some(intent) = w.appearance_intent() {
         return Some(intent);
@@ -233,7 +181,19 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Direction { Up, Down, Left, Right }
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
+/// send. Invoked after the throttle gate.
+type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
+/// Lets the shell drain `NeighbourMsg::PresenceMoved` into
+/// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
+type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
 
 pub struct App {
     state: State,
@@ -243,61 +203,35 @@ pub struct App {
     root_node: Option<NodeId>,
     node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     layout_dirty: bool,
-    /// Set when any widget in the tree has reported `take_structure_dirty()`
-    /// this tick. Triggers a rebuild of the taffy tree before the next
-    /// layout pass — without it, widgets spawned at runtime (e.g. a new
-    /// `WindowGroup` from a tab-drop split) have no `NodeId` and are
-    /// skipped by `apply_layout`.
+    /// Set when a widget reports `take_structure_dirty()`: without a taffy
+    /// rebuild before the next layout pass, runtime-spawned widgets (e.g. a
+    /// tab-drop split) have no `NodeId` and `apply_layout` skips them.
     structure_dirty: bool,
     needs_sync: bool,
-    /// Physical window size the most recent `RedrawRequested` frame was
-    /// built at. `about_to_wait` compares the live `inner_size()` against
-    /// this to catch an allocation change that arrived without a `Resized`
-    /// event (a compositor reconfigure, or a resize that coalesced away)
-    /// and reflow responsive layouts on the next tick instead of waiting
-    /// on stray input. `None` until the first frame is drawn.
+    /// Diffed against `inner_size()` in `about_to_wait` to catch a resize
+    /// that arrived without a `Resized` event.
     last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
-    /// Physical `(width, height)` the taffy tree was last `compute_layout`'d
-    /// against. Used by the scroll-reposition fast path: a frame that is only
-    /// `layout_dirty` because content scrolled needs `apply_layout` but not a
-    /// full re-solve — unless the window size changed since the last solve, in
-    /// which case available space changed and we must recompute. `None` until
-    /// the first solve.
+    /// `(width, height)` the taffy tree was last solved against — lets the
+    /// scroll-reposition fast path skip a full re-solve unless it changed.
     last_layout_px: Option<(u32, u32)>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
     pub focusable_order: Vec<NodeId>,
-    /// Opt-in: when set, the first focusable widget is focused once the
-    /// initial layout is built (before the event loop runs) so the app is
-    /// keyboard-usable without a click. Default `false` — existing apps
-    /// (shell, terminal, file-explorer) keep "nothing focused until the
-    /// user acts". The greeter sets this so the username field is typeable
-    /// immediately at the login prompt.
+    /// Opt-in: focuses the first focusable widget after initial layout, so
+    /// the app is keyboard-usable without a click.
     pub autofocus_first: bool,
-    /// Opt-in: when set, every structural rebuild of the widget tree
-    /// re-establishes keyboard focus. If the root widget raises
-    /// [`crate::widget::Widget::take_focus_reset`] (a wizard advancing to a
-    /// new step) focus jumps to the first focusable of the rebuilt tree;
-    /// otherwise focus is *preserved* by re-selecting the focusable at the
-    /// same ordinal position (so a rebuild triggered by an unrelated state
-    /// change — e.g. a validation message appearing — doesn't silently
-    /// drop the caret). Default `false`: the shell / greeter keep their
-    /// existing rebuild-focus behaviour untouched.
+    /// Opt-in: re-establishes keyboard focus on every structural rebuild.
+    /// [`crate::widget::Widget::take_focus_reset`] jumps to the first
+    /// focusable (wizard advancing a step); otherwise focus is preserved by
+    /// ordinal position so an unrelated rebuild doesn't drop the caret.
     pub autofocus_on_structure_change: bool,
-    /// Opt-in: when set, the App polls the widget tree each tick for a
-    /// [`crate::widget::Widget::appearance_intent`] and re-themes live when the
-    /// user's global-appearance choice (theme / high-contrast / reduced-motion /
-    /// UI-scale / text-scale) changes. Off by default so apps that get their
-    /// theme pushed from the host (the shell) pay nothing and the hot path is
-    /// untouched; the Settings app turns it on so changing UI scale or text size
-    /// re-scales its own window immediately.
+    /// Opt-in, off by default so host-themed apps pay nothing: polls the
+    /// tree each tick for [`crate::widget::Widget::appearance_intent`] and
+    /// re-themes live.
     pub appearance_reconcile: bool,
     modifiers: winit::event::Modifiers,
 
-    /// Recognises back/forward navigation gestures (two-finger touchpad
-    /// swipe, touchscreen edge pull) from scroll/touch events and hands
-    /// the result to the widget tree via [`Widget::on_nav_gesture`].
     nav_gestures: crate::gesture::NavGestureRecognizer,
 
     // Stable state for Undo/Redo tracking
@@ -306,11 +240,9 @@ pub struct App {
 
     // Collaboration
     collab_manager: CollaborationManager,
-    /// Who this process acts as. Every committed action is attributed to it,
-    /// and Ctrl+Z only reverts actions carrying it — so in a shared session a
-    /// user's undo walks past their collaborators' work instead of through it.
-    /// Resolved once from the same environment the broker's `Hello` announces,
-    /// so the id here is the id peers see.
+    /// Every committed action is attributed to it and Ctrl+Z only reverts
+    /// actions carrying it, so undo walks past collaborators' work rather
+    /// than through it.
     local_author: crate::permissions::UserId,
     /// The undo status last handed to the widget tree, and the history
     /// revision it was derived from.
@@ -327,189 +259,80 @@ pub struct App {
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
-    /// Scope under which local pointer moves are broadcast via
-    /// [`App::broadcast_presence`] while the event loop runs. The shell
-    /// sets this at startup (e.g. to the current workspace) so every
-    /// connected peer receives `RemotePresenceUpdate` events under the
-    /// same key the shell paints remote cursors with. Leaving it `None`
-    /// disables outbound pointer broadcast — useful for headless tests
-    /// and the `quick-ui` examples, which have no meaningful scope.
+    /// `None` disables outbound broadcast (headless tests, `quick-ui`
+    /// examples).
     presence_broadcast_scope: Option<PresenceKey>,
-    /// The peer we're currently "following", if any — set by clicking a
-    /// peer's presence indicator (their off-screen mist, in particular).
-    /// [`App::followed_peer_target`] resolves this to their live pointer so
-    /// a host can scroll/recentre toward them. `None` = not following.
+    /// `None` is the ordinary case; the shell sets
+    /// [`crate::presence::PointerSpace::Desktop`] for its own chrome, whose
+    /// window *is* the desktop other surfaces resolve against. Set rather
+    /// than guessed — a wrong guess publishes a position in the wrong space
+    /// with nothing to detect it from outside.
+    pointer_space: Option<crate::presence::PointerSpace>,
+    /// The peer "followed" via a clicked presence indicator; `None` = not
+    /// following.
     followed_peer: Option<String>,
-    /// Timestamp of the last outbound pointer broadcast, used by
-    /// [`pointer_broadcast_allowed`] to throttle the wire rate to
-    /// ~30 Hz regardless of how fast winit delivers `CursorMoved`.
     last_pointer_broadcast: Option<Instant>,
-    /// Last caret/selection presence broadcast for the focused widget,
-    /// used to avoid re-sending unchanged presence every frame.
-    last_focus_presence:
-        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    /// Last location presence (e.g. current tab/page) broadcast for the
-    /// root widget, diffed to avoid re-sending unchanged presence.
-    last_location_presence:
-        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    /// Last [`ViewSubset`](crate::view::ViewSubset) broadcast to presence —
-    /// the region/resource the local participant is looking at. Diffed so
-    /// [`App::broadcast_view_presence`] only sends when the view actually
-    /// moves, not every frame.
+    /// Diffed against, to avoid re-sending unchanged presence every frame.
+    last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     last_view_presence: Option<crate::view::ViewSubset>,
-    /// Optional out-of-band sink invoked alongside the Unix-socket
-    /// `broadcast_presence` send. The shell registers a closure here
-    /// when peer-sync is enabled so local cursor moves get fanned out
-    /// to libp2p peers in addition to (or instead of) the legacy
-    /// `QUICK_COLLAB_SOCK` server. The toolkit invokes the sink after
-    /// the throttle gate, so callers receive the same ~30 Hz cadence.
-    presence_broadcast_sink: Option<Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>>,
-    /// Optional per-frame callback invoked from `AboutToWait`. The
-    /// shell registers a drain closure here when peer-sync is enabled
-    /// so received `NeighbourMsg::PresenceMoved` events can be pushed
-    /// into [`PresenceCtx::remote_cursors`] without App needing to
-    /// know about libp2p. The closure receives `&mut PresenceCtx` so
-    /// it can write directly to the overlay surface.
-    frame_tick: Option<Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>>,
+    /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
+    /// send. Invoked after the throttle gate.
+    presence_broadcast_sink: Option<PresenceBroadcastSink>,
+    /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
+    /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
+    frame_tick: Option<FrameTick>,
 
-    /// Last OS cursor shape pushed to the window via `Window::set_cursor`.
-    /// `CursorMoved` re-resolves the desired shape from the widget under
-    /// the pointer every move, but only calls into winit when this
-    /// changes — keeping the hot pointer path cheap and not perturbing
-    /// the incremental-render gate.
+    /// Only calls into winit when it changes, keeping the hot pointer path
+    /// cheap.
     current_cursor: CursorIcon,
 
-    /// Central hover-tooltip controller. On every pointer move the App
-    /// hit-tests the widget tree (the same `node_map` sweep
-    /// [`Self::resolve_cursor`] uses) for the smallest widget under the pointer
-    /// that exposes a [`Widget::tooltip`], feeds it here, and — once the dwell
-    /// elapses — paints a single themed chip on top of the whole app. Clicks,
-    /// scrolls, keys and pointer-leave dismiss it. This is what makes tooltips
-    /// a toolkit primitive available to every app with zero per-app wiring.
     tooltip_host: crate::widget::TooltipHost,
 
-    /// Built-in screen reader. `Some` when
-    /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader)
-    /// is on (toggled via [`Self::set_screen_reader_enabled`], or auto-enabled
-    /// at construction when `QOS_A11Y_SCREEN_READER`/`QOS_SCREEN_READER` is set
-    /// in the environment — the env var the shell mirrors into sandboxes).
-    /// When `None`, every narration call site short-circuits, so a build
-    /// with the reader off pays nothing and is byte-for-byte unaffected.
-    ///
-    /// The reader owns a `tts` speaker (default backend, falling back to a
-    /// silent `NullSpeaker` when no TTS is installed — so enabling it never
-    /// panics). Focus narration flows from [`Self::set_focused_node`]; a
-    /// dedicated keyboard layer in `window_event` drives the reading-cursor
-    /// commands.
+    /// `None` makes every narration call site a no-op, so a reader-off
+    /// build is byte-for-byte unaffected.
     screen_reader: Option<crate::screen_reader::ScreenReader>,
-    /// Whether the screen-reader modifier key (the **Insert** key, the
-    /// NVDA/Orca convention) is currently held. winit does not expose Insert as
-    /// a [`Modifiers`](winit::event::Modifiers) bit, so we track its
-    /// press/release ourselves to implement the `Insert + <key>` reader
-    /// command layer without colliding with normal navigation (Tab, Alt+arrows,
-    /// Ctrl shortcuts). Only meaningful when [`Self::screen_reader`] is `Some`.
+    /// winit doesn't expose the **Insert** key (the NVDA/Orca reader
+    /// modifier) as a [`Modifiers`](winit::event::Modifiers) bit, so
+    /// press/release is tracked here for the `Insert + <key>` command layer.
     screen_reader_modifier_down: bool,
-    /// Last spoken text of every [live region](crate::a11y::AccessNode::live)
-    /// seen in the tree, keyed by the region's name (its stable identity across
-    /// frames). Each frame the reader compares a live node's current text to its
-    /// entry here and announces the change — without moving focus. Only
-    /// populated when the reader is active; cleared when it's disabled.
     live_region_last: std::collections::HashMap<String, String>,
 
-    /// Whether a modal currently traps keyboard focus (some widget in the tree
-    /// returns [`Widget::traps_focus`] true). While set, `focusable_order` is
-    /// restricted to the modal's subtree. Tracked across frames so the App can
-    /// detect the open→close transition and restore focus.
+    /// Tracked to detect the open→close transition and restore focus.
     focus_trap_active: bool,
-    /// The element that held focus the moment a focus trap appeared. Restored
-    /// when the trap goes away (the modal closes), so the keyboard lands back
-    /// where the user was. `None` when no trap is active or nothing was focused.
     focus_before_trap: Option<NodeId>,
 
-    /// The base (non-high-contrast) colour theme. Kept separate from the live
-    /// [`Self::theme`] so toggling high contrast off restores the user's
-    /// original colours rather than a hard-coded default. Text scale and the
-    /// reduced-motion flag are re-applied on top of this whenever either
-    /// preference changes.
+    /// Kept separate from the live [`Self::theme`] so disabling high
+    /// contrast restores it exactly.
     base_theme: Theme,
-    /// Low-vision preferences (high contrast + reduced motion) the active
-    /// theme is derived from. The screen-reader flag is mirrored separately by
-    /// [`Self::screen_reader`]; this struct's `screen_reader` field is kept in
-    /// sync so a single value can be handed back to callers.
     a11y: crate::a11y::A11ySettings,
-    /// Global text-size multiplier (`1.0` = default). Folded into the active
-    /// theme so every widget that reads its font size from the theme scales
-    /// together; layout grows to fit so nothing clips.
     text_scale: f32,
-    /// Global UI-scale multiplier (`1.0` = default) — the user "make everything
-    /// bigger" knob. Folded into the active theme ([`Theme::with_ui_scale`]) so
-    /// spacing, radii, and the type scale all grow together. Composes on top of
-    /// the per-output device scale winit reports: widgets lay out in logical px
-    /// (already multiplied by this factor via the theme) and the render
-    /// transform then rasterises at the device's physical resolution, so the
-    /// result stays crisp at any fractional device scale.
+    /// Composes on top of the per-output device scale
+    /// ([`Theme::with_ui_scale`]) so the result stays crisp at any
+    /// fractional scale.
     ui_scale: f32,
 
-    /// The fullscreen state the App last *requested* from the window (its
-    /// intent). Compared against the root's
-    /// [`crate::widget::Widget::fullscreen_intent`] each frame so a steady
-    /// desired state only issues a single `set_fullscreen` call — see
-    /// [`fullscreen_request_decision`].
+    /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
+    /// frame so a steady desired state issues one `set_fullscreen` call —
+    /// see [`fullscreen_request_decision`].
     fullscreen_requested: bool,
-    /// The last *actual* fullscreen state observed from the window and pushed
-    /// to the root via [`crate::widget::Widget::on_fullscreen_changed`].
-    /// Distinguishes app-driven from compositor-driven transitions (a global
-    /// un-fullscreen keybind flips this without the app asking).
+    /// To distinguish app-driven from compositor-driven transitions.
     fullscreen_active: bool,
 
-    /// Background writer for the CRDT document, installed by
-    /// [`App::with_autosave`]. `None` means this App does not persist — the
-    /// pre-existing behaviour, kept for examples, tests and the shell's
-    /// hosted chrome, none of which own a package id.
     autosave: Option<crate::persist::Autosave>,
-    /// The records this app has open, installed by [`App::with_records`].
-    ///
-    /// When present, the live document is *one record's* document rather
-    /// than the app's whole state, and the root widget names which one via
-    /// [`crate::widget::Widget::record_intent`]. `None` — every app that has
-    /// not adopted records — behaves exactly as before.
+    /// When present the live document is one record's, named by the root
+    /// widget via [`crate::widget::Widget::record_intent`].
     records: Option<crate::record::RecordSet>,
-    /// The room index that goes with `records`: which records this room
-    /// holds. Kept beside the live document rather than inside it, because it
-    /// is a fact about the room and not about any one record.
     room_index: Option<automerge::AutoCommit>,
 
-    /// The Ctrl+K action palette, `Some` while open. Scoped to the focused app
-    /// instance's open resources (collected from the root widget each time it
-    /// opens). See [`Self::open_action_palette`].
     action_palette: Option<crate::action_palette::ActionPalette>,
-    /// Decoders for every action type the hosted app registered (via
-    /// [`Self::action_registry_mut`]). The palette resolves a chosen row through
-    /// this — the same path a remote peer uses to replay an action.
     action_registry: qos_actions::ActionRegistry,
-    /// Where dispatched actions are replicated / submitted. Defaults to a
-    /// local-only transport; the shell/session swaps in a peer/host transport
-    /// via [`Self::set_action_transport`].
     action_transport: Box<dyn qos_actions::ActionTransport>,
-    /// The retained accessibility tree — stable node identity + a frame-to-frame
-    /// diff over the widget semantics and the app's resource affordances.
-    /// Refreshed on demand via [`Self::refresh_semantic_tree`]; read via
-    /// [`Self::semantic_tree`]; driven via [`Self::invoke_semantic_action`].
     semantic_tree: crate::a11y_tree::SemanticTree,
 
-    /// Per-pass frame profiler + HUD, or `None` when profiling is off (the
-    /// default). Enabled by `QOS_PROFILE` / `QOS_PROFILE_OUT` via
-    /// [`crate::profiling::FrameProfiler::from_env`]. While `None`, the
-    /// render-loop hooks read no clock and allocate nothing — see the
-    /// `RedrawRequested` handler.
     profiler: Option<crate::profiling::FrameProfiler>,
 
-    /// An explicit window title set by the app via
-    /// [`App::with_window_title`] / [`App::set_window_title`]. When set it
-    /// wins over the automatic resolution (env / package id / binary
-    /// name). `None` — the common case — leaves the toolkit to derive the
-    /// title, so an app names its window only when it wants something
-    /// other than its package name.
+    /// Wins over the automatic env/package-id/binary-name resolution.
     window_title: Option<String>,
 }
 
@@ -526,9 +349,7 @@ impl App {
             structure_dirty: false,
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             needs_sync: true,
-            // Theme is finalised right after this struct literal — the env-
-            // driven low-vision preferences are folded in once all the
-            // fields they depend on (base_theme, a11y, text_scale) exist.
+            // Finalised below, once base_theme/a11y/text_scale all exist.
             last_frame_size: None,
             last_layout_px: None,
             theme: Theme::dark(),
@@ -545,9 +366,21 @@ impl App {
             local_author: crate::collaboration::local_user_id(),
             undo_status: crate::undo::UndoStatus::empty(),
             undo_status_rev: None,
-            presence_ctx: PresenceCtx::empty(),
+            presence_ctx: {
+                // Own identity, in preference order: the handle announced on
+                // `Hello`, then the fallback app id. Anything else is
+                // somebody else and gets painted.
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_own_identity(
+                    crate::collaboration::presence_handle_env()
+                        .into_iter()
+                        .chain(std::iter::once(crate::collaboration::local_user_id().0)),
+                );
+                ctx
+            },
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
+            pointer_space: None,
             followed_peer: None,
             last_pointer_broadcast: None,
             last_focus_presence: None,
@@ -557,9 +390,7 @@ impl App {
             frame_tick: None,
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
-            // Auto-enable the screen reader if the environment opts in (the
-            // shell mirrors A11ySettings.screen_reader into spawned sandboxes
-            // via QOS_A11Y_* env vars). Either var, non-empty, turns it on.
+            // Auto-enable if the shell mirrored QOS_A11Y_* into this sandbox.
             screen_reader: if Self::screen_reader_env_enabled() {
                 Some(crate::screen_reader::ScreenReader::new())
             } else {
@@ -586,9 +417,6 @@ impl App {
             window_title: None,
         };
 
-        // Seed the low-vision preferences from the environment so a sandbox
-        // the shell launched with `QOS_A11Y_*` set comes up already themed —
-        // matching how the screen reader auto-enables above.
         app.a11y.high_contrast = Self::high_contrast_env_enabled();
         app.a11y.reduce_motion = Self::reduce_motion_env_enabled();
         app.a11y.screen_reader = app.screen_reader.is_some();
@@ -596,38 +424,16 @@ impl App {
         app.ui_scale = Self::ui_scale_env().unwrap_or(1.0);
         app.rebuild_theme();
 
-        // Publish presence by default, scoped to the room this process
-        // collaborates in.
-        //
-        // This used to be the app's job, and the setter's own documentation
-        // says the shell calls it — but the shell cannot reach into another
-        // process's `App`, so for every sandboxed app the responsibility
-        // fell to its author, and almost none of them took it. An app that
-        // never set a scope did not merely hide its cursor: the scope is
-        // also what sends `Arrived`, the request that makes peers already
-        // holding the document reply with it. So those apps never announced
-        // themselves and never caught up on anything written before they
-        // opened, silently and with nothing logged.
-        //
-        // The room comes from `local_cluster_id`, the same value the
-        // collaboration address is built from, so presence and documents
-        // cannot end up in different rooms. With no room in the
-        // environment there is no scope and nothing is published — the
-        // nil cluster addresses nobody.
-        //
-        // `set_presence_broadcast_scope(None)` remains the opt-out for the
-        // cases that genuinely should not publish: teardown, and a surface
-        // that is not a participant.
+        // The scope is also what sends `Arrived`, so an app that never set
+        // one would never catch up on anything written before it opened.
+        // No room means no scope.
         if let Some(scope) = PresenceKey::for_local_workspace() {
             app.set_presence_broadcast_scope(Some(scope));
         }
+        app.presence_ctx.set_surface_id(crate::local_surface_id());
         app
     }
 
-    /// Re-derive the live [`Self::theme`] from the base colour theme, the
-    /// current low-vision settings, and the text-scale factor. Called whenever
-    /// any of those inputs change so widgets always draw against a theme that
-    /// reflects every active preference.
     fn rebuild_theme(&mut self) {
         self.theme = self
             .base_theme
@@ -635,29 +441,20 @@ impl App {
             .with_a11y(&self.a11y, self.text_scale, self.ui_scale);
     }
 
-    /// Mutable access to the action registry so the hosted app can register its
-    /// action types (`app.action_registry_mut().register::<TubeAction>("tube.action")`).
-    /// Both the palette (local execution) and remote replay decode through it.
+    /// Lets the hosted app register its action types, e.g.
+    /// `app.action_registry_mut().register::<TubeAction>("tube.action")`.
     pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
         &mut self.action_registry
     }
 
-    /// Swap in a peer/host-aware transport for dispatched actions. The default
-    /// is a local-only transport (`ClientLocal` replicate is a no-op sink,
-    /// `ServerPreferred` falls back to local execution).
     pub fn set_action_transport(&mut self, transport: Box<dyn qos_actions::ActionTransport>) {
         self.action_transport = transport;
     }
 
-    /// The resource-collection hook: the tree of open resources the focused app
-    /// instance (the root widget) currently publishes. Called each time the
-    /// action palette opens (and drivable directly in tests).
     pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
         self.root_widget.resources(&self.state.doc)
     }
 
-    /// Open the Ctrl+K action palette, scoped to the focused instance's open
-    /// resources + their exported actions. No-op-safe to call repeatedly.
     pub fn open_action_palette(&mut self) {
         let resources = self.collect_resources();
         let providers = self.root_widget.search_providers();
@@ -668,37 +465,29 @@ impl App {
         self.action_palette = Some(palette);
     }
 
-    /// Close + drop the action palette.
     pub fn close_action_palette(&mut self) {
         self.action_palette = None;
     }
 
-    /// Read access to the action palette (for hosts/tests that inspect it).
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
         self.action_palette.as_ref()
     }
 
-    /// Route a keyboard event to the open action palette. Returns whether the
-    /// event was consumed. On a selection it dispatches the chosen action
-    /// against the CRDT doc (honoring its execution locus), records it on the
-    /// undo stack, and re-syncs the widget tree; Escape closes the palette.
     fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
         let Some(palette) = self.action_palette.as_mut() else {
             return false;
         };
         let root = self.state.root.clone();
         let before = self.state.doc.get_heads();
-        let consumed = palette.handle_key(
-            event,
-            &self.modifiers,
-            &mut self.state.doc,
-            &root,
-        );
-        // An action row may have fired: drain + dispatch it through qos_actions.
-        let dispatched = self
-            .action_palette
-            .as_mut()
-            .and_then(|p| p.take_dispatch(&mut self.state.doc, &self.action_registry, self.action_transport.as_mut()));
+        let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
+        // An action row may have fired: drain + dispatch through qos_actions.
+        let dispatched = self.action_palette.as_mut().and_then(|p| {
+            p.take_dispatch(
+                &mut self.state.doc,
+                &self.action_registry,
+                self.action_transport.as_mut(),
+            )
+        });
         if let Some(result) = dispatched {
             match result {
                 Ok(d) if d.mutated_local() => {
@@ -710,10 +499,12 @@ impl App {
                 Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
             }
         }
-        // A content row may have fired: hand its id to the app to navigate. This
-        // is presentation, not an action — record an undo point only if the
-        // navigation genuinely mutated the shared doc.
-        let navigation = self.action_palette.as_mut().and_then(|p| p.take_navigation());
+        // A content row may have fired: hand its id to the app to navigate,
+        // recording an undo point only if it mutated the shared doc.
+        let navigation = self
+            .action_palette
+            .as_mut()
+            .and_then(super::action_palette::ActionPalette::take_navigation);
         if let Some(action_id) = navigation {
             let nav_before = self.state.doc.get_heads();
             self.root_widget
@@ -725,21 +516,12 @@ impl App {
             self.layout_dirty = true;
         }
         // If the palette closed (Escape, or a non-prompted selection), drop it.
-        if self
-            .action_palette
-            .as_ref()
-            .map(|p| !p.is_open())
-            .unwrap_or(false)
-        {
+        if self.action_palette.as_ref().is_some_and(|p| !p.is_open()) {
             self.action_palette = None;
         }
         consumed
     }
 
-    /// Whether the environment opts the screen reader on at startup. Reads
-    /// `QOS_A11Y_SCREEN_READER` (the sandbox-mirrored var) and the shorter
-    /// `QOS_SCREEN_READER` alias; either, non-empty and not `"0"`/`"false"`,
-    /// enables it.
     fn screen_reader_env_enabled() -> bool {
         for key in ["QOS_A11Y_SCREEN_READER", "QOS_SCREEN_READER"] {
             if let Ok(v) = std::env::var(key) {
@@ -752,9 +534,8 @@ impl App {
         false
     }
 
-    /// Whether a `QOS_A11Y_*` env var (and its short alias) is set to a
-    /// truthy value: non-empty, not `"0"`, not `"false"` (case-insensitive).
-    /// The single gate the boolean low-vision env flags share.
+    /// Shared truthy-env-var gate for the low-vision flags: non-empty, not
+    /// `"0"`/`"false"` (case-insensitive).
     fn bool_env(keys: &[&str]) -> bool {
         for key in keys {
             if let Ok(v) = std::env::var(key) {
@@ -767,70 +548,56 @@ impl App {
         false
     }
 
-    /// Whether the environment opts high contrast on at startup
-    /// (`QOS_A11Y_HIGH_CONTRAST` / `QOS_HIGH_CONTRAST`).
     fn high_contrast_env_enabled() -> bool {
         Self::bool_env(&["QOS_A11Y_HIGH_CONTRAST", "QOS_HIGH_CONTRAST"])
     }
 
-    /// Whether the environment opts reduced motion on at startup
-    /// (`QOS_A11Y_REDUCE_MOTION` / `QOS_REDUCE_MOTION`).
     fn reduce_motion_env_enabled() -> bool {
         Self::bool_env(&["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"])
     }
 
-    /// Text-scale factor from the environment (`QOS_A11Y_TEXT_SCALE` /
-    /// `QOS_TEXT_SCALE`), or `None` if unset / unparseable. A bad value is
-    /// ignored rather than crashing the app at startup.
+    /// A bad value is ignored rather than crashing the app at startup.
     fn text_scale_env() -> Option<f32> {
         for key in ["QOS_A11Y_TEXT_SCALE", "QOS_TEXT_SCALE"] {
-            if let Ok(v) = std::env::var(key) {
-                if let Ok(f) = v.trim().parse::<f32>() {
-                    if f.is_finite() && f > 0.0 {
-                        return Some(f);
-                    }
-                }
+            if let Ok(v) = std::env::var(key)
+                && let Ok(f) = v.trim().parse::<f32>()
+                && f.is_finite()
+                && f > 0.0
+            {
+                return Some(f);
             }
         }
         None
     }
 
-    /// Global UI-scale factor from the environment (`QOS_UI_SCALE`), or `None`
-    /// if unset / unparseable. The shell mirrors the user's UI-scale preference
-    /// into spawned sandboxes via this var so an app comes up already scaled,
-    /// matching how [`Self::text_scale_env`] handles the text-size preference.
+    /// The shell mirrors the user's UI-scale preference into spawned
+    /// sandboxes via this var so an app comes up already scaled.
     fn ui_scale_env() -> Option<f32> {
         for key in ["QOS_UI_SCALE", "QOS_A11Y_UI_SCALE"] {
-            if let Ok(v) = std::env::var(key) {
-                if let Ok(f) = v.trim().parse::<f32>() {
-                    if f.is_finite() && f > 0.0 {
-                        return Some(f);
-                    }
-                }
+            if let Ok(v) = std::env::var(key)
+                && let Ok(f) = v.trim().parse::<f32>()
+                && f.is_finite()
+                && f > 0.0
+            {
+                return Some(f);
             }
         }
         None
     }
 
-    /// The active low-vision preferences (high contrast + reduced motion +
-    /// screen reader). The screen-reader flag tracks
-    /// [`Self::screen_reader_enabled`].
+    /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
         let mut s = self.a11y;
         s.screen_reader = self.screen_reader.is_some();
         s
     }
 
-    /// The global text-size multiplier currently in effect (`1.0` = default).
     pub fn text_scale(&self) -> f32 {
         self.text_scale
     }
 
-    /// Set the global text-size multiplier and re-theme. Every widget that
-    /// reads its font size from the theme scales together on the next frame,
-    /// and layout grows to fit so text never clips. The value is clamped to a
-    /// sane range by the theme. Used by the shell when the user changes the
-    /// text-size preference, and by examples/tests via `QOS_A11Y_TEXT_SCALE`.
+    /// Layout grows to fit so text never clips; the value is clamped to a
+    /// sane range by the theme.
     pub fn set_text_scale(&mut self, factor: f32) {
         self.text_scale = factor;
         self.rebuild_theme();
@@ -838,18 +605,10 @@ impl App {
         self.structure_dirty = true;
     }
 
-    /// The global UI-scale multiplier currently in effect (`1.0` = default).
-    /// This is the user "make everything bigger" knob; it composes with the
-    /// per-output device scale the compositor reports.
     pub fn ui_scale(&self) -> f32 {
         self.ui_scale
     }
 
-    /// Set the global UI-scale multiplier and re-theme. Spacing, radii, and the
-    /// type scale all grow together on the next frame ([`Theme::with_ui_scale`]),
-    /// and layout is marked dirty so the whole interface re-flows live. Used by
-    /// the shell when the user changes the UI-scale preference, and by
-    /// examples/tests via `QOS_UI_SCALE`.
     pub fn set_ui_scale(&mut self, factor: f32) {
         self.ui_scale = factor;
         self.rebuild_theme();
@@ -857,15 +616,11 @@ impl App {
         self.structure_dirty = true;
     }
 
-    /// Whether the high-contrast colour track is currently active.
     pub fn high_contrast(&self) -> bool {
         self.a11y.high_contrast
     }
 
-    /// Turn the high-contrast colour track on or off at runtime and re-theme.
-    /// Off restores the user's original colours (the base theme captured at
-    /// construction / via [`Self::set_theme`]), not a hard-coded default. The
-    /// text-scale factor and reduced-motion flag are preserved across the swap.
+    /// Off restores the captured base theme, not a hard-coded default.
     pub fn set_high_contrast(&mut self, on: bool) {
         if self.a11y.high_contrast == on {
             return;
@@ -876,21 +631,15 @@ impl App {
         self.structure_dirty = true;
     }
 
-    /// Flip the high-contrast colour track and return the new state.
     pub fn toggle_high_contrast(&mut self) -> bool {
         self.set_high_contrast(!self.a11y.high_contrast);
         self.a11y.high_contrast
     }
 
-    /// Whether reduced motion is currently in effect.
     pub fn reduce_motion(&self) -> bool {
         self.a11y.reduce_motion
     }
 
-    /// Turn reduced motion on or off at runtime and re-theme. Animated
-    /// widgets consult the theme's reduced-motion flag and snap to their
-    /// resting state when it is set; the App also stops pumping the perpetual
-    /// animation-frame loop.
     pub fn set_reduce_motion(&mut self, on: bool) {
         if self.a11y.reduce_motion == on {
             return;
@@ -899,10 +648,8 @@ impl App {
         self.rebuild_theme();
     }
 
-    /// Replace the base colour theme (the shell sets this when the user picks
-    /// a theme). The high-contrast track, text scale, and reduced-motion flag
-    /// are re-applied on top, so changing the base theme doesn't discard the
-    /// user's low-vision preferences.
+    /// Low-vision preferences are re-applied on top, so changing the base
+    /// theme doesn't discard them.
     pub fn set_theme(&mut self, theme: Theme) {
         self.base_theme = theme;
         self.rebuild_theme();
@@ -910,15 +657,7 @@ impl App {
         self.structure_dirty = true;
     }
 
-    /// Enable or disable the built-in screen reader at runtime. The shell calls
-    /// this when the user toggles
-    /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader).
-    ///
-    /// Enabling constructs a [`ScreenReader`](crate::screen_reader::ScreenReader)
-    /// over the default `tts` speaker (never panics; falls back to a silent
-    /// `NullSpeaker` when no TTS stack is present) and immediately announces the
-    /// currently-focused widget so the user gets oriented. Disabling stops any
-    /// in-flight speech and drops the reader, returning every narration call
+    /// Disabling stops in-flight speech and returns every narration call
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         match (enabled, self.screen_reader.is_some()) {
@@ -937,34 +676,27 @@ impl App {
         }
     }
 
-    /// Whether the built-in screen reader is currently active.
     pub fn screen_reader_enabled(&self) -> bool {
         self.screen_reader.is_some()
     }
 
-    /// Install a caller-provided screen reader (e.g. one over a test
-    /// `NullSpeaker`, so a headless test can assert on the spoken phrases).
-    /// Passing `None` disables narration. Used by the headless tests and by a
-    /// host that wants a custom speech backend.
+    /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
+    /// headless tests can assert on spoken phrases).
     #[doc(hidden)]
     pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
         self.screen_reader = reader;
     }
 
-    /// Borrow the active screen reader, if any (tests inspect the recorded
-    /// utterances of an injected reader).
     #[doc(hidden)]
     pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
         self.screen_reader.as_ref()
     }
 
-    /// Announce the currently-focused widget through the screen reader, if both
-    /// the reader is active and a widget is focused. No-op otherwise. Called on
-    /// focus changes ([`Self::set_focused_node`]) and when the reader is first
-    /// enabled.
     fn announce_current_focus(&mut self) {
         let Some(id) = self.focused_node else { return };
-        let Some(&w_ptr) = self.node_map.get(&id) else { return };
+        let Some(&w_ptr) = self.node_map.get(&id) else {
+            return;
+        };
         // SAFETY: same node_map dereference invariant the rest of `App` relies
         // on — pointers are valid for the duration of an event dispatch (the
         // tree is only rebuilt between frames). Mirrors `navigate_focus`.
@@ -974,35 +706,24 @@ impl App {
         }
     }
 
-    /// The built-in screen reader's keyboard command layer.
-    ///
-    /// Returns `true` if the event was a reader command and was consumed (so
-    /// the caller skips normal dispatch). A no-op returning `false` when the
-    /// reader is disabled, so non-reader builds are unaffected.
-    ///
-    /// **Bindings** (the **Insert** key is the reader modifier — the long-
-    /// standing NVDA/Orca convention; tracked via [`Self::screen_reader_modifier_down`]
-    /// since winit has no Insert modifier bit). These deliberately avoid Tab
-    /// (focus order), Alt+arrows / bare arrows (directional focus) and Ctrl+keys
-    /// (undo / app shortcuts):
+    /// Bindings deliberately avoid Tab (focus order), Alt+arrows / bare
+    /// arrows (directional focus) and Ctrl+keys (undo / app shortcuts):
     ///
     /// | Keys | Action |
     /// |---|---|
-    /// | `Insert + Down`  | **Read all** — speak the whole reading order ("say all") |
-    /// | `Insert + Right` | **Read next** — step the reading cursor forward and speak it |
-    /// | `Insert + Left`  | **Read previous** — step the reading cursor back and speak it |
-    /// | `Insert + Up`    | **Where am I** — re-announce the currently-focused widget |
-    /// | `Insert + H`     | **Next heading** — jump the reading cursor to the next heading |
-    /// | `Insert + Shift + H` | **Previous heading** — jump to the previous heading |
-    /// | `Insert + F`     | **Next form field** — jump to the next interactive control |
-    /// | `Insert + Shift + F` | **Previous form field** — jump to the previous control |
-    /// | `Insert + Escape`| **Stop** — silence speech and clear the queue |
+    /// | `Insert + Down`  | Read all |
+    /// | `Insert + Right` | Read next |
+    /// | `Insert + Left`  | Read previous |
+    /// | `Insert + Up`    | Where am I |
+    /// | `Insert + H`     | Next heading |
+    /// | `Insert + Shift + H` | Previous heading |
+    /// | `Insert + F`     | Next form field |
+    /// | `Insert + Shift + F` | Previous form field |
+    /// | `Insert + Escape`| Stop |
     ///
-    /// The `Insert` key itself is swallowed (so a stray Insert never types) but
-    /// reported as *not* a command (returns `false`) so it doesn't suppress a
-    /// genuine following keypress's normal handling.
+    /// `Insert` itself is swallowed but reported as not-a-command, so it
+    /// doesn't suppress the following keypress's normal handling.
     fn handle_screen_reader_key(&mut self, event: &WindowEvent) -> bool {
-        // Disabled → never intercept anything.
         if self.screen_reader.is_none() {
             return false;
         }
@@ -1012,28 +733,19 @@ impl App {
         use winit::event::ElementState;
         use winit::keyboard::{Key, NamedKey};
 
-        // Track the Insert modifier press/release.
         if let Key::Named(NamedKey::Insert) = ke.logical_key {
             self.screen_reader_modifier_down = ke.state == ElementState::Pressed;
-            // Swallow the Insert key so it never produces text, but report it as
-            // not-a-command so the next key dispatches normally.
             return false;
         }
 
-        // Only act on presses while the reader modifier is held.
         if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
             return false;
         }
 
-        // Quick navigation by element type: jump the reading cursor to the
-        // next/previous heading (H) or form field (F). Shift reverses
-        // direction. winit delivers these as character keys, so handle them
-        // before the named-key arm. The reading direction is the only thing
-        // Shift changes here, so we read it off the live modifier state.
+        // Handled before the named-key arm since winit delivers H/F as
+        // character keys, not named keys.
         if let Key::Character(ref c) = ke.logical_key {
             let shift = self.modifiers.state().shift_key();
-            // Split-borrow: `root_widget` and `screen_reader` are disjoint
-            // fields, so pass the root in inline (mirrors the arrow-key arms).
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
                     if let Some(sr) = self.screen_reader.as_mut() {
@@ -1064,8 +776,6 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                // Split-borrow: root_widget and screen_reader are disjoint
-                // fields, so borrow each independently.
                 if let Some(sr) = self.screen_reader.as_mut() {
                     sr.read_all(self.root_widget.as_ref());
                 }
@@ -1097,38 +807,18 @@ impl App {
         }
     }
 
-    /// Reconcile the root widget's desired OS-fullscreen state with the live
-    /// window, and notify the root of the *actual* state.
-    ///
-    /// Two directions, both idempotent:
-    ///   1. **App-driven** — if the root's
-    ///      [`crate::widget::Widget::fullscreen_intent`] differs from what we
-    ///      last requested, push it to the window via `set_fullscreen`. On
-    ///      Wayland this sends `xdg_toplevel.set_fullscreen` to the compositor;
-    ///      on every other winit backend it goes to the host WM. Either way the
-    ///      app becomes a true borderless full-output surface.
-    ///   2. **Compositor-driven** — read back the window's actual fullscreen
-    ///      state and, on a transition, call the root's
-    ///      [`crate::widget::Widget::on_fullscreen_changed`]. This is how a
-    ///      global un-fullscreen keybind (or a denied request) reaches the app.
-    ///
-    /// Returns `true` when anything changed and a redraw/re-sync is warranted.
-    /// Called once per event-loop wakeup from `about_to_wait`.
+    /// Reconciles both directions, idempotently: app-driven (push
+    /// `fullscreen_intent` to the window on change) and compositor-driven
+    /// (read the actual state back and notify the root on a transition, e.g.
+    /// a global un-fullscreen keybind or a denied request).
     fn reconcile_fullscreen(&mut self, window: &Window) -> bool {
         let mut changed = false;
 
-        // (1) App-driven: honor the root's desired state.
         let want = self.root_widget.fullscreen_intent();
         if let Some(new_state) = fullscreen_request_decision(self.fullscreen_requested, want) {
             if new_state {
-                // The root names *which* output it wants (e.g. the largest
-                // monitor for a presentation / immersive video). Enumerate the
-                // live monitors, pick the target via the shared selection logic,
-                // and fullscreen onto that specific output. When the host
-                // exposes no monitors (the current qOS compositor) the list is
-                // empty and `select_output` returns `None`, so we fall back to
-                // `Borderless(None)` — still a genuine full-output surface, just
-                // compositor-placed.
+                // An empty monitor list falls back to `Borderless(None)`,
+                // still a full-output surface.
                 let params = self.root_widget.fullscreen_params();
                 let monitors: Vec<winit::monitor::MonitorHandle> =
                     window.available_monitors().collect();
@@ -1154,22 +844,14 @@ impl App {
             changed = true;
         }
 
-        // (2) Compositor-driven: observe the actual state and notify the root
-        // on a transition. `window.fullscreen()` reflects the compositor's
-        // most recent configure on Wayland (and the WM state elsewhere), so it
-        // catches a fullscreen we never asked for as well as a grant of one we
-        // did.
         let actual = window.fullscreen().is_some();
         changed |= self.note_actual_fullscreen(actual);
 
         changed
     }
 
-    /// Record the actual OS-fullscreen state and, on a transition, notify the
-    /// root widget via [`crate::widget::Widget::on_fullscreen_changed`].
-    /// Returns `true` iff the state changed. Split out from
-    /// [`Self::reconcile_fullscreen`] so the App→root notification wiring is
-    /// unit-testable without a live winit window.
+    /// Split from [`Self::reconcile_fullscreen`] so the App→root notification
+    /// wiring is unit-testable without a live winit window.
     fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
         if actual == self.fullscreen_active {
             return false;
@@ -1181,18 +863,7 @@ impl App {
         true
     }
 
-    /// Reconcile the widget tree's desired global appearance with the live
-    /// theme. When [`Self::appearance_reconcile`] is enabled, the App walks the
-    /// tree for an [`crate::widget::Widget::appearance_intent`] and applies any
-    /// field that differs from what is currently in effect — the base colour
-    /// theme, the high-contrast / reduced-motion tracks, the global UI scale,
-    /// and the text scale — then re-themes and marks layout dirty so the whole
-    /// interface re-scales/re-colours on the next frame. Level-triggered and
-    /// idempotent: a no-op on the common frame where the user's choice is
-    /// unchanged. Returns `true` iff anything changed.
-    ///
-    /// Kept split out (and driven off the shared field state) so the reconcile
-    /// decision is unit-testable without a live winit window.
+    /// Level-triggered: a no-op once the user's choice is caught up.
     pub(crate) fn reconcile_appearance(&mut self) -> bool {
         if !self.appearance_reconcile {
             return false;
@@ -1229,18 +900,10 @@ impl App {
         changed
     }
 
-    /// Hit-test the widget tree at `point` (logical coords) and return the
-    /// OS cursor shape the most-specific widget under the pointer wants, or
-    /// `None` if nothing claims one.
-    ///
-    /// Cheap: a single pass over `node_map` with an `O(1)`
-    /// [`Widget::cursor_shape`] per widget (the default returns `None`;
-    /// only opted-in leaves do real work). The smallest-area matching rect
-    /// wins, so a deeply-nested child (a text field, a resize handle) beats
-    /// its enclosing container. This deliberately works off `node_map`
-    /// rather than walking `children` so it still reaches interactive
-    /// widgets nested under containers that keep private child storage
-    /// (e.g. the shell's `GroupRow` / `WindowGroup`).
+    /// The smallest-area matching rect wins, so a nested child beats its
+    /// enclosing container. Works off `node_map` rather than walking
+    /// `children` so it still reaches widgets nested under containers with
+    /// private child storage.
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         let mut best: Option<(f64, CursorIcon)> = None;
         for &w_ptr in self.node_map.values() {
@@ -1251,24 +914,21 @@ impl App {
             // dereferences in `navigate_focus` / focus handling.
             let w = unsafe { &*w_ptr };
             let rect = w.get_rect();
-            if rect.contains(point) {
-                if let Some(icon) = w.cursor_shape(point) {
-                    let area = (rect.width() * rect.height()).max(0.0);
-                    if best.is_none_or(|(a, _)| area < a) {
-                        best = Some((area, icon));
-                    }
+            if rect.contains(point)
+                && let Some(icon) = w.cursor_shape(point)
+            {
+                let area = (rect.width() * rect.height()).max(0.0);
+                if best.is_none_or(|(a, _)| area < a) {
+                    best = Some((area, icon));
                 }
             }
         }
         best.map(|(_, icon)| icon)
     }
 
-    /// The hover-tooltip `(anchor_rect, label)` for the widget under `point`,
-    /// or `None`. Mirrors [`Self::resolve_cursor`]: a single sweep over
-    /// `node_map`, picking the smallest-area widget under the pointer that
-    /// exposes a non-empty [`Widget::tooltip`] — so a nested icon button beats
-    /// its enclosing toolbar. The label is the raw string the widget returns;
-    /// the caller resolves i18n at render/announce time.
+    /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
+    /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
+    /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
         for &w_ptr in self.node_map.values() {
@@ -1292,11 +952,8 @@ impl App {
         best.map(|(_, rect, label)| (rect, label))
     }
 
-    /// Register a per-frame callback invoked from `AboutToWait`. The
-    /// shell uses this to drain received `PresenceMoved` events from
-    /// libp2p and write them into `PresenceCtx::remote_cursors`. The
-    /// callback runs once per event-loop wakeup; it must therefore be
-    /// cheap and non-blocking.
+    /// Called once per event-loop wakeup, so it must be cheap and
+    /// non-blocking.
     pub fn set_frame_tick<F>(&mut self, tick: F)
     where
         F: FnMut(&mut PresenceCtx) + Send + Sync + 'static,
@@ -1304,16 +961,6 @@ impl App {
         self.frame_tick = Some(Box::new(tick));
     }
 
-    /// Register a sink invoked alongside [`Self::broadcast_presence`].
-    ///
-    /// When set, every call to `broadcast_presence` (including the
-    /// throttled `CursorMoved` path inside `App::run`) also dispatches
-    /// the `(key, payload)` pair to `sink`. The shell uses this hook to
-    /// republish presence updates over libp2p — see
-    /// `quick_shell::shell::network::ShellNetwork::publish_presence`.
-    /// Passing a fresh sink replaces any previous registration; pass
-    /// `None`-equivalent (an empty sink) is not supported, use
-    /// [`Self::clear_presence_broadcast_sink`] instead.
     pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
     where
         F: Fn(&PresenceKey, &PresencePayload) + Send + Sync + 'static,
@@ -1321,76 +968,65 @@ impl App {
         self.presence_broadcast_sink = Some(Box::new(sink));
     }
 
-    /// Drop any previously-registered presence broadcast sink. Calls to
-    /// `broadcast_presence` after this fall back to the Unix-socket-only
-    /// path.
     pub fn clear_presence_broadcast_sink(&mut self) {
         self.presence_broadcast_sink = None;
     }
 
-    /// Set (or clear) the presence key under which local pointer moves
-    /// are broadcast during the event loop. The shell calls this after
-    /// resolving the active workspace so remote peers see the cursor
-    /// attributed to the right scope. Passing `None` disables outbound
-    /// pointer broadcast.
+    pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
+        self.pointer_space = Some(space);
+    }
+
+    fn local_pointer_key(&self) -> PresenceKey {
+        match self.pointer_space.clone() {
+            Some(space) => PresenceKey::Pointer { space },
+            None => PresenceKey::local_surface_pointer(),
+        }
+    }
+
+    /// Decides *whether* to publish and under what scope, not what space the
+    /// pointer is in — see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         self.presence_broadcast_scope = key.clone();
-        // Reset the throttle so a new scope's first pointer move fires
-        // immediately rather than waiting on the stale last-send gate.
+        // Reset the throttle so a new scope's first move fires immediately.
         self.last_pointer_broadcast = None;
-        // Announce arrival under the new scope so peers already in the
-        // room reply with a full document snapshot — this is the
-        // app-side half of the late-join convergence handshake. A `None`
-        // scope (teardown / headless) announces nothing.
+        // Announce arrival so peers already in the room reply with a full
+        // snapshot (the late-join handshake).
         if let Some(k) = key {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!(
+                crate::diag!(
                     "[app] set scope; collab connected={}; broadcasting Arrived",
                     self.collab_manager.is_connected()
                 );
             }
-            self.broadcast_presence(
-                k,
-                crate::collaboration::PresencePayload::Arrived,
-            );
+            self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
         }
     }
 
-    /// Returns the currently active presence-broadcast scope, if any.
-    /// Exposed for tests that assert the scope wiring.
     pub fn presence_broadcast_scope(&self) -> Option<&PresenceKey> {
         self.presence_broadcast_scope.as_ref()
     }
 
-    pub fn presence_ctx(&self) -> &PresenceCtx { &self.presence_ctx }
-    pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx { &mut self.presence_ctx }
+    pub fn presence_ctx(&self) -> &PresenceCtx {
+        &self.presence_ctx
+    }
+    pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx {
+        &mut self.presence_ctx
+    }
 
-    /// Start (or stop, with `None`) following a peer. While set,
-    /// [`Self::followed_peer_target`] resolves to their live pointer so a
-    /// host can keep them in view.
     pub fn set_followed_peer(&mut self, user_id: Option<String>) {
         self.followed_peer = user_id;
     }
 
-    /// The peer currently being followed, if any.
     pub fn followed_peer(&self) -> Option<&str> {
         self.followed_peer.as_deref()
     }
 
-    /// The followed peer's live pointer position in scene space, if we're
-    /// following someone and have a position for them. `None` when not
-    /// following, or the peer has no known pointer (e.g. just left).
     pub fn followed_peer_target(&self) -> Option<[f32; 2]> {
         let id = self.followed_peer.as_deref()?;
         self.presence_ctx.peer_pointer(id)
     }
 
-    /// Try to follow whatever peer's presence indicator sits under `point`
-    /// (their off-screen mist band) for the given `viewport`. Returns
-    /// `true` and latches [`Self::followed_peer`] when a peer is hit; a
-    /// miss leaves the current follow target untouched and returns `false`.
-    /// This is the seam a host click handler calls to make a peer's mist
-    /// clickable — "jump to where Alice went".
+    /// A miss leaves the current follow target untouched.
     pub fn try_follow_click(
         &mut self,
         viewport: vello::kurbo::Rect,
@@ -1404,30 +1040,22 @@ impl App {
         }
     }
 
-    pub fn permission_ctx(&self) -> &PermissionContext { &self.permission_ctx }
+    pub fn permission_ctx(&self) -> &PermissionContext {
+        &self.permission_ctx
+    }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
     }
 
-    /// Broadcast the local user's presence to every connected peer via
-    /// the collaboration manager. This is the outbound counterpart to
-    /// `apply_remote_presence`: callers — the shell, or any widget that
-    /// has meaningful local presence (text input cursor, tab focus) —
-    /// invoke this when state changes, and peers receive the event
-    /// through `CollabEvent::RemotePresenceUpdate`.
-    ///
-    /// The server (or `MemoryRelay::pump` in tests) attributes the
-    /// broadcast to *this* user's id automatically, so callers only
-    /// specify what changed, not who.
+    /// The server attributes the broadcast to this user's id automatically,
+    /// so callers only specify what changed.
     pub fn broadcast_presence(
         &mut self,
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
-        // Fan out to the optional out-of-band sink first — this is how
-        // the shell's libp2p bridge republishes presence to LAN peers.
-        // The sink fires before the Unix-socket send so a slow socket
-        // never delays the network path.
+        // Fan out to the optional out-of-band sink first (the shell's Iroh
+        // bridge) so a slow socket never delays the network path.
         if let Some(sink) = self.presence_broadcast_sink.as_ref() {
             sink(&key, &payload);
         }
@@ -1435,11 +1063,7 @@ impl App {
             .send(CollabRequest::Presence { key, payload });
     }
 
-    /// Broadcast the document changes made since the last call as an
-    /// incremental CRDT delta, so peers see local edits in near-real-time.
-    /// This is the live-edit path (the late-join handshake still ships a
-    /// full snapshot). Cheap when nothing changed — `save_incremental`
-    /// returns empty and we skip the send.
+    /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if !self.collab_manager.is_connected() {
             return;
@@ -1447,18 +1071,13 @@ impl App {
         let delta = self.state.save_incremental();
         if !delta.is_empty() {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!("[app] broadcast doc delta {}B", delta.len());
+                crate::diag!("[app] broadcast doc delta {}B", delta.len());
             }
             self.collab_manager
                 .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
         }
     }
 
-    /// Poll the focused widget for its caret/selection presence and
-    /// broadcast it when it changes since the last send, so peers see the
-    /// local caret/selection move in near-real-time. The focused widget
-    /// supplies both the key (which sub-element the caret is in) and the
-    /// payload via [`Widget::presence_payload`].
     fn broadcast_focus_presence(&mut self) {
         use crate::collaboration::PresencePayload;
         let current = self
@@ -1466,23 +1085,24 @@ impl App {
             .and_then(|id| self.node_map.get(&id).copied())
             .and_then(|w| unsafe { (*w).presence_payload() });
         if current != self.last_focus_presence {
-            // Typing detection: when the local caret advances forward under
-            // the same scope, the user inserted text — publish a `Typing`
-            // event for the just-inserted run so peers light up a fading
-            // highlighter over what we wrote. Backspace / left-arrow (caret
-            // moves back) and scope changes don't qualify. This rides the
-            // real caret presence stream, so it needs no per-widget hook.
+            // When the caret advances forward under the same scope, publish
+            // `Typing` for the inserted run so peers light up a fading
+            // highlighter. Backspace/left-arrow and scope changes don't
+            // qualify.
             if let (
                 Some((new_key, PresencePayload::Caret { pos: new_pos })),
                 Some((old_key, PresencePayload::Caret { pos: old_pos })),
             ) = (&current, &self.last_focus_presence)
+                && new_key == old_key
+                && new_pos > old_pos
             {
-                if new_key == old_key && new_pos > old_pos {
-                    self.broadcast_presence(
-                        new_key.clone(),
-                        PresencePayload::Typing { start: *old_pos, end: *new_pos },
-                    );
-                }
+                self.broadcast_presence(
+                    new_key.clone(),
+                    PresencePayload::Typing {
+                        start: *old_pos,
+                        end: *new_pos,
+                    },
+                );
             }
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
@@ -1491,10 +1111,8 @@ impl App {
         }
     }
 
-    /// Poll the ROOT widget for its location presence (e.g. which page /
-    /// tab it's viewing) and broadcast the diff, so peers can render
-    /// "indicative mist" on the navigational element leading here. Unlike
-    /// focus presence, this is polled on the root regardless of focus.
+    /// Unlike focus presence, this is polled on the root regardless of
+    /// focus.
     fn broadcast_location_presence(&mut self) {
         let current = self.root_widget.presence_payload();
         if current != self.last_location_presence {
@@ -1505,22 +1123,11 @@ impl App {
         }
     }
 
-    /// Broadcast the local participant's [`ViewSubset`](crate::view::ViewSubset)
-    /// — scroll / open resource / viewport / view mode — so peers know not
-    /// just where the local cursor is (that rides the caret/selection
-    /// presence stream) but *what region and resource* the participant is
-    /// looking at. Diffed against the last send, so it only fires when the
-    /// view actually moves.
-    ///
-    /// The subset has no `PresencePayload` variant of its own, so it rides
-    /// the existing presence frame carried inside a
-    /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key; the
-    /// paired payload is inert — the receiver recognises the key and stores
-    /// the decoded subset per peer (see [`App::apply_remote_presence`]). No
-    /// new wire variant, no change to the collab transport.
-    ///
-    /// Skipped entirely when nothing is listening (no live broker and no
-    /// out-of-band sink), so the single-user path pays nothing.
+    /// The subset has no `PresencePayload` variant of its own — it rides the
+    /// existing presence frame inside a
+    /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
+    /// inert paired payload; the receiver recognises the key and decodes the
+    /// subset instead.
     fn broadcast_view_presence(&mut self) {
         if !self.collab_manager.is_connected() && self.presence_broadcast_sink.is_none() {
             return;
@@ -1532,42 +1139,26 @@ impl App {
         }
         self.broadcast_presence(
             crate::presence::PresenceKey::view(&subset),
-            // Inert carrier: the receiver dispatches on the `View` key
-            // before the payload is ever inspected. `Arrived` is chosen
-            // because the SDK presence transport relays it with the routing
-            // key intact, which is what actually ferries the subset.
+            // Inert: the receiver dispatches on the key before inspecting
+            // the payload; `Arrived` because the SDK transport relays it
+            // with the routing key intact.
             crate::collaboration::PresencePayload::Arrived,
         );
         self.last_view_presence = Some(subset);
     }
 
-    /// Start following `peer_id`: bind the local viewport to that peer's
-    /// broadcast [`ViewSubset`](crate::view::ViewSubset) so the local view
-    /// scrolls/pans to track where they are looking. Applies immediately if
-    /// the peer has already published a View; following a peer who is not
-    /// present (no broadcast View yet) latches the intent but moves nothing,
-    /// and the viewport snaps to them the moment their first View arrives.
-    ///
-    /// A device is just another participant here — there is no special-casing
-    /// of the user's own devices. Following is opt-in and reversible via
-    /// [`Self::unfollow`].
+    /// Following a peer who hasn't published a View yet latches the intent
+    /// without moving anything; the viewport snaps to them once their first
+    /// View arrives.
     pub fn follow(&mut self, peer_id: impl Into<String>) {
         self.followed_peer = Some(peer_id.into());
         self.apply_follow();
     }
 
-    /// Stop following whoever was being followed, releasing the local
-    /// viewport. Subsequent View broadcasts from that peer no longer move
-    /// the local view. A no-op when not currently following.
     pub fn unfollow(&mut self) {
         self.followed_peer = None;
     }
 
-    /// Bind the local viewport to the followed peer's broadcast View, if
-    /// any. Hands the peer's scroll / view-mode to the root widget so the
-    /// local content pans to match where they are looking. A no-op when not
-    /// following, or when the followed peer has published no View yet — the
-    /// "follow someone who isn't here" case, which must not move the view.
     fn apply_follow(&mut self) {
         let Some(id) = self.followed_peer.clone() else {
             return;
@@ -1582,17 +1173,14 @@ impl App {
         self.root_widget
             .restore_view_state(&crate::view::ViewContribution {
                 scroll: view.scroll.clone(),
-                view_mode: view.view_mode.clone(),
+                view_mode: view.view_mode,
             });
         self.layout_dirty = true;
         self.needs_sync = true;
     }
 
-    /// Poll the collaboration manager and apply any pending events
-    /// (remote cursor moves, remote presence updates). This is the headless
-    /// equivalent of the `Event::AboutToWait` branch in [`App::run`] and is
-    /// exposed so integration tests can drive the collab pump without
-    /// a real winit event loop.
+    /// Lets integration tests drive the collab pump without a real winit
+    /// event loop.
     #[doc(hidden)]
     pub fn poll_and_apply_collab_events(&mut self) {
         let events = self.collab_manager.poll();
@@ -1601,21 +1189,8 @@ impl App {
         }
     }
 
-    /// Drain every pending [`CollabEvent`] from the collaboration
-    /// manager and route the payload into [`Self::presence_ctx`]:
-    /// remote cursor moves stamp the `remote_cursors` overlay vec,
-    /// arrivals / departures update the `here` map, caret /
-    /// selection / pointer updates land in their respective maps,
-    /// and a CRDT incremental merge is applied so peer mutations
-    /// become visible at the next sync. Returns `true` iff at least
-    /// one event was processed; the caller can use that to decide
-    /// whether the window needs a fresh redraw.
-    ///
-    /// This is the **single shared entry point** the per-frame tick
-    /// and the headless test path both go through. Keeping the
-    /// dispatch in one place means a future protocol addition
-    /// (e.g. a new payload variant) doesn't have to be added to
-    /// two near-identical match arms.
+    /// Shared by the per-frame tick and the headless test path. Returns
+    /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
         let events = self.collab_manager.poll();
         let mut any = false;
@@ -1623,28 +1198,24 @@ impl App {
             any = true;
             match event {
                 CollabEvent::Context { collaborators, .. } => {
-                    for c in collaborators {
-                        self.state.collab.cursors.entry(c.id.clone()).or_insert(
-                            crate::state::RemoteCursor {
-                                x: 0.0,
-                                y: 0.0,
-                                color: crate::color_compat::rgb(
-                                    c.color[0] as f64,
-                                    c.color[1] as f64,
-                                    c.color[2] as f64,
-                                ),
-                                name: c.name.clone(),
-                            },
+                    // The self row carries the address others use for this
+                    // participant (so a locally-derived id is recognised in
+                    // a room-keyed roster) and the host-assigned name; it
+                    // never enters the roster itself.
+                    if let Some(me) = collaborators.iter().find(|c| c.is_self) {
+                        self.presence_ctx.set_self_participant(
+                            crate::permissions::UserId(me.id.clone()),
+                            me.name.clone(),
                         );
-                        // Seed the overlay-side presence so peer
-                        // labels come through with the server-
-                        // announced friendly name; later cursor
-                        // moves preserve the label because they
-                        // pass display_name=None.
-                        self.presence_ctx
-                            .upsert_remote_cursor(c.id.clone(), [0.0, 0.0], Some(&c.name));
-                        // Seed the roster so caret chips and mist tags for
-                        // this peer show the friendly name, not the raw id.
+                    }
+                    // Filtered to others: letting the self row through would
+                    // put the local user in every list built from presence.
+                    for c in collaborators.into_iter().filter(|c| !c.is_self) {
+                        // Relabel only — the roster doesn't say where a peer's
+                        // pointer is, so it must not mint one at the origin.
+                        if let Some(cursor) = self.state.collab.cursors.get_mut(&c.id) {
+                            cursor.name = c.name.clone();
+                        }
                         self.presence_ctx.set_display_name(
                             crate::permissions::UserId(c.id.clone()),
                             c.name.clone(),
@@ -1659,48 +1230,69 @@ impl App {
                     self.presence_ctx
                         .upsert_remote_cursor(user_id, [x, y], None);
                 }
-                CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                } => {
                     self.apply_remote_presence(user_id, key, payload);
                 }
+                CollabEvent::ActionArrived {
+                    type_id,
+                    payload,
+                    from_user_id,
+                } => {
+                    // Every app in the room is handed every action; the one
+                    // whose registry knows the type applies it, so the owner
+                    // stays the only writer. `before` MUST be read ahead of
+                    // apply: a baseline left behind the incoming change means
+                    // the user's next Ctrl+Z reverts someone else's edit along
+                    // with their own keystroke.
+                    let before = self.state.doc.get_heads();
+                    let applied =
+                        self.root_widget
+                            .apply_room_action(&mut self.state.doc, &type_id, &payload);
+                    if applied {
+                        // Named after the publisher so local Ctrl+Z walks
+                        // past it instead of through it.
+                        self.state.record_committed_action_authored(
+                            before,
+                            None,
+                            None,
+                            Some(crate::permissions::UserId(from_user_id.clone())),
+                        );
+                        self.needs_sync = true;
+                        self.structure_dirty = true;
+                    }
+                }
                 CollabEvent::CRDTUpdate { data } => {
-                    // MERGE incoming full state rather than replacing the
-                    // doc — a replace clobbers our own concurrent edits.
+                    // MERGE rather than replace — replacing clobbers our own
+                    // concurrent edits.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
+                        crate::diag!("[app] recv CRDTUpdate {}B", data.len());
                     }
                     if let Ok(mut incoming) = State::load(&data) {
                         let _ = self.state.doc.merge(&mut incoming.doc);
                         self.needs_sync = true;
-                        // A remote change can grow the widget tree (new
-                        // page/block), so force a relayout before the next
-                        // draw — else a stale layout indexes out of bounds.
+                        // A remote change can grow the widget tree, so force
+                        // a relayout — else a stale layout indexes out of
+                        // bounds.
                         self.layout_dirty = true;
                     }
                 }
                 CollabEvent::CRDTIncremental { data } => {
-                    // The live-edit path: every keystroke a peer makes arrives
-                    // here. It is the one inbound variant that used to log
-                    // nothing, which made "did the edit cross?" unanswerable
-                    // from a debug run — the two ends looked identical whether
-                    // the delta was dropped in transit or applied silently.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTIncremental {}B", data.len());
+                        crate::diag!("[app] recv CRDTIncremental {}B", data.len());
                     }
                     let _ = self.state.load_incremental(&data);
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
                 CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                    // The broker has already validated the envelope (signature
-                    // check + role table lookup + replay defence) before
-                    // emitting this event to us. The toolkit trusts that and
-                    // applies the embedded payload to the local Automerge doc
-                    // via the same incremental-merge path the legacy unsigned
-                    // variant uses. Phase 7 (MLS encryption) layers payload
-                    // decryption between extraction and apply; the envelope
-                    // metadata stays cleartext.
+                    // The broker already validated the envelope (signature +
+                    // role table + replay defence); the toolkit trusts it.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!(
+                        crate::diag!(
                             "[app] recv SignedCRDTIncremental from {} ({}B payload)",
                             "<peer>",
                             envelope.payload.len()
@@ -1710,16 +1302,15 @@ impl App {
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
-                CollabEvent::ScrollbackBatch { artifact: _, ops, exhausted: _ } => {
-                    // Phase 6: apply older ops in seq order. The broker
-                    // pre-validated each envelope before sticking it in
-                    // its in-memory log; we trust the contents the same
-                    // way `SignedCRDTIncremental` does. Apps that need
-                    // a "Loading older edits…" spinner read the
-                    // `exhausted` flag separately; the toolkit's
-                    // default surface is just to apply.
+                CollabEvent::ScrollbackBatch {
+                    artifact: _,
+                    ops,
+                    exhausted: _,
+                } => {
+                    // Broker pre-validated each envelope, trusted the same
+                    // way as `SignedCRDTIncremental`.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv ScrollbackBatch ({} ops)", ops.len());
+                        crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
                         let _ = self.state.load_incremental(&envelope.payload);
@@ -1732,14 +1323,16 @@ impl App {
         any
     }
 
-    /// Test-only hook: apply a single `CollabEvent` directly, bypassing the
-    /// collab manager's socket/poll path. Integration tests that construct
-    /// a `MemoryRelay` can use this to inject remote presence / cursor
-    /// updates into the app's state without wiring a full transport.
+    /// Bypasses the collab manager's socket/poll path — for tests using a
+    /// `MemoryRelay`.
     #[doc(hidden)]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         match event {
-            CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+            CollabEvent::RemotePresenceUpdate {
+                user_id,
+                key,
+                payload,
+            } => {
                 self.apply_remote_presence(user_id, key, payload);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
@@ -1753,14 +1346,10 @@ impl App {
                 );
                 entry.x = x;
                 entry.y = y;
-                // Also drive the PresenceCtx overlay path so integration
-                // tests can assert on remote cursors via the public presence
-                // surface instead of the legacy cursors HashMap.
-                self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
+                self.presence_ctx
+                    .upsert_remote_cursor(user_id, [x, y], None);
             }
             CollabEvent::CRDTIncremental { data } => {
-                // Mirror the production path so tests can exercise the
-                // incremental-merge wiring without a real event loop.
                 let _ = self.state.load_incremental(&data);
                 self.needs_sync = true;
             }
@@ -1773,10 +1362,6 @@ impl App {
                 }
             }
             CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                // Validation has happened on the broker side; the
-                // toolkit trusts the envelope at this point and feeds
-                // the payload into the same incremental-merge path the
-                // legacy variant uses.
                 let _ = self.state.load_incremental(&envelope.payload);
                 self.needs_sync = true;
             }
@@ -1784,10 +1369,10 @@ impl App {
         }
     }
 
-    /// Test-only accessor: a mutable reference to the app's CRDT state so
-    /// integration tests can stage mutations (e.g. type into a text input)
-    /// and then serialize the resulting deltas via `save_incremental` to
-    /// feed the peer relay.
+    pub fn local_author(&self) -> &crate::permissions::UserId {
+        &self.local_author
+    }
+
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
         &mut self.state
@@ -1795,9 +1380,15 @@ impl App {
 
     fn update_focusable_order(&mut self) {
         self.focusable_order.clear();
-        fn collect_focusable(node_id: NodeId, widget: &dyn Widget, taffy: &TaffyTree<()>, order: &mut Vec<NodeId>) {
-            // Disabled widgets are skipped by keyboard focus traversal.
-            if widget.is_focusable() && widget.is_enabled() { order.push(node_id); }
+        fn collect_focusable(
+            node_id: NodeId,
+            widget: &dyn Widget,
+            taffy: &TaffyTree<()>,
+            order: &mut Vec<NodeId>,
+        ) {
+            if widget.is_focusable() && widget.is_enabled() {
+                order.push(node_id);
+            }
             let children = widget.children();
             if let Ok(child_nodes) = taffy.children(node_id) {
                 for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
@@ -1805,8 +1396,7 @@ impl App {
                 }
             }
         }
-        // Locate the focusables of an open modal's subtree, if one is up. The
-        // deepest trapping widget wins (a modal opened from within a modal).
+        // The deepest trapping widget wins (a modal opened from within one).
         fn find_trap_focusables(
             node_id: NodeId,
             widget: &dyn Widget,
@@ -1836,30 +1426,30 @@ impl App {
         let trap_active = trap.is_some();
 
         if let Some(trapped) = trap {
-            // Confine keyboard focus to the modal's focusables.
             self.focusable_order = trapped;
         } else {
-            collect_focusable(root, self.root_widget.as_ref(), &self.taffy, &mut self.focusable_order);
+            collect_focusable(
+                root,
+                self.root_widget.as_ref(),
+                &self.taffy,
+                &mut self.focusable_order,
+            );
         }
 
-        // Manage the trap open/close transition for focus restore.
         match (self.focus_trap_active, trap_active) {
             (false, true) => {
-                // A modal just opened: remember where focus was, then move it
-                // into the modal so Tab cycles inside it and the dialog (or its
-                // first field) is announced.
+                // Modal just opened: remember prior focus, move into the trap.
                 self.focus_before_trap = self.focused_node;
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
                 } else {
-                    // Modal has no focusable content — drop focus so Tab can't
-                    // reach the content behind the backdrop.
+                    // No focusable content — drop focus so Tab can't reach
+                    // the content behind the backdrop.
                     self.set_focused_node(None);
                 }
             }
             (true, false) => {
-                // The modal closed: return focus to where the user was, as long
-                // as that element still exists in the rebuilt tree.
+                // Modal closed: restore only if that element still exists.
                 let restore = self
                     .focus_before_trap
                     .take()
@@ -1867,8 +1457,8 @@ impl App {
                 self.set_focused_node(restore);
             }
             (true, true) => {
-                // Still trapped: if focus drifted outside the modal (a rebuild
-                // dropped the focused element), pull it back to the first member.
+                // Still trapped: pull focus back if a rebuild dropped it
+                // outside the modal.
                 let inside = self
                     .focused_node
                     .is_some_and(|id| self.focusable_order.contains(&id));
@@ -1881,14 +1471,10 @@ impl App {
         self.focus_trap_active = trap_active;
     }
 
-    /// Fold one inbound `RemotePresenceUpdate` into this app.
-    ///
-    /// The decode itself lives on [`crate::presence::PresenceCtx`] so
-    /// the compositor — which subscribes to the same stream to paint
-    /// peers over its windows — reads presence exactly the way an app
-    /// does. What stays here is the part only a document holder can
-    /// do: follow a peer's viewport, and answer a late joiner with
-    /// full state.
+    /// The decode lives on [`crate::presence::PresenceCtx`] so the
+    /// compositor reads presence the same way an app does; what stays here
+    /// is what only a document holder can do (follow a peer's viewport,
+    /// answer a late joiner with full state).
     fn apply_remote_presence(
         &mut self,
         user_id: String,
@@ -1905,7 +1491,7 @@ impl App {
             RemotePresenceEffect::PeerArrived => {
                 let data = self.state.save();
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!("[app] recv Arrived; replying full state {}B", data.len());
+                    crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
                 }
                 self.collab_manager
                     .send(crate::collaboration::CollabRequest::SyncCRDT { data });
@@ -2072,14 +1658,16 @@ impl App {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
                     if let Some(&w_ptr) = self.node_map.get(&id) {
-                        unsafe { (*w_ptr).set_state(&metadata); }
+                        unsafe {
+                            (*w_ptr).set_state(&metadata);
+                        }
                     }
                     self.last_stable_metadata = Some(metadata);
                 }
                 self.last_stable_focus_idx = Some(idx);
             }
-        } else { 
-            self.set_focused_node(None); 
+        } else {
+            self.set_focused_node(None);
             self.last_stable_focus_idx = None;
             self.last_stable_metadata = None;
         }
@@ -2088,51 +1676,27 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        // Stamp the action with who performed it. Without this every entry on
-        // the undo stack is anonymous, and `undo_for_author` — the thing that
-        // stops one collaborator reverting another's work — has nothing to
-        // match on.
-        //
-        // `commit_action_authored` reports whether the transaction actually
-        // changed the document. The App calls `commit_action` after *every*
-        // handled event, and many handled events mutate only ephemeral widget
-        // state, not the CRDT — a text-selection drag in the terminal is the
-        // motivating case: it fires a `CursorMoved` per frame, each marked
-        // handled, with nothing committed. Serialising the whole document
-        // (`state.save()`) and broadcasting it on each of those was a per-frame
-        // cost proportional to the document size, which is what made selection
-        // feel laggy over a large scrollback. When nothing changed there is
-        // nothing to persist or sync, so skip both.
+        // Called after every handled event, many of which (e.g. a
+        // selection-drag `CursorMoved`) mutate only ephemeral widget state,
+        // not the CRDT — `changed` lets those skip persisting/syncing.
         let changed = self.state.commit_action_authored(
             self.last_stable_focus_idx,
             self.last_stable_metadata.clone(),
             Some(self.local_author.clone()),
         );
-        self.last_stable_focus_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+        self.last_stable_focus_idx = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
-            self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+            self.node_map
+                .get(&id)
+                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
 
-        // Ship the commit as an incremental delta, not the whole document.
-        //
-        // Serialising the entire document per committed edit is a cost
-        // proportional to its size on every keystroke, which is what a long
-        // document feels as typing lag. The skip above spared the events that
-        // change nothing; the edits that *do* change something are the ones a
-        // person is making while they watch.
-        //
-        // It also silently disabled the incremental path: `AutoCommit::save`
-        // advances the save cursor to the current heads, so the
-        // `broadcast_doc_delta` later in the same idle tick found
-        // `save_incremental` empty and sent nothing. Every app that marks its
-        // edits with `needs_commit` — which is every editor — was therefore
-        // syncing by whole-document snapshot and never by delta.
-        //
-        // Undo and redo are safe on this path: `UndoLog::apply_inverse` writes
-        // the inverse into the document as new changes, so a delta carries
-        // them like any other edit. A peer that has *not* seen the document
-        // still gets a full snapshot — that is the `Arrived` handshake, and it
-        // is unaffected.
+        // Incremental delta, not the whole document — serialising per
+        // keystroke scales with document size. `UndoLog::apply_inverse`
+        // writes the inverse as new changes, so a delta carries undo/redo
+        // like any other edit.
         if changed {
             self.broadcast_doc_delta();
         }
@@ -2140,28 +1704,26 @@ impl App {
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         if self.focused_node != new_id {
-            if let Some(old_id) = self.focused_node {
-                if let Some(&w_ptr) = self.node_map.get(&old_id) {
-                    unsafe { (*w_ptr).set_focus(false); }
+            if let Some(old_id) = self.focused_node
+                && let Some(&w_ptr) = self.node_map.get(&old_id)
+            {
+                unsafe {
+                    (*w_ptr).set_focus(false);
                 }
             }
             self.focused_node = new_id;
-            if let Some(id) = new_id {
-                if let Some(&w_ptr) = self.node_map.get(&id) {
-                    unsafe { (*w_ptr).set_focus(true); }
-                    // Screen-reader focus narration. Pull the newly-focused
-                    // widget's semantics and speak it, INTERRUPTING the previous
-                    // utterance so rapid arrow/Tab navigation stays responsive
-                    // (the reader's queue coalesces a focus storm to the latest).
-                    // No-op when the reader is disabled — the hot focus path
-                    // pays only a single `Option::is_some`-style branch.
-                    if self.screen_reader.is_some() {
-                        let node = unsafe { (*w_ptr).accessibility() };
-                        if let (Some(node), Some(sr)) =
-                            (node, self.screen_reader.as_mut())
-                        {
-                            sr.announce_focus(&node);
-                        }
+            if let Some(id) = new_id
+                && let Some(&w_ptr) = self.node_map.get(&id)
+            {
+                unsafe {
+                    (*w_ptr).set_focus(true);
+                }
+                // Interrupts the previous utterance so rapid arrow/Tab
+                // navigation stays responsive.
+                if self.screen_reader.is_some() {
+                    let node = unsafe { (*w_ptr).accessibility() };
+                    if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
+                        sr.announce_focus(&node);
                     }
                 }
             }
@@ -2170,10 +1732,6 @@ impl App {
         }
     }
 
-    /// Snapshot the focused widget's concise value+state string. Captured
-    /// *before* an event is dispatched so [`announce_state_change`] can detect
-    /// whether the same control's state changed (mouse click, Space/Enter, a
-    /// slider step) and speak the new state. Cheap no-op when the reader is off.
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -2182,12 +1740,12 @@ impl App {
         Some((id, crate::screen_reader::describe_state(&node)))
     }
 
-    /// If the focused control's state changed since `pre` (and focus did NOT
-    /// move — a focus move is already narrated by [`set_focused_node`]), speak
-    /// just the new state ("checked", "on", "75 percent"). Covers both mouse
-    /// and keyboard activation, so the reader always confirms the result.
+    /// Only fires if focus did NOT move — a move is narrated separately by
+    /// [`set_focused_node`].
     fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
-        let Some((pre_id, pre_state)) = pre else { return };
+        let Some((pre_id, pre_state)) = pre else {
+            return;
+        };
         if self.focused_node != Some(pre_id) {
             return;
         }
@@ -2209,11 +1767,6 @@ impl App {
         }
     }
 
-    /// Snapshot the focused widget's caret-review state `(caret_byte, text)`
-    /// *before* an event is dispatched, so [`announce_text_review`] can tell a
-    /// caret move (arrow / Home / End over existing content) from an edit. Cheap
-    /// no-op when the reader is off or the focused widget isn't an editable text
-    /// field.
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
         self.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -2222,36 +1775,31 @@ impl App {
         Some((id, caret, text))
     }
 
-    /// If the focused text field's caret moved over **unchanged** text since
-    /// `pre`, announce what the caret landed on: the single character for a
-    /// one-step move (arrow keys), or the word for a longer jump (Home/End,
-    /// word-wise move). Typing (which changes the text) is left to the widget's
-    /// own echo, so this never double-speaks an edit. No-op when the reader is
-    /// off, focus moved, or the field isn't editable text.
+    /// Typing is left to the widget's own echo so this never double-speaks
+    /// an edit.
     fn announce_text_review(&mut self, pre: Option<(NodeId, usize, String)>) {
-        let Some((pre_id, pre_caret, pre_text)) = pre else { return };
+        let Some((pre_id, pre_caret, pre_text)) = pre else {
+            return;
+        };
         if self.focused_node != Some(pre_id) {
             return;
         }
         if self.screen_reader.is_none() {
             return;
         }
-        let Some(&w_ptr) = self.node_map.get(&pre_id) else { return };
+        let Some(&w_ptr) = self.node_map.get(&pre_id) else {
+            return;
+        };
         let Some((now_caret, now_text)) = (unsafe { (*w_ptr).text_review() }) else {
             return;
         };
-        // Only a pure caret move over identical text is a "review"; an edit
-        // changed the text and is echoed by the widget itself.
         if now_text != pre_text || now_caret == pre_caret {
             return;
         }
-        // One char-boundary step → speak the character; a longer jump → speak
-        // the word the caret now sits in.
         let single_step = next_boundary(&now_text, pre_caret) == now_caret
             || prev_boundary(&now_text, pre_caret) == now_caret;
         if single_step {
-            // The character the caret is now on (to its right). At the very end
-            // there's nothing to the right, so fall back to the char to the left.
+            // Character to the caret's right; fall back left at end of text.
             let ch = now_text[now_caret..]
                 .chars()
                 .next()
@@ -2259,37 +1807,27 @@ impl App {
             if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
                 sr.echo_char(ch);
             }
-        } else if let Some(word) = word_at(&now_text, now_caret) {
-            if let Some(sr) = self.screen_reader.as_mut() {
-                sr.echo_word(&word);
-            }
+        } else if let Some(word) = word_at(&now_text, now_caret)
+            && let Some(sr) = self.screen_reader.as_mut()
+        {
+            sr.echo_word(&word);
         }
     }
 
-    /// Scan the tree for [live regions](crate::a11y::AccessNode::live) whose
-    /// spoken text changed since the last frame and announce each change —
-    /// **without moving focus**. A toast appearing, a status line updating, a
-    /// progress step all narrate themselves this way. Politeness picks the
-    /// priority: assertive interrupts; polite waits for a pause. Run once per
-    /// frame after `sync`, so the text reflects the freshly-pulled CRDT state.
-    /// A cheap no-op when the reader is off.
+    /// Announces changed [live regions](crate::a11y::AccessNode::live)
+    /// without moving focus.
     fn scan_live_regions(&mut self) {
         if self.screen_reader.is_none() {
             return;
         }
-        // Collect (identity, politeness, current text) for every live region,
-        // then diff against the stored snapshot. The identity is the region's
-        // accessible name — a live region without a name can't be tracked
-        // stably across frames, so it's skipped.
+        // A live region without an accessible name can't be tracked stably
+        // across frames, so it's skipped.
         let mut seen: Vec<(String, crate::a11y::Politeness, String)> = Vec::new();
-        fn visit(
-            w: &dyn Widget,
-            out: &mut Vec<(String, crate::a11y::Politeness, String)>,
-        ) {
-            if let Some(node) = w.accessibility() {
-                if let (Some(politeness), Some(name)) = (node.live, node.name.clone()) {
-                    out.push((name, politeness, crate::screen_reader::describe(&node)));
-                }
+        fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
+            if let Some(node) = w.accessibility()
+                && let (Some(politeness), Some(name)) = (node.live, node.name.clone())
+            {
+                out.push((name, politeness, crate::screen_reader::describe(&node)));
             }
             for child in w.children() {
                 visit(child, out);
@@ -2302,17 +1840,16 @@ impl App {
         for (key, politeness, text) in seen {
             current_keys.insert(key.clone());
             let changed = self.live_region_last.get(&key) != Some(&text);
-            // Record the new text first so we never re-announce the same value.
             self.live_region_last.insert(key, text.clone());
-            // Announce only meaningful (non-empty) text. Clearing a region to
-            // empty updates the snapshot silently.
+            // Clearing a region to empty updates the snapshot silently.
             if changed && !text.is_empty() {
                 to_announce.push((politeness, text));
             }
         }
         // Drop snapshots for regions that left the tree, so a region that
         // reappears with the same text announces afresh.
-        self.live_region_last.retain(|k, _| current_keys.contains(k));
+        self.live_region_last
+            .retain(|k, _| current_keys.contains(k));
 
         if let Some(sr) = self.screen_reader.as_mut() {
             for (politeness, text) in to_announce {
@@ -2328,20 +1865,33 @@ impl App {
     }
 
     fn navigate_focus(&mut self, direction: Direction) {
-        let current_id = match self.focused_node {
-            Some(id) => id,
-            None => { if !self.focusable_order.is_empty() { self.set_focused_node(Some(self.focusable_order[0])); } return; }
+        let current_id = if let Some(id) = self.focused_node {
+            id
+        } else {
+            if !self.focusable_order.is_empty() {
+                self.set_focused_node(Some(self.focusable_order[0]));
+            }
+            return;
         };
-        let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) { unsafe { (*w_ptr).get_rect() } } else { return; };
+        let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) {
+            unsafe { (*w_ptr).get_rect() }
+        } else {
+            return;
+        };
         let current_center = current_rect.center();
         let mut best_candidate = None;
         let mut best_score = f64::MAX;
         for &candidate_id in &self.focusable_order {
-            if candidate_id == current_id { continue; }
+            if candidate_id == current_id {
+                continue;
+            }
             if let Some(&candidate_ptr) = self.node_map.get(&candidate_id) {
                 let candidate_rect = unsafe { (*candidate_ptr).get_rect() };
                 let candidate_center = candidate_rect.center();
-                let vector = vello::kurbo::Vec2::new(candidate_center.x - current_center.x, candidate_center.y - current_center.y);
+                let vector = vello::kurbo::Vec2::new(
+                    candidate_center.x - current_center.x,
+                    candidate_center.y - current_center.y,
+                );
                 let (primary_dist, secondary_dist, in_direction) = match direction {
                     Direction::Up => (-vector.y, vector.x.abs(), vector.y < -1.0),
                     Direction::Down => (vector.y, vector.x.abs(), vector.y > 1.0),
@@ -2350,41 +1900,25 @@ impl App {
                 };
                 if in_direction {
                     let score = primary_dist + (secondary_dist * 2.0);
-                    if score < best_score { best_score = score; best_candidate = Some(candidate_id); }
+                    if score < best_score {
+                        best_score = score;
+                        best_candidate = Some(candidate_id);
+                    }
                 }
             }
         }
-        if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
+        if let Some(new_id) = best_candidate {
+            self.set_focused_node(Some(new_id));
+        }
     }
 
-    /// Whether the App's own keyboard focus navigation (Tab cycling and
-    /// directional arrows) may run this frame.
-    ///
-    /// It runs when nothing is capturing the pointer as a modal, **or** when a
-    /// focus trap is active. In the trapped case [`focusable_order`] is already
-    /// scoped to the trap's subtree (see [`Self::update_focusable_order`]), so
-    /// navigation stays *inside* the modal and cannot walk out to the content
-    /// behind the scrim. Gating on the focus-trap signal — not `modal_capture`
-    /// — is deliberate: `modal_capture` governs only pointer click-through, so
-    /// gating Tab on it froze focus inside a dialog (the OK/Cancel buttons
-    /// couldn't be cycled) while a trap that set `traps_focus` without
-    /// `modal_capture` let Tab escape entirely.
-    ///
-    /// [`focusable_order`]: Self::focusable_order
+    /// Gated on the focus-trap signal, not `modal_capture`: that governs only
+    /// pointer click-through — gating Tab on it instead either froze focus
+    /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
         modal_rect.is_none() || self.focus_trap_active
     }
 
-    /// Advance keyboard focus for a Tab (`shift == false`) / Shift+Tab
-    /// (`shift == true`) press: step through [`focusable_order`] wrapping
-    /// last↔first. When a modal traps focus that order is scoped to the modal,
-    /// so the cycle stays within it. Returns `true` when focus moved (there was
-    /// at least one focusable), so the caller marks the event handled.
-    ///
-    /// This is the production Tab path — the window-event loop calls it and the
-    /// focus-trap tests drive it directly, rather than re-implementing the wrap.
-    ///
-    /// [`focusable_order`]: Self::focusable_order
     fn focus_tab(&mut self, shift: bool) -> bool {
         let len = self.focusable_order.len();
         if len == 0 {
@@ -2407,12 +1941,8 @@ impl App {
         true
     }
 
-    /// Build a fresh [`accesskit::TreeUpdate`] from the current widget tree,
-    /// node map, and focus. Pure delegation to
-    /// [`crate::accesskit_bridge::build_tree_update`]; kept on `App` so the
-    /// adapter's `update_if_active` closure can build the tree from the App's
-    /// live state. `scale` is the window scale factor so bounds land in
-    /// physical pixels (what AT-SPI expects).
+    /// `scale` is the window scale factor so bounds land in physical pixels
+    /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
         crate::accesskit_bridge::build_tree_update(
             self.root_widget.as_ref(),
@@ -2509,7 +2039,7 @@ impl App {
             self.set_focused_node(Some(taffy_id));
         }
 
-        // 1. Widget gets first refusal, told which element was targeted.
+        // Widget gets first refusal, told which element was targeted.
         let handled = unsafe {
             (*w_ptr).perform_action_at(action, key_path, &mut self.state.doc, &self.state.root)
         };
@@ -2519,15 +2049,12 @@ impl App {
             return None;
         }
 
-        // 2. Generic fallbacks — widget-granular, see the doc comment.
         match action {
             Action::Focus => {
                 self.set_focused_node(Some(taffy_id));
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                // Synthesise a click at the widget's centre through the same
-                // path real pointer input takes.
                 let rect = unsafe { (*w_ptr).get_rect() };
                 let c = rect.center();
                 Some((c.x, c.y))
@@ -2569,15 +2096,8 @@ impl App {
         did
     }
 
-    /// Rebuild the [retained semantic tree](crate::a11y_tree::SemanticTree) from
-    /// the current widget tree, node map, focus, and the focused app's open
-    /// resources, diffing it against the previous frame.
-    ///
-    /// Returns the [`TreeDelta`](crate::a11y_tree::TreeDelta): what nodes were
-    /// added / removed / had their content change since the last refresh. Node
-    /// identity is preserved for everything that recurred, so a consumer (an
-    /// AT-SPI incremental push, a screen reader, an AI-agent introspecting the
-    /// UI) can react to just the diff rather than re-reading a whole new tree.
+    /// Node identity is preserved for everything that recurred, so a
+    /// consumer reacts to just the diff.
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let resources = self.collect_resources();
         self.semantic_tree.refresh(
@@ -2588,35 +2108,18 @@ impl App {
         )
     }
 
-    /// Read access to the retained semantic tree (last
-    /// [`refresh`](Self::refresh_semantic_tree)ed state).
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
         &self.semantic_tree
     }
 
-    /// Invoke a named affordance on a semantic node — the operate-the-tree
-    /// counterpart to reading it. This is how an assistive technology, a voice
-    /// command, or an AI agent drives the UI *by name*.
-    ///
-    /// * A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) (focus, activate,
-    ///   increment, …) routes through the same
-    ///   [`dispatch_a11y_action`](Self::dispatch_a11y_action) path an AccessKit
-    ///   `ActionRequest` takes — [`Widget::perform_action`](crate::widget::Widget::perform_action)
-    ///   first, then the generic focus/click fallback.
-    /// * An [`App`](crate::a11y_tree::SemanticActionKind::App) or
-    ///   [`AppPrompted`](crate::a11y_tree::SemanticActionKind::AppPrompted)
-    ///   affordance dispatches the resource's **exact
-    ///   [`EncodedAction`](qos_actions::EncodedAction)** through
-    ///   [`qos_actions::dispatch`] — the *identical* audited path the Ctrl+K
-    ///   palette and the on-screen control use — and records one undo boundary.
-    ///   `arg` supplies the free-text argument a prompted action needs (ignored
-    ///   otherwise).
-    ///
-    /// Returns `Ok(true)` if a matching affordance was found and driven,
-    /// `Ok(false)` if the node or action name was unknown, and `Err` if a
-    /// resolved app action failed to decode/dispatch. Call
-    /// [`refresh_semantic_tree`](Self::refresh_semantic_tree) first so the ids
-    /// are current.
+    /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
+    /// the same [`dispatch_a11y_action`](Self::dispatch_a11y_action) path an
+    /// AccessKit `ActionRequest` takes; an
+    /// [`App`](crate::a11y_tree::SemanticActionKind::App) affordance
+    /// dispatches through [`qos_actions::dispatch`], the same audited path
+    /// the Ctrl+K palette uses. Call
+    /// [`refresh_semantic_tree`](Self::refresh_semantic_tree) first so the
+    /// ids are current.
     pub fn invoke_semantic_action(
         &mut self,
         id: &crate::a11y_tree::SemanticId,
@@ -2624,8 +2127,7 @@ impl App {
         arg: Option<&str>,
     ) -> Result<bool, String> {
         use crate::a11y_tree::SemanticActionKind;
-        // Resolve the affordance out of the (immutably-borrowed) tree first, so
-        // the mutation below is free to borrow the doc / registry / transport.
+        // Cloned so the mutation below is free to borrow doc/registry/transport.
         let Some(action) = self.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
@@ -2666,11 +2168,8 @@ impl App {
         }
     }
 
-    /// Dispatch a resolved [`EncodedAction`](qos_actions::EncodedAction) through
-    /// the qOS action model — decode via the app-registered registry, dispatch
-    /// via [`qos_actions::dispatch`] honouring its locus, and (when it mutated
-    /// the local doc) record one undo boundary. Byte-for-byte the same path as a
-    /// Ctrl+K palette selection ([`Self::action_palette_handle_key`]).
+    /// Byte-for-byte the same path as a Ctrl+K palette selection
+    /// ([`Self::action_palette_handle_key`]).
     fn dispatch_encoded_semantic(
         &mut self,
         encoded: qos_actions::EncodedAction,
@@ -2695,10 +2194,7 @@ impl App {
         Ok(true)
     }
 
-    /// Build the initial taffy tree, seed the focus order, and (when
-    /// [`Self::autofocus_first`] is set) hand the keyboard to the first
-    /// focusable widget. Factored out of [`Self::run_with_setup`] so the
-    /// headless tests can stand the App up without spinning a winit loop.
+    /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
         self.node_map.clear();
@@ -2708,13 +2204,11 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
-        // Opt-in startup focus: hand the keyboard to the first focusable
-        // widget so the app is typeable without a click (used by the
-        // greeter so the username field is ready at the login prompt).
-        if self.autofocus_first && self.focused_node.is_none() {
-            if let Some(&first) = self.focusable_order.first() {
-                self.set_focused_node(Some(first));
-            }
+        if self.autofocus_first
+            && self.focused_node.is_none()
+            && let Some(&first) = self.focusable_order.first()
+        {
+            self.set_focused_node(Some(first));
         }
         self.last_stable_focus_idx = self
             .focused_node
@@ -2726,58 +2220,36 @@ impl App {
         });
     }
 
-    /// Re-run the per-frame focus pass: pull widget state via `sync` (so a
-    /// modal's open flag updates) then re-evaluate the focusable order and any
-    /// focus trap. This is what the event loop does after handling input that
-    /// changed widget state without rebuilding the tree; exposed (doc-hidden)
-    /// so headless tests can drive modal open/close without a winit loop.
+    /// Exposed so headless tests can drive modal open/close without a winit
+    /// loop.
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         self.update_focusable_order();
     }
 
-    /// Rebuild the taffy tree from the current widget tree after a
-    /// structural mutation, re-establishing keyboard focus.
-    ///
-    /// When [`Self::autofocus_on_structure_change`] is set this *also*
-    /// preserves the focused widget's **ephemeral** caret / selection state
-    /// across the rebuild. The previously-focused widget's [`Widget::get_state`]
-    /// is captured BEFORE the tree is torn down; after the rebuild, provided
-    /// focus lands back on the SAME focusable ordinal (so we never paste a
-    /// caret onto a different field), [`Widget::set_state`] restores it on the
-    /// new focused widget. This mirrors the undo path
-    /// ([`Self::apply_undo_entry`]), which already round-trips widget metadata
-    /// — without it a rebuild triggered by an unrelated state change (a
-    /// validation line appearing, a sibling status row) silently snaps the
-    /// caret back to offset 0.
-    ///
-    /// If the root raised [`Widget::take_focus_reset`] (a wizard advancing to
-    /// a new step, or — in the greeter — an auth-phase transition that changes
-    /// which fields are focusable) focus jumps to the first focusable of the
-    /// rebuilt tree and no caret is restored, because the focused field
-    /// legitimately changed.
-    ///
-    /// Exposed (doc-hidden) so the headless tests can exercise focus + caret
-    /// continuity without a real event loop.
+    /// When [`Self::autofocus_on_structure_change`] is set, restores the
+    /// focused widget's caret/selection only if focus lands back on the SAME
+    /// focusable ordinal after rebuild (never onto a different field);
+    /// without this an unrelated rebuild snaps the caret to offset 0.
+    /// [`Widget::take_focus_reset`] instead jumps to the first focusable
+    /// with no caret restore, since the field legitimately changed.
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
-        // Capture pre-rebuild focus ordinal, the focused widget's ephemeral
-        // state, and the root's one-shot focus-reset request BEFORE the tree
-        // is torn down — the focusable node ids are about to be invalidated.
-        let (prev_focus_idx, prev_focus_state, focus_reset) =
-            if self.autofocus_on_structure_change {
-                let idx = self
-                    .focused_node
-                    .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-                let state = self
-                    .focused_node
-                    .and_then(|id| self.node_map.get(&id).copied())
-                    .and_then(|w| unsafe { (*w).get_state() });
-                (idx, state, self.root_widget.take_focus_reset())
-            } else {
-                (None, None, false)
-            };
+        // Node ids below are about to be invalidated.
+        let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
+        {
+            let idx = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+            let state = self
+                .focused_node
+                .and_then(|id| self.node_map.get(&id).copied())
+                .and_then(|w| unsafe { (*w).get_state() });
+            (idx, state, self.root_widget.take_focus_reset())
+        } else {
+            (None, None, false)
+        };
 
         self.taffy = TaffyTree::new();
         self.node_map.clear();
@@ -2790,55 +2262,38 @@ impl App {
         self.layout_dirty = true;
         self.update_focusable_order();
 
-        // A focus trap (open modal) already placed focus inside its subtree in
-        // `update_focusable_order`; the structure-change autofocus must not
-        // override that and let focus escape the modal.
+        // A focus trap already placed focus inside its subtree in
+        // `update_focusable_order`; don't let it escape the modal.
         if self.autofocus_on_structure_change && !self.focus_trap_active {
             if focus_reset {
-                // Step / phase transition: hand focus to the first field of
-                // the freshly-built tree. No caret restore — the focused
-                // field deliberately changed.
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
                 }
             } else if let Some(idx) = prev_focus_idx {
-                // Incidental rebuild (e.g. a status line appeared): keep focus
-                // on the same ordinal so the caret doesn't vanish mid-edit.
-                // We only restore the caret/selection when the SAME ordinal
-                // still exists in the rebuilt tree — a shifted ordinal means
-                // the focusable set changed and we can't prove it's the same
-                // logical field, so we clamp focus but skip the caret paste.
                 let exact = self.focusable_order.get(idx).copied();
                 let target = exact.or_else(|| self.focusable_order.last().copied());
                 if let Some(id) = target {
                     self.set_focused_node(Some(id));
-                    if exact.is_some() {
-                        if let Some(state) = prev_focus_state.as_deref() {
-                            if let Some(&w) = self.node_map.get(&id) {
-                                unsafe { (*w).set_state(state); }
-                            }
+                    if exact.is_some()
+                        && let Some(state) = prev_focus_state.as_deref()
+                        && let Some(&w) = self.node_map.get(&id)
+                    {
+                        unsafe {
+                            (*w).set_state(state);
                         }
                     }
                 }
             }
         }
 
-        // The widgets built above are *fresh* instances (apps that rebuild
-        // their composition — the greeter, the installer wizard — recreate
-        // their children in `build_layout`). The frame's `sync` ran against
-        // the OLD tree, so without this the new widgets would draw blank
-        // until the next event. Re-sync now so they pull their CRDT state
-        // this frame; this also clamps any caret restored just above against
-        // the now-populated text. Cheap, and a no-op for widgets that don't
-        // read state in `sync`.
+        // The widgets built above are fresh instances the OLD `sync` never
+        // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         self.needs_sync = false;
     }
 
-    /// Persist this App's CRDT document through `autosave`.
-    ///
     /// Pair with [`crate::persist::open`], which hands back the document the
-    /// previous session left behind plus the writer for it:
+    /// previous session left plus its writer:
     ///
     /// ```ignore
     /// let (state, autosave) = ui::persist::open("dev.qos.my-app");
@@ -2846,55 +2301,32 @@ impl App {
     ///     .with_autosave(autosave)
     ///     .run();
     /// ```
-    ///
-    /// From here on every change the document takes is written back —
-    /// debounced, atomically, and incrementally — and flushed when the event
-    /// loop exits. Nothing else in the App changes; widgets keep mutating the
-    /// same `AutoCommit` they always did.
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
         self.autosave = Some(autosave);
         self
     }
 
-    /// Set the window title explicitly, overriding the automatic
-    /// resolution (env / package id / binary name). Builder form, for an
-    /// app that wants a title other than its package name — most don't,
-    /// and get their real name for free. Takes effect when the window is
-    /// created, so set it before [`App::run`].
+    /// Takes effect when the window is created, so set before [`App::run`].
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
         self.window_title = Some(title.into());
         self
     }
 
-    /// Set the window title explicitly at runtime. Same precedence as
-    /// [`App::with_window_title`]; applied when the window is next
-    /// created. `None` clears the override and restores automatic
-    /// resolution.
+    /// `None` clears the override and restores automatic resolution.
     pub fn set_window_title(&mut self, title: Option<String>) {
         self.window_title = title;
     }
 
-    /// The title this App would give its window right now, resolved
-    /// through the same precedence the window uses (explicit override →
-    /// `QOS_APP_NAME` → package id → binary name → generic default).
-    /// Exposed so the resolution is observable in tests and by a host
-    /// that mirrors the title elsewhere.
+    /// Precedence: explicit override → `QOS_APP_NAME` → package id → binary
+    /// name → generic default.
     pub fn resolved_window_title(&self) -> String {
         resolve_window_title(self.window_title.as_deref())
     }
 
-    /// Make this App's live document a **record's** document.
-    ///
-    /// `records` owns the per-record documents and their persistence;
-    /// `room_index` is the room's list of which records it holds — normally
-    /// the document [`crate::persist::open`] hands back, since that document
-    /// already is per-room state. The root widget names the record it is on
-    /// via [`crate::widget::Widget::record_intent`] and the App checks it out
-    /// before the next `sync`.
-    ///
-    /// Pair it with [`App::with_autosave`] only if the room index itself
-    /// should be persisted — the records persist through `records`, not
-    /// through the App's autosave, so the two are not alternatives.
+    /// `records` owns per-record documents and persistence; `room_index` is
+    /// which records the room holds. Pair with [`App::with_autosave`] only if
+    /// the room index itself should persist — records persist through
+    /// `records`.
     pub fn with_records(
         mut self,
         records: crate::record::RecordSet,
@@ -2905,28 +2337,17 @@ impl App {
         self
     }
 
-    /// The records this App has open, if it adopted them.
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
         self.records.as_ref()
     }
 
-    /// The room index this App writes record references into.
     pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
         self.room_index.as_ref()
     }
 
-    /// Check out the record the root widget names, if it differs from the
-    /// live one.
-    ///
-    /// Runs once per frame, before `sync`, so a widget that opened a file
-    /// during the previous frame is editing that file's own document by the
-    /// time it next reads state. On a change the collaboration channel is
-    /// re-announced: the record is the routing key, so a checkout is a change
-    /// of address, and continuing to publish this document's deltas under the
-    /// previous record's name is what "opening a second file merged the
-    /// first" was made of.
-    ///
-    /// Returns whether the live document changed.
+    /// The record is the collaboration routing key, so a checkout is a
+    /// change of address — without re-announcing it, deltas keep publishing
+    /// under the previous record's name.
     pub fn record_tick(&mut self) -> bool {
         let Some(set) = self.records.as_mut() else {
             return false;
@@ -2941,30 +2362,19 @@ impl App {
             Some(id) => {
                 self.collab_manager = CollaborationManager::for_record(&id);
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!(
+                    crate::diag!(
                         "[app] checked out record {}; collab connected={}",
                         id.as_str(),
                         self.collab_manager.is_connected()
                     );
                 }
-                // The freshly-adopted document has not been through `sync`,
-                // and the widget's caches still describe the outgoing one.
                 self.needs_sync = true;
                 self.layout_dirty = true;
-                // Re-announce arrival on the channel we just moved to.
-                //
-                // `Arrived` is what asks the peers already holding this
-                // document to reply with a full snapshot, and the scope was
-                // announced once, before the loop started, on the connection
-                // this checkout has just replaced. Without re-announcing, a
-                // window that opens a file someone else is already editing
-                // hears only the edits made from then on and never the text
-                // that was already there.
+                // `Arrived` asks peers already holding the document to reply
+                // with a full snapshot, so a window opening a file someone
+                // else is editing hears its existing content too.
                 if let Some(scope) = self.presence_broadcast_scope.clone() {
-                    self.broadcast_presence(
-                        scope,
-                        crate::collaboration::PresencePayload::Arrived,
-                    );
+                    self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 true
             }
@@ -2972,16 +2382,10 @@ impl App {
         }
     }
 
-    /// Offer the current document to the background writer.
-    ///
-    /// Called once per idle tick. Cheap when nothing changed: comparing two
-    /// head vectors, no serialisation and no I/O.
+    /// With records in play, the App's autosave writes the room index
+    /// instead of the live document — sending the live doc to both would put
+    /// a record's content in the room index.
     fn autosave_tick(&mut self) {
-        // With records in play the live document belongs to a record and is
-        // written through that record's own store; the App's autosave (when
-        // installed alongside) writes the room index instead. Sending the
-        // live document to both would put a record's content into the room
-        // index file.
         match self.records.as_mut() {
             Some(set) => {
                 set.tick(&mut self.state.doc);
@@ -2999,9 +2403,8 @@ impl App {
         }
     }
 
-    /// Write out anything still pending and wait for it to land. Called on
-    /// event-loop teardown so a `kill` right after the last keystroke still
-    /// finds it on disk.
+    /// Called on event-loop teardown so a `kill` right after the last
+    /// keystroke still finds it on disk.
     fn autosave_flush(&mut self) {
         if let Some(set) = self.records.as_mut() {
             set.flush(&mut self.state.doc);
@@ -3017,9 +2420,8 @@ impl App {
         }
     }
 
-    /// The writer installed by [`App::with_autosave`], if any. Exposed so a
-    /// caller can check [`crate::persist::Autosave::last_error`] rather than
-    /// assuming the disk accepted the writes.
+    /// Lets a caller check [`crate::persist::Autosave::last_error`] rather
+    /// than assuming the disk accepted the writes.
     pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
         self.autosave.as_ref()
     }
@@ -3028,32 +2430,19 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
-    /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before
-    /// the loop starts running so callers (e.g. the shell's hosted-mode
-    /// `QOS_TEST_CONTROL` socket listener) can spawn background threads
-    /// that inject [`UserEvent`]s into the App. The closure runs once,
-    /// after the event loop is created and before `run_app`. Any thread
-    /// the closure spawns may move the proxy and `send_event(_)` from
-    /// any thread; the App processes each via `ApplicationHandler::
-    /// user_event`, translating to the equivalent `WindowEvent` and
-    /// routing through the SAME dispatch path as hardware events.
+    /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before the
+    /// loop starts, so callers can spawn threads that inject [`UserEvent`]s.
     pub fn run_with_setup<F>(mut self, setup: F)
     where
         F: FnOnce(EventLoopProxy<UserEvent>),
     {
-        let event_loop = EventLoop::<UserEvent>::with_user_event()
-            .build()
-            .unwrap();
+        let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
         let proxy = event_loop.create_proxy();
-        // Keep a clone for the AccessKit adapter (it routes initial-tree /
-        // action-request / deactivation events back through this same proxy as
-        // `UserEvent::AccessKit`).
+        // The AccessKit adapter routes events back through this as
+        // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
         setup(proxy);
 
-        // Build the taffy tree up-front so widgets that don't depend on a
-        // live window (focus order, undo bookkeeping) are wired before the
-        // first `resumed` callback.
         self.init_layout();
 
         let mut handler = AppHandler {
@@ -3062,15 +2451,13 @@ impl App {
             render: None,
             a11y_adapter: None,
             a11y_proxy,
+            ime_allowed: false,
+            ime_cursor_rect: None,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
 }
 
-/// Resolve the human-readable window title from the process environment,
-/// given any explicit override the app set. Reads `QOS_APP_NAME` (the
-/// launcher exports the manifest `[package].name`), `QOS_PACKAGE_ID`
-/// (the app_id — `dev.qos.notes`), and the running binary's file name.
 /// See [`resolve_title_from`] for the precedence.
 fn resolve_window_title(explicit: Option<&str>) -> String {
     let app_name = std::env::var("QOS_APP_NAME").ok();
@@ -3086,17 +2473,37 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
     )
 }
 
-/// Pure title resolution, so the precedence is unit-testable without
-/// touching the process environment. In order, the first non-blank
-/// candidate wins:
-///
-/// 1. `explicit` — a title the app set via [`App::with_window_title`].
-/// 2. `app_name` — `QOS_APP_NAME`, the manifest's `[package].name`.
-/// 3. the last dot-segment of `package_id` (`QOS_PACKAGE_ID`),
-///    humanized: `dev.qos.notes` → `Notes`.
-/// 4. `binary`, humanized: a dev run with no launcher env gets
-///    `file-explorer` → `File Explorer`.
-/// 5. a generic `qOS App` — never the old `QuickUI App` placeholder.
+/// Public because it is half of a protocol: what a pointer published in this
+/// surface's content coordinates is scoped to
+/// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
+/// surface the same way by calling this same function.
+pub fn local_surface_id() -> String {
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    resolve_app_id(package_id.as_deref(), binary.as_deref())
+}
+
+/// A shared generic id would collapse every id-keyed compositor lookup (tab
+/// label, launch placement, "is this document already open") onto every
+/// other app; it's a last resort for no-package, no-binary-name.
+fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
+    let non_blank = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(id) = package_id.and_then(non_blank) {
+        return id;
+    }
+    if let Some(bin) = binary.and_then(non_blank) {
+        return bin;
+    }
+    "org.qos.app".to_string()
+}
+
+/// Pure, so the precedence is unit-testable without touching the process
+/// environment. First non-blank candidate wins.
 fn resolve_title_from(
     explicit: Option<&str>,
     app_name: Option<&str>,
@@ -3129,10 +2536,6 @@ fn resolve_title_from(
     "qOS App".to_string()
 }
 
-/// Turn a machine identifier into a human title: split on `-`, `_`, `.`,
-/// and whitespace, drop the empties, upper-case each word's first
-/// character, and join with a single space. `file-explorer` →
-/// `File Explorer`, `notes` → `Notes`.
 fn humanize_ident(ident: &str) -> String {
     ident
         .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())
@@ -3148,48 +2551,33 @@ fn humanize_ident(ident: &str) -> String {
         .join(" ")
 }
 
-/// Winit 0.30 `ApplicationHandler` driver for [`App`]. The previous
-/// closure-based event loop captured `self`, the window, the surface and
-/// the renderer; the new pattern hoists that state into a struct so winit
-/// can call back into us with `&mut self`.
-///
-/// As of the Item-4 render-thread refactor (2026-05-23 perf plan), the
-/// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` all live
-/// on a dedicated worker thread — see [`crate::render_thread`]. The
-/// `AppHandler` keeps only the channel ends needed to ship frames to the
-/// worker and recycle scene buffers; the `Scene` buffer itself moves
-/// between main and worker per frame via a bounded pool channel.
+/// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
+/// dedicated worker thread (see [`crate::render_thread`]) — this struct
+/// keeps only the channel ends to ship frames and recycle scene buffers.
 struct AppHandler {
     app: App,
-    /// `None` until winit fires the first `resumed` event. On platforms
-    /// that gate window creation behind an `ActiveEventLoop` (every modern
-    /// platform), creating the window any earlier would panic.
+    /// `None` until the first `resumed` — every modern platform gates window
+    /// creation behind an `ActiveEventLoop`.
     window: Option<Arc<Window>>,
-    /// The render-thread plumbing (channels + join handle). `None` until
-    /// the first `resumed` fires; set to `None` again in `exiting` after
-    /// the worker is joined so its surface is dropped BEFORE the
-    /// `Window` arc goes away.
+    /// `None` again in `exiting`, after the worker is joined, so its surface
+    /// drops BEFORE the `Window` arc goes away.
     render: Option<RenderThreadHandle>,
-    /// AccessKit ↔ winit adapter. `None` until `resumed` creates the
-    /// window (the adapter must be created while the window is hidden, then the
-    /// window is shown). On Linux this pulls in `accesskit_unix`, which
-    /// publishes our exported tree over AT-SPI2 so Orca / braille work. The
-    /// adapter is **lazy**: `update_if_active` is a no-op until an AT actually
-    /// connects, so the hot path pays nothing when no screen reader is running.
-    /// Guarded so headless / no-window code paths never require it.
+    /// `None` until `resumed` creates the window (must be built while
+    /// hidden); lazy, so the hot path pays nothing with no screen reader
+    /// running.
     a11y_adapter: Option<accesskit_winit::Adapter>,
-    /// Proxy used to construct the adapter (it delivers accesskit events back
-    /// through the winit event loop as [`UserEvent::AccessKit`]).
     a11y_proxy: EventLoopProxy<UserEvent>,
+    /// Cached so a steady frame does not issue platform text-input requests.
+    ime_allowed: bool,
+    ime_cursor_rect: Option<vello::kurbo::Rect>,
 }
 
 impl AppHandler {
-    /// Lazily initialise the wgpu surface + renderer and spawn the render
-    /// worker. Called once, from the first `RedrawRequested`, so the heavy
-    /// blocking GPU init runs AFTER the winit event loop has processed the
-    /// initial `configure` and wired the seat — not inline in `resumed`,
-    /// where it would starve those first events and race first-launch focus.
-    fn init_render(&mut self, window: &Arc<Window>) {
+    /// Called from the first `RedrawRequested` rather than inline in
+    /// `resumed`, so the blocking GPU init doesn't starve the loop's first
+    /// events. `Err` is returned, not panicked, since every step here can
+    /// fail when the compositor exits mid-open.
+    fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
         let size = window.inner_size();
         let mut render_cx = RenderContext::new();
         let surface = pollster::block_on(render_cx.create_surface(
@@ -3198,12 +2586,22 @@ impl AppHandler {
             size.height.max(1),
             vello::wgpu::PresentMode::AutoVsync,
         ))
-        .unwrap();
+        .map_err(|e| format!("could not create a drawing surface: {e}"))?;
         let device_handle = &render_cx.devices[surface.dev_id];
-        // vello 0.9's `create_surface` builds the blitter pipeline against
-        // the format it chose; flipping to the sRGB suffix here would
-        // panic on the format mismatch in the first blit.
-        surface.surface.configure(&device_handle.device, &surface.config);
+        // Flipping to the sRGB suffix here would panic on mismatch with the
+        // format `create_surface` already chose. `configure` returns no
+        // `Result`, so guard it like the worker's reconfigures do
+        // (`render_thread::configure_surface_checked`) — an already-lost
+        // surface would otherwise hit wgpu's panicking default handler.
+        let configure_scope = device_handle
+            .device
+            .push_error_scope(vello::wgpu::ErrorFilter::Validation);
+        surface
+            .surface
+            .configure(&device_handle.device, &surface.config);
+        if let Some(err) = pollster::block_on(configure_scope.pop()) {
+            return Err(format!("could not configure the drawing surface: {err}"));
+        }
         let renderer = Renderer::new(
             &device_handle.device,
             RendererOptions {
@@ -3213,25 +2611,21 @@ impl AppHandler {
                 pipeline_cache: None,
             },
         )
-        .unwrap();
-        // Hand the wgpu state off to the render worker. After this point
-        // the main thread doesn't touch the surface, renderer, or
-        // render_cx — every GPU call happens on the `ui-render` thread.
+        .map_err(|e| format!("could not create the renderer: {e}"))?;
+        // After this, every GPU call happens on the `ui-render` thread.
         self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+        Ok(())
     }
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
-    /// External-input translator: every variant becomes the WindowEvent
-    /// winit would have delivered, then routes back through
-    /// `Self::window_event` so injected and hardware events take the
-    /// IDENTICAL code path (same dispatch, same handlers, same redraw
-    /// gate). The unsafe transmute of a zeroed DeviceId is the same
-    /// trick `shell::compositor::native` uses for the headless event
-    /// path — winit's DeviceId is opaque and the dispatch chain doesn't
-    /// inspect it.
+    // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
+    // DeviceId is opaque and the dispatch chain never inspects it (same
+    // trick `shell::compositor::native` uses headless).
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        let Some(window) = self.window.as_ref().cloned() else { return };
+        let Some(window) = self.window.clone() else {
+            return;
+        };
         let window_id = window.id();
         match event {
             UserEvent::Hover { x, y } => {
@@ -3269,10 +2663,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 self.window_event(event_loop, window_id, ev);
             }
             UserEvent::External(payload) => {
-                // Out-of-band payload: hand straight to the root widget,
-                // then drive a re-sync + redraw so its mutation paints.
-                // (Used by the qOS installer to stream backend progress
-                // from a worker thread into its status log.)
                 let app = &mut self.app;
                 app.root_widget
                     .on_external_event(&payload, &mut app.state.doc, &app.state.root);
@@ -3283,8 +2673,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
                     AkWindowEvent::InitialTreeRequested => {
-                        // An AT just connected. Push the full tree so the
-                        // adapter has something to publish immediately.
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &App = &self.app;
@@ -3293,19 +2681,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         window.request_redraw();
                     }
                     AkWindowEvent::ActionRequested(req) => {
-                        // Map the AccessKit action (+ data) back to ours and
-                        // dispatch it to the target widget. A `Some((x, y))`
-                        // result means "synthesise a click here" — we route it
-                        // through the same path as a real / injected click.
+                        // `Some((x, y))` means "synthesise a click here".
                         if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
                             req.action,
                             req.data.as_ref(),
                         ) {
                             let click = self.app.dispatch_a11y_action(req.target_node, &action);
                             if let Some((x, y)) = click {
-                                // Reuse the synthetic-click path (CursorMoved →
-                                // Pressed → Released) so the activation takes the
-                                // identical route a pointer click would.
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
                                 let moved = WindowEvent::CursorMoved {
@@ -3329,100 +2711,56 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             window.request_redraw();
                         }
                     }
-                    AkWindowEvent::AccessibilityDeactivated => {
-                        // All ATs gone — nothing to do; `update_if_active`
-                        // becomes a no-op until the next activation.
-                    }
+                    AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
         }
     }
 
-
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // `resumed` can fire more than once (suspend/resume on mobile);
-        // after the first init the window/render state stays valid, so
-        // subsequent calls are no-ops.
+        // Can fire more than once (suspend/resume on mobile).
         if self.window.is_some() {
             return;
         }
-        // Attach the clipboard to this app's own Wayland connection, before
-        // any window exists — a copy has to work from the first frame, and the
-        // backend only needs the display, not a surface. Sharing the app's
-        // connection is required, not incidental: the compositor only accepts
+        // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
-        // No-ops off Wayland, and no-ops when a host (the compositor, for its
-        // in-process widgets) already installed one.
         #[cfg(target_os = "linux")]
         {
             crate::clipboard::install_wayland_backend_from_display(event_loop);
         }
-        // The AccessKit adapter must be created while the window is still
-        // hidden (it asserts this), so build the window invisible, create the
-        // adapter, then show it.
-        // The human-readable window title. Resolved through the app's
-        // real name (an explicit override, then `QOS_APP_NAME` from the
-        // manifest, then the package id, then the binary name) rather
-        // than a toolkit placeholder — so every window's titlebar / task
-        // entry reads as the app, not "QuickUI App".
+        // AccessKit's adapter asserts it's created while the window is
+        // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window_title.as_deref());
-        // The window icon: the app's own art when it ships some (via
-        // `QOS_APP_ICON`), otherwise a generated qOS default. Resolved
-        // once and used both as a creation attribute and via
-        // `set_window_icon`, so whichever the backend honours takes it.
         let icon = crate::window_icon::resolve();
         let mut window_attributes = Window::default_attributes()
             .with_title(title)
             .with_window_icon(icon.clone())
-            // Draw a normal, draggable title bar (winit's sctk-adwaita CSD)
-            // on compositors that don't provide server-side decorations —
-            // e.g. GNOME/mutter. Explicit even though it's the winit
-            // default, so the intent is unmistakable.
+            // Draggable title bar on compositors with no server-side
+            // decorations (e.g. GNOME/mutter); explicit though it's the
+            // winit default, so the intent is unmistakable.
             .with_decorations(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        // Give the xdg-toplevel a real app_id, and make it *this app's*.
-        //
-        // Without one the app_id is the empty string, and mutter keys
-        // window identity, focus / xdg-activation, and its decoration
-        // policy off the app_id — an empty id is the concrete difference
-        // from every GTK / other Wayland app (all of which come up
-        // focused + decorated).
-        //
-        // A single shared id is nearly as bad, and on qOS it is worse.
-        // The compositor has no other handle on which window belongs to
-        // which launch: it labels the tab from the app_id, matches a
-        // launch's placement note by it, and answers "is this document
-        // already open" by it. With every app announcing `org.qos.app`
-        // those all resolve to the same thing — every tab is called
-        // "app", no placement note is ever claimed, and a document that
-        // is open cannot be recognised as open. `QOS_PACKAGE_ID` is the
-        // identity the launcher already puts in the sandbox for exactly
-        // this reason (see `crate::persist`, `crate::record`), so it is
-        // the id to announce. Outside a sandbox there is no package, and
-        // the generic id is the honest answer.
-        //
-        // Wayland only; a no-op on other winit backends.
+        // See `resolve_app_id`: a shared id collapses per-app compositor
+        // lookups.
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let app_id = std::env::var("QOS_PACKAGE_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "org.qos.app".to_string());
+            let app_id = resolve_app_id(
+                std::env::var("QOS_PACKAGE_ID").ok().as_deref(),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .as_deref(),
+            );
             window_attributes = window_attributes.with_name(app_id, "");
         }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-        // Also set the icon post-creation: some backends only honour it
-        // this way, not as a creation attribute. A no-op on Wayland
-        // compositors that source the icon from the app_id instead.
+        // Some backends only honour the icon post-creation; a no-op on
+        // Wayland compositors that source it from the app_id instead.
         window.set_window_icon(icon);
 
-        // Accessibility: wire the AccessKit winit adapter so the exported
-        // tree reaches AT-SPI2 (Orca, braille). Events (initial-tree request,
-        // action requests, deactivation) are delivered back through our event
-        // loop proxy as `UserEvent::AccessKit`. This is intentionally created
-        // before the window is shown.
+        // Must be created before the window is shown.
         self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
             event_loop,
             &window,
@@ -3430,36 +2768,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         ));
         window.set_visible(true);
 
-        // Mark the freshly-built taffy tree dirty so the very first
-        // `RedrawRequested` re-runs layout against the actual window
-        // size and scale factor.
         self.app.layout_dirty = true;
-        // Drive the first frame. GPU init (create_surface / renderer /
-        // render-worker spawn) is DEFERRED to that first `RedrawRequested`
-        // — see `init_render` + `window_event`. Doing the ~50 ms
-        // `pollster::block_on` surface+device init inline here would block
-        // the winit Wayland event loop during `resumed`, starving the
-        // initial xdg `configure` and the wl_seat wiring; on mutter that
-        // intermittently left the toplevel unfocused with dead input on
-        // first launch ("works on the second try"). Deferring lets the
-        // event loop complete the configure + seat handshake first.
+        // GPU init deferred to first `RedrawRequested` (`init_render`): the
+        // ~50ms surface+device init here would block `resumed`'s seat
+        // wiring — on mutter that intermittently left the toplevel
+        // unfocused with dead input on first launch.
         window.request_redraw();
+        crate::dnd::set_drag_window(&window);
         self.window = Some(window);
     }
 
-    /// Winit calls this once on event-loop teardown. We use it to
-    /// shut the render thread down BEFORE the `Window` arc is
-    /// dropped — the worker's `RenderSurface<'static>` references the
-    /// window, and wgpu may panic if the surface outlives the window.
+    /// BEFORE the `Window` arc is dropped — the worker's
+    /// `RenderSurface<'static>` references it, and wgpu may panic if the
+    /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        // Last chance to get the user's final edit onto the disk — after
-        // this the process is on its way out.
         self.app.autosave_flush();
         if let Some(mut render) = self.render.take() {
             render.shutdown_and_join();
-            // `render` (and the worker-owned surface inside it) is
-            // now dropped. Only after this is it safe to let
-            // `self.window` go.
         }
     }
 
@@ -3469,128 +2794,94 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.as_ref().cloned() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         if window.id() != window_id {
             return;
         }
-        // Accessibility: let the AccessKit adapter observe every window event
-        // before the app handles it (it tracks focus / window state for the
-        // AT-SPI bridge). No-op when no AT is attached.
+        // No-op when no AT is attached.
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(&window, &event);
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_size) => {
-                // Resize is handled lazily on the worker: the
-                // `RenderRequest` carries the latest dimensions and
-                // the worker calls `resize_surface` when they
-                // differ from the live surface config. Main only
-                // needs to drive a redraw — the next frame the
-                // worker pulls will see the new size on `window
-                // .inner_size()`.
+                // Handled lazily on the worker via the next `RenderRequest`'s
+                // dimensions; main only needs to drive a redraw.
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                // The display's fractional scale factor changed (moved to
-                // a HiDPI monitor, or the compositor sent a new
-                // `wp_fractional_scale.preferred_scale`). winit delivers a
-                // fractional `f64` here; the render path reads the live
-                // `window.scale_factor()` each frame and composites the
-                // whole scene through `Affine::scale(scale_factor)`
-                // (physical-pixel surface, logical-pixel layout), so a
-                // 1.25/1.5/1.75× factor renders crisp rather than being
-                // rounded to an integer. We only need to invalidate layout
-                // and redraw so the new factor is picked up — winit resizes
-                // the surface to keep the logical size stable, and the
-                // worker reconfigures it on the next frame.
+                // The render path reads `window.scale_factor()` each frame,
+                // so we just need to invalidate layout and redraw.
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                // Deferred one-time GPU init on the first frame (see
-                // `init_render`): the surface + renderer are built here,
-                // after the event loop has processed the initial configure
-                // and wired the seat, rather than inline in `resumed`.
                 if self.render.is_none() {
                     qos_startup_metrics::mark("first-redraw-init-render-start");
-                    self.init_render(&window);
+                    if let Err(reason) = self.init_render(&window) {
+                        // Retrying every redraw would only spin.
+                        crate::diag!("qos: {reason}");
+                        event_loop.exit();
+                        return;
+                    }
                     qos_startup_metrics::mark("first-redraw-init-render-done");
                 } else {
-                    // Every subsequent redraw hits the "first-paint"
-                    // mark only the first time — subsequent frames are
-                    // uninteresting for the cold-start measurement.
-                    // A boolean guard is cheaper than a lock; the mark
-                    // itself is a no-op past the first call because the
-                    // metrics module records every push and downstream
-                    // consumers just look at the first occurrence.
                     qos_startup_metrics::mark("first-paint");
                 }
                 let Some(render) = self.render.as_mut() else {
                     return;
                 };
+                let ime_allowed_cache = &mut self.ime_allowed;
+                let ime_rect_cache = &mut self.ime_cursor_rect;
                 let app = &mut self.app;
-                // Drain any pending FrameOutcomes from the worker
-                // BEFORE building this frame. If the previous
-                // frame was `Reconfigured` or `Skipped`, we'll
-                // re-request a redraw after this one so the user
-                // doesn't see a stale image.
+                // A `Reconfigured` or `Skipped` previous frame re-requests a
+                // redraw so the user doesn't see a stale image.
                 let mut needs_followup_redraw = false;
+                let mut surface_gone = false;
                 while let Ok(outcome) = render.frame_complete.try_recv() {
                     match outcome {
                         FrameOutcome::Presented => {}
                         FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
                             needs_followup_redraw = true;
                         }
+                        FrameOutcome::SurfaceGone => {
+                            surface_gone = true;
+                        }
                     }
                 }
+                if surface_gone {
+                    tracing::info!("drawing surface is gone; closing the window");
+                    event_loop.exit();
+                    return;
+                }
 
-                // Pull a recycled Scene buffer from the worker's
-                // pool. The pool is seeded with two Scenes at
-                // spawn time so the first frame doesn't block;
-                // afterwards this `recv()` is the backpressure
-                // boundary — if the worker is still draining the
-                // previous frame, main blocks here until it
-                // catches up. Capacity-2 pool means at most one
-                // frame of overlap (main building N+1 while
+                // `recv()` is the backpressure boundary — capacity-2 means
+                // at most one frame of overlap (main building N+1 while
                 // worker presents N).
-                let mut scene = match render.scene_pool.recv() {
-                    Ok(s) => s,
-                    Err(_) => {
-                        tracing::error!("ui-render thread died; closing window");
-                        event_loop.exit();
-                        return;
-                    }
+                let mut scene = if let Ok(s) = render.scene_pool.recv() {
+                    s
+                } else {
+                    tracing::error!("ui-render thread died; closing window");
+                    event_loop.exit();
+                    return;
                 };
                 scene.reset();
 
-                // Pull the current window dimensions directly
-                // from the window — the worker only learns about
-                // resizes via the dims carried in this request.
                 let inner = window.inner_size();
                 let width = inner.width;
                 let height = inner.height;
                 let scale_factor = window.scale_factor() as f32;
-                // Record the size this frame is built at so `about_to_wait`
-                // can notice a later allocation change (a resize that never
-                // produced a `Resized` event, or one that coalesced) and
-                // reflow without waiting on stray input.
                 app.last_frame_size = Some(inner);
 
                 // Records first: if the root widget opened a different
-                // record, the document it is about to sync against is that
-                // record's, not the outgoing one's.
+                // record, sync against that record's document, not the
+                // outgoing one's.
                 app.record_tick();
 
-                // Frame profiler (gated). `__prof_frame_start` is `Some` only
-                // when `QOS_PROFILE`/`QOS_PROFILE_OUT` installed a profiler, so
-                // the disabled path reads no clock. It marks the start of both
-                // the `sync` pass and the whole-frame total committed below.
-                let __prof_frame_start =
-                    app.profiler.as_ref().map(|_| std::time::Instant::now());
+                let __prof_frame_start = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 if app.needs_sync {
                     app.root_widget.sync(&mut app.state.doc, &app.state.root);
                     app.needs_sync = false;
@@ -3599,43 +2890,30 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
                 }
 
-                // Live regions: after the tree reflects the freshly-synced
-                // state, announce any live region whose spoken text changed —
-                // a new toast, an updated status line — without moving focus.
                 app.scan_live_regions();
 
-                // Poll the tree for structural mutations that
-                // happened since the last frame (e.g. a tab
-                // split that inserted a brand-new WindowGroup
-                // into a GroupRow). If any subtree reports
-                // dirty, rebuild the taffy tree from scratch so
-                // the new widgets get node ids and the layout
-                // pass below sees them.
+                // E.g. a tab split inserting a new WindowGroup: rebuild the
+                // taffy tree from scratch so new widgets get node ids the
+                // layout pass below can see.
                 app.structure_dirty |= app.root_widget.take_structure_dirty();
-                // Capture BEFORE `rebuild_structure` clears it: a fresh taffy
-                // tree always needs a full solve regardless of the scroll fast
-                // path below.
+                // Captured BEFORE `rebuild_structure` clears it — a fresh
+                // taffy tree always needs a full solve regardless of the
+                // scroll fast path below.
                 let structure_rebuilt = app.structure_dirty;
                 let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 if app.structure_dirty {
-                    // Rebuild the taffy tree, re-establishing keyboard focus
-                    // AND (for `autofocus_on_structure_change` apps) the
-                    // focused widget's caret/selection across the rebuild.
                     app.rebuild_structure();
                 }
-                // Widget-tree (re)build is part of the build_layout pass; the
-                // taffy `compute_layout` below adds to the same pass.
                 if let Some(p) = app.profiler.as_mut() {
                     p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
                 }
 
-                // Phase timing (gated). `QUICK_UI_PERF=1` enables a
-                // per-frame stderr breakdown of compute_layout /
-                // apply_layout / draw_widget_tree / render_to_surface /
-                // present. The flag is checked once and cached in a
-                // static so we don't hit env vars on the hot path.
                 let perf = perf_enabled();
-                let t_frame_start = if perf { Some(std::time::Instant::now()) } else { None };
+                let t_frame_start = if perf {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let mut t_compute_us = 0u128;
                 let mut t_apply_us = 0u128;
                 let mut t_relayout_branch = false;
@@ -3643,17 +2921,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let root_node = app.root_node.unwrap();
                 if app.layout_dirty {
                     t_relayout_branch = true;
-                    // Scroll-reposition fast path: a frame that is `layout_dirty`
-                    // only because content scrolled needs `apply_layout` to push
-                    // the new offset down to the children, but NOT a full taffy
-                    // `compute_layout` — the intrinsic sizes and relative boxes
-                    // are unchanged. Re-solving the whole content tree on every
-                    // scroll frame was the dominant per-frame cost on long lists
-                    // and grids. We still force a full solve whenever the tree
-                    // was just rebuilt, the window changed size (available space
-                    // differs), or any widget genuinely needs re-measuring
-                    // (`layout_needs_measure`). `QUICK_UI_NO_SCROLL_OPT=1`
-                    // disables the fast path (always solve) as a safety escape.
+                    // A frame dirty only because content scrolled needs
+                    // `apply_layout` to push the offset down, but not a full
+                    // `compute_layout` — re-solving the whole tree on every
+                    // scroll frame was the dominant per-frame cost on long
+                    // lists/grids.
                     let size_changed = app.last_layout_px != Some((width, height));
                     let must_compute = structure_rebuilt
                         || size_changed
@@ -3664,7 +2936,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         let text_renderer = &mut app.text_renderer;
                         let t0 = std::time::Instant::now();
                         let (logical_w, logical_h) =
-                            crate::scale::logical_size((width, height), scale_factor as f64);
+                            crate::scale::logical_size((width, height), f64::from(scale_factor));
                         app.taffy
                             .compute_layout_with_measure(
                                 root_node,
@@ -3674,7 +2946,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 },
                                 |known, available, node_id, _, _| {
                                     if let Some(&widget_ptr) = node_map.get(&node_id) {
-                                        unsafe { (*widget_ptr).measure(known, available, text_renderer) }
+                                        unsafe {
+                                            (*widget_ptr).measure(known, available, text_renderer)
+                                        }
                                     } else {
                                         taffy::Size::ZERO
                                     }
@@ -3715,28 +2989,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // an AT is told about has to be the one that gets painted.
                 app.publish_undo_status();
 
-                let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };
-                // Composite the whole logical scene at the per-output device
-                // scale. Widget rects are logical; Vello rasterises glyphs and
-                // strokes at the physical resolution this transform implies, so
-                // the frame is crisp at any fractional scale (see `crate::scale`).
-                let transform = crate::scale::composite_transform(scale_factor as f64);
-                // Initialise the spatial-culling viewport to the
-                // entire window in *logical* coords (the App's
-                // transform applies a scale_factor at composite
-                // time, so widget rects live in logical space).
-                // Scrollables push a tighter inner viewport during
-                // their child recursion. Restored to `None` after
-                // draw so the bench's offscreen renderer paths
-                // aren't accidentally bound to a stale viewport.
-                let (vp_w, vp_h) = crate::scale::logical_size((width, height), scale_factor as f64);
+                let t_draw_start = if perf {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+                // Widget rects are logical; this transform rasterises at the
+                // physical resolution, so the frame stays crisp at any
+                // fractional scale.
+                let transform = crate::scale::composite_transform(f64::from(scale_factor));
+                let (vp_w, vp_h) =
+                    crate::scale::logical_size((width, height), f64::from(scale_factor));
                 let window_rect = vello::kurbo::Rect::new(0.0, 0.0, vp_w, vp_h);
                 let prev_vp = app.presence_ctx.push_viewport(window_rect);
                 // No GPU damage clip: vello allocates a fresh `target_texture`
-                // per frame, so any `scene.push_layer` clipping out the static
-                // region simply paints those tiles as background instead of
-                // preserving last frame. A correct damage path would need to
-                // retain + re-blit the previous target texture — deferred.
+                // per frame, so clipping out a static region would just paint
+                // background instead of preserving the last frame.
                 let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 app.root_widget.draw_with_presence(
                     &mut scene,
@@ -3747,19 +3015,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.permission_ctx,
                 );
                 app.presence_ctx.pop_viewport(prev_vp);
-                // Mark every visited widget as drawn — clears their
-                // per-widget `dirty` flag so `needs_redraw` returns
-                // false on the next frame unless an event mutates
-                // them. Without this the incremental gate is a no-op:
-                // widgets stay "dirty" forever.
+                // Without this the incremental dirty gate is a no-op.
                 app.root_widget.mark_drawn();
 
-                // Top-layer overlay pass: widgets whose visual extent
-                // escapes their layout box (an open `Dropdown` list, a
-                // popover) paint here so they composite ABOVE every
-                // later-drawn sibling instead of being occluded by it.
-                // Default is a no-op recursion, so this is free for the
-                // shell / greeter and every widget that doesn't opt in.
+                // Widgets whose visual extent escapes their layout box (an
+                // open `Dropdown`, a popover) composite above every
+                // later-drawn sibling here. No-op by default.
                 app.root_widget.draw_overlay(
                     &mut scene,
                     transform,
@@ -3768,13 +3029,38 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.presence_ctx,
                 );
 
-                // The Ctrl+K action palette paints last so it composites above
-                // the whole app. Centered near the top, sized to its content.
+                // Text widgets publish the caret rectangle after shaping, so
+                // the platform IME candidate window follows the exact glyph
+                // position (including wrapping, scrolling, and RTL). A
+                // focused non-text control returns `None`, disabling IME.
+                let ime_rect = app.focused_node.and_then(|id| {
+                    app.node_map
+                        .get(&id)
+                        .and_then(|&widget| unsafe { (*widget).ime_cursor_rect() })
+                });
+                let ime_allowed = ime_rect.is_some();
+                if *ime_allowed_cache != ime_allowed {
+                    window.set_ime_allowed(ime_allowed);
+                    *ime_allowed_cache = ime_allowed;
+                }
+                if ime_rect != *ime_rect_cache {
+                    if let Some(rect) = ime_rect {
+                        window.set_ime_cursor_area(
+                            winit::dpi::LogicalPosition::new(rect.x0.max(0.0), rect.y0.max(0.0)),
+                            winit::dpi::LogicalSize::new(
+                                rect.width().max(1.0),
+                                rect.height().max(1.0),
+                            ),
+                        );
+                    }
+                    *ime_rect_cache = ime_rect;
+                }
+
                 if let Some(ap) = app.action_palette.as_mut() {
-                    let win_w = (width as f64) / (scale_factor as f64);
+                    let win_w = f64::from(width) / f64::from(scale_factor);
                     let card_w = (win_w * 0.6).clamp(360.0, 640.0);
                     let x0 = ((win_w - card_w) / 2.0).max(0.0);
-                    let y0 = (height as f64 / (scale_factor as f64) * 0.12).max(24.0);
+                    let y0 = (f64::from(height) / f64::from(scale_factor) * 0.12).max(24.0);
                     ap.layout(&app.theme, Point::new(x0, y0), card_w);
                     ap.draw(
                         &mut scene,
@@ -3784,20 +3070,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         &app.presence_ctx,
                     );
                 }
-                // Central hover tooltip — painted last so the single chip
-                // composites above the whole app (widget tree, overlays and the
-                // action palette). Tick the wall clock, and if a tooltip has
-                // dwelled long enough to reveal, resolve its i18n label and draw
-                // one themed chip anchored to the hovered control, flipped and
-                // clamped to stay inside the window.
                 app.tooltip_host.tick(Instant::now());
                 if let Some((text, anchor)) = app
                     .tooltip_host
                     .visible()
                     .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
                 {
-                    let win_w = (width as f64) / (scale_factor as f64);
-                    let win_h = (height as f64) / (scale_factor as f64);
+                    let win_w = f64::from(width) / f64::from(scale_factor);
+                    let win_h = f64::from(height) / f64::from(scale_factor);
                     let viewport = vello::kurbo::Rect::new(0.0, 0.0, win_w, win_h);
                     crate::widget::tooltip::draw_hover_tooltip(
                         &mut scene,
@@ -3810,19 +3090,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // The `draw` pass covers the whole widget tree, the top-layer
-                // overlay, and the action palette — everything encoded into the
-                // scene above (but NOT the profiling HUD, which is drawn after
-                // the timing is committed so it never inflates its own numbers).
                 if let Some(p) = app.profiler.as_mut() {
                     p.record_since(crate::profiling::Pass::Draw, __prof_draw);
                 }
-                let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+                let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
 
-                // Draw Remote Cursors (legacy path — `state.collab.cursors`
-                // is the pre-PresenceCtx map; kept for compat with apps
-                // that still write into it directly).
-                for (_, cursor) in &app.state.collab.cursors {
+                // Legacy path — `state.collab.cursors` predates PresenceCtx;
+                // kept for apps that still write into it directly.
+                for cursor in app.state.collab.cursors.values() {
                     let mut path = vello::kurbo::BezPath::new();
                     path.move_to(Point::new(0.0, 0.0));
                     path.line_to(Point::new(14.0, 14.0));
@@ -3831,11 +3106,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     path.close_path();
 
                     let cursor_transform =
-                        transform * Affine::translate((cursor.x as f64, cursor.y as f64));
+                        transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         cursor_transform,
-                        cursor.color.clone(),
+                        cursor.color,
                         None,
                         &path,
                     );
@@ -3857,13 +3132,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // Remote peer presence (both collab-socket and libp2p
-                // sources land in `remote_cursors`): one shared helper
-                // paints each on-screen peer as a round, color-coded dot +
-                // name pill, and each OFF-screen peer as a colored edge
-                // mist pointing the way they drifted, so nobody vanishes.
-                // `pointers` is kept populated for the shell overlay but
-                // not painted here, so no peer is drawn twice.
+                // A pointer that arrived on a desktop scope is the
+                // compositor's to draw, and the helper skips it — see
+                // `presence::PointerOwner`. Only the *painting* has one
+                // owner; the shell threads this same context into its own
+                // overlay too.
                 crate::presence::draw_remote_presence(
                     &mut scene,
                     transform,
@@ -3873,10 +3146,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.presence_ctx,
                 );
 
-                // Commit this frame to the profiler: the total is the measured
-                // wall time of the whole frame build (so it includes the small
-                // amount of work between passes), and any `handle_event` time
-                // banked since the last frame is folded in here.
+                // Folds in any `handle_event` time banked since last frame.
                 if let (Some(p), Some(start)) = (app.profiler.as_mut(), __prof_frame_start) {
                     p.commit_frame(start.elapsed().as_micros() as u64);
                 }
@@ -3897,7 +3167,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     ) {
                         let rect = widget.get_rect();
                         let color = cycle[depth % 3];
-                        scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, color, None, &rect);
+                        scene.stroke(
+                            &vello::kurbo::Stroke::new(1.5),
+                            transform,
+                            color,
+                            None,
+                            &rect,
+                        );
                         let label = format!("{}: {}", widget.name(), depth);
                         let text_y = (rect.y0 + 12.0).min(rect.y1);
                         let bg_rect =
@@ -3938,36 +3214,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // Accessibility: push the freshly-laid-out tree to the
-                // AccessKit adapter. `update_if_active` only builds + sends the
-                // `TreeUpdate` when an AT is actually attached, so this is free
-                // (a single bool check) on the common no-screen-reader path.
-                // Bounds are emitted in physical pixels (scale-multiplied) to
-                // match what the AT-SPI bridge expects from the window.
+                // `update_if_active` only builds + sends when an AT is
+                // attached, so this is free on the common no-reader path.
                 if let Some(adapter) = self.a11y_adapter.as_mut() {
                     let app_ref: &App = app;
-                    let scale = scale_factor as f64;
+                    let scale = f64::from(scale_factor);
                     adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
                 }
 
-                // Hand the encoded Scene to the render worker. The
-                // seven GPU steps that used to live here (encode →
-                // get_current_texture → encoder → blit → submit →
-                // present → poll) now run on the `ui-render` thread;
-                // main returns from RedrawRequested as soon as the
-                // channel send completes.
-                //
-                // The worker pushes the consumed `Scene` straight
-                // back into `scene_pool` for the next frame, so
-                // there is no per-frame `done` channel and no
-                // extra forwarder thread.
-                //
-                // Profiling HUD: painted last so it composites on top of the
-                // whole app, and AFTER the frame timing was committed above so
-                // its own cost never enters the numbers it reports.
-                if app.profiler.as_ref().is_some_and(|p| p.hud_enabled()) {
+                // Painted last, after the frame timing was committed above,
+                // so the HUD's own cost never enters its numbers.
+                if app
+                    .profiler
+                    .as_ref()
+                    .is_some_and(super::profiling::FrameProfiler::hud_enabled)
+                {
                     let (hud_w, hud_h) =
-                        crate::scale::logical_size((width, height), scale_factor as f64);
+                        crate::scale::logical_size((width, height), f64::from(scale_factor));
                     if let Some(p) = app.profiler.as_ref() {
                         p.draw_hud(
                             &mut scene,
@@ -3979,7 +3242,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
                 let req = RenderRequest::Frame {
-                    scene,
+                    scene: Box::new(scene),
                     width,
                     height,
                     base_color: app.theme.bg_app,
@@ -3990,16 +3253,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     return;
                 }
 
-                let t_send_us = t_frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+                let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
                 if let Some(_start) = t_frame_start {
-                    // Attribute the draw phase: how much of it was
-                    // cosmic-text shaping (and how many labels hit vs.
-                    // missed the shaped-glyph cache) vs. Vello scene
-                    // encoding. On a static frame this should read
-                    // `shape=0us hit=N miss=0` — every label reused.
-                    let (shape_hits, shape_misses, shape_ns) =
-                        app.text_renderer.take_shape_stats();
-                    eprintln!(
+                    // On a static frame this reads `shape=0us hit=N miss=0`.
+                    let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
+                    crate::diag!(
                         "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                         t_send_us,
                         if t_relayout_branch { "Y" } else { "n" },
@@ -4023,41 +3281,29 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             other => {
                 let event = other;
                 let app = &mut self.app;
-                // Profiler `handle_event` pass: time the whole input-dispatch
-                // arm (this covers pointer, keyboard, and wheel — every event
-                // that reaches the widget tree). Banked per event and folded
-                // into the next frame's commit. `None`, and no clock read, when
-                // profiling is off. This arm has no early `return`, so the
-                // single record at its tail runs for every input event.
                 let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
-                // DEBUGABILITY (RUST_LOG=ui::app=debug): trace every
-                // mouse/keyboard event hitting the App so a real
-                // click reproducer (xdotool, ydotool, the live
-                // window) can be diagnosed without source-reading.
-                // Pointer-move spam is intentionally NOT throttled
-                // here — when the bug is "no clicks work", you want
-                // to see whether moves arrive at all.
+                // RUST_LOG=ui::app=debug: pointer-move spam is intentionally
+                // not throttled here — when the bug is "no clicks work", you
+                // want to see whether moves arrive at all.
                 match &event {
                     WindowEvent::MouseInput { state, button, .. } => {
                         tracing::debug!(?state, ?button, "App::window_event MouseInput");
                     }
                     WindowEvent::CursorMoved { position, .. } => {
-                        tracing::trace!(x = position.x, y = position.y, "App::window_event CursorMoved");
+                        tracing::trace!(
+                            x = position.x,
+                            y = position.y,
+                            "App::window_event CursorMoved"
+                        );
                     }
                     WindowEvent::KeyboardInput { event: ke, .. } => {
                         tracing::debug!(key = ?ke.logical_key, state = ?ke.state, "App::window_event KeyboardInput");
                     }
                     _ => {}
                 }
-                // Outbound pointer-presence broadcast: if the
-                // shell has declared a presence scope, relay
-                // every pointer move (throttled to ~30 Hz) so
-                // peers can render this user's cursor on the
-                // same scope. CursorLeft clears the peer-side
-                // pointer via the `Left` payload so their
-                // cursor stops rendering when we wander out
-                // of the window.
-                if let Some(scope) = app.presence_broadcast_scope.clone() {
+                // `CursorMoved` is measured in this window's own content,
+                // never the desktop — see the `pointer_space` field.
+                if app.presence_broadcast_scope.is_some() {
                     match &event {
                         WindowEvent::CursorMoved { position, .. } => {
                             let now = Instant::now();
@@ -4067,8 +3313,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
                             ) {
                                 app.last_pointer_broadcast = Some(now);
+                                let where_it_is = app.local_pointer_key();
                                 app.broadcast_presence(
-                                    scope.clone(),
+                                    where_it_is,
                                     PresencePayload::Pointer {
                                         x: position.x as f32,
                                         y: position.y as f32,
@@ -4077,7 +3324,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             }
                         }
                         WindowEvent::CursorLeft { .. } => {
-                            app.broadcast_presence(scope.clone(), PresencePayload::Left);
+                            let where_it_was = app.local_pointer_key();
+                            app.broadcast_presence(where_it_was, PresencePayload::Left);
                             app.last_pointer_broadcast = None;
                         }
                         _ => {}
@@ -4088,10 +3336,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let mut focus_target = None;
                 let mut is_undo_redo = false;
 
-                // The Ctrl+K action palette, while open, owns the keyboard: it
-                // consumes keys (typing filters, Enter dispatches the selected
-                // action, Escape closes) before anything reaches the app behind.
-                // Ctrl+K itself is handled below (toggle), so let it through.
+                // The palette owns the keyboard while open; Ctrl+K itself is
+                // handled below, so let it through.
                 if app.action_palette.is_some() {
                     let is_ctrl_k = matches!(
                         &event,
@@ -4113,21 +3359,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                // Screen-reader command layer: `Insert + <key>` drives the
-                // reading cursor / say-all / stop without colliding with normal
-                // navigation. Runs FIRST so it wins over Tab/arrow handling, and
-                // is a no-op (returns false) when the reader is disabled. When
-                // it consumes a command we still want a redraw (the narration
-                // may have moved a visible reading highlight in the future), so
-                // mark handled and let the tail of this branch request it.
+                // Runs FIRST so it wins over Tab/arrow handling.
                 if app.handle_screen_reader_key(&event) {
                     handled = true;
                     is_undo_redo = true; // suppress an undo commit for a read cmd
                 }
 
-                // snapshot the focused control's state BEFORE dispatch, so
-                // we can announce a resulting change (checked / on / value) —
-                // whether it came from a mouse click or keyboard activation.
                 let state_pre = if matches!(
                     event,
                     WindowEvent::KeyboardInput { .. }
@@ -4141,46 +3378,36 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     None
                 };
 
-                // Snapshot the focused text field's caret BEFORE dispatch, so we
-                // can announce the char/word a caret move (arrow / Home / End)
-                // lands on once the widget has processed the key. Only keyboard
-                // events can move a caret over existing content.
                 let review_pre = if matches!(event, WindowEvent::KeyboardInput { .. }) {
                     app.text_review_snapshot()
                 } else {
                     None
                 };
 
-                // Modal capture: when the tree hosts an open modal overlay it
-                // reports its box rect here. `modal_rect` governs pointer
-                // click-through only — an unhandled press inside the modal's
-                // lifetime is swallowed so clicks can't fall through to widgets
-                // behind it. Keyboard focus *containment* is a separate concern
-                // driven by `traps_focus()` / `focus_trap_active`: while a trap
-                // is active `focusable_order` is scoped to the modal, and
-                // `keyboard_nav_allowed` lets Tab/arrow navigation run *within*
-                // that scope (so a dialog's buttons stay reachable) instead of
-                // being switched off wholesale.
+                // Governs pointer click-through only; keyboard focus
+                // containment is the separate `traps_focus()` concern (see
+                // `keyboard_nav_allowed`).
                 let modal_rect = app.root_widget.modal_capture();
 
-                if !handled {
-                if let WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
-                            state: winit::event::ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } = event
+                if !handled
+                    && let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key:
+                                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
                 {
                     app.debug_mode = !app.debug_mode;
                     handled = true;
                 }
-                }
 
-                if !handled && app.modifiers.state().control_key() {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && app.modifiers.state().control_key()
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Character(ref c),
@@ -4189,60 +3416,60 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        let shift = app.modifiers.state().shift_key();
-                        // The history bindings resolve through
-                        // `undo::shortcut`, the one table both this host and
-                        // the headless driver read, and are performed through
-                        // `perform_undo` / `perform_redo` — the same methods an
-                        // on-screen Undo control reaches. One binding, one
-                        // implementation.
-                        if let Some(req) = crate::undo::shortcut(c.as_str(), true, shift) {
-                            match req {
-                                crate::undo::UndoRequest::Undo => app.perform_undo(),
-                                crate::undo::UndoRequest::Redo => app.perform_redo(),
-                            };
-                            is_undo_redo = true;
+                {
+                    let shift = app.modifiers.state().shift_key();
+                    // The history bindings resolve through `undo::shortcut`,
+                    // the one table both this host and the headless driver
+                    // read, and are performed through `perform_undo` /
+                    // `perform_redo` — the same methods an on-screen Undo
+                    // control reaches. One binding, one implementation.
+                    //
+                    // Those methods snapshot the caret (`undo_focus_snapshot`)
+                    // before touching a stack; otherwise round-tripping
+                    // undo/redo loses caret position.
+                    if let Some(req) = crate::undo::shortcut(c.as_str(), true, shift) {
+                        match req {
+                            crate::undo::UndoRequest::Undo => app.perform_undo(),
+                            crate::undo::UndoRequest::Redo => app.perform_redo(),
+                        };
+                        is_undo_redo = true;
+                        handled = true;
+                    }
+                    match c.as_str() {
+                        // Ctrl+K opens the action palette scoped to the focused
+                        // app instance's open resources. A second Ctrl+K
+                        // (palette already open) closes it.
+                        "k" | "K" => {
+                            if app.action_palette.is_some() {
+                                app.close_action_palette();
+                            } else {
+                                app.open_action_palette();
+                            }
                             handled = true;
                         }
-                        match c.as_str() {
-                            // Ctrl+K opens the action palette scoped to the
-                            // focused app instance's open resources. A second
-                            // Ctrl+K (palette already open) closes it.
-                            "k" | "K" => {
-                                if app.action_palette.is_some() {
-                                    app.close_action_palette();
-                                } else {
-                                    app.open_action_palette();
-                                }
-                                handled = true;
-                            }
-                            _ => {}
-                        }
+                        _ => {}
                     }
                 }
 
-                if !handled && app.keyboard_nav_allowed(modal_rect) {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && app.keyboard_nav_allowed(modal_rect)
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
-                                logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                                logical_key:
+                                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                                 state: winit::event::ElementState::Pressed,
                                 ..
                             },
                         ..
                     } = event
-                    {
-                        let shift = app.modifiers.state().shift_key();
-                        // Cycles `focusable_order`, which is scoped to the modal
-                        // subtree while a trap is active — so Tab stays inside a
-                        // dialog and wraps last↔first there.
-                        handled = app.focus_tab(shift);
-                    }
+                {
+                    let shift = app.modifiers.state().shift_key();
+                    handled = app.focus_tab(shift);
                 }
 
-                if !handled {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(logical_key),
@@ -4251,52 +3478,53 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        let dir = match logical_key {
-                            winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                            winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                            winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                            winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                            _ => None,
-                        };
-                        if let (Some(d), true, true) =
-                            (dir, app.modifiers.state().alt_key(), app.keyboard_nav_allowed(modal_rect))
-                        {
-                            app.navigate_focus(d);
-                            handled = true;
-                        }
+                {
+                    let dir = match logical_key {
+                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                        _ => None,
+                    };
+                    if let (Some(d), true, true) = (
+                        dir,
+                        app.modifiers.state().alt_key(),
+                        app.keyboard_nav_allowed(modal_rect),
+                    ) {
+                        app.navigate_focus(d);
+                        handled = true;
                     }
                 }
 
-                // Global back/forward navigation gestures: two-finger
-                // horizontal swipe (precise touchpad scroll) and
-                // touchscreen edge pulls. Recognised here so every app
-                // gets them; delivered to the widget tree via
-                // `on_nav_gesture` (the WebView, a wizard, a pane stack —
-                // whatever owns history — consumes it).
+                // Two-finger swipe / edge pull; delivered via `on_nav_gesture`.
                 if !handled {
                     use crate::gesture::GesturePhase;
                     let map_phase = |p: winit::event::TouchPhase| match p {
                         winit::event::TouchPhase::Started => GesturePhase::Begin,
                         winit::event::TouchPhase::Moved => GesturePhase::Update,
-                        winit::event::TouchPhase::Ended
-                        | winit::event::TouchPhase::Cancelled => GesturePhase::End,
+                        winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                            GesturePhase::End
+                        }
                     };
                     let nav = match &event {
                         WindowEvent::MouseWheel { delta, phase, .. } => {
                             let (dx, dy, precise) = match delta {
                                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y, true),
                                 winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                                    (*x as f64, *y as f64, false)
+                                    (f64::from(*x), f64::from(*y), false)
                                 }
                             };
-                            app.nav_gestures.on_scroll(dx, dy, map_phase(*phase), precise)
+                            app.nav_gestures
+                                .on_scroll(dx, dy, map_phase(*phase), precise)
                         }
-                        WindowEvent::PanGesture { delta, phase, .. } => app
-                            .nav_gestures
-                            .on_scroll(delta.x as f64, delta.y as f64, map_phase(*phase), true),
+                        WindowEvent::PanGesture { delta, phase, .. } => app.nav_gestures.on_scroll(
+                            f64::from(delta.x),
+                            f64::from(delta.y),
+                            map_phase(*phase),
+                            true,
+                        ),
                         WindowEvent::Touch(t) => {
-                            let width = window.inner_size().width as f64;
+                            let width = f64::from(window.inner_size().width);
                             app.nav_gestures.on_touch(
                                 t.id,
                                 t.location.x,
@@ -4326,7 +3554,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     let root_node = app.root_node.unwrap();
                     let was_mouse_click = matches!(
                         event,
-                        WindowEvent::MouseInput { state: winit::event::ElementState::Pressed, .. }
+                        WindowEvent::MouseInput {
+                            state: winit::event::ElementState::Pressed,
+                            ..
+                        }
                     );
                     app.root_widget.handle_event(
                         &event,
@@ -4347,11 +3578,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             "root_widget.handle_event(MouseInput Pressed) returned"
                         );
                     }
-                    // Click-through swallow: with a modal active, any pointer
-                    // press the modal didn't already consume (e.g. a click on
-                    // the dimmed backdrop outside the box, before the modal's
-                    // own out-of-box dismiss has been wired) is marked handled
-                    // so it can't reach widgets painted behind the scrim.
+                    // A press the modal didn't consume (the dimmed backdrop)
+                    // is still marked handled so it can't reach widgets
+                    // behind the scrim.
                     if modal_rect.is_some()
                         && matches!(
                             event,
@@ -4368,13 +3597,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                // Keyboard activation: if no widget consumed Enter/Space (text
-                // inputs do, so they keep typing), activate the focused control
-                // via its `Activate` action — the same mutation a mouse click
-                // performs. Buttons fire, checkboxes/switches flip. The state
-                // change is spoken below by `announce_state_change`.
-                if !handled {
-                    if let WindowEvent::KeyboardInput {
+                // If no widget consumed Enter/Space (text inputs do), activate
+                // the focused control the same way a mouse click would.
+                if !handled
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key:
@@ -4387,23 +3613,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        if app.perform_action_on_focused(&crate::a11y::Action::Activate) {
-                            handled = true;
-                        }
-                    }
+                    && app.perform_action_on_focused(&crate::a11y::Action::Activate)
+                {
+                    handled = true;
                 }
 
-                // A focused range control (e.g. a slider) consumes Left/Right
-                // to adjust its value; Up/Down and Tab still move focus, so you
-                // can always navigate away. Modifiers scale the step:
+                // A focused range control consumes Left/Right; Up/Down and Tab
+                // still move focus. Modifiers scale the step:
                 //   plain  → one step       Shift → four steps (coarse)
                 //   Ctrl   → jump to min/max (Left = min, Right = max)
-                // Other widgets ignore the action, so their Left/Right falls
-                // through to directional navigation below. The resulting value
-                // is spoken by `announce_state_change`.
-                if !handled {
-                    if let WindowEvent::KeyboardInput {
+                // Other widgets ignore the action, falling through to
+                // directional navigation below.
+                if !handled
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(named),
@@ -4412,40 +3634,40 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        use crate::a11y::Action;
-                        let ctrl = app.modifiers.state().control_key();
-                        let shift = app.modifiers.state().shift_key();
-                        // (action to repeat, how many times)
-                        let (action, times) = match named {
-                            winit::keyboard::NamedKey::ArrowLeft if ctrl => {
-                                (Some(Action::SetValue("0".into())), 1)
-                            }
-                            winit::keyboard::NamedKey::ArrowRight if ctrl => {
-                                (Some(Action::SetValue("100".into())), 1)
-                            }
-                            winit::keyboard::NamedKey::ArrowLeft => {
-                                (Some(Action::Decrement), if shift { 4 } else { 1 })
-                            }
-                            winit::keyboard::NamedKey::ArrowRight => {
-                                (Some(Action::Increment), if shift { 4 } else { 1 })
-                            }
-                            _ => (None, 0),
-                        };
-                        if let Some(act) = action {
-                            let mut any = false;
-                            for _ in 0..times {
-                                any |= app.perform_action_on_focused(&act);
-                            }
-                            if any {
-                                handled = true;
-                            }
+                {
+                    use crate::a11y::Action;
+                    let ctrl = app.modifiers.state().control_key();
+                    let shift = app.modifiers.state().shift_key();
+                    // (action to repeat, how many times)
+                    let (action, times) = match named {
+                        winit::keyboard::NamedKey::ArrowLeft if ctrl => {
+                            (Some(Action::SetValue("0".into())), 1)
+                        }
+                        winit::keyboard::NamedKey::ArrowRight if ctrl => {
+                            (Some(Action::SetValue("100".into())), 1)
+                        }
+                        winit::keyboard::NamedKey::ArrowLeft => {
+                            (Some(Action::Decrement), if shift { 4 } else { 1 })
+                        }
+                        winit::keyboard::NamedKey::ArrowRight => {
+                            (Some(Action::Increment), if shift { 4 } else { 1 })
+                        }
+                        _ => (None, 0),
+                    };
+                    if let Some(act) = action {
+                        let mut any = false;
+                        for _ in 0..times {
+                            any |= app.perform_action_on_focused(&act);
+                        }
+                        if any {
+                            handled = true;
                         }
                     }
                 }
 
-                if !handled && app.keyboard_nav_allowed(modal_rect) {
-                    if let WindowEvent::KeyboardInput {
+                if !handled
+                    && app.keyboard_nav_allowed(modal_rect)
+                    && let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
                                 logical_key: winit::keyboard::Key::Named(logical_key),
@@ -4454,25 +3676,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             },
                         ..
                     } = event
-                    {
-                        let dir = match logical_key {
-                            winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                            winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                            winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                            winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                            _ => None,
-                        };
-                        if let Some(d) = dir {
-                            app.navigate_focus(d);
-                            handled = true;
-                        }
+                {
+                    let dir = match logical_key {
+                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                        _ => None,
+                    };
+                    if let Some(d) = dir {
+                        app.navigate_focus(d);
+                        handled = true;
                     }
                 }
 
-                // Broadcast the focused widget's caret/selection presence
-                // and the root widget's location presence (diffed) so
-                // peers can render the remote caret + indicative mist.
-                // Cheap: no-ops when nothing changed or no socket is bound.
                 app.broadcast_focus_presence();
                 app.broadcast_location_presence();
                 app.broadcast_view_presence();
@@ -4482,14 +3699,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     handled = true;
                 }
 
-                // if the dispatch changed the *still-focused* control's
-                // state (a checkbox the mouse toggled, a switch flipped by
-                // Space), speak the new state. When focus moved instead,
-                // `set_focused_node` already narrated it, and this is a no-op.
                 app.announce_state_change(state_pre);
-
-                // If the caret moved over unchanged text (review, not typing),
-                // speak the character / word it landed on.
                 app.announce_text_review(review_pre);
 
                 if handled {
@@ -4509,25 +3719,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         app.commit_action();
                     }
                     app.needs_sync = true;
-                    // Incremental-redraw gate (Unit 2 of the 2026-05-23
-                    // perf plan), narrowed to its actual target: hover
-                    // spam. The original "gate everything on
-                    // `needs_redraw()`" was wrong because container
-                    // widgets like Tabs / GroupRow / TabBar mutate
-                    // their own active-index state without setting
-                    // any descendant leaf widget's `dirty` flag —
-                    // so the tree's recursive `needs_redraw` returned
-                    // false and CLICKS WERE INVISIBLE on hosted-mode.
-                    // (Headless was unaffected because the FrameBuilder
-                    // dispatch path doesn't go through this gate.)
-                    //
-                    // The conservative gate now: pointer MOVES (the
-                    // 60+ Hz stream the perf plan cared about) still
-                    // skip a redraw when nothing reports dirty; every
-                    // other handled event (MouseInput, KeyboardInput,
-                    // …) requests a redraw unconditionally. This
-                    // preserves the hover-spam win and restores
-                    // click-to-paint.
+                    // Gating every handled event on `needs_redraw()` is
+                    // wrong: container widgets can mutate their own
+                    // active-index state without setting a descendant leaf's
+                    // `dirty` flag, so recursive `needs_redraw` misses it.
+                    // Only pointer MOVES (the hot 60+ Hz stream) skip a
+                    // redraw when nothing's dirty.
                     let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
                     if !is_pointer_move || app.root_widget.is_layout_dirty() {
                         app.layout_dirty = true;
@@ -4537,43 +3734,31 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                // OS cursor shape. After dispatching the move, hit-test the
-                // widget tree at the pointer and adopt the cursor the most-
-                // specific widget under it asks for — an I-beam over a text
-                // field, an east-west / north-south arrow over a split or
-                // resize handle, a pointer over a button. Resolved on every
-                // `CursorMoved` (not just `handled` ones, so the shape stays
-                // correct when the pointer crosses into a widget that doesn't
-                // flip its own hover), but we only call winit's `set_cursor`
-                // when the shape actually changes so the per-move path stays
-                // cheap and the incremental-render gate is left untouched.
+                // Resolved on every `CursorMoved`, not just handled ones, so
+                // the shape stays correct crossing into a widget that
+                // doesn't flip its own hover.
                 if let WindowEvent::CursorMoved { position, .. } = &event {
                     let scale = window.scale_factor();
                     let logical = Point::new(position.x / scale, position.y / scale);
-                    let desired = app
-                        .resolve_cursor(logical)
-                        .unwrap_or(CursorIcon::Default);
+                    let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
                     if app.current_cursor != desired {
                         app.current_cursor = desired;
                         window.set_cursor(desired);
                     }
-                    // Retarget the central hover tooltip. `on_pointer` keeps the
-                    // dwell running when the pointer stays over the same region
-                    // and restarts it on a new one; a redraw is requested so the
-                    // reveal/clear lands promptly (the frame pump in
-                    // `about_to_wait` carries the dwell across to the reveal).
+                    // `on_pointer` keeps the dwell running over the same
+                    // region and restarts it on a new one.
                     let target = app.tooltip_target_at(logical);
                     if app.tooltip_host.on_pointer(target, Instant::now()) {
                         window.request_redraw();
                     }
                 }
 
-                // Any click, scroll, key or pointer-leave dismisses a shown or
-                // pending tooltip — the user has moved on from "what is this?".
                 if matches!(
                     &event,
-                    WindowEvent::MouseInput { state: ElementState::Pressed, .. }
-                        | WindowEvent::MouseWheel { .. }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        ..
+                    } | WindowEvent::MouseWheel { .. }
                         | WindowEvent::KeyboardInput { .. }
                         | WindowEvent::CursorLeft { .. }
                 ) && app.tooltip_host.dismiss()
@@ -4589,38 +3774,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(window) = self.window.as_ref().cloned() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         let app = &mut self.app;
 
-        // Reflow on an allocation change even when no other input arrives.
-        // The event-driven loop only re-runs layout on a user event or a
-        // `Resized`, so a compositor reconfigure that changes `inner_size()`
-        // without delivering `Resized` (or a resize that coalesced away)
-        // would leave responsive content sized to the previous frame until
-        // the user happens to move the mouse. Compare against the size the
-        // last frame was built at and, only when it actually differs, mark
-        // layout dirty and request one redraw — the redraw refreshes
-        // `last_frame_size`, so this self-coalesces to a single reflow per
-        // distinct size rather than a per-tick repaint.
-        if let Some(prev) = app.last_frame_size {
-            if window.inner_size() != prev {
-                app.layout_dirty = true;
-                window.request_redraw();
-            }
+        // Catches a compositor reconfigure that changes `inner_size()`
+        // without delivering `Resized`.
+        if let Some(prev) = app.last_frame_size
+            && window.inner_size() != prev
+        {
+            app.layout_dirty = true;
+            window.request_redraw();
         }
-        // Drain every pending CollabEvent into PresenceCtx /
-        // state.collab via the single shared dispatch. If any event
-        // came through, kick a redraw so the freshly-stamped remote
-        // cursor / caret / selection appears on the next frame.
         if app.pump_collab_presence() {
             window.request_redraw();
         }
 
-        // Fade out peer "just typed" highlighter marks: reclaim any that
-        // have fully decayed, and keep pumping frames while any are still
-        // fading so the taper animates instead of freezing between events.
+        // Keep pumping frames while any "just typed" highlighter mark is
+        // still fading, so the taper animates instead of freezing.
         let typing_now = Instant::now();
         app.presence_ctx.prune_typing(typing_now);
         let typing_active = app.presence_ctx.has_active_typing(typing_now);
@@ -4655,142 +3827,75 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // the transaction itself. A no-op unless a stack actually moved.
         app.refresh_undo_status();
 
-        // Persist whatever the frame just changed. Level-triggered rather
-        // than hooked into individual mutations: widgets write to the
-        // document from many places (text splices, drag drops, collab
-        // merges) and comparing heads once per idle tick catches all of
-        // them without every call site having to remember.
+        // Level-triggered rather than hooked into individual mutations:
+        // widgets write to the document from many places.
         app.autosave_tick();
 
-        // Reconcile the root's desired OS-fullscreen state with the window
-        // (and observe compositor-driven fullscreen changes). Level-triggered
-        // and idempotent — a no-op on the common frame where nothing changed.
         if app.reconcile_fullscreen(&window) {
             window.request_redraw();
         }
 
-        // Reconcile a live global-appearance change (theme / high-contrast /
-        // reduced-motion / UI-scale / text-scale) surfaced by an appearance
-        // pane, so the running app re-scales/re-colours immediately. Opt-in via
-        // `appearance_reconcile`; a cheap no-op otherwise. When it applies a
-        // change it marks layout + structure dirty, so pump a redraw.
         if app.reconcile_appearance() {
             app.needs_sync = true;
             window.request_redraw();
         }
 
-        // Re-broadcast location presence here too: the active page can
-        // change during `sync` (e.g. the initial auto-select), which the
-        // post-event broadcast above wouldn't catch. Diffed, so it only
-        // sends on an actual change.
+        // The active page/view can change during `sync` (e.g. the initial
+        // auto-select), which the post-event broadcast above wouldn't catch.
         app.broadcast_location_presence();
-        // Same for the participant's View (scroll / open resource / mode):
-        // `sync` can move it (e.g. the initial auto-select), so re-broadcast
-        // the diffed subset here too.
         app.broadcast_view_presence();
 
-        // Check out the record the root widget names, on the idle tick as
-        // well as on paint.
-        //
-        // The record is the collaboration address: until the checkout runs,
-        // this app is still announcing the pre-record channel, and a peer
-        // that has checked out is announcing the file's. Two windows on one
-        // document then sit on two channels and no edit crosses.
-        //
-        // Doing it only in `RedrawRequested` tied the address to painting,
-        // which is the one thing a collaborating window cannot be relied on
-        // to do: a background tab is not painted, and neither is a window
-        // whose first frame is still behind a shader compile. Both keep
-        // running this tick, so both settle on the right channel.
+        // Run here too, not only `RedrawRequested`, since painting isn't
+        // guaranteed — a background tab, or a first frame behind a shader
+        // compile.
         if app.record_tick() {
             window.request_redraw();
         }
 
-        // Keep syncing on idle frames while a collab app is still seeding
-        // or adopting the shared document. Without this a first peer with
-        // no input never re-runs `sync` to seed its doc after the grace
-        // window, so a late joiner receives an empty reply and diverges.
-        // Stops as soon as the widget reports it's converged.
+        // Without this a first peer with no input never re-syncs to seed its
+        // doc after the grace window, so a late joiner diverges.
         if app.collab_manager.is_connected() && app.root_widget.needs_idle_sync() {
             app.needs_sync = true;
             window.request_redraw();
         }
 
-        // Broadcast any local document edits (and the initial seed) as an
-        // incremental delta so peers converge in near-real-time. Runs each
-        // ~16ms tick while connected; a no-op when nothing changed.
         app.broadcast_doc_delta();
 
-        // If a widget mutated its child composition between
-        // frames (e.g. GroupRow split a tab into a new group
-        // during the last event dispatch), flag the app so the
-        // next RedrawRequested rebuilds the taffy tree before
-        // laying out. We don't drain the flag here — the draw
-        // handler needs to see it — just pump a redraw so the
-        // rebuild happens promptly.
+        // Flag drained by the draw handler, not here — just pump a redraw.
         if app.root_widget.take_structure_dirty() {
             app.structure_dirty = true;
             window.request_redraw();
         }
 
-        // Pump the animation / async-work loop: the root reports it needs
-        // another frame either because a widget is mid-transition (e.g. the
-        // shell's overview crossfade) or because it has a background worker
-        // — a network fetch, a file load — whose result it folds in on the
-        // next `sync`. Give it that sync opportunity and a redraw so the
-        // fresh state surfaces this frame; without the sync, a worker that
-        // delivered into the CRDT/state would stay invisible until unrelated
-        // input arrived. The bounded `WaitUntil` chosen at the end of this
-        // method keeps waking the loop at ~60 Hz while `needs_frame` holds,
-        // so results drain promptly, then it drops back to `Wait` the moment
-        // the widget stops asking — no idle spin.
-        //
-        // Reduced motion stops the perpetual pump: widgets that respect it
-        // already paint their resting state (a still spinner, a static bar),
-        // so there is nothing left to animate and we let the loop go idle.
-        // A hover tooltip counting toward its reveal needs frames pumped until
-        // the dwell elapses. Unlike animation, a tooltip is not motion, so it
-        // reveals even under reduce-motion — request a redraw independently.
+        // A hover tooltip is not motion, so it reveals even under
+        // reduce-motion — requested independently of the animation pump.
         let tooltip_pending = app.tooltip_host.needs_frame();
         if tooltip_pending {
             window.request_redraw();
         }
 
+        // Reduced motion lets the loop go idle since animated widgets
+        // already paint their resting state.
         let needs_frame = app.root_widget.needs_animation_frame();
         if needs_frame && !app.theme.reduce_motion {
             app.needs_sync = true;
-            // An animation tick may reposition content without any input event
-            // (a Scrollable auto-repeating a held track-page, a momentum
-            // fling), so force `apply_layout` this frame — the sync/draw pass
-            // alone would leave the moved offset unreflected in the children's
-            // resolved rects. The scroll fast path keeps this to a cheap
-            // reposition (no `compute_layout`) unless something needs measuring.
+            // Forces `apply_layout` since an animation tick (e.g. momentum
+            // fling) can reposition content without an input event.
             app.layout_dirty = true;
             window.request_redraw();
         }
 
-        // Pump the optional shell-registered frame tick so
-        // out-of-band sources (libp2p presence, palette
-        // command queue) can drain into the overlay state
-        // once per wakeup. We always request a redraw when
-        // the tick fires because the shell typically writes
-        // visible state (remote cursor positions) — without
-        // the redraw a remote cursor would not animate.
+        // The shell typically writes visible state (remote cursor
+        // positions) here, so redraw unconditionally when the tick fires.
         if let Some(tick) = app.frame_tick.as_mut() {
             tick(&mut app.presence_ctx);
             window.request_redraw();
         }
 
-        // Choose the loop's idle cadence for this wakeup. The steady state —
-        // nothing animating, no collab socket, no pending async work — is
-        // event-driven `Wait`: the loop sleeps until real input arrives and
-        // burns no CPU, so the `QUICK_UI_PERF` idle frame count stays ~0.
-        // We escalate to a bounded ~60 Hz `WaitUntil` tick only while there
-        // is work that no winit event will surface on its own: a live collab
-        // socket whose peer edits/presence must be drained, or a root that
-        // still needs another frame (animation or async worker). Dropping
-        // straight back to `Wait` the instant both clear is what keeps an
-        // idle app from spinning.
+        // `Wait` sleeps until real input, zero CPU; escalate to a bounded
+        // ~60 Hz tick only while something no winit event surfaces on its
+        // own needs draining — a live collab socket, or a root still
+        // wanting another frame.
         if app.collab_manager.is_connected() || needs_frame || tooltip_pending || typing_active {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(16),
@@ -4801,14 +3906,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 }
 
-/// Framework helper: run `dispatch` only if `widget`'s permission scope (if any)
-/// passes `ctx.check`. Returns true if dispatched, false if denied.
-///
-/// Widgets that expose a `permission_scope()` are gated at the framework level:
-/// mutating events (clicks, text input, wheel, etc.) should be routed through
-/// this helper so that denied interactions short-circuit cleanly without the
-/// widget ever observing the event. Callers can additionally consult
-/// `ctx.check_with_denied_feedback(&scope)` to surface a toast/flash on denial.
 #[cfg(test)]
 mod window_title_tests {
     use super::*;
@@ -4819,7 +3916,6 @@ mod window_title_tests {
         assert_eq!(humanize_ident("file-explorer"), "File Explorer");
         assert_eq!(humanize_ident("word-processor"), "Word Processor");
         assert_eq!(humanize_ident("db_client"), "Db Client");
-        // The last dot-segment case a package id feeds in.
         assert_eq!(humanize_ident("notes"), "Notes");
         assert_eq!(humanize_ident(""), "");
     }
@@ -4837,8 +3933,6 @@ mod window_title_tests {
 
     #[test]
     fn app_name_env_resolves_to_the_manifest_name() {
-        // `QOS_APP_NAME` carries the manifest `[package].name`; it is the
-        // primary source once no explicit override is set.
         let t = resolve_title_from(None, Some("Notes"), Some("dev.qos.notes"), Some("notes"));
         assert_eq!(t, "Notes");
         assert_ne!(t, "QuickUI App");
@@ -4846,16 +3940,18 @@ mod window_title_tests {
 
     #[test]
     fn package_id_falls_back_to_humanized_last_segment() {
-        // No manifest name: the app_id's last segment, humanized.
-        let t = resolve_title_from(None, None, Some("dev.qos.file-explorer"), Some("file-explorer"));
+        let t = resolve_title_from(
+            None,
+            None,
+            Some("dev.qos.file-explorer"),
+            Some("file-explorer"),
+        );
         assert_eq!(t, "File Explorer");
         assert_ne!(t, "QuickUI App");
     }
 
     #[test]
     fn binary_name_is_the_dev_run_fallback() {
-        // A dev run outside the launcher: no env at all, so the binary
-        // name stands in — never the old placeholder.
         let t = resolve_title_from(None, None, None, Some("terminal"));
         assert_eq!(t, "Terminal");
         assert_ne!(t, "QuickUI App");
@@ -4863,28 +3959,46 @@ mod window_title_tests {
 
     #[test]
     fn blank_candidates_are_skipped_not_used() {
-        // Empty / whitespace env values must not win — they fall through
-        // to the next source, and never to "QuickUI App" while a real
-        // one exists.
         let t = resolve_title_from(Some("  "), Some(""), Some("dev.qos.notes"), Some("notes"));
         assert_eq!(t, "Notes");
     }
 
     #[test]
     fn generic_default_is_qos_app_never_quickui_app() {
-        // The last resort, when literally nothing identifies the app, is
-        // the qOS default — the string the whole change exists to kill is
-        // never produced.
         let t = resolve_title_from(None, None, None, None);
         assert_eq!(t, "qOS App");
         assert_ne!(t, "QuickUI App");
     }
 
     #[test]
+    fn the_app_id_is_never_the_generic_one_when_anything_identifies_the_app() {
+        assert_eq!(
+            resolve_app_id(Some("dev.qos.file-explorer"), Some("file-explorer")),
+            "dev.qos.file-explorer",
+            "the package id is the identity everything else is keyed on"
+        );
+        assert_eq!(
+            resolve_app_id(None, Some("file-explorer")),
+            "file-explorer",
+            "outside a sandbox the binary still names this app, and it \
+             matches the trailing-component convention package ids use"
+        );
+        assert_eq!(
+            resolve_app_id(Some("   "), Some("terminal")),
+            "terminal",
+            "a blank package id is no package id"
+        );
+        assert_eq!(
+            resolve_app_id(None, None),
+            "org.qos.app",
+            "the generic id survives only when there is nothing to say"
+        );
+        assert_ne!(resolve_app_id(None, Some("file-explorer")), "org.qos.app");
+    }
+
+    #[test]
     #[serial_test::serial(process_env)]
     fn env_path_end_to_end_prefers_app_name() {
-        // Prove the real env-reading entry point, not just the pure core:
-        // with `QOS_APP_NAME` set the window title is the manifest name.
         let prev_name = std::env::var_os("QOS_APP_NAME");
         let prev_id = std::env::var_os("QOS_PACKAGE_ID");
         // SAFETY: guarded by the `process_env` serial group.
@@ -4939,17 +4053,16 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn pointer_broadcast_allowed_first_call_always_passes() {
-        // With no prior broadcast, the throttle must let the first move
-        // through. Otherwise a peer's first pointer event after startup
-        // would drop silently.
         let now = Instant::now();
-        assert!(pointer_broadcast_allowed(None, now, Duration::from_millis(33)));
+        assert!(pointer_broadcast_allowed(
+            None,
+            now,
+            Duration::from_millis(33)
+        ));
     }
 
     #[test]
     fn pointer_broadcast_allowed_blocks_inside_gap() {
-        // Two broadcasts spaced closer than the minimum gap: the second
-        // must be denied so the wire rate stays capped.
         let t0 = Instant::now();
         let t1 = t0 + Duration::from_millis(10);
         assert!(!pointer_broadcast_allowed(
@@ -4961,8 +4074,8 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn pointer_broadcast_allowed_passes_at_and_past_gap() {
-        // A broadcast exactly at the gap boundary is allowed — strict >
-        // would accumulate single-ms drift under a sawtooth wakeup schedule.
+        // Exactly at the gap boundary is allowed — strict `>` would
+        // accumulate single-ms drift under a sawtooth wakeup schedule.
         let t0 = Instant::now();
         assert!(pointer_broadcast_allowed(
             Some(t0),
@@ -4978,16 +4091,11 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn set_presence_broadcast_scope_resets_throttle() {
-        // A new scope should fire immediately rather than waiting on the
-        // old scope's last-send gate. Verified by observing that
-        // `last_pointer_broadcast` is cleared when the scope changes.
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(state, root);
         app.last_pointer_broadcast = Some(Instant::now());
-        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
-            id: "home".into(),
-        }));
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: "home".into() }));
         assert!(
             app.last_pointer_broadcast.is_none(),
             "scope change must clear the throttle so the next move broadcasts immediately"
@@ -4998,14 +4106,9 @@ mod pointer_broadcast_tests {
         );
     }
 
-    /// A committed edit must still be on the wire as a delta afterwards.
-    ///
-    /// `commit_action` used to serialise the whole document here, and
-    /// `AutoCommit::save` advances the save cursor — so the
-    /// `broadcast_doc_delta` that runs later in the same idle tick found
-    /// nothing to send. Every editor marks its edits with `needs_commit`,
-    /// so for every editor the incremental path was dead and each keystroke
-    /// shipped a whole-document snapshot instead.
+    /// Guards against `commit_action` serialising the whole document (which
+    /// advances `AutoCommit::save`'s cursor and leaves `broadcast_doc_delta`
+    /// nothing to send).
     #[test]
     fn a_commit_leaves_the_edit_for_the_incremental_broadcast() {
         use automerge::transaction::Transactable;
@@ -5030,14 +4133,8 @@ mod pointer_broadcast_tests {
         );
     }
 
-    /// An app launched into a workspace publishes presence with no
-    /// app-side code.
-    ///
-    /// This replaces an earlier test that pinned the opposite contract
-    /// ("default None so broadcast is opt-in"). Opt-in was the defect: the
-    /// scope is what sends `Arrived`, so an app that never set one never
-    /// announced itself and never received the state written before it
-    /// opened — and 44 of 46 apps never set one.
+    /// The scope is what sends `Arrived`, so opt-in would mean an app that
+    /// forgets to set it never receives state written before it opened.
     #[test]
     #[serial_test::serial]
     fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
@@ -5047,15 +4144,15 @@ mod pointer_broadcast_tests {
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
-            Some(&PresenceKey::Workspace { id: room.to_string() }),
+            Some(&PresenceKey::Workspace {
+                id: room.to_string()
+            }),
             "a workspace in the environment is a scope, with no app-side call"
         );
         unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
     }
 
-    /// Outside a session there is no room to publish into, so nothing is
-    /// published. The nil cluster addresses nobody; announcing under it
-    /// would be announcing into a room no one can be in.
+    /// The nil cluster addresses nobody, so no room means nothing published.
     #[test]
     #[serial_test::serial]
     fn an_app_with_no_workspace_publishes_nothing() {
@@ -5070,9 +4167,6 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn setting_scope_announces_arrival() {
-        // The app-side half of the late-join handshake: setting a
-        // presence scope must announce `Arrived` so peers already in the
-        // room reply with full state.
         use std::sync::{Arc, Mutex};
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
@@ -5097,15 +4191,12 @@ mod pointer_broadcast_tests {
     #[test]
     fn crdt_update_merges_not_replaces() {
         use automerge::transaction::Transactable;
-        use automerge::{ObjType, ReadDoc, ROOT};
-        // Shared base with a map "m" holding "x" — peers share this base
-        // via the late-join handshake, so merge is conflict-free.
+        use automerge::{ObjType, ROOT, ReadDoc};
         let mut base = automerge::AutoCommit::new();
         let m = base.put_object(&ROOT, "m", ObjType::Map).unwrap();
         base.put(&m, "x", 1).unwrap();
         let base_bytes = base.save();
 
-        // App from base; add a local edit m["a"].
         let app_state = State::load(&base_bytes).unwrap();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(app_state, root);
@@ -5118,7 +4209,6 @@ mod pointer_broadcast_tests {
             doc.put(&m, "a", 10).unwrap();
         }
 
-        // A remote peer (same base) adds m["b"] and sends full state.
         let mut peer = automerge::AutoCommit::load(&base_bytes).unwrap();
         let pm = match peer.get(&ROOT, "m") {
             Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
@@ -5129,23 +4219,22 @@ mod pointer_broadcast_tests {
 
         app.apply_collab_event_for_test(CollabEvent::CRDTUpdate { data: incoming });
 
-        // Both edits must survive the merge (a replace would drop "a").
+        // A replace would drop "a".
         let doc = &mut app.state_mut_for_test().doc;
         let m = match doc.get(&ROOT, "m") {
             Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
             _ => panic!("m exists"),
         };
-        assert!(doc.get(&m, "a").unwrap().is_some(), "local edit survives merge");
+        assert!(
+            doc.get(&m, "a").unwrap().is_some(),
+            "local edit survives merge"
+        );
         assert!(doc.get(&m, "b").unwrap().is_some(), "remote edit merged in");
         assert!(doc.get(&m, "x").unwrap().is_some(), "base value present");
     }
 
     #[test]
     fn presence_broadcast_sink_receives_both_key_and_payload() {
-        // The shell-side libp2p bridge subscribes via
-        // `set_presence_broadcast_sink`. Verify that a registered sink
-        // observes every (key, payload) pair passed through
-        // `broadcast_presence`, with both halves of the tuple intact.
         use std::sync::{Arc, Mutex};
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
@@ -5172,9 +4261,6 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn clear_presence_broadcast_sink_drops_callback() {
-        // After clearing, the sink must not receive subsequent broadcasts.
-        // Guards against the bridge accidentally double-publishing once
-        // peer-sync is torn down.
         use std::sync::{Arc, Mutex};
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
@@ -5193,7 +4279,11 @@ mod pointer_broadcast_tests {
             PresenceKey::Workspace { id: "x".into() },
             PresencePayload::Arrived,
         );
-        assert_eq!(*count.lock().unwrap(), 1, "sink fires before clear, never after");
+        assert_eq!(
+            *count.lock().unwrap(),
+            1,
+            "sink fires before clear, never after"
+        );
     }
 }
 
@@ -5204,13 +4294,9 @@ mod rebuild_focus_tests {
     use automerge::{AutoCommit, ObjId};
     use vello::kurbo::Rect;
 
-    /// A minimal container that *recreates* its children on every
-    /// `build_layout` — exactly like the greeter's `build_composition` and
-    /// the installer's wizard steps. The recreation is what makes caret
-    /// continuity non-trivial: the focused `TextInput` is a brand-new
-    /// instance after a rebuild, so its caret would reset to the new
-    /// instance's default unless the App restores it via `get_state` /
-    /// `set_state`.
+    /// Recreates its children on every `build_layout`: the focused
+    /// `TextInput` is a brand-new instance after rebuild, so its caret
+    /// resets unless the App restores it via `get_state`/`set_state`.
     struct RebuildHarness {
         show_status: bool,
         request_reset: bool,
@@ -5230,14 +4316,11 @@ mod rebuild_focus_tests {
 
         fn rebuild_children(&mut self) {
             let mut kids: Vec<Box<dyn Widget>> = Vec::new();
-            // Fresh focusable input each rebuild. `with_initial_value` parks
-            // the caret at the END ("hello" -> 5), so a restored caret of 3
-            // is distinguishable from both the reset-to-0 bug and the new
-            // instance's own default.
+            // `with_initial_value` parks the caret at the END ("hello" -> 5),
+            // so a restored caret of 3 is distinguishable from both the
+            // reset-to-0 bug and the new instance's own default.
             kids.push(Box::new(TextInput::local().with_initial_value("hello")));
             if self.show_status {
-                // Non-focusable sibling appears — the rebuild trigger, and a
-                // child the focus order must ignore.
                 kids.push(Box::new(Text::new("status")));
             }
             self.children = kids;
@@ -5337,9 +4420,6 @@ mod rebuild_focus_tests {
         unsafe { (*w).get_state() }
     }
 
-    /// The core fix: typing into a field, then a sibling status line appears
-    /// (a structural rebuild), must NOT snap the caret back to 0 — the App
-    /// restores the focused widget's ephemeral state across the rebuild.
     #[test]
     fn caret_preserved_across_structure_rebuild() {
         let mut app = App::new(State::new(), Box::new(RebuildHarness::new()));
@@ -5347,37 +4427,33 @@ mod rebuild_focus_tests {
         app.autofocus_on_structure_change = true;
         app.init_layout();
 
-        // Startup auto-focus landed on the (sole) input. Park the caret at 3.
         let id = app.focused_node.expect("input focused at startup");
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("3"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("3");
+        }
         assert_eq!(caret(&app).as_deref(), Some("3"));
 
-        // A sibling status line appears -> structural rebuild (recreates the
-        // input as a fresh instance whose own caret default is 5).
+        // Triggers a structural rebuild that recreates the input as a fresh
+        // instance whose own caret default is 5.
         let mut tmp = AutoCommit::new();
         app.root_widget
             .on_external_event("show_status", &mut tmp, &automerge::ROOT);
         app.rebuild_structure();
 
-        // Focus stayed on the recreated input, caret restored to 3 (not 0,
-        // not the new instance's end-of-text default 5).
         assert!(app.focused_node.is_some(), "focus preserved across rebuild");
         assert_eq!(
             caret(&app).as_deref(),
             Some("3"),
             "caret offset must be preserved across the rebuild"
         );
-        // Prove a real rebuild happened with a new sibling, and that the
-        // non-focusable sibling did not change the focusable count (which is
-        // what makes the same-ordinal guard hold).
-        assert_eq!(app.root_widget.children().len(), 2, "status sibling appeared");
+        assert_eq!(
+            app.root_widget.children().len(),
+            2,
+            "status sibling appeared"
+        );
         assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
     }
 
-    /// The guard's other half: when the root raises `take_focus_reset` (a
-    /// wizard step / auth-phase transition), focus jumps to the first
-    /// focusable and the old caret is deliberately NOT pasted — the focused
-    /// field changed.
     #[test]
     fn focus_reset_does_not_restore_caret() {
         let mut app = App::new(State::new(), Box::new(RebuildHarness::new()));
@@ -5386,15 +4462,15 @@ mod rebuild_focus_tests {
         app.init_layout();
 
         let id = app.focused_node.unwrap();
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("3"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("3");
+        }
 
         let mut tmp = AutoCommit::new();
         app.root_widget
             .on_external_event("reset", &mut tmp, &automerge::ROOT);
         app.rebuild_structure();
 
-        // Reset path: focus on the first focusable, caret is the new
-        // instance's own default (end of "hello" = 5), NOT the preserved 3.
         assert_eq!(
             caret(&app).as_deref(),
             Some("5"),
@@ -5403,36 +4479,35 @@ mod rebuild_focus_tests {
     }
 }
 
+/// Mutating events should route through this so denied interactions
+/// short-circuit before the widget ever observes them.
 pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
     ctx: &crate::permissions::PermissionContext,
     widget: &W,
     dispatch: impl FnOnce(),
 ) -> bool {
-    if let Some(scope) = widget.permission_scope() {
-        if !ctx.check(&scope) {
-            return false;
-        }
+    if let Some(scope) = widget.permission_scope()
+        && !ctx.check(&scope)
+    {
+        return false;
     }
     dispatch();
     true
 }
 
-/// App ↔ screen-reader wiring. Proves the App narrates focus changes
-/// through an injected reader (over a recording speaker), toggles the reader
-/// on/off, and that a reader-off App is unaffected. The focus-narration path
-/// (`set_focused_node`) is private, so these tests drive it through the public
-/// `init_layout` (autofocus) + the public a11y action dispatch / setter API.
+/// The focus-narration path (`set_focused_node`) is private, so these tests
+/// drive it through the public `init_layout` (autofocus) + the a11y action
+/// dispatch / setter API.
 #[cfg(test)]
 mod screen_reader_tests {
     use super::*;
     use crate::screen_reader::ScreenReader;
     use crate::widget::{Button, Widget};
-    use tts::{NullSpeaker, Speaker, Utterance};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+    use tts::{NullSpeaker, Speaker, Utterance};
 
-    // A recording speaker we can read back after moving a clone into the reader.
     #[derive(Clone, Default)]
     struct SharedRecorder(Rc<RefCell<NullSpeaker>>);
     impl Speaker for SharedRecorder {
@@ -5455,11 +4530,9 @@ mod screen_reader_tests {
             "shared-null"
         }
     }
-    // Test-only: single-threaded, so the !Send Rc is fine.
+    // SAFETY: test-only, single-threaded, so the !Send Rc is fine.
     unsafe impl Send for SharedRecorder {}
 
-    // A container of two focusable buttons that lays them out so directional
-    // focus has somewhere to go.
     struct TwoButtons {
         kids: Vec<Box<dyn Widget>>,
     }
@@ -5490,7 +4563,9 @@ mod screen_reader_tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -5521,7 +4596,10 @@ mod screen_reader_tests {
             self.kids.iter().map(|c| c.as_ref()).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+            self.kids
+                .iter_mut()
+                .map(|c| &mut **c as &mut (dyn Widget + '_))
+                .collect()
         }
         fn name(&self) -> &str {
             "two-buttons"
@@ -5540,8 +4618,6 @@ mod screen_reader_tests {
 
     #[test]
     fn autofocus_narrates_the_focused_widget() {
-        // With the reader installed and autofocus on, building the layout
-        // focuses the first button and the reader speaks it.
         let (mut app, rec) = app_with_reader();
         app.autofocus_first = true;
         app.init_layout();
@@ -5553,9 +4629,6 @@ mod screen_reader_tests {
         let (mut app, rec) = app_with_reader();
         app.autofocus_first = true;
         app.init_layout();
-        // Move focus to the next focusable (the second button). set_focused_node
-        // is private; drive it via the public a11y Focus action on the 2nd node,
-        // which routes through set_focused_node (the same path Tab/arrow use).
         let second = app.focusable_order[1];
         let ak_id = crate::accesskit_bridge::widget_ak_id(&app.node_map, second).unwrap();
         app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
@@ -5575,8 +4648,10 @@ mod screen_reader_tests {
         assert!(app.screen_reader_enabled());
         app.set_screen_reader_enabled(false);
         assert!(!app.screen_reader_enabled());
-        assert!(rec.0.borrow().stop_count() >= 1, "disabling stops in-flight speech");
-        // Re-focus after disable: nothing new is spoken (reader is gone).
+        assert!(
+            rec.0.borrow().stop_count() >= 1,
+            "disabling stops in-flight speech"
+        );
         let before = rec.0.borrow().spoken().len();
         let second = app.focusable_order[1];
         let ak_id = crate::accesskit_bridge::widget_ak_id(&app.node_map, second).unwrap();
@@ -5590,7 +4665,6 @@ mod screen_reader_tests {
 
     #[test]
     fn reader_disabled_by_default_unless_env() {
-        // A plain App (no env, no setter) has no reader, so focus is silent.
         let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
         app.autofocus_first = true;
         app.init_layout();
@@ -5602,9 +4676,7 @@ mod screen_reader_tests {
 
     #[test]
     fn screen_reader_key_layer_is_noop_when_disabled() {
-        // handle_screen_reader_key must return false (not intercept anything)
-        // when the reader is off — proving normal navigation is never stolen.
-        // winit's KeyEvent has no public constructor, but the disabled-guard is
+        // winit's KeyEvent has no public constructor; the disabled-guard is
         // the first line of the method, so a non-keyboard event exercises it.
         let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
         app.init_layout();
@@ -5620,7 +4692,6 @@ mod screen_reader_tests {
 
     #[test]
     fn screen_reader_key_layer_ignores_non_keyboard_when_enabled() {
-        // Even with the reader ON, a non-keyboard event is not a command.
         let (mut app, _rec) = app_with_reader();
         app.init_layout();
         assert!(app.screen_reader_enabled());
@@ -5632,8 +4703,7 @@ mod screen_reader_tests {
 
     // ----- Live regions -----
 
-    /// A widget exposing one live region whose spoken value is mutable, so a
-    /// test can change it between frames and prove the App announces the change.
+    /// One live region whose spoken value is mutable between frames.
     struct LiveWidget {
         name: String,
         value: Rc<RefCell<String>>,
@@ -5719,12 +4789,10 @@ mod screen_reader_tests {
         let (mut app, rec) = app_with_reader_over(Box::new(live));
         let focus_before = app.focused_node;
 
-        // Seed the snapshot with the first scan, then forget what was recorded
-        // so we assert purely on the *change* below.
+        // Seed the snapshot, then forget it so we assert purely on the change.
         app.scan_live_regions();
         rec.0.borrow_mut().reset();
 
-        // A change appears in the live region (e.g. a toast text).
         *val.borrow_mut() = "File saved".to_string();
         app.scan_live_regions();
         assert_eq!(
@@ -5732,10 +4800,11 @@ mod screen_reader_tests {
             Some("Notifications, group, File saved"),
             "the changed live text is announced (name, role, value)"
         );
-        // Focus was never moved by the announcement.
-        assert_eq!(app.focused_node, focus_before, "live region must not move focus");
+        assert_eq!(
+            app.focused_node, focus_before,
+            "live region must not move focus"
+        );
 
-        // Re-scanning with the SAME text announces nothing further.
         rec.0.borrow_mut().reset();
         app.scan_live_regions();
         assert!(
@@ -5752,7 +4821,10 @@ mod screen_reader_tests {
         *val.borrow_mut() = "Permission denied".to_string();
         app.scan_live_regions();
         let recref = rec.0.borrow();
-        let last = recref.utterances().last().expect("an utterance was recorded");
+        let last = recref
+            .utterances()
+            .last()
+            .expect("an utterance was recorded");
         assert_eq!(last.priority, tts::Priority::Important);
         assert!(last.interrupt, "assertive live regions interrupt");
     }
@@ -5765,7 +4837,10 @@ mod screen_reader_tests {
         *val.borrow_mut() = "Uploading, 40%".to_string();
         app.scan_live_regions();
         let recref = rec.0.borrow();
-        let last = recref.utterances().last().expect("an utterance was recorded");
+        let last = recref
+            .utterances()
+            .last()
+            .expect("an utterance was recorded");
         assert_eq!(last.priority, tts::Priority::Notification);
         assert!(!last.interrupt, "polite live regions do not interrupt");
     }
@@ -5778,7 +4853,6 @@ mod screen_reader_tests {
         app.init_layout();
         assert!(!app.screen_reader_enabled());
         *val.borrow_mut() = "anything".to_string();
-        // Must not panic and must record nothing (no reader).
         app.scan_live_regions();
     }
 
@@ -5797,43 +4871,51 @@ mod screen_reader_tests {
 
     #[test]
     fn caret_move_one_char_announces_the_character() {
-        // "abc" with caret parked at end (3). Snapshot, move caret left to 2,
-        // then announce — the char now under the caret is 'c'.
         let (mut app, rec, id) = app_with_focused_input("abc");
         let pre = app.text_review_snapshot();
         assert!(pre.is_some(), "focused text input yields a review snapshot");
         rec.0.borrow_mut().reset(); // forget the autofocus narration
-        // Move the caret one char left (no edit).
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("2"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("2");
+        }
         app.announce_text_review(pre);
-        assert_eq!(rec.0.borrow().last(), Some("c"), "single-step move echoes the char");
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("c"),
+            "single-step move echoes the char"
+        );
     }
 
     #[test]
     fn caret_jump_to_start_announces_the_word() {
-        // "hello world", caret at end. Jump to start (0): a multi-step move, so
-        // the word under the caret ("hello") is announced.
         let (mut app, rec, id) = app_with_focused_input("hello world");
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
-        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("0"); }
+        unsafe {
+            (*(*app.node_map.get(&id).unwrap())).set_state("0");
+        }
         app.announce_text_review(pre);
-        assert_eq!(rec.0.borrow().last(), Some("hello"), "a long jump echoes the word");
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("hello"),
+            "a long jump echoes the word"
+        );
     }
 
     #[test]
     fn no_caret_move_announces_nothing() {
-        // Caret unchanged between snapshot and announce → silence.
         let (mut app, rec, _id) = app_with_focused_input("abc");
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         app.announce_text_review(pre);
-        assert!(rec.0.borrow().spoken().is_empty(), "no move, no announcement");
+        assert!(
+            rec.0.borrow().spoken().is_empty(),
+            "no move, no announcement"
+        );
     }
 
     #[test]
     fn text_review_snapshot_is_none_for_non_text_widget() {
-        // A button (no text_review) yields no snapshot, so review never fires.
         let (mut app, _rec) = app_with_reader();
         app.autofocus_first = true;
         app.init_layout();
@@ -5845,12 +4927,8 @@ mod screen_reader_tests {
     }
 }
 
-/// Modal focus-trap wiring. Proves that while an open modal is in the tree the
-/// App confines keyboard focus to the modal's subtree (so Tab can't reach the
-/// content behind the backdrop), and restores the previously-focused element
-/// when the modal closes. The modal's open flag is a state change (no
-/// structural rebuild), so node ids stay stable and `refresh_focus_order` —
-/// the per-frame focus pass — re-evaluates the trap.
+/// The modal's open flag is a state change (no structural rebuild), so node
+/// ids stay stable and `refresh_focus_order` re-evaluates the trap.
 #[cfg(test)]
 mod focus_trap_tests {
     use super::*;
@@ -5860,7 +4938,6 @@ mod focus_trap_tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
-    /// A tiny container of two focusable buttons used as the modal body.
     struct TwoKids {
         kids: Vec<Box<dyn Widget>>,
     }
@@ -5891,7 +4968,9 @@ mod focus_trap_tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -5922,7 +5001,10 @@ mod focus_trap_tests {
             self.kids.iter().map(|c| c.as_ref()).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+            self.kids
+                .iter_mut()
+                .map(|c| &mut **c as &mut (dyn Widget + '_))
+                .collect()
         }
         fn name(&self) -> &str {
             "two-kids"
@@ -5932,10 +5014,8 @@ mod focus_trap_tests {
         }
     }
 
-    /// A root with two always-present outer buttons plus a modal whose body is
-    /// two more buttons. A shared `want_open` cell flips the modal's state in
-    /// `sync` — modelling a host that opens/closes the dialog in response to a
-    /// click, without rebuilding the widget tree.
+    /// A shared `want_open` cell flips the modal's state in `sync`, modelling
+    /// a host that opens/closes without rebuilding the widget tree.
     struct ModalHost {
         outer: Vec<Box<dyn Widget>>,
         modal: ModalDialog<TwoKids>,
@@ -5967,8 +5047,6 @@ mod focus_trap_tests {
             theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            // Reflect the requested open state before building so the trap query
-            // sees it on the freshly-built tree.
             self.modal.set_open(self.want_open.get());
             let mut kids: Vec<_> = self
                 .outer
@@ -5976,7 +5054,9 @@ mod focus_trap_tests {
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
             kids.push(self.modal.build_layout(taffy, theme, node_map));
-            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &kids)
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -6025,9 +5105,8 @@ mod focus_trap_tests {
         }
     }
 
-    /// Stand up an App over the modal host and return it plus the open-flag
-    /// cell. The tree is built closed; flipping the cell + calling
-    /// `refresh_focus_order` models the per-frame re-evaluation.
+    /// Built closed; flipping the cell + calling `refresh_focus_order`
+    /// models the per-frame re-evaluation.
     fn host_app() -> (App, Rc<Cell<bool>>) {
         let cell = Rc::new(Cell::new(false));
         let app = App::new(State::new(), Box::new(ModalHost::new(cell.clone())));
@@ -6039,7 +5118,6 @@ mod focus_trap_tests {
         let (mut app, _open) = host_app();
         app.init_layout();
         assert!(!app.focus_trap_active, "no trap while the modal is closed");
-        // Outer buttons plus the (closed) modal body are all reachable.
         assert!(
             app.focusable_order.len() >= 3,
             "all focusables reachable when nothing traps"
@@ -6052,7 +5130,6 @@ mod focus_trap_tests {
         app.init_layout();
         let full = app.focusable_order.len();
 
-        // Open the modal (a state flip) and re-run the per-frame focus pass.
         open.set(true);
         app.refresh_focus_order();
 
@@ -6077,31 +5154,37 @@ mod focus_trap_tests {
         app.refresh_focus_order();
         assert!(app.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
-        let modal_set: std::collections::HashSet<_> =
-            app.focusable_order.iter().copied().collect();
+        let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
         let second = app.focusable_order[1];
 
-        // The window-event loop gates Tab on `keyboard_nav_allowed`. With a
-        // trap active it must be allowed EVEN while a modal captures the pointer
-        // — otherwise the dialog's buttons would be unreachable by keyboard.
+        // Must be allowed EVEN while a modal captures the pointer, or the
+        // dialog's buttons would be unreachable by keyboard.
         assert!(
             app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
             "an active focus trap allows Tab to run (scoped to the modal)"
         );
 
-        // Drive the SAME `focus_tab` the event loop calls. Every landing must
-        // stay inside the modal's two focusables and wrap last↔first — Tab can
-        // never reach the content behind the scrim.
         app.set_focused_node(Some(first));
         assert!(app.focus_tab(false), "Tab moves focus");
-        assert_eq!(app.focused_node, Some(second), "Tab advances within the modal");
+        assert_eq!(
+            app.focused_node,
+            Some(second),
+            "Tab advances within the modal"
+        );
         assert!(modal_set.contains(&second));
         assert!(app.focus_tab(false));
-        assert_eq!(app.focused_node, Some(first), "Tab from the last wraps to the first");
-        // Shift+Tab steps backward and is equally contained.
+        assert_eq!(
+            app.focused_node,
+            Some(first),
+            "Tab from the last wraps to the first"
+        );
         assert!(app.focus_tab(true));
-        assert_eq!(app.focused_node, Some(second), "Shift+Tab from the first wraps to the last");
+        assert_eq!(
+            app.focused_node,
+            Some(second),
+            "Shift+Tab from the first wraps to the last"
+        );
         assert!(
             modal_set.contains(&app.focused_node.unwrap()),
             "Shift+Tab stays inside the modal subtree"
@@ -6110,14 +5193,15 @@ mod focus_trap_tests {
 
     #[test]
     fn pointer_capture_without_a_trap_suppresses_app_tab() {
-        // A surface that captures the pointer (FloatingWindow, context menu)
-        // but does NOT trap keyboard focus must switch OFF the App's own Tab /
-        // arrow navigation so its own key handling wins — the click-through
-        // swallow is what `modal_capture` is for, not focus containment.
+        // A pointer-capturing, non-trapping surface (a context menu) must
+        // switch off the App's own Tab/arrow navigation.
         let (mut app, _open) = host_app();
         app.init_layout();
         assert!(!app.focus_trap_active);
-        assert!(app.keyboard_nav_allowed(None), "with no modal, Tab runs normally");
+        assert!(
+            app.keyboard_nav_allowed(None),
+            "with no modal, Tab runs normally"
+        );
         assert!(
             !app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
             "a pointer-capturing surface with no focus trap suppresses App-level Tab"
@@ -6128,20 +5212,20 @@ mod focus_trap_tests {
     fn closing_modal_restores_prior_focus() {
         let (mut app, open) = host_app();
         app.init_layout();
-        // Focus an outer button before opening the modal.
         let outer = app.focusable_order[0];
         app.set_focused_node(Some(outer));
 
-        // Open: focus moves into the modal, prior focus is remembered.
         open.set(true);
         app.refresh_focus_order();
         assert!(app.focus_trap_active);
         assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
 
-        // Close: focus returns to the outer button it left.
         open.set(false);
         app.refresh_focus_order();
-        assert!(!app.focus_trap_active, "trap released when the modal closes");
+        assert!(
+            !app.focus_trap_active,
+            "trap released when the modal closes"
+        );
         assert_eq!(
             app.focused_node,
             Some(outer),
@@ -6176,7 +5260,6 @@ mod low_vision_tests {
         assert!(!a.high_contrast());
         assert!(!a.reduce_motion());
         assert_eq!(a.text_scale(), 1.0);
-        // The live theme starts on the plain (non-high-contrast) track.
         assert!(!a.theme.reduce_motion);
         assert_eq!(a.theme.text_scale, 1.0);
     }
@@ -6196,12 +5279,14 @@ mod low_vision_tests {
         );
         assert_eq!(a.theme.name, "High Contrast");
 
-        // Toggling back restores the original colours.
         let now_off = a.toggle_high_contrast();
         assert!(!now_off);
         assert!(!a.high_contrast());
         let restored = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
-        assert!((restored - plain_ratio).abs() < 1e-6, "off restores base colours");
+        assert!(
+            (restored - plain_ratio).abs() < 1e-6,
+            "off restores base colours"
+        );
     }
 
     #[test]
@@ -6221,7 +5306,11 @@ mod low_vision_tests {
         a.set_text_scale(1.5);
         let hc_base = Theme::high_contrast().tokens.typography.scale.base;
         a.set_high_contrast(true);
-        assert_eq!(a.text_scale(), 1.5, "scale preference is preserved across the swap");
+        assert_eq!(
+            a.text_scale(),
+            1.5,
+            "scale preference is preserved across the swap"
+        );
         assert!((a.theme.tokens.typography.scale.base - hc_base * 1.5).abs() < 1e-3);
         assert_eq!(a.theme.name, "High Contrast");
     }
@@ -6232,7 +5321,10 @@ mod low_vision_tests {
         assert!(!a.theme.reduce_motion);
         a.set_reduce_motion(true);
         assert!(a.reduce_motion());
-        assert!(a.theme.reduce_motion, "the flag reaches the theme widgets draw against");
+        assert!(
+            a.theme.reduce_motion,
+            "the flag reaches the theme widgets draw against"
+        );
         a.set_reduce_motion(false);
         assert!(!a.theme.reduce_motion);
     }
@@ -6259,9 +5351,18 @@ mod low_vision_tests {
         let base_type = a.theme.tokens.typography.scale.base;
         a.set_ui_scale(1.5);
         assert_eq!(a.ui_scale(), 1.5);
-        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3, "spacing grows");
-        assert!((a.theme.tokens.radii.md - base_radius * 1.5).abs() < 1e-3, "radii grow");
-        assert!((a.theme.tokens.typography.scale.base - base_type * 1.5).abs() < 1e-3, "type grows");
+        assert!(
+            (a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3,
+            "spacing grows"
+        );
+        assert!(
+            (a.theme.tokens.radii.md - base_radius * 1.5).abs() < 1e-3,
+            "radii grow"
+        );
+        assert!(
+            (a.theme.tokens.typography.scale.base - base_type * 1.5).abs() < 1e-3,
+            "type grows"
+        );
         // A UI-scale change must re-run layout so the whole interface re-flows.
         assert!(a.layout_dirty);
     }
@@ -6286,13 +5387,15 @@ mod low_vision_tests {
         a.set_ui_scale(1.5);
         let hc_gap = Theme::high_contrast().tokens.spacing.s3;
         a.set_high_contrast(true);
-        assert_eq!(a.ui_scale(), 1.5, "UI-scale preference is preserved across the swap");
+        assert_eq!(
+            a.ui_scale(),
+            1.5,
+            "UI-scale preference is preserved across the swap"
+        );
         assert!((a.theme.tokens.spacing.s3 - hc_gap * 1.5).abs() < 1e-2);
         assert_eq!(a.theme.name, "High Contrast");
     }
 
-    /// A minimal root that expresses a fixed [`AppearanceIntent`], so the App's
-    /// live re-theme reconcile can be exercised without a window.
     struct AppearanceRoot {
         intent: crate::theme::AppearanceIntent,
     }
@@ -6317,7 +5420,8 @@ mod low_vision_tests {
             _tr: &mut TextRenderer,
             _theme: &Theme,
             _p: &crate::presence::PresenceCtx,
-        ) {}
+        ) {
+        }
         #[allow(clippy::too_many_arguments)]
         fn handle_event(
             &mut self,
@@ -6330,15 +5434,25 @@ mod low_vision_tests {
             _ft: &mut Option<NodeId>,
             _n: NodeId,
             _t: &TaffyTree<()>,
-        ) {}
+        ) {
+        }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             Some(self.intent.clone())
         }
-        fn name(&self) -> &str { "AppearanceRoot" }
-        fn get_rect(&self) -> vello::kurbo::Rect { vello::kurbo::Rect::ZERO }
+        fn name(&self) -> &str {
+            "AppearanceRoot"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
     }
 
-    fn intent(theme: Theme, ui_scale: f32, text_scale: f32, high_contrast: bool) -> crate::theme::AppearanceIntent {
+    fn intent(
+        theme: Theme,
+        ui_scale: f32,
+        text_scale: f32,
+        high_contrast: bool,
+    ) -> crate::theme::AppearanceIntent {
         crate::theme::AppearanceIntent {
             base_theme: theme,
             high_contrast,
@@ -6350,9 +5464,10 @@ mod low_vision_tests {
 
     #[test]
     fn appearance_reconcile_off_is_a_noop() {
-        let root = AppearanceRoot { intent: intent(Theme::nord(), 1.5, 1.3, true) };
+        let root = AppearanceRoot {
+            intent: intent(Theme::nord(), 1.5, 1.3, true),
+        };
         let mut a = App::new(State::new(), Box::new(root));
-        // Default: appearance_reconcile is off, so the intent is ignored.
         assert!(!a.reconcile_appearance());
         assert_eq!(a.theme.name, "Dark");
         assert_eq!(a.ui_scale(), 1.0);
@@ -6363,20 +5478,30 @@ mod low_vision_tests {
         let base_gap = Theme::high_contrast().tokens.spacing.s3;
         let base_type = Theme::high_contrast().tokens.typography.scale.base;
         // Nord base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
-        let root = AppearanceRoot { intent: intent(Theme::nord(), 1.5, 1.2, true) };
+        let root = AppearanceRoot {
+            intent: intent(Theme::nord(), 1.5, 1.2, true),
+        };
         let mut a = App::new(State::new(), Box::new(root));
         a.appearance_reconcile = true;
-        assert!(a.reconcile_appearance(), "first reconcile applies the intent");
+        assert!(
+            a.reconcile_appearance(),
+            "first reconcile applies the intent"
+        );
         assert_eq!(a.ui_scale(), 1.5);
         assert_eq!(a.text_scale(), 1.2);
         assert!(a.high_contrast());
-        assert_eq!(a.theme.name, "High Contrast", "high_contrast overrides the Nord base");
+        assert_eq!(
+            a.theme.name, "High Contrast",
+            "high_contrast overrides the Nord base"
+        );
         // Spacing grew by the UI factor; type by UI × text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
         assert!((a.theme.tokens.typography.scale.base - base_type * 1.5 * 1.2).abs() < 1e-1);
         assert!(a.layout_dirty, "a live appearance change re-runs layout");
-        // Steady intent → second reconcile is a no-op (level-triggered).
-        assert!(!a.reconcile_appearance(), "unchanged intent does not re-theme");
+        assert!(
+            !a.reconcile_appearance(),
+            "unchanged intent does not re-theme"
+        );
     }
 }
 
@@ -6389,10 +5514,8 @@ mod fullscreen_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// A minimal root widget that exposes a settable fullscreen *intent* and
-    /// records the actual-state notifications it receives (into a shared cell
-    /// the test can inspect), so the App's fullscreen reconcile wiring can be
-    /// exercised without a live window.
+    /// Lets the App's fullscreen reconcile wiring be exercised without a
+    /// live window.
     struct FsRoot {
         want: Option<bool>,
         rect: Rect,
@@ -6403,7 +5526,11 @@ mod fullscreen_tests {
         fn new(want: Option<bool>) -> (Self, Rc<RefCell<Vec<bool>>>) {
             let changes = Rc::new(RefCell::new(Vec::new()));
             (
-                Self { want, rect: Rect::ZERO, changes: changes.clone() },
+                Self {
+                    want,
+                    rect: Rect::ZERO,
+                    changes: changes.clone(),
+                },
                 changes,
             )
         }
@@ -6458,42 +5585,29 @@ mod fullscreen_tests {
         }
     }
 
-    /// The pure decision only fires `set_fullscreen` on an actual change of
-    /// the requested state — a steady desire is idempotent.
     #[test]
     fn decision_truth_table() {
-        // No opinion → never touch the window.
         assert_eq!(fullscreen_request_decision(false, None), None);
         assert_eq!(fullscreen_request_decision(true, None), None);
-        // Want matches what we already requested → no-op (idempotent).
         assert_eq!(fullscreen_request_decision(false, Some(false)), None);
         assert_eq!(fullscreen_request_decision(true, Some(true)), None);
-        // Want differs → issue the new state exactly once.
         assert_eq!(fullscreen_request_decision(false, Some(true)), Some(true));
         assert_eq!(fullscreen_request_decision(true, Some(false)), Some(false));
     }
 
-    /// A compositor-driven transition (fullscreen granted, then exited) reaches
-    /// the root via `on_fullscreen_changed`, exactly once per edge; a repeated
-    /// same-state observation is swallowed.
     #[test]
     fn actual_state_transitions_notify_root_once_per_edge() {
         let (root, changes) = FsRoot::new(None);
         let mut app = App::new(State::new(), Box::new(root));
 
-        // Rising edge.
         assert!(app.note_actual_fullscreen(true));
-        // Same state again → no notification.
         assert!(!app.note_actual_fullscreen(true));
-        // Falling edge.
         assert!(app.note_actual_fullscreen(false));
 
         assert_eq!(*changes.borrow(), vec![true, false]);
         assert!(!app.fullscreen_active);
     }
 
-    /// `note_actual_fullscreen` marks the app for a re-sync + relayout so the
-    /// widget tree can switch to its presentation layout on the next frame.
     #[test]
     fn entering_fullscreen_marks_resync_and_relayout() {
         let (root, _changes) = FsRoot::new(Some(true));
@@ -6511,14 +5625,13 @@ mod action_palette_tests {
     use super::*;
     use crate::widget::Widget;
     use automerge::transaction::Transactable;
-    use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, ROOT};
+    use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
     use qos_actions::{Action, ActionError, ActionSpec, Doc, Resource};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-    /// A minimal replayable action: set a boolean flag under a root key.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Flip {
         key: String,
@@ -6531,8 +5644,7 @@ mod action_palette_tests {
         }
     }
 
-    /// A searchable-content source folded into the unified palette — stands in
-    /// for an app's contacts / files provider.
+    /// Stands in for an app's contacts/files provider.
     struct PeopleProvider;
     impl crate::search::SearchProvider for PeopleProvider {
         fn name(&self) -> &str {
@@ -6547,9 +5659,8 @@ mod action_palette_tests {
         }
     }
 
-    /// A root widget that publishes one open resource exporting one immediate
-    /// [`Flip`] action, plus a searchable People provider — i.e. exactly what an
-    /// app instance offers the unified Ctrl+K (actions + findable content).
+    /// One open resource exporting a [`Flip`] action, plus a searchable
+    /// People provider.
     struct Publisher;
     impl Widget for Publisher {
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
@@ -6611,20 +5722,17 @@ mod action_palette_tests {
             vec![Box::new(PeopleProvider)]
         }
         fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _p: &ObjId) {
-            // Navigation writes the chosen id into the doc so the test can prove
-            // the app was reached through the real palette path.
-            doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into())).unwrap();
+            doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
+                .unwrap();
         }
     }
 
-    /// Synthesise a pressed `Enter` key event. Mirrors the `mem::zeroed`
-    /// workaround the palette's own tests use — winit 0.30 keeps a `KeyEvent`
-    /// field `pub(crate)`, so a struct literal can't build one.
+    /// winit keeps a `KeyEvent` field `pub(crate)`, so a struct literal
+    /// can't build one.
     fn synth_enter() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -6636,24 +5744,17 @@ mod action_palette_tests {
         }
     }
 
-    /// The full `ui::App` Ctrl+K path: the palette scopes to the focused root
-    /// widget's published resources, and choosing one dispatches its action
-    /// against the CRDT (honouring its locus), records it on the undo stack, and
-    /// marks the app for re-sync — proving the wiring, not just the pieces.
     #[test]
     fn ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo() {
         let mut app = App::new(State::new(), Box::new(Publisher));
-        // The app registers its action decoders — the same path a remote peer
-        // uses to replay a dispatched action.
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
 
-        // The resource-collection hook reflects what the focused widget publishes.
         let res = app.collect_resources();
         assert_eq!(res.len(), 1, "one open resource");
         assert_eq!(res[0].kind, "test.obj");
 
-        // Opening Ctrl+K scopes the palette to those resources AND folds in the
-        // widget's searchable content — one surface, both kinds.
+        // Scopes the palette to those resources AND folds in the widget's
+        // searchable content — one surface, both kinds.
         app.open_action_palette();
         let ap = app.action_palette().expect("palette is open");
         assert!(ap.is_open());
@@ -6667,48 +5768,50 @@ mod action_palette_tests {
             "palette folds in the widget's searchable content: {labels:?}"
         );
 
-        // Preconditions: flag unset, nothing recorded to undo.
         assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
         assert!(app.state.peek_last_undo().is_none());
         app.needs_sync = false;
         app.layout_dirty = false;
 
-        // Enter selects the top row (the action) and dispatches it, the real path.
+        // Enter selects the top row (the action) and dispatches it.
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
 
-        // The action mutated the shared CRDT...
         let flipped = app
             .state
             .doc
             .get(&ROOT, "flipped")
             .unwrap()
             .and_then(|(v, _)| v.to_bool());
-        assert_eq!(flipped, Some(true), "dispatched action set the flag in the CRDT");
-        // ...it is recorded as an undo point...
+        assert_eq!(
+            flipped,
+            Some(true),
+            "dispatched action set the flag in the CRDT"
+        );
         assert!(
             app.state.peek_last_undo().is_some(),
             "the dispatched action is undoable"
         );
-        // ...the app is marked for re-sync + relayout so the widget tree adopts it...
         assert!(app.needs_sync, "dispatch marks the app for re-sync");
         assert!(app.layout_dirty, "dispatch marks the app for relayout");
-        // ...and a non-prompted selection closes + drops the palette.
-        assert!(app.action_palette().is_none(), "palette closed after selection");
+        assert!(
+            app.action_palette().is_none(),
+            "palette closed after selection"
+        );
     }
 
-    /// The other half of the unified surface: a **content** row (from a folded-in
-    /// [`SearchProvider`](crate::search::SearchProvider)) does NOT dispatch — it
-    /// hands its opaque id back through [`Widget::activate_search_result`] so the
-    /// app navigates. Proves the App wiring for the second outcome channel.
+    /// A content row does NOT dispatch — it hands its id back through
+    /// [`Widget::activate_search_result`] instead.
     #[test]
     fn ctrl_k_content_row_navigates_through_the_app() {
         let mut app = App::new(State::new(), Box::new(Publisher));
         app.open_action_palette();
-        // Narrow to a single content hit (the action row does not match "ada").
         app.action_palette.as_mut().unwrap().set_query("ada");
         let labels = app.action_palette().unwrap().result_labels();
-        assert!(labels.iter().any(|l| l == "Ada Lovelace"), "content hit present: {labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "Ada Lovelace"),
+            "content hit present: {labels:?}"
+        );
         assert!(
             !labels.iter().any(|l| l.contains("Flip it")),
             "the action row is filtered out by the query: {labels:?}"
@@ -6718,7 +5821,6 @@ mod action_palette_tests {
         app.needs_sync = false;
         app.layout_dirty = false;
 
-        // Enter on the content row navigates (not dispatches).
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
 
@@ -6733,29 +5835,28 @@ mod action_palette_tests {
             Some("person:Ada Lovelace".to_string()),
             "the content row's id reached the app to navigate"
         );
-        assert!(app.action_palette().is_none(), "navigation closes the palette");
-        assert!(app.needs_sync && app.layout_dirty, "navigation marks a redraw");
+        assert!(
+            app.action_palette().is_none(),
+            "navigation closes the palette"
+        );
+        assert!(
+            app.needs_sync && app.layout_dirty,
+            "navigation marks a redraw"
+        );
     }
 }
 
-// ---------------------------------------------------------------------------
-// Freeze / thaw: the App is (de)serializable as a whole — its State document
-// plus its View — through one override seam. See `crate::view` for the design.
-// Kept as a small, self-contained impl block so the bulk of `app.rs` is
-// untouched.
-// ---------------------------------------------------------------------------
+// See `crate::view` for the (de)serialize-as-a-whole design this implements.
 impl crate::view::FreezeThaw for App {
-    /// Default state serialization for a CRDT app: `doc.save()`. `AutoCommit`'s
-    /// save takes `&mut self` to flush its open transaction; freeze is `&self`
-    /// and a cold path (memory eviction / reboot), so we save a clone rather
-    /// than widen the signature.
+    /// `AutoCommit::save` takes `&mut self` to flush its open transaction;
+    /// freeze is `&self` on a cold path, so save a clone rather than widen
+    /// the signature.
     fn serialize_state(&self) -> Vec<u8> {
         self.state.doc.clone().save()
     }
 
-    /// Default state restore for a CRDT app: load the document and adopt it as
-    /// the live one (which also resets the undo history, as a document swap
-    /// must — the old stacks name changes this document has never seen).
+    /// Also resets the undo history — the old stacks name changes this
+    /// document has never seen.
     fn restore_state(&mut self, bytes: &[u8]) -> Result<(), crate::view::ThawError> {
         let doc = automerge::AutoCommit::load(bytes)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
@@ -6763,10 +5864,6 @@ impl crate::view::FreezeThaw for App {
         Ok(())
     }
 
-    /// Capture the live presentation into a [`View`](crate::view::View): the
-    /// focused widget's caret/selection (through the same ephemeral
-    /// `get_state` mechanism the undo path uses), the open resource, the
-    /// viewport, and the root widget's scroll/view-mode contribution.
     fn capture_view(&self) -> crate::view::View {
         use crate::view::{FocusView, View, ViewRect};
 
@@ -6790,8 +5887,8 @@ impl crate::view::FreezeThaw for App {
             .map(|s| ViewRect {
                 x: 0.0,
                 y: 0.0,
-                width: s.width as f64,
-                height: s.height as f64,
+                width: f64::from(s.width),
+                height: f64::from(s.height),
             })
             .unwrap_or_default();
 
@@ -6806,12 +5903,8 @@ impl crate::view::FreezeThaw for App {
         }
     }
 
-    /// Restore a [`View`](crate::view::View) onto the live app: hand the
-    /// scroll/view-mode fields back to the root widget, then move focus to the
-    /// captured ordinal and replay the focused widget's ephemeral caret via
-    /// `set_state`. `open_resource` is carried for presence/reboot to reopen the
-    /// record; the record-navigation wiring is the host's and is not driven
-    /// here.
+    /// `open_resource` is carried for presence/reboot to reopen the record;
+    /// record-navigation itself is the host's and is not driven here.
     fn restore_view(&mut self, view: &crate::view::View) {
         self.root_widget
             .restore_view_state(&crate::view::ViewContribution {
@@ -6819,15 +5912,15 @@ impl crate::view::FreezeThaw for App {
                 view_mode: view.view_mode.clone(),
             });
 
-        if let Some(f) = &view.focus {
-            if let Some(&id) = self.focusable_order.get(f.ordinal) {
-                self.set_focused_node(Some(id));
-                if !f.ephemeral.is_empty() {
-                    if let Some(&w) = self.node_map.get(&id) {
-                        unsafe {
-                            (*w).set_state(&f.ephemeral);
-                        }
-                    }
+        if let Some(f) = &view.focus
+            && let Some(&id) = self.focusable_order.get(f.ordinal)
+        {
+            self.set_focused_node(Some(id));
+            if !f.ephemeral.is_empty()
+                && let Some(&w) = self.node_map.get(&id)
+            {
+                unsafe {
+                    (*w).set_state(&f.ephemeral);
                 }
             }
         }
@@ -6837,34 +5930,28 @@ impl crate::view::FreezeThaw for App {
     }
 }
 
-// ---------------------------------------------------------------------------
-// View presence: broadcast the local participant's View subset, render peers'
-// Views, and attach/follow. Exercised on the real broadcast/receive path —
+// View presence: exercised on the real broadcast/receive path —
 // `broadcast_view_presence` through the presence sink, and
 // `apply_collab_event_for_test` through `apply_remote_presence`.
-// ---------------------------------------------------------------------------
 #[cfg(test)]
 mod view_presence_tests {
     use super::*;
+    use crate::PresenceCtx;
+    use crate::TextRenderer;
+    use crate::Theme;
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     use crate::state::State;
     use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
     use crate::widget::Widget;
-    use crate::PresenceCtx;
-    use crate::TextRenderer;
-    use crate::Theme;
     use automerge::{AutoCommit, ObjId};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use taffy::TaffyTree;
-    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use vello::Scene;
+    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use winit::event::WindowEvent;
 
-    /// A root that carries exactly the presentation a [`ViewSubset`] projects:
-    /// a scroll offset + view mode (via `view_state` / `restore_view_state`)
-    /// and an open resource (via `record_intent`). No focus needed — the
-    /// subset deliberately excludes the caret.
+    /// No focus field — [`ViewSubset`] excludes the caret.
     struct ViewRoot {
         scroll: Vec<f64>,
         mode: Option<String>,
@@ -6947,16 +6034,10 @@ mod view_presence_tests {
         app
     }
 
-    /// The View a participant is looking at — scroll, open resource, viewport,
-    /// view mode — is broadcast through the *real* presence path and lands in
-    /// a second peer's `PresenceCtx` as that peer's View, distinct from a
-    /// cursor point. Asserted on the frame that actually leaves the sender
-    /// (captured through the broadcast sink) and on the frame the receiver
-    /// applies (through `apply_remote_presence`).
+    /// Asserted on both the frame that leaves the sender (via the broadcast
+    /// sink) and the frame the receiver applies.
     #[test]
     fn view_subset_broadcasts_through_real_presence_path() {
-        // Sender: scrolled, in "grid" mode, with a resource open, laid out to
-        // a real viewport.
         let mut sender = app_with_root(ViewRoot {
             scroll: vec![10.0, 20.0],
             mode: Some("grid".into()),
@@ -6965,8 +6046,6 @@ mod view_presence_tests {
         });
         sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
 
-        // Capture what actually leaves the sender via the real broadcast sink
-        // (the same seam the shell's libp2p bridge subscribes to).
         let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&captured);
@@ -6988,12 +6067,17 @@ mod view_presence_tests {
             Some("file:/report.md"),
             "the open resource rode the frame"
         );
-        assert_eq!(sent.view_mode.as_deref(), Some("grid"), "view mode rode the frame");
+        assert_eq!(
+            sent.view_mode.as_deref(),
+            Some("grid"),
+            "view mode rode the frame"
+        );
         assert_eq!(sent.viewport.width, 1024.0, "viewport width rode the frame");
-        assert_eq!(sent.viewport.height, 768.0, "viewport height rode the frame");
+        assert_eq!(
+            sent.viewport.height, 768.0,
+            "viewport height rode the frame"
+        );
 
-        // A second, unrelated participant applies that exact frame through the
-        // real receive path and now knows where the sender is looking.
         let mut receiver = app_with_root(ViewRoot::new());
         assert!(
             receiver
@@ -7012,26 +6096,22 @@ mod view_presence_tests {
             .presence_ctx()
             .peer_view(&crate::permissions::UserId("alice".into()))
             .expect("the peer's View is stored after their broadcast");
-        assert_eq!(peer_view, &sent, "the receiver stores the peer's exact View subset");
+        assert_eq!(
+            peer_view, &sent,
+            "the receiver stores the peer's exact View subset"
+        );
 
-        // The inert carrier payload must NOT have been processed as a real
-        // Arrived — no phantom cursor, no presence registration under the
-        // View key.
+        // The inert carrier payload must not be processed as a real Arrived.
         assert!(
             receiver.presence_ctx().remote_cursors.is_empty(),
             "a View frame must not register a phantom cursor"
         );
     }
 
-    /// Delivering a peer's View to the receiver, then `follow`ing them, moves
-    /// the local viewport to match their broadcast View; a later View from the
-    /// followed peer keeps tracking; `unfollow` releases so subsequent Views
-    /// no longer move the local view.
     #[test]
     fn follow_binds_local_viewport_and_unfollow_releases() {
         let mut app = app_with_root(ViewRoot::new());
 
-        // Helper: deliver a peer View through the real receive path.
         fn deliver(app: &mut App, peer: &str, scroll: Vec<f64>, mode: &str) {
             let subset = ViewSubset {
                 scroll,
@@ -7046,8 +6126,6 @@ mod view_presence_tests {
             });
         }
 
-        // Peer bob is looking at scroll 100 / "list". Before following, the
-        // local view has not moved.
         deliver(&mut app, "bob", vec![100.0], "list");
         assert_eq!(
             <App as FreezeThaw>::capture_view(&app).scroll,
@@ -7055,13 +6133,19 @@ mod view_presence_tests {
             "receiving a peer's View must not move the local view on its own"
         );
 
-        // Follow bob: the local viewport binds to his View.
         app.follow("bob");
         let v = <App as FreezeThaw>::capture_view(&app);
-        assert_eq!(v.scroll, vec![100.0], "follow moved the local view to the peer's scroll");
-        assert_eq!(v.view_mode.as_deref(), Some("list"), "follow adopted the peer's view mode");
+        assert_eq!(
+            v.scroll,
+            vec![100.0],
+            "follow moved the local view to the peer's scroll"
+        );
+        assert_eq!(
+            v.view_mode.as_deref(),
+            Some("list"),
+            "follow adopted the peer's view mode"
+        );
 
-        // Bob scrolls on; while followed, the local view keeps tracking.
         deliver(&mut app, "bob", vec![250.0], "board");
         assert_eq!(
             <App as FreezeThaw>::capture_view(&app).scroll,
@@ -7069,7 +6153,6 @@ mod view_presence_tests {
             "a followed peer's later View keeps moving the local view"
         );
 
-        // Unfollow releases: a further View from bob no longer moves us.
         app.unfollow();
         deliver(&mut app, "bob", vec![999.0], "grid");
         assert_eq!(
@@ -7079,8 +6162,6 @@ mod view_presence_tests {
         );
     }
 
-    /// Following a peer who is not present (has broadcast no View) latches the
-    /// intent but moves nothing — no panic, no spurious scroll.
     #[test]
     fn following_absent_peer_is_a_noop() {
         let mut app = app_with_root(ViewRoot {
@@ -7093,14 +6174,19 @@ mod view_presence_tests {
         app.follow("ghost");
 
         let v = <App as FreezeThaw>::capture_view(&app);
-        assert_eq!(v.scroll, vec![7.0], "following an absent peer leaves the local view untouched");
-        assert_eq!(app.followed_peer(), Some("ghost"), "the follow intent is still latched");
+        assert_eq!(
+            v.scroll,
+            vec![7.0],
+            "following an absent peer leaves the local view untouched"
+        );
+        assert_eq!(
+            app.followed_peer(),
+            Some("ghost"),
+            "the follow intent is still latched"
+        );
     }
 }
 
-/// The retained semantic tree, driven through the full `ui::App`: refreshing it,
-/// reading node identity/state, and invoking a node's affordance so it dispatches
-/// the *same* `EncodedAction` the on-screen control does.
 #[cfg(test)]
 mod semantic_tree_app_tests {
     use super::*;
@@ -7108,15 +6194,13 @@ mod semantic_tree_app_tests {
     use crate::state::State;
     use crate::widget::{Button, Widget};
     use automerge::transaction::Transactable;
-    use automerge::{ReadDoc, ScalarValue, Value, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     use qos_actions::{
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
     };
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
-    /// A minimal real action: bump a counter, or set a label. Deterministic —
-    /// the executor's contract. Registered under [`COUNTER_TYPE`].
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum CounterAction {
         Bump,
@@ -7145,15 +6229,16 @@ mod semantic_tree_app_tests {
         }
     }
 
-    /// A leaf widget that publishes one open resource ("Counter") exporting an
-    /// immediate `bump` and a prompted `set-label` — the on-screen control's
-    /// resource+action model, exactly as a real app does.
+    /// One open resource exporting an immediate `bump` and a prompted
+    /// `set-label`.
     struct CounterCard {
         button: Button,
     }
     impl CounterCard {
         fn new() -> Self {
-            Self { button: Button::new("bump", "Bump", None) }
+            Self {
+                button: Button::new("bump", "Bump", None),
+            }
         }
     }
     impl Widget for CounterCard {
@@ -7167,7 +6252,9 @@ mod semantic_tree_app_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let kid = self.button.build_layout(taffy, theme, node_map);
-            let node = taffy.new_with_children(taffy::Style::default(), &[kid]).unwrap();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &[kid])
+                .unwrap();
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -7207,28 +6294,34 @@ mod semantic_tree_app_tests {
             KurboRect::ZERO
         }
         fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
-            vec![Resource::new("test.counter", "test.counter", "Counter")
-                .with_action(
-                    ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-                        .unwrap(),
-                )
-                .with_action(ActionSpec::prompted(
-                    "set-label",
-                    "Set label",
-                    "Label",
-                    "name…",
-                    ExecutionLocus::ClientLocal,
-                    |s: &str| {
-                        EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
+            vec![
+                Resource::new("test.counter", "test.counter", "Counter")
+                    .with_action(
+                        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+                            .unwrap(),
+                    )
+                    .with_action(ActionSpec::prompted(
+                        "set-label",
+                        "Set label",
+                        "Label",
+                        "name…",
+                        ExecutionLocus::ClientLocal,
+                        |s: &str| {
+                            EncodedAction::encode(
+                                COUNTER_TYPE,
+                                &CounterAction::SetLabel(s.to_string()),
+                            )
                             .unwrap()
-                    },
-                ))]
+                        },
+                    )),
+            ]
         }
     }
 
     fn app() -> App {
         let mut app = App::new(State::new(), Box::new(CounterCard::new()));
-        app.action_registry_mut().register::<CounterAction>(COUNTER_TYPE);
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
         app
     }
@@ -7258,7 +6351,10 @@ mod semantic_tree_app_tests {
             .node(&SemanticId("r:test.counter".into()))
             .expect("the app's open resource is a semantic node");
         assert_eq!(node.name.as_deref(), Some("Counter"));
-        assert!(node.action("bump").is_some(), "the resource's action is an affordance");
+        assert!(
+            node.action("bump").is_some(),
+            "the resource's action is an affordance"
+        );
         assert!(node.action("set-label").is_some());
         // The root owns it (resources hang off the window root).
         let root = tree.node(tree.root()).unwrap();
@@ -7269,10 +6365,13 @@ mod semantic_tree_app_tests {
     fn identity_is_stable_across_refreshes() {
         let mut app = app();
         app.refresh_semantic_tree();
-        let ids_before: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
-        // A refresh with nothing changed yields no delta and identical ids.
+        let ids_before: Vec<SemanticId> =
+            app.semantic_tree().iter().map(|n| n.id.clone()).collect();
         let delta = app.refresh_semantic_tree();
-        assert!(delta.is_empty(), "a stable frame yields no delta, got {delta:?}");
+        assert!(
+            delta.is_empty(),
+            "a stable frame yields no delta, got {delta:?}"
+        );
         let ids_after: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
         assert_eq!(ids_before, ids_after, "node identity survives a refresh");
     }
@@ -7286,13 +6385,13 @@ mod semantic_tree_app_tests {
             .action(&SemanticId("r:test.counter".into()), "bump")
             .expect("bump affordance");
 
-        // The on-screen control dispatches through ui::ActionHost — the exact
-        // path a real app's affordance takes. It must build the byte-identical
-        // EncodedAction the semantic node exposes.
         let mut host = crate::action_host::ActionHost::new();
         let mut host_doc = automerge::AutoCommit::new();
         host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
-        let from_affordance = host.last_dispatched().expect("the affordance dispatched").clone();
+        let from_affordance = host
+            .last_dispatched()
+            .expect("the affordance dispatched")
+            .clone();
 
         match &bump.kind {
             SemanticActionKind::App(enc) => assert_eq!(
@@ -7310,10 +6409,12 @@ mod semantic_tree_app_tests {
         let id = SemanticId("r:test.counter".into());
         assert_eq!(counter(&app), 0);
 
-        // Invoke by name — the operate-the-tree path an AT / agent uses.
         assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
-        assert_eq!(counter(&app), 1, "the invoked action mutated the shared doc");
-        // Each invocation dispatches the real action again.
+        assert_eq!(
+            counter(&app),
+            1,
+            "the invoked action mutated the shared doc"
+        );
         assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
         assert_eq!(counter(&app), 2);
 
@@ -7327,18 +6428,23 @@ mod semantic_tree_app_tests {
         let mut app = app();
         app.refresh_semantic_tree();
         let id = SemanticId("r:test.counter".into());
-        assert!(app.invoke_semantic_action(&id, "set-label", Some("hello")).unwrap());
-        assert_eq!(label(&app), "hello", "the prompted argument reached the built action");
+        assert!(
+            app.invoke_semantic_action(&id, "set-label", Some("hello"))
+                .unwrap()
+        );
+        assert_eq!(
+            label(&app),
+            "hello",
+            "the prompted argument reached the built action"
+        );
     }
 
     #[test]
     fn invoke_matches_a_direct_affordance_dispatch_byte_for_byte() {
-        // Two docs from the same start: one driven by the semantic-tree invoke,
-        // one by a direct ActionHost affordance dispatch. They must converge to
-        // the identical value — proving the a11y path and the UI path are one.
         let mut app = app();
         app.refresh_semantic_tree();
-        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None).unwrap();
+        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None)
+            .unwrap();
 
         let mut host = crate::action_host::ActionHost::new();
         let mut host_doc = automerge::AutoCommit::new();
@@ -7349,7 +6455,10 @@ mod semantic_tree_app_tests {
             Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
             _ => 0,
         };
-        assert_eq!(via_a11y, via_affordance, "both paths produce the same result");
+        assert_eq!(
+            via_a11y, via_affordance,
+            "both paths produce the same result"
+        );
     }
 }
 
@@ -7366,8 +6475,8 @@ mod synthetic_node_dispatch_tests {
     use super::*;
     use crate::a11y::{Action, Role};
     use crate::state::State;
-    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
     use crate::widget::Widget;
+    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -7524,7 +6633,7 @@ mod synthetic_node_dispatch_tests {
             _state: &mut automerge::AutoCommit,
             _path: &automerge::ObjId,
         ) -> bool {
-            use crate::a11y::{hash_key, Action};
+            use crate::a11y::{Action, hash_key};
             let Some(&key) = key_path.first() else {
                 return false;
             };
@@ -7698,7 +6807,11 @@ mod synthetic_node_dispatch_tests {
 
         let id = semantic_clip(&app, "outro");
         assert!(
-            app.semantic_tree().node(&id).unwrap().action("activate").is_some(),
+            app.semantic_tree()
+                .node(&id)
+                .unwrap()
+                .action("activate")
+                .is_some(),
             "the clip advertises an activate affordance"
         );
 
@@ -7757,7 +6870,10 @@ mod synthetic_node_dispatch_tests {
             before,
             "the semantic id belongs to the clip, not to the slot"
         );
-        assert_eq!(app.invoke_semantic_action(&before, "activate", None), Ok(true));
+        assert_eq!(
+            app.invoke_semantic_action(&before, "activate", None),
+            Ok(true)
+        );
         assert_eq!(*activated.borrow(), vec!["outro".to_string()]);
     }
 
@@ -7804,7 +6920,10 @@ mod synthetic_node_dispatch_tests {
         let root = app.semantic_tree().root().clone();
         let node = app.semantic_tree().node(&root).unwrap();
         assert!(node.widget_taffy_id.is_none() && node.synthetic_ref.is_none());
-        assert_eq!(app.invoke_semantic_action(&root, "activate", None), Ok(false));
+        assert_eq!(
+            app.invoke_semantic_action(&root, "activate", None),
+            Ok(false)
+        );
     }
 
     #[test]
@@ -7853,7 +6972,9 @@ mod synthetic_node_dispatch_tests {
             .iter()
             .find(|(_, ptr)| {
                 let w = unsafe { &***ptr };
-                w.accessibility().map(|n| n.role == Role::Table).unwrap_or(false)
+                w.accessibility()
+                    .map(|n| n.role == Role::Table)
+                    .unwrap_or(false)
             })
             .map(|(&id, _)| id)
             .expect("the table was laid out");
@@ -7876,8 +6997,7 @@ mod synthetic_node_dispatch_tests {
             app.dispatch_a11y_action(target, &Action::Focus);
             let after = app.build_a11y_tree_update(1.0);
             assert_eq!(
-                after.focus,
-                target,
+                after.focus, target,
                 "focus should follow the AT to row {index}"
             );
             let (_, node) = after
@@ -7957,7 +7077,7 @@ mod undo_control_tests {
     use crate::a11y::Action;
     use crate::state::State;
     use crate::widget::{Row, UndoButton, Widget};
-    use automerge::{transaction::Transactable, ObjType, ReadDoc, ROOT};
+    use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 
     /// Build the tree an app would: an Undo button and a Redo button in a row.
     ///
@@ -8268,11 +7388,11 @@ mod dispatched_action_tests {
     use super::*;
     use crate::state::State;
     use crate::widget::Widget;
-    use automerge::{transaction::Transactable, ReadDoc, ScalarValue, ROOT};
+    use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
     use qos_actions::{ActionError, Doc, ExecutionLocus};
+    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use vello::kurbo::Rect;
-    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Bump {
@@ -8468,7 +7588,10 @@ mod dispatched_action_tests {
              told to sync and repaint for one"
         );
 
-        assert!(app.perform_undo(), "the real edit is still the top of the stack");
+        assert!(
+            app.perform_undo(),
+            "the real edit is still the top of the stack"
+        );
         assert_eq!(count(&app), None);
         assert!(
             !app.perform_undo(),

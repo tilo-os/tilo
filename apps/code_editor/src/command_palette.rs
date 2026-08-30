@@ -63,7 +63,11 @@ impl Command {
 
     pub fn catalogue() -> Vec<(Command, &'static str, &'static str)> {
         vec![
-            (Command::OpenFolder, "File: Open Folder\u{2026}", "Ctrl+Shift+O"),
+            (
+                Command::OpenFolder,
+                "File: Open Folder\u{2026}",
+                "Ctrl+Shift+O",
+            ),
             (Command::OpenFile, "File: Open File\u{2026}", "Ctrl+O"),
             (Command::NewFile, "File: New File", ""),
             (Command::Save, "File: Save", "Ctrl+S"),
@@ -73,14 +77,38 @@ impl Command {
             (Command::CloseTab, "View: Close Active Tab", "Ctrl+W"),
             (Command::Find, "Edit: Find in File", "Ctrl+F"),
             (Command::Replace, "Edit: Replace in File", "Ctrl+H"),
-            (Command::SearchProject, "Edit: Search Project", "Ctrl+Shift+F"),
+            (
+                Command::SearchProject,
+                "Edit: Search Project",
+                "Ctrl+Shift+F",
+            ),
             (Command::GoToLine, "Go: Go to Line\u{2026}", "Ctrl+G"),
-            (Command::DuplicateLine, "Selection: Duplicate Line", "Shift+Alt+Down"),
+            (
+                Command::DuplicateLine,
+                "Selection: Duplicate Line",
+                "Shift+Alt+Down",
+            ),
             (Command::MoveLineUp, "Selection: Move Line Up", "Alt+Up"),
-            (Command::MoveLineDown, "Selection: Move Line Down", "Alt+Down"),
-            (Command::DeleteLine, "Selection: Delete Line", "Ctrl+Shift+K"),
-            (Command::ToggleComment, "Edit: Toggle Line Comment", "Ctrl+/"),
-            (Command::ToggleBottomPanel, "View: Toggle Bottom Panel", "Ctrl+J"),
+            (
+                Command::MoveLineDown,
+                "Selection: Move Line Down",
+                "Alt+Down",
+            ),
+            (
+                Command::DeleteLine,
+                "Selection: Delete Line",
+                "Ctrl+Shift+K",
+            ),
+            (
+                Command::ToggleComment,
+                "Edit: Toggle Line Comment",
+                "Ctrl+/",
+            ),
+            (
+                Command::ToggleBottomPanel,
+                "View: Toggle Bottom Panel",
+                "Ctrl+J",
+            ),
             (Command::ToggleSidebar, "View: Toggle Sidebar", "Ctrl+B"),
             (Command::NextTheme, "Preferences: Cycle Color Theme", ""),
             (Command::GoToProblems, "View: Focus Problems", ""),
@@ -235,9 +263,7 @@ impl CommandPalette {
             .iter()
             .enumerate()
             .filter(|(_, e)| matches!(e.kind, PaletteKind::Command(_)) == want_command)
-            .filter_map(|(i, e)| {
-                Self::fuzzy_match(&self.query, &e.label).map(|s| (i, s))
-            })
+            .filter_map(|(i, e)| Self::fuzzy_match(&self.query, &e.label).map(|s| (i, s)))
             .collect();
         scored.sort_by(|a, b| b.1.cmp(&a.1));
         self.filtered = scored.into_iter().map(|(i, _)| i).collect();
@@ -274,8 +300,7 @@ impl CommandPalette {
             }
             Key::Named(NamedKey::ArrowUp) => {
                 if !self.filtered.is_empty() {
-                    self.selected =
-                        (self.selected + self.filtered.len() - 1) % self.filtered.len();
+                    self.selected = (self.selected + self.filtered.len() - 1) % self.filtered.len();
                 }
                 true
             }
@@ -303,7 +328,7 @@ impl CommandPalette {
                     let acceptable = if self.goto_mode {
                         !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
                     } else {
-                        !s.is_empty() && !s.chars().any(|c| c.is_control())
+                        !s.is_empty() && !s.chars().any(char::is_control)
                     };
                     if acceptable {
                         self.query.push_str(s);
@@ -331,7 +356,13 @@ impl CommandPalette {
         }
         let c = &theme.tokens.colors;
         // Scrim over the whole viewport.
-        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &self.viewport);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.overlay,
+            None,
+            &self.viewport,
+        );
 
         let rows = self.filtered.len().min(MAX_ROWS);
         let panel_h = INPUT_H + rows as f64 * ROW_H + 8.0;
@@ -339,7 +370,13 @@ impl CommandPalette {
         let y0 = self.viewport.y0 + 80.0;
         let panel = RoundedRect::new(x0, y0, x0 + WIDTH, y0 + panel_h, 10.0);
         scene.fill(Fill::NonZero, transform, c.surfaces.glass, None, &panel);
-        scene.stroke(&Stroke::new(1.0), transform, c.border_white_20, None, &panel);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_white_20,
+            None,
+            &panel,
+        );
 
         // Input row.
         let prompt = if self.goto_mode {
@@ -363,7 +400,7 @@ impl CommandPalette {
             c.text_primary
         };
         let input_text = if self.query.is_empty() {
-            format!("{}{}", prompt, placeholder)
+            format!("{prompt}{placeholder}")
         } else {
             shown.clone()
         };
@@ -378,7 +415,7 @@ impl CommandPalette {
         // Caret after the query text.
         let (qw, _) = text_renderer.measure(&shown, 16.0, None);
         if !self.query.is_empty() || self.command_mode {
-            let cx = x0 + 16.0 + qw as f64 + 1.0;
+            let cx = x0 + 16.0 + f64::from(qw) + 1.0;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -403,7 +440,13 @@ impl CommandPalette {
             let row_rect = Rect::new(x0 + 4.0, ry, x0 + WIDTH - 4.0, ry + ROW_H);
             if vi == self.selected {
                 let sel = RoundedRect::from_rect(row_rect, 6.0);
-                scene.fill(Fill::NonZero, transform, c.accent[5].multiply_alpha(0.35), None, &sel);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.accent[5].multiply_alpha(0.35),
+                    None,
+                    &sel,
+                );
             }
             // Icon glyph: command vs file.
             let glyph = match entry.kind {
@@ -437,8 +480,7 @@ impl CommandPalette {
                     &entry.detail,
                     12.0,
                     c.text_dim,
-                    transform
-                        * Affine::translate((x0 + WIDTH - 16.0 - dw as f64, ry + 10.0)),
+                    transform * Affine::translate((x0 + WIDTH - 16.0 - f64::from(dw), ry + 10.0)),
                     None,
                 );
             }

@@ -176,8 +176,8 @@ impl SnippetsApp {
             .copied()
             .max_by_key(|id| {
                 let s = app.library.get(*id);
-                let lines = s.map(|s| s.body.lines().count()).unwrap_or(0);
-                let templated = s.map(|s| s.has_placeholders()).unwrap_or(false) as usize;
+                let lines = s.map_or(0, |s| s.body.lines().count());
+                let templated = usize::from(s.is_some_and(super::model::Snippet::has_placeholders));
                 (templated, lines)
             })
             .or_else(|| app.visible.first().copied());
@@ -250,7 +250,8 @@ impl SnippetsApp {
     /// just before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: SnippetsAction) {
-        self.actions.dispatch(doc, actions::SNIPPETS_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, actions::SNIPPETS_ACTION_TYPE, &action);
         self.refresh_from_doc(doc);
     }
 
@@ -293,8 +294,7 @@ impl SnippetsApp {
         let needs_expand = self
             .library
             .get(id)
-            .map(|s| s.has_placeholders())
-            .unwrap_or(false);
+            .is_some_and(super::model::Snippet::has_placeholders);
         if needs_expand {
             self.start_expand(id);
             return;
@@ -321,7 +321,7 @@ impl SnippetsApp {
     }
 
     fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        let cur = self.library.get(id).map(|s| s.favorite).unwrap_or(false);
+        let cur = self.library.get(id).is_some_and(|s| s.favorite);
         self.perform_action(doc, actions::set_favorite_action(id, !cur));
         self.recompute_visible();
     }
@@ -356,7 +356,10 @@ impl SnippetsApp {
     }
 
     fn toast(&mut self, message: &str) {
-        self.toast = Some(Toast { message: message.to_string(), ttl: 90 });
+        self.toast = Some(Toast {
+            message: message.to_string(),
+            ttl: 90,
+        });
     }
 
     /// Reconcile the in-memory library with the shared document.
@@ -552,7 +555,7 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
-        self.library.get(id).map(|s| s.uses).unwrap_or(0)
+        self.library.get(id).map_or(0, |s| s.uses)
     }
 
     #[doc(hidden)]
@@ -675,17 +678,19 @@ impl ui::widget::Widget for SnippetsApp {
     /// makes every snippet findable there by title, language, folder, tag,
     /// description or body, alongside the actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SnippetSearchProvider::new(&self.library))]
+        vec![Box::new(
+            crate::search_provider::SnippetSearchProvider::new(&self.library),
+        )]
     }
 
     /// Open the snippet a chosen palette row identifies. Selection is app-local
     /// presentation (per-peer, never in the shared doc), so the doc args are
     /// unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id) {
-            if self.library.get(id).is_some() {
-                self.open_snippet(id);
-            }
+        if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id)
+            && self.library.get(id).is_some()
+        {
+            self.open_snippet(id);
         }
     }
 
@@ -705,17 +710,17 @@ impl ui::widget::Widget for SnippetsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn ui::widget::Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // Crossing a breakpoint (a window resize) drops any stale user
         // preference so the sidebar adopts the new layout's natural default.
@@ -760,7 +765,10 @@ impl ui::widget::Widget for SnippetsApp {
         // dimming scrim. Painted last so it sits above the content.
         if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_visible() {
             // Scrim: fades in with the reveal, behind the sliding rail.
-            let scrim = c.surfaces.overlay.with_alpha_factor((self.sidebar.reveal() * 0.55) as f32);
+            let scrim = c
+                .surfaces
+                .overlay
+                .with_alpha_factor((self.sidebar.reveal() * 0.55) as f32);
             draw::fill_rect(scene, t, self.rect, scrim);
             self.record(self.rect, Action::DismissSidebar);
         }
@@ -855,7 +863,7 @@ impl ui::widget::Widget for SnippetsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64 * BODY_LINE,
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * BODY_LINE,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 self.scroll = (self.scroll - dy).max(0.0);
@@ -873,28 +881,28 @@ impl ui::widget::Widget for SnippetsApp {
                 let mods = modifiers.state();
                 // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
                 // Cmd/Ctrl-C copies the open snippet.
-                if mods.control_key() || mods.super_key() {
-                    if let Key::Character(ch) = logical_key {
-                        match ch.to_lowercase().as_str() {
-                            "f" => {
-                                self.search_focused = true;
-                                *handled = true;
-                                return;
-                            }
-                            "n" => {
-                                self.new_snippet(state);
-                                *handled = true;
-                                return;
-                            }
-                            "c" => {
-                                if let Some(id) = self.open {
-                                    self.copy(id, state);
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            _ => {}
+                if (mods.control_key() || mods.super_key())
+                    && let Key::Character(ch) = logical_key
+                {
+                    match ch.to_lowercase().as_str() {
+                        "f" => {
+                            self.search_focused = true;
+                            *handled = true;
+                            return;
                         }
+                        "n" => {
+                            self.new_snippet(state);
+                            *handled = true;
+                            return;
+                        }
+                        "c" => {
+                            if let Some(id) = self.open {
+                                self.copy(id, state);
+                            }
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
                     }
                 }
 
@@ -950,7 +958,7 @@ impl ui::widget::Widget for SnippetsApp {
         false
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SnippetsApp"
     }
 
@@ -1003,7 +1011,12 @@ impl SnippetsApp {
             let w = band.width();
             let p = self.push.slide();
             let list = Rect::new(band.x0 - w * p, band.y0, band.x1 - w * p, band.y1);
-            let detail = Rect::new(band.x0 + w * (1.0 - p), band.y0, band.x1 + w * (1.0 - p), band.y1);
+            let detail = Rect::new(
+                band.x0 + w * (1.0 - p),
+                band.y0,
+                band.x1 + w * (1.0 - p),
+                band.y1,
+            );
             // Draw the off-screen pane first so the incoming one sits on top.
             if p < 0.999 {
                 self.draw_list(scene, t, tr, theme, list);
@@ -1037,8 +1050,8 @@ impl SnippetsApp {
     /// can be summoned / dismissed), or while the push stack shows the detail
     /// (so the user can go Back to the list).
     fn show_toggle(&self) -> bool {
-        let sidebar_collapsed = self.sidebar.reveal() < 0.999
-            || self.sidebar_layout() == SplitLayout::Overlay;
+        let sidebar_collapsed =
+            self.sidebar.reveal() < 0.999 || self.sidebar_layout() == SplitLayout::Overlay;
         let push_in_detail = self.is_push_layout() && self.push.reveal() > 0.5;
         sidebar_collapsed || push_in_detail
     }
@@ -1065,21 +1078,56 @@ impl SnippetsApp {
         if push_back {
             // Back chevron "‹".
             let r = 5.0;
-            draw::stroke_line(scene, t, Point::new(cx + r * 0.6, cy - r), Point::new(cx - r * 0.6, cy), 1.8, c.text_primary);
-            draw::stroke_line(scene, t, Point::new(cx - r * 0.6, cy), Point::new(cx + r * 0.6, cy + r), 1.8, c.text_primary);
+            draw::stroke_line(
+                scene,
+                t,
+                Point::new(cx + r * 0.6, cy - r),
+                Point::new(cx - r * 0.6, cy),
+                1.8,
+                c.text_primary,
+            );
+            draw::stroke_line(
+                scene,
+                t,
+                Point::new(cx - r * 0.6, cy),
+                Point::new(cx + r * 0.6, cy + r),
+                1.8,
+                c.text_primary,
+            );
             self.record(btn, Action::PushBack);
         } else if overlay_open {
             // Close "X" when the overlay sidebar is showing.
             let r = 6.0;
-            draw::stroke_line(scene, t, Point::new(cx - r, cy - r), Point::new(cx + r, cy + r), 1.8, c.text_primary);
-            draw::stroke_line(scene, t, Point::new(cx + r, cy - r), Point::new(cx - r, cy + r), 1.8, c.text_primary);
+            draw::stroke_line(
+                scene,
+                t,
+                Point::new(cx - r, cy - r),
+                Point::new(cx + r, cy + r),
+                1.8,
+                c.text_primary,
+            );
+            draw::stroke_line(
+                scene,
+                t,
+                Point::new(cx + r, cy - r),
+                Point::new(cx - r, cy + r),
+                1.8,
+                c.text_primary,
+            );
             self.record(btn, Action::ToggleSidebar);
         } else {
             // Three-line hamburger to summon the sidebar.
             let half = 7.0;
             for i in 0..3 {
-                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
-                draw::stroke_line(scene, t, Point::new(cx - half, ly), Point::new(cx + half, ly), 1.8, c.text_primary);
+                let ly = btn.y0 + 11.0 + f64::from(i) * 6.0;
+                draw::stroke_line(
+                    scene,
+                    t,
+                    Point::new(cx - half, ly),
+                    Point::new(cx + half, ly),
+                    1.8,
+                    c.text_primary,
+                );
             }
             self.record(btn, Action::ToggleSidebar);
         }
@@ -1139,14 +1187,24 @@ impl SnippetsApp {
         };
 
         // Smart folders.
-        for smart in [SmartFolder::All, SmartFolder::Favorites, SmartFolder::MostUsed] {
+        for smart in [
+            SmartFolder::All,
+            SmartFolder::Favorites,
+            SmartFolder::MostUsed,
+        ] {
             let active = matches!(&self.selection, Selection::Smart(s) if *s == smart);
-            let count = self
-                .library
-                .query(&Selection::Smart(smart), "")
-                .len();
+            let count = self.library.query(&Selection::Smart(smart), "").len();
             let row = self.sidebar_row(
-                scene, t, tr, theme, area, y, smart.label(), Some(count), active, 0,
+                scene,
+                t,
+                tr,
+                theme,
+                area,
+                y,
+                smart.label(),
+                Some(count),
+                active,
+                0,
             );
             self.record(row, Action::Select(Selection::Smart(smart)));
             y += SIDEBAR_ROW_H;
@@ -1161,8 +1219,18 @@ impl SnippetsApp {
                 .library
                 .query(&Selection::Folder(folder.clone()), "")
                 .len();
-            let row =
-                self.sidebar_row(scene, t, tr, theme, area, y, &folder, Some(count), active, 1);
+            let row = self.sidebar_row(
+                scene,
+                t,
+                tr,
+                theme,
+                area,
+                y,
+                &folder,
+                Some(count),
+                active,
+                1,
+            );
             self.record(row, Action::Select(Selection::Folder(folder.clone())));
             y += SIDEBAR_ROW_H;
         }
@@ -1173,8 +1241,7 @@ impl SnippetsApp {
         for (tag, cnt) in self.library.tags() {
             let active = matches!(&self.selection, Selection::Tag(x) if *x == tag);
             let label = format!("#{tag}");
-            let row =
-                self.sidebar_row(scene, t, tr, theme, area, y, &label, Some(cnt), active, 1);
+            let row = self.sidebar_row(scene, t, tr, theme, area, y, &label, Some(cnt), active, 1);
             self.record(row, Action::Select(Selection::Tag(tag.clone())));
             y += SIDEBAR_ROW_H;
         }
@@ -1203,14 +1270,24 @@ impl SnippetsApp {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
         }
         let fg = if active { c.text_primary } else { c.neutral[7] };
-        let x = row.x0 + pad + indent as f64 * 12.0;
+        let x = row.x0 + pad + f64::from(indent) * 12.0;
         let ty = y + (SIDEBAR_ROW_H - 4.0 - 15.0) / 2.0;
         draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
         if let Some(n) = count {
             let s = n.to_string();
-            let w = tr.measure(&s, 12.0, None).0 as f64;
+            let w = f64::from(tr.measure(&s, 12.0, None).0);
             let cfg = if active { c.accent[8] } else { c.text_dim };
-            draw::text(scene, tr, t, &s, row.x1 - pad - w, ty + 1.0, 12.0, cfg, TextWeight::Regular);
+            draw::text(
+                scene,
+                tr,
+                t,
+                &s,
+                row.x1 - pad - w,
+                ty + 1.0,
+                12.0,
+                cfg,
+                TextWeight::Regular,
+            );
         }
         row
     }
@@ -1237,7 +1314,11 @@ impl SnippetsApp {
             area.y0 + 10.0 + SEARCH_H - 16.0,
         );
         let focused = self.search_focused;
-        let border = if focused { c.border_focus } else { c.border_standard };
+        let border = if focused {
+            c.border_focus
+        } else {
+            c.border_standard
+        };
         draw::fill_round(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
         draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, border);
         let placeholder = self.search.is_empty();
@@ -1246,7 +1327,11 @@ impl SnippetsApp {
         } else {
             self.search.clone()
         };
-        let scolor = if placeholder { c.text_dim } else { c.text_primary };
+        let scolor = if placeholder {
+            c.text_dim
+        } else {
+            c.text_primary
+        };
         let sy = search_rect.y0 + (search_rect.height() - 15.0) / 2.0;
         draw::text(
             scene,
@@ -1264,7 +1349,7 @@ impl SnippetsApp {
             let tw = if placeholder {
                 0.0
             } else {
-                tr.measure(&self.search, 14.0, None).0 as f64
+                f64::from(tr.measure(&self.search, 14.0, None).0)
             };
             let cx = search_rect.x0 + 12.0 + tw + 1.0;
             draw::fill_rect(
@@ -1277,7 +1362,12 @@ impl SnippetsApp {
         self.record(search_rect, Action::FocusSearch);
         if !placeholder {
             // A small clear affordance.
-            let clear = Rect::new(search_rect.x1 - 26.0, search_rect.y0, search_rect.x1, search_rect.y1);
+            let clear = Rect::new(
+                search_rect.x1 - 26.0,
+                search_rect.y0,
+                search_rect.x1,
+                search_rect.y1,
+            );
             draw::text(
                 scene,
                 tr,
@@ -1307,8 +1397,13 @@ impl SnippetsApp {
             TextWeight::Medium,
         );
         let new_label = "+ New";
-        let nw = tr.measure(new_label, 13.0, None).0 as f64 + 20.0;
-        let new_rect = Rect::new(area.x1 - pad - nw, header_y - 4.0, area.x1 - pad, header_y + 18.0);
+        let nw = f64::from(tr.measure(new_label, 13.0, None).0) + 20.0;
+        let new_rect = Rect::new(
+            area.x1 - pad - nw,
+            header_y - 4.0,
+            area.x1 - pad,
+            header_y + 18.0,
+        );
         draw::fill_round(scene, t, new_rect, theme.radii_md(), c.accent[5]);
         draw::text(
             scene,
@@ -1328,7 +1423,9 @@ impl SnippetsApp {
         let mut y = list_top - self.scroll;
         let ids = self.visible.clone();
         for id in ids {
-            let Some(s) = self.library.get(id).cloned() else { continue };
+            let Some(s) = self.library.get(id).cloned() else {
+                continue;
+            };
             let row = Rect::new(area.x0 + 6.0, y, area.x1 - 6.0, y + ROW_H - 6.0);
             // Cull rows scrolled out of view but still record the hit so
             // clicks resolve; skip drawing if fully off-pane.
@@ -1364,13 +1461,33 @@ impl SnippetsApp {
         // A soft rounded tile carrying a glyph — a real, composed anchor.
         let tile = 56.0;
         let tile_rect = Rect::new(cx - tile / 2.0, top, cx + tile / 2.0, top + tile);
-        draw::fill_round(scene, t, tile_rect, theme.radii_md() + 4.0, c.surfaces.raised);
-        draw::stroke_round(scene, t, tile_rect, theme.radii_md() + 4.0, 1.0, c.border_standard);
+        draw::fill_round(
+            scene,
+            t,
+            tile_rect,
+            theme.radii_md() + 4.0,
+            c.surfaces.raised,
+        );
+        draw::stroke_round(
+            scene,
+            t,
+            tile_rect,
+            theme.radii_md() + 4.0,
+            1.0,
+            c.border_standard,
+        );
         let glyph = "{ }";
-        let gw = tr.measure(glyph, 22.0, None).0 as f64;
+        let gw = f64::from(tr.measure(glyph, 22.0, None).0);
         draw::text(
-            scene, tr, t, glyph,
-            cx - gw / 2.0, top + 15.0, 22.0, c.accent[6], TextWeight::Bold,
+            scene,
+            tr,
+            t,
+            glyph,
+            cx - gw / 2.0,
+            top + 15.0,
+            22.0,
+            c.accent[6],
+            TextWeight::Bold,
         );
         let mut y = tile_rect.y1 + 20.0;
 
@@ -1381,18 +1498,38 @@ impl SnippetsApp {
                 "Save a command, query, or block of code once — reuse it anywhere.",
             )
         } else {
-            ("No snippets match", "Try a different search, or clear the filter.")
+            (
+                "No snippets match",
+                "Try a different search, or clear the filter.",
+            )
         };
-        let hw = tr.measure(headline, 17.0, None).0 as f64;
+        let hw = f64::from(tr.measure(headline, 17.0, None).0);
         draw::text(
-            scene, tr, t, headline,
-            cx - hw / 2.0, y, 17.0, c.text_primary, TextWeight::Bold,
+            scene,
+            tr,
+            t,
+            headline,
+            cx - hw / 2.0,
+            y,
+            17.0,
+            c.text_primary,
+            TextWeight::Bold,
         );
         y += 26.0;
         // Sub-copy, wrapped to the available width so it never clips.
         for line in wrap_center(sub, tr, 13.0, area.width() - 48.0) {
-            let lw = tr.measure(&line, 13.0, None).0 as f64;
-            draw::text(scene, tr, t, &line, cx - lw / 2.0, y, 13.0, c.text_dim, TextWeight::Regular);
+            let lw = f64::from(tr.measure(&line, 13.0, None).0);
+            draw::text(
+                scene,
+                tr,
+                t,
+                &line,
+                cx - lw / 2.0,
+                y,
+                13.0,
+                c.text_dim,
+                TextWeight::Regular,
+            );
             y += 19.0;
         }
         y += 12.0;
@@ -1400,32 +1537,72 @@ impl SnippetsApp {
         if library_empty {
             // Primary call to action, centred.
             let label = "New snippet";
-            let lw = tr.measure(label, 13.5, None).0 as f64;
+            let lw = f64::from(tr.measure(label, 13.5, None).0);
             let bw = lw + 34.0;
             let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
             let hovered = btn.contains(self.last_mouse);
-            draw::fill_round(scene, t, btn, theme.radii_md(), if hovered { c.accent[4] } else { c.accent[5] });
+            draw::fill_round(
+                scene,
+                t,
+                btn,
+                theme.radii_md(),
+                if hovered { c.accent[4] } else { c.accent[5] },
+            );
             draw::text(
-                scene, tr, t, label,
-                btn.x0 + 17.0, btn.y0 + (36.0 - 14.0) / 2.0, 13.5, c.text_primary, TextWeight::Semibold,
+                scene,
+                tr,
+                t,
+                label,
+                btn.x0 + 17.0,
+                btn.y0 + (36.0 - 14.0) / 2.0,
+                13.5,
+                c.text_primary,
+                TextWeight::Semibold,
             );
             self.record(btn, Action::NewSnippet);
             // A quiet hint at the search grammar.
             y = btn.y1 + 22.0;
             let hint = "Tip: filter with  language:rust  or  tag:k8s";
-            let hw2 = tr.measure(hint, 11.5, None).0 as f64;
-            draw::text(scene, tr, t, hint, cx - hw2 / 2.0, y, 11.5, c.text_dim, TextWeight::Regular);
+            let hw2 = f64::from(tr.measure(hint, 11.5, None).0);
+            draw::text(
+                scene,
+                tr,
+                t,
+                hint,
+                cx - hw2 / 2.0,
+                y,
+                11.5,
+                c.text_dim,
+                TextWeight::Regular,
+            );
         } else {
             let label = "Clear search";
-            let lw = tr.measure(label, 13.0, None).0 as f64;
+            let lw = f64::from(tr.measure(label, 13.0, None).0);
             let bw = lw + 30.0;
             let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
             let hovered = btn.contains(self.last_mouse);
-            draw::fill_round(scene, t, btn, theme.radii_md(), if hovered { c.surfaces.raised } else { c.neutral[2] });
+            draw::fill_round(
+                scene,
+                t,
+                btn,
+                theme.radii_md(),
+                if hovered {
+                    c.surfaces.raised
+                } else {
+                    c.neutral[2]
+                },
+            );
             draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
             draw::text(
-                scene, tr, t, label,
-                btn.x0 + 15.0, btn.y0 + (34.0 - 14.0) / 2.0, 13.0, c.text_primary, TextWeight::Semibold,
+                scene,
+                tr,
+                t,
+                label,
+                btn.x0 + 15.0,
+                btn.y0 + (34.0 - 14.0) / 2.0,
+                13.0,
+                c.text_primary,
+                TextWeight::Semibold,
             );
             self.record(btn, Action::ClearSearch);
         }
@@ -1450,10 +1627,15 @@ impl SnippetsApp {
         }
         let pad = 12.0;
         // Language sigil badge.
-        let badge = Rect::new(row.x0 + pad, row.y0 + 12.0, row.x0 + pad + 30.0, row.y0 + 32.0);
+        let badge = Rect::new(
+            row.x0 + pad,
+            row.y0 + 12.0,
+            row.x0 + pad + 30.0,
+            row.y0 + 32.0,
+        );
         draw::fill_round(scene, t, badge, 6.0, lang_tint(theme, s.language));
         let sig = s.language.sigil();
-        let sw = tr.measure(sig, 11.0, None).0 as f64;
+        let sw = f64::from(tr.measure(sig, 11.0, None).0);
         draw::text(
             scene,
             tr,
@@ -1473,8 +1655,22 @@ impl SnippetsApp {
         } else {
             s.title.clone()
         };
-        let tcolor = if s.favorite { c.semantic.warning } else { c.text_primary };
-        draw::text(scene, tr, t, &title, tx, row.y0 + 10.0, 14.5, tcolor, TextWeight::Semibold);
+        let tcolor = if s.favorite {
+            c.semantic.warning
+        } else {
+            c.text_primary
+        };
+        draw::text(
+            scene,
+            tr,
+            t,
+            &title,
+            tx,
+            row.y0 + 10.0,
+            14.5,
+            tcolor,
+            TextWeight::Semibold,
+        );
 
         // Subtitle: first body line, dimmed and clipped.
         let first_line = s.body.lines().next().unwrap_or("").trim();
@@ -1500,7 +1696,7 @@ impl SnippetsApp {
             String::new()
         };
         if !hint.is_empty() {
-            let hw = tr.measure(&hint, 11.0, None).0 as f64;
+            let hw = f64::from(tr.measure(&hint, 11.0, None).0);
             draw::text(
                 scene,
                 tr,
@@ -1533,7 +1729,7 @@ impl SnippetsApp {
             } else {
                 "Select a snippet to preview it."
             };
-            let mw = tr.measure(msg, 15.0, None).0 as f64;
+            let mw = f64::from(tr.measure(msg, 15.0, None).0);
             draw::text(
                 scene,
                 tr,
@@ -1547,15 +1743,31 @@ impl SnippetsApp {
             );
             return;
         };
-        let Some(s) = self.library.get(open).cloned() else { return };
+        let Some(s) = self.library.get(open).cloned() else {
+            return;
+        };
         let pad = 28.0;
         let mut y = area.y0 + 24.0;
 
         // Title. In single-pane push showing the detail, the top-left Back
         // chevron floats over this corner, so indent the title past it.
         let back_shown = self.is_push_layout() && self.push.reveal() > 0.5;
-        let title_x = if back_shown { area.x0 + pad + TOGGLE_SIZE } else { area.x0 + pad };
-        draw::text(scene, tr, t, &s.title, title_x, y, 24.0, c.text_primary, TextWeight::Bold);
+        let title_x = if back_shown {
+            area.x0 + pad + TOGGLE_SIZE
+        } else {
+            area.x0 + pad
+        };
+        draw::text(
+            scene,
+            tr,
+            t,
+            &s.title,
+            title_x,
+            y,
+            24.0,
+            c.text_primary,
+            TextWeight::Bold,
+        );
         y += 36.0;
 
         // Meta row: language pill + folder + tags.
@@ -1577,12 +1789,34 @@ impl SnippetsApp {
         self.record(lp, Action::SetLanguage(open, next));
         x = lp.x1 + 8.0;
         if !s.folder.is_empty() {
-            let fp = draw::pill(scene, tr, t, &s.folder, x, y, 22.0, 12.0, c.text_dim, c.neutral[2]);
+            let fp = draw::pill(
+                scene,
+                tr,
+                t,
+                &s.folder,
+                x,
+                y,
+                22.0,
+                12.0,
+                c.text_dim,
+                c.neutral[2],
+            );
             x = fp.x1 + 8.0;
         }
         for tag in &s.tags {
             let label = format!("#{tag}");
-            let tp = draw::pill(scene, tr, t, &label, x, y, 22.0, 12.0, c.accent[7], c.accent[1]);
+            let tp = draw::pill(
+                scene,
+                tr,
+                t,
+                &label,
+                x,
+                y,
+                22.0,
+                12.0,
+                c.accent[7],
+                c.accent[1],
+            );
             self.record(tp, Action::Select(Selection::Tag(tag.clone())));
             x = tp.x1 + 8.0;
         }
@@ -1607,15 +1841,73 @@ impl SnippetsApp {
         // Action toolbar: Copy / Expand / Favorite / Duplicate / Delete.
         y += 4.0;
         let mut bx = area.x0 + pad;
-        let primary_label = if s.has_placeholders() { "Fill & Copy" } else { "Copy" };
-        bx = self.toolbar_button(scene, t, tr, theme, bx, y, primary_label, true, Action::Copy(open));
+        let primary_label = if s.has_placeholders() {
+            "Fill & Copy"
+        } else {
+            "Copy"
+        };
+        bx = self.toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            bx,
+            y,
+            primary_label,
+            true,
+            Action::Copy(open),
+        );
         if s.has_placeholders() {
-            bx = self.toolbar_button(scene, t, tr, theme, bx, y, "Variables…", false, Action::Expand(open));
+            bx = self.toolbar_button(
+                scene,
+                t,
+                tr,
+                theme,
+                bx,
+                y,
+                "Variables…",
+                false,
+                Action::Expand(open),
+            );
         }
-        let star_label = if s.favorite { "★ Starred" } else { "☆ Star" };
-        bx = self.toolbar_button(scene, t, tr, theme, bx, y, star_label, false, Action::ToggleFavorite(open));
-        bx = self.toolbar_button(scene, t, tr, theme, bx, y, "Duplicate", false, Action::Duplicate(open));
-        let _ = self.toolbar_button(scene, t, tr, theme, bx, y, "Delete", false, Action::Delete(open));
+        let star_label = if s.favorite {
+            "★ Starred"
+        } else {
+            "☆ Star"
+        };
+        bx = self.toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            bx,
+            y,
+            star_label,
+            false,
+            Action::ToggleFavorite(open),
+        );
+        bx = self.toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            bx,
+            y,
+            "Duplicate",
+            false,
+            Action::Duplicate(open),
+        );
+        let _ = self.toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            bx,
+            y,
+            "Delete",
+            false,
+            Action::Delete(open),
+        );
         y += 44.0;
 
         // Code card with syntax-highlighted body.
@@ -1640,7 +1932,7 @@ impl SnippetsApp {
         primary: bool,
         action: Action,
     ) -> f64 {
-        let tw = tr.measure(label, 13.0, None).0 as f64;
+        let tw = f64::from(tr.measure(label, 13.0, None).0);
         let w = tw + 24.0;
         let rect = Rect::new(x, y, x + w, y + 32.0);
         let hovered = rect.contains(self.last_mouse);
@@ -1649,7 +1941,11 @@ impl SnippetsApp {
             .text_size(13.0)
             .weight(TextWeight::Semibold)
             .hovered(hovered)
-            .style(if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral });
+            .style(if primary {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Neutral
+            });
         Button::paint(scene, t, tr, theme, &face);
         self.record(rect, action);
         rect.x1 + 8.0
@@ -1774,7 +2070,7 @@ fn draw_toast(
     message: &str,
 ) {
     let c = &theme.tokens.colors;
-    let w = tr.measure(message, 14.0, None).0 as f64 + 40.0;
+    let w = f64::from(tr.measure(message, 14.0, None).0) + 40.0;
     let h = 40.0;
     let x = area.x1 - w - 24.0;
     let y = area.y1 - h - 24.0;
@@ -1802,8 +2098,12 @@ fn wrap_center(s: &str, tr: &mut TextRenderer, size: f32, max_w: f64) -> Vec<Str
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
     for word in s.split_whitespace() {
-        let trial = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
-        if tr.measure(&trial, size, None).0 as f64 > max_w && !cur.is_empty() {
+        let trial = if cur.is_empty() {
+            word.to_string()
+        } else {
+            format!("{cur} {word}")
+        };
+        if f64::from(tr.measure(&trial, size, None).0) > max_w && !cur.is_empty() {
             lines.push(std::mem::take(&mut cur));
             cur.push_str(word);
         } else {
@@ -1832,7 +2132,7 @@ trait Radii {
 }
 impl Radii for Theme {
     fn radii_md(&self) -> f64 {
-        self.tokens.radii.md as f64
+        f64::from(self.tokens.radii.md)
     }
 }
 
@@ -1848,7 +2148,10 @@ mod tests {
         // none. The starter set is demo/`--shots` only.
         let app = SnippetsApp::new();
         assert_eq!(app.library_len_for_test(), 0, "live library starts empty");
-        assert!(app.open_id_for_test().is_none(), "nothing is opened on an empty library");
+        assert!(
+            app.open_id_for_test().is_none(),
+            "nothing is opened on an empty library"
+        );
         assert_eq!(app.visible_count_for_test(), 0);
     }
 
@@ -1918,7 +2221,10 @@ mod tests {
             .map(|s| s.id)
             .expect("a templated snippet exists");
         app.copy_for_test(id, &mut doc);
-        assert!(app.expand_open_for_test(), "templated copy routes through expand");
+        assert!(
+            app.expand_open_for_test(),
+            "templated copy routes through expand"
+        );
     }
 
     #[test]
@@ -1954,16 +2260,28 @@ mod tests {
     fn wide_keeps_sidebar_docked_and_open() {
         let mut app = SnippetsApp::new();
         app.layout_at_width_for_test(1280.0);
-        assert!(!app.sidebar_is_overlay_for_test(), "wide window docks the sidebar");
-        assert!(app.sidebar_open_for_test(), "docked sidebar is open beside the content");
-        assert!(!app.is_push_for_test(), "wide window keeps list + detail side by side");
+        assert!(
+            !app.sidebar_is_overlay_for_test(),
+            "wide window docks the sidebar"
+        );
+        assert!(
+            app.sidebar_open_for_test(),
+            "docked sidebar is open beside the content"
+        );
+        assert!(
+            !app.is_push_for_test(),
+            "wide window keeps list + detail side by side"
+        );
     }
 
     #[test]
     fn narrow_collapses_sidebar_to_overlay_closed_by_default() {
         let mut app = SnippetsApp::new();
         app.layout_at_width_for_test(720.0);
-        assert!(app.sidebar_is_overlay_for_test(), "narrow window overlays the sidebar");
+        assert!(
+            app.sidebar_is_overlay_for_test(),
+            "narrow window overlays the sidebar"
+        );
         assert!(
             !app.sidebar_open_for_test(),
             "the overlay sidebar is closed by default, summoned by the hamburger"
@@ -1976,7 +2294,10 @@ mod tests {
         app.layout_at_width_for_test(720.0);
         assert!(!app.sidebar_open_for_test());
         app.toggle_sidebar_for_test();
-        assert!(app.sidebar_open_for_test(), "the toggle summons the overlay flap");
+        assert!(
+            app.sidebar_open_for_test(),
+            "the toggle summons the overlay flap"
+        );
         app.toggle_sidebar_for_test();
         assert!(!app.sidebar_open_for_test(), "toggling again dismisses it");
     }
@@ -1985,7 +2306,10 @@ mod tests {
     fn very_narrow_uses_single_pane_push() {
         let mut app = SnippetsApp::new();
         app.layout_at_width_for_test(480.0);
-        assert!(app.is_push_for_test(), "very-narrow window switches to single-pane push");
+        assert!(
+            app.is_push_for_test(),
+            "very-narrow window switches to single-pane push"
+        );
         assert!(
             !app.push_showing_detail_for_test(),
             "push starts on the master list"
@@ -2040,7 +2364,7 @@ mod tests {
     }
 
     /// The toolbar Delete button dispatches the byte-identical `EncodedAction`
-    /// the Ctrl+K palette's "Delete snippet" ActionSpec exports — proof the two
+    /// the Ctrl+K palette's "Delete snippet" `ActionSpec` exports — proof the two
     /// share one source of truth — and it actually removes the row.
     #[test]
     fn toolbar_delete_dispatches_the_same_action_as_the_palette() {
@@ -2062,7 +2386,9 @@ mod tests {
 
         app.delete_for_test(id, &mut doc);
 
-        let dispatched = app.last_dispatched_for_test().expect("the button dispatched an action");
+        let dispatched = app
+            .last_dispatched_for_test()
+            .expect("the button dispatched an action");
         assert_eq!(dispatched.type_id, SNIPPETS_ACTION_TYPE);
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
         assert_eq!(
@@ -2097,7 +2423,11 @@ mod tests {
             .iter()
             .find(|r| r.id.as_str() == format!("snippets.snippet:{id}"))
             .unwrap();
-        let spec = snip.actions.iter().find(|a| a.id == "toggle-favorite").unwrap();
+        let spec = snip
+            .actions
+            .iter()
+            .find(|a| a.id == "toggle-favorite")
+            .unwrap();
         let spec_encoded = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
             _ => panic!("toggle-favorite is immediate"),
@@ -2105,12 +2435,17 @@ mod tests {
 
         app.toggle_favorite_for_test(id, &mut doc);
 
-        let dispatched = app.last_dispatched_for_test().expect("the star dispatched an action");
+        let dispatched = app
+            .last_dispatched_for_test()
+            .expect("the star dispatched an action");
         assert_eq!(
             dispatched.payload, spec_encoded.payload,
             "the star and the palette build the identical EncodedAction",
         );
-        assert!(SnippetsDoc::get(&doc, id).unwrap().favorite, "the snippet is now starred");
+        assert!(
+            SnippetsDoc::get(&doc, id).unwrap().favorite,
+            "the snippet is now starred"
+        );
     }
 
     /// The full undo covenant through the real host path: a toolbar affordance
@@ -2150,7 +2485,9 @@ mod tests {
             Widget::take_committed_action(&mut app).is_none(),
             "rising-edge: the captured heads are cleared on read",
         );
-        let entry = state.peek_last_undo().expect("exactly one undo boundary recorded");
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
         assert_eq!(
             entry.author.as_ref(),
             Some(&local_author),
@@ -2181,7 +2518,14 @@ mod tests {
         // mutation (the shape a replayed `DeleteSnippet` action leaves behind).
         SnippetsDoc::remove(&mut doc, id);
         app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.library_len_for_test(), before - 1, "the deletion re-projected");
-        assert!(!app.library.snippets.iter().any(|s| s.id == id), "and is not resurrected");
+        assert_eq!(
+            app.library_len_for_test(),
+            before - 1,
+            "the deletion re-projected"
+        );
+        assert!(
+            !app.library.snippets.iter().any(|s| s.id == id),
+            "and is not resurrected"
+        );
     }
 }

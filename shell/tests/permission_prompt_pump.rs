@@ -1,18 +1,8 @@
-//! Sandbox Phase 4 Task 4.2 — integration tests for the
-//! permission-prompt pump.
-//!
-//! Exercises the chrome ↔ overlay-host wiring without spinning up a
-//! full render loop:
-//!   1. Push a `(AppId, Capability)` onto `chrome.pending_grants`.
-//!   2. Run a `tick_permission_prompt_for_tests` so the host latches
-//!      a `PermissionPrompt` widget.
-//!   3. Synthesize a click on one of the four buttons through the
-//!      widget's own `handle_event` (via the
-//!      `permission_prompt_mut_for_tests` accessor).
-//!   4. Tick again so the pump drains the choice + applies the grant.
-//!
-//! Each test asserts both the queue state (front popped) and the
-//! workspace's `grants` map (Once doesn't persist; Session/Always do).
+//! Integration tests for the permission-prompt pump (chrome <-> overlay-host
+//! wiring, no render loop): queue a pending grant, tick to latch a
+//! `PermissionPrompt`, click through the widget's own `handle_event`, tick
+//! again to drain. Asserts queue state and the workspace `grants` map
+//! (Once doesn't persist; Session/Always do).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -53,10 +43,8 @@ fn left_press() -> WindowEvent {
     }
 }
 
-/// Drive an event through a [`PermissionPrompt`] with throwaway
-/// scaffolding. Mirrors the shell's own `pump_permission_prompt`
-/// driving — the test path writes through the widget's `handle_event`
-/// directly.
+/// Drive an event through a [`PermissionPrompt`], mirroring the shell's own
+/// `pump_permission_prompt`.
 fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     let mut tree = TaffyTree::<()>::new();
     let node = tree.new_leaf(Default::default()).unwrap();
@@ -77,18 +65,9 @@ fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     );
 }
 
-/// Build a minimal chrome holding a single workspace + the requested
-/// app's pending grant. Returns the chrome handle and the workspace's
-/// id so the test can assert on the post-pump grants map.
-///
-/// The workspace is handed to the local user, because that is the only
-/// state the compositor ever runs in: a room with no recorded owner has
-/// no administrators — deliberately, so a workspace a peer shared with
-/// you cannot be administered by you — and both paths that mint a
-/// workspace (boot, and the wheel disc's "+") call
-/// `adopt_ownerless_workspaces` for exactly that reason. A fixture that
-/// pushes a bare `Workspace::new` and skips it is testing a room nobody
-/// can govern, where "Always" is correctly refused.
+/// One workspace plus the requested app's pending grant. The workspace is
+/// handed to the local user because an ownerless room has no administrators,
+/// where "Always" is correctly refused.
 fn chrome_with_pending_grant(
     app_id: &str,
     capability: Capability,
@@ -108,8 +87,7 @@ fn chrome_with_pending_grant(
     (chrome, id)
 }
 
-/// Stub content widget. The host doesn't need a real strip tree to
-/// exercise the prompt pump.
+/// Stub content widget — the pump needs no real strip tree.
 struct StubContent {
     rect: Rect,
 }
@@ -122,7 +100,7 @@ impl ui::widget::Widget for StubContent {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
         let n = taffy.new_leaf(Default::default()).unwrap();
-        node_map.insert(n, self as *mut dyn ui::widget::Widget);
+        node_map.insert(n, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         n
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: taffy::NodeId, _origin: Point) {}
@@ -148,7 +126,7 @@ impl ui::widget::Widget for StubContent {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "StubContent"
     }
     fn get_rect(&self) -> Rect {
@@ -179,8 +157,7 @@ fn pump_drains_pending_grant_after_choice() {
         let prompt = host
             .permission_prompt_mut_for_tests()
             .expect("prompt latched");
-        // Drive the prompt through a known geometry so the button
-        // rects are deterministic.
+        // Known geometry so the button rects are deterministic.
         prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
         let center = prompt.allow_rect().center();
         dispatch(prompt, &cursor_at(center));
@@ -216,7 +193,6 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
     let mut host = host_with_chrome(chrome.clone());
 
-    // Latch the prompt.
     host.tick_permission_prompt_for_tests();
     {
         let prompt = host
@@ -229,7 +205,6 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         assert_eq!(prompt.pending_choice, Some(PromptChoice::Session));
     }
 
-    // Drain.
     host.tick_permission_prompt_for_tests();
 
     let st = chrome.borrow();
@@ -241,8 +216,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         .get("org.example.app")
         .expect("Session click must persist a grant on the active workspace");
     assert_eq!(caps.len(), 1);
-    // Scope must be `Session`, not the pre-prompt `Once` — the pump
-    // upgrades the scope based on the user's choice.
+    // Scope must be `Session`, not the pre-prompt `Once` — the pump upgrades it.
     assert!(
         matches!(
             &caps[0],
@@ -257,9 +231,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
 
 #[test]
 fn pump_persists_always_grant_with_filesystem_capability() {
-    // Sanity that the scope-replacement helper round-trips a non-
-    // Camera variant — Filesystem carries `path` + `mode` fields the
-    // pump must preserve while flipping the scope.
+    // Filesystem carries `path` + `mode` the pump must preserve across the flip.
     let granted_path = PathBuf::from("/home/u/work");
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.gnome.gedit",
@@ -269,10 +241,8 @@ fn pump_persists_always_grant_with_filesystem_capability() {
             scope: GRANT_ONCE,
         },
     );
-    // "Always" means "still granted after a reboot", so point the tree
-    // at a state file and read it back at the end. Without this the test
-    // only proves the grant reached memory, which is the half of the
-    // promise that was never the hard part.
+    // "Always" means "still granted after a reboot", so read the state file back
+    // — otherwise this only proves the grant reached memory.
     let state_file = scratch_dir().join("state.json");
     chrome.borrow().tree_mut().persist_path = Some(state_file.clone());
 
@@ -283,9 +253,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
         let prompt = host
             .permission_prompt_mut_for_tests()
             .expect("prompt latched");
-        // Only an administrator of the room may grant permanently, and
-        // the fixture handed the workspace to the local user, so the
-        // Always button is live.
+        // Only a room administrator may grant permanently; the local user owns it.
         assert!(prompt.is_owner);
         prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
         let center = prompt.always_rect().center();
@@ -325,9 +293,8 @@ fn pump_persists_always_grant_with_filesystem_capability() {
         );
     }
 
-    // The compositor can be killed rather than asked to exit, so the
-    // write is eager: by the time the pump returns the grant is already
-    // on disk. Reload it the way the boot path does.
+    // The write is eager because the compositor can be killed rather than asked
+    // to exit; reload the way the boot path does.
     let reloaded = shell::shell::persist::load_tree_from(&state_file)
         .expect("the pump must have written the state file");
     let ws = reloaded
@@ -338,9 +305,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     expect_grant(ws, "after reloading the state file");
 }
 
-/// Per-test scratch directory under `target/`, so a state file written
-/// here never lands in the user's real config dir and parallel workers
-/// don't stomp on each other.
+/// Per-test scratch dir under `target/`, off the user's real config dir.
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -408,9 +373,7 @@ fn pump_does_not_latch_when_queue_is_empty() {
 
 #[test]
 fn pump_advances_to_next_grant_after_first_drain() {
-    // Two queued grants for the same app — first an Allow, then a
-    // Deny. Both should be visible in sequence; after the second
-    // drain the queue is empty and no widget remains.
+    // Allow then Deny across two apps: both visible in sequence, nothing left.
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     tree.workspaces.push(Workspace::new(id, "demo"));
@@ -429,7 +392,6 @@ fn pump_advances_to_next_grant_after_first_drain() {
     }
     let mut host = host_with_chrome(chrome.clone());
 
-    // First grant — Allow.
     host.tick_permission_prompt_for_tests();
     {
         let prompt = host
@@ -443,7 +405,6 @@ fn pump_advances_to_next_grant_after_first_drain() {
     }
     host.tick_permission_prompt_for_tests();
 
-    // Second grant — Deny.
     {
         let prompt = host
             .permission_prompt_mut_for_tests()
@@ -467,27 +428,17 @@ fn pump_advances_to_next_grant_after_first_drain() {
     );
 }
 
-/// Tests-only helper to read the host's prompt slot through the
-/// public `permission_prompt_mut_for_tests` accessor without
-/// borrowing it for the rest of the test scope.
+/// Read the host's prompt slot without borrowing it for the rest of the scope.
 fn host_has_no_prompt(host: &ShellOverlayHost) -> bool {
-    // The accessor takes `&mut`, so we cast through unsafe to read
-    // the slot without exposing a parallel `&self` accessor on the
-    // host. Cheap and contained — the prompt is `Option<...>` and
-    // we only need the discriminant.
-    //
-    // Done via a one-liner cast because `&ShellOverlayHost` already
-    // implies stable layout for `'a` and we never write through the
-    // pointer.
+    // The accessor takes `&mut`; cast through a raw pointer to read the
+    // discriminant without adding a parallel `&self` accessor. Read-only.
     let host_ptr: *const ShellOverlayHost = host;
-    let host_mut: *mut ShellOverlayHost = host_ptr as *mut _;
+    let host_mut: *mut ShellOverlayHost = host_ptr.cast_mut();
     let p = unsafe { (*host_mut).permission_prompt_mut_for_tests() };
     p.is_none()
 }
 
-// Reference unused field/import suppression: `OverlayFlags`, `Duration`,
-// `VecDeque` are pulled in for symmetry with the wider chrome-state API
-// the prompt sits inside, even when this file's tests don't poke them.
+// Imported for symmetry with the wider chrome-state API, unused here.
 #[allow(dead_code)]
 fn _suppress_unused() {
     let _ = OverlayFlags::default();

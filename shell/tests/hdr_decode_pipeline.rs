@@ -1,53 +1,31 @@
-//! HEVC Main10 decode pipeline test.
+//! HEVC Main10 decode pipeline test: round-trips a 64x64 gradient 10-bit
+//! YUV frame through libx265 -> HEVC Main10 NALUs -> `HevcDecoder` ->
+//! P010, asserting the output is genuinely 10-bit-wide (the top 6 bits of
+//! luma carry content, not the always-zero pattern an 8-bit-in-16-bit
+//! downconvert leaves).
 //!
-//! Round-trips a 64×64 solid-gradient 10-bit YUV frame through libx265
-//! (encoder) → HEVC Main10 NALU bytes → `HevcDecoder` → P010 planes.
-//! Asserts the output is genuinely 10-bit-wide — the top 6 bits of the
-//! luma sample should carry actual content (not the "always zero"
-//! pattern an 8-bit-in-16-bit downconvert would leave).
-//!
-//! # Why this file needs a feature of its own
-//!
-//! Every test here needs libavcodec to carry HEVC *and* libx265, and
-//! that is a property of the distro's ffmpeg, not of qOS. Fedora — what
-//! qOS is built from and ships — configures `libavcodec-free` with
-//! `--disable-decoder='h264,hevc,vc1,vvc'` and offers no libx265
-//! encoder, so on a stock image none of this is observable.
-//!
-//! It used to be compiled anyway: the round-trip printed "skipping" and
-//! returned green while proving nothing, and its two neighbours failed
-//! outright and were waved through as pre-existing. A test that cannot
-//! see its subject must not report success, so the gate is explicit
-//! instead. Run these against an HEVC-capable libavcodec
-//! (rpmfusion's `libavcodec-freeworld`, or a self-built ffmpeg) with:
+//! Fedora configures `libavcodec-free` with
+//! `--disable-decoder='h264,hevc,vc1,vvc'` and no libx265, so on a stock
+//! image none of this is observable. The gate is explicit rather than a
+//! quiet self-skip — under the feature a missing codec is a failure, the
+//! feature being the caller asserting the codec is there:
 //!
 //! ```text
 //! cargo test -p shell --features hevc-codec-tests --test hdr_decode_pipeline
 //! ```
-//!
-//! Under that feature there are no self-skips left: a missing codec is a
-//! failure, because the feature is the caller asserting it is there.
-//!
-//! The dispatch contract that *is* observable everywhere — which decoder
-//! a wire label selects, and how an absent backend is reported — lives
-//! in `shell::network::decoder::tests` and
-//! `shell::shell::peer_view::tests`, and runs on every host.
-
 #![cfg(all(feature = "hdr-decode", feature = "hevc-codec-tests"))]
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::ffi;
 use shell::network::decoder::{DecodedPixels, HevcDecoder};
 
-/// Build a 64×64 YUV420P10LE frame with a diagonal gradient.
-/// libx265's 10-bit mode wants YUV420P10 input (Y plane + separate
-/// U + V half-resolution planes), each sample stored in the LOWER
-/// 10 bits of a u16 native LE encoding.
+/// libx265's 10-bit mode wants Y + half-res U/V, each sample in the
+/// LOWER 10 bits of a native-LE u16.
 fn gradient_frame_yuv420p10(width: u32, height: u32) -> ffmpeg::frame::Video {
     let mut frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::YUV420P10LE, width, height);
 
-    // Y plane — diagonal gradient covering the full 10-bit range so
-    // the round-trip has non-uniform content to preserve.
+    // Diagonal gradient covering the full 10-bit range, so the round-trip
+    // has non-uniform content to preserve.
     let y_stride = frame.stride(0);
     let range = (width as u32 + height as u32).saturating_sub(2).max(1);
     {
@@ -95,15 +73,11 @@ fn gradient_frame_yuv420p10(width: u32, height: u32) -> ffmpeg::frame::Video {
     frame
 }
 
-/// Try to encode `num_frames` HEVC Main10 frames using libavcodec's
-/// `libx265` encoder. Returns the concatenated Annex-B NALU stream.
-/// Returns `None` if the libavcodec on this host wasn't built with
-/// libx265 support — the test self-skips in that case.
+/// `None` if this host's libavcodec lacks libx265.
 fn encode_hevc_main10_frames(width: u32, height: u32, num_frames: u32) -> Option<Vec<u8>> {
     let _ = ffmpeg::init();
-    // Look up libx265 by name — the encoder-registry name matches the
-    // FFmpeg CLI's `-c:v libx265`. If the build is missing libx265,
-    // this returns null and we self-skip.
+    // The encoder-registry name matches the FFmpeg CLI's `-c:v libx265`; a
+    // build without it returns null and we self-skip.
     let cname = std::ffi::CString::new("libx265").ok()?;
     let ptr = unsafe { ffi::avcodec_find_encoder_by_name(cname.as_ptr()) };
     if ptr.is_null() {
@@ -132,8 +106,7 @@ fn encode_hevc_main10_frames(width: u32, height: u32, num_frames: u32) -> Option
     }
 
     let mut opts = ffmpeg::Dictionary::new();
-    // x265 params — "ultrafast" and "no-info" for a compact bitstream
-    // suitable for the test's 64×64.
+    // "ultrafast" + "no-info" keep the bitstream compact at 64x64.
     opts.set("preset", "ultrafast");
     opts.set("tune", "zerolatency");
     opts.set("x265-params", "log-level=none:keyint=1");
@@ -143,12 +116,8 @@ fn encode_hevc_main10_frames(width: u32, height: u32, num_frames: u32) -> Option
     let mut out = Vec::new();
     for i in 0..num_frames {
         let mut frame = gradient_frame_yuv420p10(width, height);
-        // Shift the gradient by i so each frame carries different
-        // content — a diagonal offset.
-        // The Y-plane build already put a diagonal there; per-frame
-        // uniqueness would come from re-baking with a phase but for
-        // this test the same gradient is fine — libx265 still
-        // motion-encodes each into a distinct P-frame.
+        // Same gradient every frame: libx265 still motion-encodes each into a
+        // distinct P-frame.
         let _ = i;
         unsafe {
             (*frame.as_mut_ptr()).pts = i as i64;
@@ -156,7 +125,6 @@ fn encode_hevc_main10_frames(width: u32, height: u32, num_frames: u32) -> Option
         opened.send_frame(&frame).ok()?;
         drain_packets(&mut opened, &mut out);
     }
-    // Flush.
     opened.send_eof().ok()?;
     drain_packets(&mut opened, &mut out);
 
@@ -177,9 +145,8 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
     const W: u32 = 64;
     const H: u32 = 64;
 
-    // No self-skip: `hevc-codec-tests` is the caller stating this build
-    // has an HEVC-capable libavcodec, so a missing encoder is a failure,
-    // not a reason to pass quietly.
+    // `hevc-codec-tests` states this build has an HEVC-capable libavcodec,
+    // so a missing encoder is a failure, not a quiet pass.
     let nalus = encode_hevc_main10_frames(W, H, 5).expect(
         "libx265 HEVC Main10 encoder missing — `hevc-codec-tests` asserts \
          this libavcodec has one",
@@ -190,19 +157,15 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
     );
 
     let mut dec = HevcDecoder::new().expect("HEVC decoder builds");
-    // Push all the NALUs at once — the HEVC parser handles the
-    // splitting internally.
     let mut got_frame = false;
-    // libavcodec may buffer the first packet; loop feeding until
-    // we get a frame or run out of retries.
+    // libavcodec may buffer the first packet, so retry until a frame lands.
     for retry in 0..8 {
         if let Some(frame) = dec.decode(&nalus) {
             assert_eq!(frame.width, W);
             assert_eq!(frame.height, H);
             got_frame = true;
-            // Verify it's genuinely 10-bit — top 6 bits of Y must
-            // contain content. If the decoder had downcast to 8-bit,
-            // the top 6 bits would all be zero.
+            // Genuinely 10-bit: an 8-bit downcast would leave the top 6 bits of Y
+            // all zero.
             match &frame.pixels {
                 DecodedPixels::P010 { y, .. } => {
                     let all_top6_zero = y.iter().all(|s| (*s >> 10) == 0);
@@ -210,13 +173,7 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
                         !all_top6_zero,
                         "top 6 bits of every luma sample are zero — decoder likely downcast to 8-bit"
                     );
-                    // Additionally: check that samples span > 8-bit's
-                    // 256-level dynamic range in the top-bit layout.
-                    // A 10-bit-in-upper-bits P010 stream has samples
-                    // in the top 10 bits, so a proper 1023-code
-                    // gradient should show at least 200 distinct
-                    // samples (much more than the 256 an 8-bit could
-                    // produce in the same space).
+                    // And the gradient's precision survived, not just its top bits.
                     let mut buckets = std::collections::HashSet::new();
                     for s in y.iter().take(4096) {
                         buckets.insert(*s >> 6);
@@ -255,7 +212,6 @@ fn hevc_decoder_returns_none_for_empty_input() {
 fn video_decoder_factory_picks_hevc_from_wire_label() {
     use shell::network::decoder::VideoDecoder;
     let d = VideoDecoder::for_wire_codec("hevc-main10").expect("hevc-main10 works");
-    // Confirm the decoder is present (compiler-checked by the pattern).
     match d {
         VideoDecoder::Hevc(_) => {}
         _ => panic!("wire label hevc-main10 should build a Hevc decoder"),

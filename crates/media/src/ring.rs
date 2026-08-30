@@ -12,8 +12,8 @@
 
 use std::collections::VecDeque;
 use std::io::Read;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// A fixed-capacity FIFO byte buffer. Writing past `capacity` overwrites the
 /// oldest bytes still in the ring.
@@ -24,7 +24,10 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
-        Self { buf: VecDeque::with_capacity(capacity.min(1 << 20)), capacity: capacity.max(1) }
+        Self {
+            buf: VecDeque::with_capacity(capacity.min(1 << 20)),
+            capacity: capacity.max(1),
+        }
     }
 
     pub fn capacity(&self) -> usize {
@@ -96,7 +99,11 @@ impl PrefetchProgress {
                 ((read * 100) / total) as u8
             }
             _ => {
-                if self.is_done() { 100 } else { 0 }
+                if self.is_done() {
+                    100
+                } else {
+                    0
+                }
             }
         }
     }
@@ -152,7 +159,10 @@ impl Prefetcher {
             })
             .expect("spawn media-prefetch thread");
 
-        Self { progress, _handle: handle }
+        Self {
+            progress,
+            _handle: handle,
+        }
     }
 
     /// A cheap, cloneable handle to this prefetch's progress.

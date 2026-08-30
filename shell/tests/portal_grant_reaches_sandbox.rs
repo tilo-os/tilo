@@ -1,9 +1,7 @@
-//! The other half of "the app can open the file": what happens to the
-//! grant the dialog minted.
-//!
-//! `portal_file_chooser_e2e.rs` proves the app is handed a path it can
-//! read *now*. This proves the grant that came with it is the thing the
-//! sandbox is actually built from — that the chain
+//! The other half of "the app can open the file": what happens to the grant
+//! the dialog minted. `portal_file_chooser_e2e.rs` proves the app is handed
+//! a path it can read *now*; this proves the grant is what the sandbox is
+//! built from — that the chain
 //!
 //! ```text
 //!   dialog pick
@@ -14,13 +12,10 @@
 //!
 //! carries the picked path end to end, and carries *only* it.
 //!
-//! Why this matters as a separate test: the mount namespace of a running
-//! sandboxed app is fixed at launch, so a grant made mid-session cannot
-//! change it. What the grant does instead is decide the *next* launch.
-//! If the grant were dropped, mis-scoped, or widened anywhere along this
-//! chain, an app would open a file once through the portal and then find
-//! it gone on restart — or, in the failure this branch removes, find the
-//! entire filesystem bound in.
+//! Separate test because a running sandbox's mount namespace is fixed at
+//! launch, so a mid-session grant only decides the *next* launch: a
+//! dropped, mis-scoped or widened grant means an app finds its file gone
+//! on restart — or finds the entire filesystem bound in.
 
 use std::path::PathBuf;
 
@@ -48,11 +43,9 @@ fn store() -> (GrantStoreHandle, WorkspaceId) {
     (GrantStoreHandle::new(handle), id)
 }
 
-/// The plan the launcher would build for `app`, from the capabilities
-/// the compositor publishes for the workspace. This is the production
-/// pair: `set_workspace_capabilities` is what `launch_in_workspace`
-/// calls, `capabilities_for_app` is what `launch_with_document` reads,
-/// and `CapabilityPlan::for_app` is what turns the result into binds.
+/// The plan the launcher would build for `app` from the capabilities the
+/// compositor publishes — the production pair `set_workspace_capabilities`/
+/// `capabilities_for_app` plus `CapabilityPlan::for_app`.
 fn plan_for(store: &GrantStoreHandle, ws: WorkspaceId, app: &str) -> CapabilityPlan {
     let caps = {
         let tree = store.tree_handle();
@@ -76,8 +69,7 @@ fn an_opened_file_is_bound_read_only_at_the_next_launch() {
     let caller = PortalCaller::new(ws, APP);
     let picked = PathBuf::from("/home/someone/Documents/report.odt");
 
-    // Exactly what `FileChooserBackend::pick_and_grant` records for an
-    // OpenFile whose dialog the user confirmed.
+    // Exactly what `pick_and_grant` records for a confirmed OpenFile dialog.
     store.insert(
         &caller,
         Capability::Filesystem {
@@ -130,13 +122,8 @@ fn a_saved_file_is_bound_writable_at_the_next_launch() {
 }
 
 /// The launcher refuses to bind the filesystem root, and must keep
-/// refusing.
-///
-/// `launcher::capabilities::is_bindable_path` rejects `"/"` outright
-/// (`path.is_absolute() && raw != "/"`), so the old `"/"` sentinel never
-/// reached bwrap as a root bind. That is defence in depth and it is
-/// load-bearing — this test is what stops the guard being relaxed on the
-/// grounds that "nothing mints a `/` grant anyway".
+/// refusing: `is_bindable_path` rejects `"/"` outright. Load-bearing, so
+/// the guard isn't relaxed on the grounds that nothing mints a `/` grant.
 #[test]
 fn the_launcher_refuses_to_bind_the_filesystem_root() {
     let (store, ws) = store();
@@ -162,21 +149,10 @@ fn the_launcher_refuses_to_bind_the_filesystem_root() {
     );
 }
 
-/// Why the `"/"` sentinel was still a serious bug even though the
-/// launcher would not bind it.
-///
-/// The damage was never at the bwrap layer. It was that
-/// `Scope::FsPath("/")` is a prefix match over every path, so every
-/// compositor-side check that asks "has this app already been granted
-/// this?" answers yes — for anything. That is the same predicate
-/// `fs/src/acl.rs` answers `open`/`read`/`write` with, and it is what
-/// `flow::resolve` consulted before deciding whether to prompt: with an
-/// Always-scoped `/` recorded, the file dialog stopped appearing and
-/// every subsequent request was auto-approved.
-///
-/// This test pins that consequence, so the reason the sentinel had to go
-/// is written down as an executable fact rather than a claim in a commit
-/// message.
+/// Why a `"/"` grant is dangerous even though the launcher refuses to bind
+/// it: `Scope::FsPath("/")` is a prefix match over every path, so every
+/// compositor-side "already granted?" check answers yes for anything —
+/// including `fs/src/acl.rs`'s open/read/write checks and `flow::resolve`.
 #[test]
 fn a_root_grant_makes_every_path_read_as_already_granted() {
     let (store, ws) = store();
@@ -205,7 +181,6 @@ fn a_root_grant_makes_every_path_read_as_already_granted() {
     );
 }
 
-/// A grant for one file must not drag its neighbours in.
 #[test]
 fn a_grant_covers_the_named_path_and_nothing_beside_it() {
     let (store, ws) = store();
@@ -232,10 +207,12 @@ fn a_grant_covers_the_named_path_and_nothing_beside_it() {
         !plan.allow_network,
         "a file grant must not carry network access"
     );
-    assert!(plan.devices.is_empty(), "a file grant must not carry devices");
+    assert!(
+        plan.devices.is_empty(),
+        "a file grant must not carry devices"
+    );
 }
 
-/// Two different apps in one workspace do not inherit each other's picks.
 #[test]
 fn a_grant_is_scoped_to_the_app_that_asked() {
     let (store, ws) = store();

@@ -158,7 +158,14 @@ impl FrameCache {
         if let Some(old) = self.entries.remove(&key) {
             self.bytes = self.bytes.saturating_sub(old.cost);
         }
-        self.entries.insert(key, Entry { frame, used_at: self.clock, cost });
+        self.entries.insert(
+            key,
+            Entry {
+                frame,
+                used_at: self.clock,
+                cost,
+            },
+        );
         self.bytes += cost;
         self.evict_to_bounds();
     }
@@ -233,7 +240,10 @@ pub fn read_ahead_targets(
         if b < 0 {
             break;
         }
-        let key = FrameKey { source: source.clone(), bucket: b as u64 };
+        let key = FrameKey {
+            source: source.clone(),
+            bucket: b as u64,
+        };
         if !cache.contains(&key) {
             out.push(b as u64 * bucket_ms);
         }
@@ -244,7 +254,7 @@ pub fn read_ahead_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dmabuf::{Colorimetry, DmabufImage, DRM_FORMAT_NV12};
+    use crate::dmabuf::{Colorimetry, DRM_FORMAT_NV12, DmabufImage};
 
     fn rgba_frame(w: u32, h: u32, pts_ms: u64) -> Arc<Frame> {
         Arc::new(Frame {
@@ -256,7 +266,10 @@ mod tests {
     }
 
     fn key(source: &str, bucket: u64) -> FrameKey {
-        FrameKey { source: Arc::from(source), bucket }
+        FrameKey {
+            source: Arc::from(source),
+            bucket,
+        }
     }
 
     #[test]
@@ -290,7 +303,11 @@ mod tests {
         assert_eq!(bucket_ms_for_fps(0.0), 1);
         assert_eq!(bucket_ms_for_fps(f64::NAN), 1);
         assert_eq!(bucket_ms_for_fps(-30.0), 1);
-        assert_eq!(bucket_of(500, 0), 500, "a zero bucket is clamped, not divided by");
+        assert_eq!(
+            bucket_of(500, 0),
+            500,
+            "a zero bucket is clamped, not divided by"
+        );
     }
 
     #[test]
@@ -299,11 +316,17 @@ mod tests {
         let mut c = FrameCache::new(8, 1 << 30);
         c.insert(key("a", 10), rgba_frame(16, 16, 333));
         c.insert(key("a", 11), rgba_frame(16, 16, 366));
-        assert!(c.get(&key("a", 10)).is_some(), "stepping back hits the cache");
+        assert!(
+            c.get(&key("a", 10)).is_some(),
+            "stepping back hits the cache"
+        );
         assert!(c.get(&key("a", 11)).is_some());
         let (hits, misses) = c.stats();
         assert_eq!((hits, misses), (2, 0));
-        assert!(c.get(&key("a", 12)).is_none(), "an unvisited time is a miss");
+        assert!(
+            c.get(&key("a", 12)).is_none(),
+            "an unvisited time is a miss"
+        );
         assert_eq!(c.stats(), (2, 1));
     }
 
@@ -330,7 +353,11 @@ mod tests {
         for i in 0..3u64 {
             c.insert(key("a", i), rgba_frame(1920, 1080, i));
         }
-        assert!(c.bytes() <= budget, "byte budget respected: {} > {budget}", c.bytes());
+        assert!(
+            c.bytes() <= budget,
+            "byte budget respected: {} > {budget}",
+            c.bytes()
+        );
         assert!(c.len() < 3, "the byte budget evicted, not the entry cap");
         assert!(c.len() >= 1, "at least the newest frame is retained");
     }
@@ -360,7 +387,10 @@ mod tests {
         for i in 0..4u64 {
             c.insert(key("a", i), f.clone());
         }
-        assert!(c.bytes() <= 4 * 1024 * 1024, "dmabufs are evicted under the budget too");
+        assert!(
+            c.bytes() <= 4 * 1024 * 1024,
+            "dmabufs are evicted under the budget too"
+        );
     }
 
     #[test]
@@ -384,7 +414,10 @@ mod tests {
         assert!(!c.contains(&key("a", 2)));
         assert!(c.contains(&key("b", 1)), "another source is untouched");
         assert_eq!(c.len(), 1);
-        assert!(c.bytes() > 0, "the surviving entry still accounts for its bytes");
+        assert!(
+            c.bytes() > 0,
+            "the surviving entry still accounts for its bytes"
+        );
     }
 
     #[test]
@@ -393,7 +426,13 @@ mod tests {
         let src: SourceKey = Arc::from("a");
         let bucket_ms = bucket_ms_for_fps(30.0);
         // Playhead at bucket 100; 101 already decoded.
-        c.insert(FrameKey { source: src.clone(), bucket: 101 }, rgba_frame(8, 8, 0));
+        c.insert(
+            FrameKey {
+                source: src.clone(),
+                bucket: 101,
+            },
+            rgba_frame(8, 8, 0),
+        );
 
         let fwd = read_ahead_targets(&c, &src, 100 * bucket_ms, bucket_ms, 1, 3);
         assert_eq!(fwd.len(), 3);
@@ -404,7 +443,11 @@ mod tests {
         assert_eq!(fwd[0], 102 * bucket_ms, "nearest uncached first");
 
         let back = read_ahead_targets(&c, &src, 100 * bucket_ms, bucket_ms, -1, 2);
-        assert_eq!(back, vec![99 * bucket_ms, 98 * bucket_ms], "scrubbing back reads behind");
+        assert_eq!(
+            back,
+            vec![99 * bucket_ms, 98 * bucket_ms],
+            "scrubbing back reads behind"
+        );
     }
 
     #[test]

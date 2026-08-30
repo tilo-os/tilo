@@ -9,29 +9,88 @@
 //!                                      ...with the version-history strip open
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the descriptor the launcher injects — nothing to
-//! configure. Run outside a session, point two instances at one shell:
-//!
-//! ```bash
-//! QUICK_COLLAB_SOCK="$XDG_RUNTIME_DIR/qos/services/collab-json.sock"
-//! QUICK_APP_ID=alice word-processor doc.md &
-//! QUICK_APP_ID=bob   word-processor doc.md
-//! ```
+//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! nothing to configure. A raw process started outside a session has no
+//! collaboration service; the descriptor is inherited, not a socket path an
+//! app can fabricate.
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
+// Thin build only: pull the shared toolkit dylib
+// (`libruntime_dylib.so`) into the link graph. It statically contains
+// the `ui` toolkit this app links -- and with it wgpu, vello,
+// cosmic-text, automerge, taffy and fluent -- so with `-C
+// prefer-dynamic` rustc serves `ui` and libstd from the dylib instead
+// of baking ~18 MB of `.text` into this binary. Naming the crate here
+// is what keeps rustc from eliminating it as unused. Compiled out in
+// normal (static) builds.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use word_processor::{open_document, WordProcessorWidget};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::text_render::TextRenderer;
 use ui::{App, PresenceCtx, State, Theme, Widget};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
+use word_processor::{WordProcessorWidget, open_document};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+
+/// An Automerge actor id that is actually distinct from every other replica's.
+///
+/// `format!("{prefix}-{pid}")` was not: every instance here runs in its own PID
+/// namespace, so every instance sees itself as pid 2, every session wrote under
+/// the *same* actor, and Automerge refuses a frame whose actor already used that
+/// sequence number — frames silently dropped in the one direction that matters,
+/// a change made on one machine never reaching another.
+///
+/// `have` is the actor the document already carries (random per `AutoCommit`, or
+/// persisted per state directory via `ui::persist`) — distinct by construction,
+/// the property the old id only looked like it had. Deliberately reads no
+/// environment: the failure was an id that was a function of things two replicas
+/// share, so only a function of its own arguments can be tested against it.
+fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
+    let hex = have.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
+/// The name this replica is given, if anything has named it. `QUICK_APP_ID` is
+/// how a dev run points two instances at one shell and gets a readable history;
+/// `QOS_USER_ID` is the session's own identity, but doesn't reach a sandboxed
+/// app (the launcher builds its environment from an allowlist, and this isn't on
+/// it) — so in the product neither answers, and the actor comes from
+/// [`distinct_actor`].
+fn named_actor(prefix: &str) -> Option<String> {
+    if let Ok(id) = std::env::var("QUICK_APP_ID")
+        && !id.is_empty()
+    {
+        return Some(id);
+    }
+    match std::env::var("QOS_USER_ID") {
+        Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
+        _ => None,
+    }
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -89,25 +148,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         // it was launched into, pumps remote ops into `State`, broadcasts
         // local deltas and caret/selection presence, and feeds the
         // resulting `PresenceCtx` into the widget's draw — all of it
-        // without an app saying so. A missing QUICK_APP_ID falls back to a
-        // per-process id so two un-configured instances still get distinct
-        // actors.
-        let app_id = std::env::var("QUICK_APP_ID")
-            .unwrap_or_else(|_| format!("wp-{}", std::process::id()));
+        // without an app saying so. `QUICK_APP_ID`/`QOS_USER_ID` name a
+        // known replica; a sandboxed launch has neither, so the fallback has
+        // to be sound on its own — see [`distinct_actor`].
+        let app_id =
+            named_actor("wp").unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
+        ui::diag!("word-processor: automerge actor {app_id}");
         state
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));
 
-        // The document being edited is a record identified by its path, and
-        // the widget names it. Installing the record set is what puts its
-        // deltas on that record's own channel instead of one shared by every
-        // word-processor window in the room — which is what used to merge two
-        // people's unrelated documents into each other.
+        // The document is a record identified by its path; installing the
+        // record set routes its deltas onto that record's own channel instead
+        // of one shared by every word-processor window in the room (which
+        // would merge unrelated documents together).
         //
         // The set is in-memory: this app's durable form is the file on disk,
-        // not a per-record automerge store, and adding a second copy of the
-        // truth is not what records are for. What the set gives it is
-        // identity, routing and the room's index of which documents it holds.
+        // not a per-record automerge store. What the set gives it is
+        // identity, routing, and the room's index of which documents it holds.
         let (room, room_autosave) = ui::persist::open("dev.qos.word-processor");
         let records = ui::RecordSet::in_memory().with_home(
             std::env::var("QOS_WORKSPACE_ID")
@@ -126,22 +184,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Give `widget`'s document a real authored history, so `--shots --history` has
-/// something worth drawing.
-///
-/// Three working sessions: two by the local author either side of a long break,
-/// one by a collaborator in between — forked, edited under its own actor, merged
-/// back, the shape a sync round has. That is what makes the strip's version band
-/// mean something: the boundaries come from a change of author and a gap in the
-/// clock, not from anything seeded here.
-///
-/// The sessions are committed with explicit wall clocks (the same primitive the
-/// FS layer uses when it replays a durable chain) because the gaps are the point;
-/// the first and last revisions go through the editor's own commit path.
-///
-/// Two of the runs are then **named**, one of them by the collaborator under its
-/// own actor, so the strip shows a name somebody else wrote. Nothing here seeds
-/// the history *pane*: it seeds the document, and the pane derives its band from
-/// the resulting change graph exactly as it does for a document a user typed.
+/// something worth drawing: three working sessions (two by the local author
+/// either side of a long break, one by a collaborator merged back in between),
+/// committed with explicit wall clocks since the gaps are the point. Two runs
+/// are named — one by the collaborator, under its own actor — so the strip
+/// shows a name somebody else wrote. Nothing here seeds the history *pane*: it
+/// seeds the document, and the pane derives its band from the resulting change
+/// graph exactly as for a document a user typed.
 fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
     state
         .doc
@@ -162,8 +211,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     let base = now - 5 * 3600;
 
     // Session one: five more sentences, half a minute apart.
@@ -183,9 +231,12 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         let last = blocks.last().expect("a paragraph to append to");
         let at = last.text.chars().count();
         let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut peer, c: &c, ids: &mut ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut peer,
+            c: &c,
+            ids: &mut ids,
+        };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
-        drop(dm);
         let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;
@@ -213,10 +264,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         }
     }
     // And the local author names theirs.
-    if let (Some(first), Some(last)) = (
-        session_three_start,
-        state.doc.get_heads().first().copied(),
-    ) {
+    if let (Some(first), Some(last)) = (session_three_start, state.doc.get_heads().first().copied())
+    {
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
@@ -250,7 +299,12 @@ fn build(file: Option<&Path>) -> Result<(State, Box<dyn Widget>), Box<dyn Error>
 }
 
 /// Render a single headless frame to `out` (mirrors the other apps' `--shots`).
-fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn Error>> {
+fn render_shot(
+    mut state: State,
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &Path,
+) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
@@ -269,7 +323,10 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
-            size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) },
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
             ..Default::default()
         },
         &[child],
@@ -279,7 +336,10 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
         let trr = &mut tr;
         taffy.compute_layout_with_measure(
             root,
-            taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
                     unsafe { (*ptr).measure(known, available, trr) }
@@ -292,7 +352,14 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+    widget.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+        &permission,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -300,4 +367,32 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
     OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
     println!("word-processor: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::distinct_actor;
+
+    /// Two ids minted inside one process must differ, even though anything
+    /// derived from the process alone (a pid, which is 2 in every sandbox here)
+    /// produces the same string twice — which is exactly what made Automerge
+    /// refuse a second replica's frames as duplicate sequence numbers.
+    #[test]
+    fn two_replicas_in_one_process_do_not_share_an_actor() {
+        let a = automerge::AutoCommit::new();
+        let b = automerge::AutoCommit::new();
+        assert_ne!(
+            distinct_actor("wp", a.get_actor()),
+            distinct_actor("wp", b.get_actor()),
+            "two replicas were given the same actor id, which is the failure \
+             that silently drops one of them's changes",
+        );
+    }
+
+    /// And it still says what it is, so a history can be read.
+    #[test]
+    fn the_actor_still_names_the_application() {
+        let doc = automerge::AutoCommit::new();
+        assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+    }
 }

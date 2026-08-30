@@ -1,38 +1,24 @@
 //! `app-catalogue` — what software this machine can open but has not
 //! installed yet, and how to get it.
 //!
-//! The desktop's applications list has always been "what is in the
-//! `qos-install` registry". That is the list of things *already here*.
-//! This crate is the other half: the software the machine's configured
-//! registries describe, minus the software it already has.
-//!
-//! ## Where the list comes from
-//!
-//! Entirely from [`config::load_registries_no_seed`] — the user's
-//! `registries.toml`. Nothing is bundled, seeded, or invented. A
-//! machine with no registries configured has an empty catalogue, and
-//! that is the correct answer rather than a failure: there genuinely
-//! is no other software it knows about.
-//!
-//! ## Why this is a separate process
+//! The desktop's applications list is "what is in the `qos-install`
+//! registry" — already installed. This crate is the other half: what
+//! the machine's configured registries ([`config::load_registries_no_seed`],
+//! the user's `registries.toml` — nothing bundled or seeded) describe,
+//! minus what's already installed. No registries configured means an
+//! empty catalogue, correctly.
 //!
 //! [`main`](../src/main.rs) builds `qos-catalogue`, and the compositor
-//! shells out to it rather than linking this crate. Listing means
-//! HTTP; installing means HTTP plus signature verification plus
-//! unpacking an archive. None of that belongs inside the most
-//! privileged process on the machine, and the desktop already has a
-//! precedent for exactly this shape — it never builds a sandbox
-//! itself either, it execs `qos-launcher`.
+//! shells out to it rather than linking this crate — listing means
+//! HTTP, installing means HTTP plus signature verification plus
+//! archive extraction, none of which belongs in the most privileged
+//! process (same precedent as the desktop execing `qos-launcher`
+//! instead of building sandboxes itself).
 //!
-//! ## What this crate does *not* decide
-//!
-//! Whether bytes are safe to extract. [`install::install`] downloads
-//! to a staging file and hands the path to `qos-install`, which
-//! recomputes the content-addressed package id and checks the
-//! publisher signature fail-closed before extracting a single byte.
-//! `--allow-self-signed` is never passed: an unattended install
-//! started from a search box is the last place to relax a signature
-//! check.
+//! This crate never decides whether bytes are safe to extract:
+//! [`install::install`] downloads to a staging file and hands the
+//! path to `qos-install`, which checks the publisher signature
+//! fail-closed before extracting anything; `--allow-self-signed` is never passed.
 
 pub mod client;
 pub mod config;
@@ -45,22 +31,19 @@ pub use config::{RegistriesFile, RegistryConfig};
 
 /// One application a registry offers that is not installed here.
 ///
-/// This is the wire shape `qos-catalogue list --json` prints and the
-/// compositor parses, so its field names are a contract between the
-/// two. Everything on it is metadata a signed registry entry carried;
-/// nothing is derived from a hard-coded table.
+/// The wire shape `qos-catalogue list --json` prints and the
+/// compositor parses — field names are a contract between the two.
+/// Everything on it is metadata a signed registry entry carried.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueApp {
-    /// Reverse-DNS package id — the same identity `qos-install`
-    /// records once this is installed.
+    /// Reverse-DNS package id — the same identity `qos-install` records once this is installed.
     pub package_id: String,
     /// The publisher's name for it.
     pub display_name: String,
     /// The publisher's one-line description.
     #[serde(default)]
     pub description: String,
-    /// First declared category, when the entry declares any. Matches
-    /// the shape of an installed app's single `category`.
+    /// First declared category, when any; matches an installed app's single `category`.
     #[serde(default)]
     pub category: Option<String>,
     /// The newest version the registry advertises.
@@ -69,8 +52,7 @@ pub struct CatalogueApp {
     pub registry: String,
     /// Where the `.qpkg` is fetched from.
     pub download_url: String,
-    /// `"verified"` or `"tofu"` — see [`TrustLevel`]. Untrusted
-    /// entries never become a `CatalogueApp` at all.
+    /// `"verified"` or `"tofu"` — see [`TrustLevel`]. Untrusted entries never become a `CatalogueApp`.
     pub trust: String,
 }
 
@@ -79,9 +61,9 @@ pub struct CatalogueApp {
 pub struct CatalogueListing {
     #[serde(default)]
     pub apps: Vec<CatalogueApp>,
-    /// Registries that were configured but could not be read, with
-    /// the reason. Reported rather than swallowed so a caller can
-    /// tell "nothing is available" from "we could not find out".
+    /// Registries configured but unreadable, with the reason — reported
+    /// rather than swallowed so a caller can tell "nothing available"
+    /// from "we couldn't find out".
     #[serde(default)]
     pub unreachable: Vec<UnreachableRegistry>,
 }
@@ -93,17 +75,13 @@ pub struct UnreachableRegistry {
 }
 
 /// Turn a verified registry entry into a catalogue row, or `None` if
-/// it cannot be offered.
-///
-/// Two ways an entry is refused: its metadata signature did not
-/// verify, or it advertises no version to download. Both mean there
-/// is nothing coherent to put in front of a user.
+/// it can't be offered: its metadata signature didn't verify, or it
+/// advertises no version to download.
 pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueApp> {
     if !v.trust.is_offerable() {
         return None;
     }
-    // The registry lists versions newest-first; the newest one is
-    // what "open this" means.
+    // Registries list versions newest-first; the newest is what "open this" means.
     let newest = v.entry.versions.first()?;
     if newest.qpkg_url.trim().is_empty() {
         return None;
@@ -129,30 +107,24 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
         trust: match v.trust {
             TrustLevel::Verified => "verified".into(),
             TrustLevel::UnverifiedOwner => "tofu".into(),
-            // Unreachable — filtered above. Kept total rather than
-            // panicking on a shape change.
+            // Unreachable — filtered above. Kept total rather than panicking on a shape change.
             TrustLevel::Untrusted => "untrusted".into(),
         },
     })
 }
 
-/// The package ids `qos-install` has already installed here.
-///
-/// Read through the launcher's registry reader — the same file, and
-/// the same `QOS_APPS_DATA_DIR` override, the desktop enumerates
-/// installed apps from. Using any other source would let the two
-/// disagree about whether an app is present.
+/// The package ids `qos-install` has already installed here, read
+/// through the launcher's registry reader (same file, same
+/// `QOS_APPS_DATA_DIR` override) so the two can't disagree about what's present.
 pub fn installed_ids() -> Vec<String> {
     launcher::registry::list_installed()
         .map(|v| v.into_iter().map(|e| e.id).collect())
         .unwrap_or_default()
 }
 
-/// Subtract what is installed, and collapse duplicate ids.
-///
-/// Registries are consulted in file order, so the first registry that
-/// offers an id is the one that wins — the user's ordering is the
-/// tie-break, not an arbitrary one.
+/// Subtract what is installed, and collapse duplicate ids. Registries
+/// are consulted in file order, so the first that offers an id wins —
+/// the user's ordering is the tie-break.
 pub fn dedupe_and_subtract(apps: Vec<CatalogueApp>, installed: &[String]) -> Vec<CatalogueApp> {
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::new();
@@ -171,9 +143,7 @@ pub fn dedupe_and_subtract(apps: Vec<CatalogueApp>, installed: &[String]) -> Vec
 }
 
 /// Everything the configured registries offer that is not installed.
-///
-/// Blocking — one HTTP round-trip per enabled registry. Callers run
-/// this on a worker thread.
+/// Blocking — one HTTP round-trip per enabled registry; callers run this on a worker thread.
 pub fn available() -> CatalogueListing {
     let registries = config::load_registries_no_seed();
     let mut apps = Vec::new();
@@ -247,9 +217,8 @@ mod tests {
         assert_eq!(app.trust, "verified");
     }
 
-    /// An entry whose signature does not cover its own metadata must
-    /// not become something a user can activate — the name and the
-    /// download URL would be unattributed.
+    /// An entry whose signature does not cover its own metadata must not
+    /// become something a user can activate — the name and download URL would be unattributed.
     #[test]
     fn a_tampered_entry_never_becomes_a_row() {
         let mut e = entry("dev.qos.sheets", "Sheets", vec![]);
@@ -268,7 +237,10 @@ mod tests {
 
         let mut blank = entry("dev.qos.blank", "Blank", vec![]);
         blank.versions[0].qpkg_url = "  ".into();
-        sign_entry(&mut blank, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+        sign_entry(
+            &mut blank,
+            &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
+        );
         assert!(entry_to_app(&verified(blank), "main").is_none());
     }
 
@@ -280,11 +252,9 @@ mod tests {
         assert_eq!(app.display_name, "Hex Editor");
     }
 
-    /// The wire contract with the compositor, pinned by exact field
-    /// name. The compositor's parser has the matching half of this
-    /// pin; a rename here without one there would silently produce an
-    /// empty catalogue rather than an error, so both tests have to be
-    /// edited together.
+    /// The wire contract with the compositor, pinned by exact field name.
+    /// A rename here without a matching change there would silently
+    /// produce an empty catalogue rather than an error — both tests must be edited together.
     #[test]
     fn the_json_envelope_field_names_are_the_contract() {
         let listing = CatalogueListing {

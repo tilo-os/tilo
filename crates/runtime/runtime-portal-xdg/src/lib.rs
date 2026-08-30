@@ -1,52 +1,30 @@
-//! `runtime-portal-xdg` — idiomatic Rust wrapper around the
-//! freedesktop XDG portals (via `ashpd`).
+//! `runtime-portal-xdg` — idiomatic Rust wrapper around the freedesktop XDG
+//! portals (via `ashpd`).
 //!
-//! qOS apps run inside a launcher-managed sandbox. The launcher's
-//! default is that the D-Bus session bus is NOT proxied in — the
-//! bus is a wide attack surface, so we only plumb it when the
-//! manifest's `[sandbox.portals]` declares an intent. For those apps
-//! this crate is the client surface.
+//! qOS apps run inside a launcher-managed sandbox where the D-Bus session
+//! bus is proxied in only when the manifest's `[sandbox.portals]` declares
+//! an intent — this crate is the client surface for those apps.
 //!
-//! ## Portals covered
+//! Every call returns `Result<T, PortalError>`; if the bus can't be reached
+//! it surfaces [`PortalError::NotAvailable`] and the app is expected to fall
+//! back to a local flow. [`is_portal_available`] probes for a bus cheaply
+//! enough to gate a "Save with system dialog" button.
 //!
-//! - [`FileChooser`] — `Open` and `Save` dialogs.
-//! - [`ScreenCast`] — `start` a screen capture session and return the
-//!   PipeWire node ids the compositor selected.
-//! - [`Notification`] — fire-and-forget desktop notification.
-//! - [`Secret`] — retrieve the per-application secret bytes the
-//!   portal keyring hands to sandboxed apps.
-//! - [`OpenUri`] — hand a URL back to the host (browser, mailto, …).
-//!
-//! ## Graceful degradation
-//!
-//! Every call returns `Result<T, PortalError>`. If the D-Bus session
-//! bus can't be reached (no `$DBUS_SESSION_BUS_ADDRESS`, or the
-//! address points at nothing), we surface [`PortalError::NotAvailable`]
-//! — matching the uniform SDK contract. Apps are expected to fall
-//! back to a local flow (an in-app file picker, in-app toast, ...).
-//!
-//! Use [`is_portal_available`] to probe the presence of a bus
-//! quickly — cheap enough to gate a "Save with system dialog" button.
-//!
-//! ## Sync vs async
-//!
-//! Everything is sync-by-default: each function spins up a tiny
-//! current-thread tokio runtime just for its own call. Apps that
-//! already own a tokio runtime should call the `_async` variants
-//! and drive the future themselves; there is no runtime nesting.
+//! Everything is sync-by-default, each function spinning up its own
+//! current-thread tokio runtime; apps that already own a runtime should
+//! call the `_async` variants directly.
 
 use std::path::PathBuf;
 
 use tokio::runtime::Builder;
 use url::Url;
 
-/// Reason a portal call failed. Every entry point returns
-/// `Result<_, PortalError>` so an app can match on a single import.
+/// Reason a portal call failed; every entry point returns this so an app
+/// can match on a single import.
 #[derive(Debug, thiserror::Error)]
 pub enum PortalError {
-    /// No D-Bus session bus is reachable. Either the launcher did
-    /// not proxy the bus in (the app's manifest did not declare the
-    /// portal) or the app is running on stock Linux with no bus.
+    /// No D-Bus session bus reachable: the launcher didn't proxy it in, or the
+    /// app is running on stock Linux with no bus.
     #[error("no D-Bus session bus available: portal unreachable")]
     NotAvailable,
     /// The user closed the portal dialog / declined the action.
@@ -55,13 +33,12 @@ pub enum PortalError {
     /// The portal responded but the response was empty.
     #[error("portal returned no response")]
     NoResponse,
-    /// The portal frontend is not installed on the host system.
-    /// Different from `NotAvailable`: we could reach the bus, but
-    /// nothing was listening on the portal interface.
+    /// The portal frontend is not installed on the host. Different from
+    /// `NotAvailable`: the bus was reachable, nothing answered the interface.
     #[error("portal frontend not found on host")]
     PortalNotFound,
-    /// Some other portal-side error. The inner string is a
-    /// human-readable diagnostic — not stable across ashpd releases.
+    /// Some other portal-side error; the string is a diagnostic, not stable
+    /// across ashpd releases.
     #[error("portal error: {0}")]
     Other(String),
 }
@@ -77,30 +54,21 @@ impl From<ashpd::Error> for PortalError {
             }
             ashpd::Error::NoResponse => PortalError::NoResponse,
             ashpd::Error::PortalNotFound(_) => PortalError::PortalNotFound,
-            // A zbus-level error typically means the connection to
-            // the bus failed. Treat that as `NotAvailable` so the
-            // app can fall back the same way it would on stock Linux
-            // with no bus at all.
+            // A zbus-level error usually means the bus connection failed; treat it as
+            // `NotAvailable` so the app falls back the same way as on stock Linux.
             ashpd::Error::Zbus(_) => PortalError::NotAvailable,
             other => PortalError::Other(other.to_string()),
         }
     }
 }
 
-/// Cheap probe: is the D-Bus session bus reachable?
+/// Cheap probe: is the D-Bus session bus reachable? Checks that
+/// `$DBUS_SESSION_BUS_ADDRESS` is set, and for a `unix:path=` address that
+/// the socket file exists. Never blocks on a real connect.
 ///
-/// Checks two things:
-/// 1. `$DBUS_SESSION_BUS_ADDRESS` is set.
-/// 2. If the address is a `unix:path=/...` (the common case), the
-///    socket file exists.
-///
-/// Returns `false` on any failure. Never blocks on a real socket
-/// connect — that would defeat the purpose of a cheap probe.
-///
-/// This is a heuristic, not an authorisation gate. Apps MUST still
-/// call the relevant portal function and match on
-/// [`PortalError::NotAvailable`] to handle "bus vanished between
-/// probe and use" races.
+/// A heuristic, not an authorisation gate — apps must still call the portal
+/// and match [`PortalError::NotAvailable`] for the "bus vanished between
+/// probe and use" race.
 pub fn is_portal_available() -> bool {
     let Some(addr) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") else {
         return false;
@@ -108,11 +76,8 @@ pub fn is_portal_available() -> bool {
     if addr.is_empty() {
         return false;
     }
-    // The address is a semicolon-separated list of transports. The
-    // one real-world use case for us is `unix:path=/run/user/<uid>/bus`
-    // or `unix:abstract=...`. For `unix:path=` we can stat the file;
-    // for `unix:abstract=` we optimistically return true (the abstract
-    // namespace can't be probed without connect()ing).
+    // A semicolon-separated list of transports. For `unix:path=` we can stat
+    // the file; for `unix:abstract=` we optimistically return true.
     let addr = addr.to_string_lossy();
     for entry in addr.split(';') {
         if entry.is_empty() {
@@ -136,9 +101,8 @@ pub fn is_portal_available() -> bool {
     false
 }
 
-/// Run a future to completion on a fresh single-threaded tokio
-/// runtime. Used by all the sync wrappers. Panics only if the
-/// runtime itself cannot be created (OOM).
+/// Run a future on a fresh single-threaded tokio runtime, used by every sync
+/// wrapper. Panics only if the runtime itself can't be built (OOM).
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     let rt = Builder::new_current_thread()
         .enable_all()
@@ -147,16 +111,11 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     rt.block_on(fut)
 }
 
-// -----------------------------------------------------------------------------
-// FileChooser
-// -----------------------------------------------------------------------------
-
 /// The Open / Save file dialog portal.
 pub struct FileChooser;
 
-/// One selected file. `path` is the local filesystem path when the
-/// portal returned a `file://` URI (the common case for Flatpak +
-/// qOS launchers). `uri` is always populated with the raw string.
+/// One selected file. `path` is set when the portal returned a `file://`
+/// URI (the common case); `uri` always holds the raw string.
 #[derive(Debug, Clone)]
 pub struct SelectedFile {
     pub uri: String,
@@ -173,13 +132,11 @@ fn uris_to_selected(uris: &[Url]) -> Vec<SelectedFile> {
 }
 
 impl FileChooser {
-    /// Show an Open dialog. Blocks the current thread until the user
-    /// picks a file (or cancels).
+    /// Show an Open dialog; blocks until the user picks a file or cancels.
     pub fn open(title: &str) -> Result<Vec<SelectedFile>, PortalError> {
         block_on(Self::open_async(title))
     }
 
-    /// Async form of [`FileChooser::open`].
     pub async fn open_async(title: &str) -> Result<Vec<SelectedFile>, PortalError> {
         use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -189,8 +146,7 @@ impl FileChooser {
         Ok(uris_to_selected(files.uris()))
     }
 
-    /// Show a Save dialog with an optional suggested filename.
-    /// Returns the target file (or `None` if the user cancelled).
+    /// Show a Save dialog with an optional suggested filename; `None` if cancelled.
     pub fn save(
         title: &str,
         current_name: Option<&str>,
@@ -198,7 +154,6 @@ impl FileChooser {
         block_on(Self::save_async(title, current_name))
     }
 
-    /// Async form of [`FileChooser::save`].
     pub async fn save_async(
         title: &str,
         current_name: Option<&str>,
@@ -218,34 +173,28 @@ impl FileChooser {
     }
 }
 
-// -----------------------------------------------------------------------------
-// ScreenCast
-// -----------------------------------------------------------------------------
-
 /// The screen-capture portal.
 pub struct ScreenCast;
 
 /// One captured screen source, as returned by the portal.
 #[derive(Debug, Clone)]
 pub struct ScreenCastStream {
-    /// PipeWire node id the app can dial to receive frames.
+    /// `PipeWire` node id the app can dial to receive frames.
     pub pipewire_node_id: u32,
-    /// Optional stable id assigned by the portal so the app can
-    /// correlate streams across restarts.
+    /// Optional stable id the portal assigns so the app can correlate streams
+    /// across restarts.
     pub id: Option<String>,
     /// Reported source size in pixels, if known.
     pub size: Option<(i32, i32)>,
 }
 
 impl ScreenCast {
-    /// Request a screencast session. The portal drives its own
-    /// user-consent UI (source selection). Returns the selected
-    /// streams on success.
+    /// Request a screencast session; the portal drives its own consent UI
+    /// (source selection) and this returns the selected streams on success.
     pub fn start() -> Result<Vec<ScreenCastStream>, PortalError> {
         block_on(Self::start_async())
     }
 
-    /// Async form of [`ScreenCast::start`].
     pub async fn start_async() -> Result<Vec<ScreenCastStream>, PortalError> {
         use ashpd::WindowIdentifier;
         use ashpd::desktop::PersistMode;
@@ -284,31 +233,20 @@ impl ScreenCast {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Notification
-// -----------------------------------------------------------------------------
-
 /// The desktop-notification portal.
 pub struct Notification;
 
 impl Notification {
-    /// Send a fire-and-forget notification with the given title.
-    /// A random id is generated per call.
+    /// Send a fire-and-forget notification with a random per-call id.
     pub fn send(title: &str) -> Result<(), PortalError> {
         Self::send_full("", title, None)
     }
 
-    /// Full form: choose the id + body. When `id` is empty a
-    /// per-process sequence id is generated.
-    pub fn send_full(
-        id: &str,
-        title: &str,
-        body: Option<&str>,
-    ) -> Result<(), PortalError> {
+    /// Full form: choose id + body; an empty `id` gets a per-process sequence id.
+    pub fn send_full(id: &str, title: &str, body: Option<&str>) -> Result<(), PortalError> {
         block_on(Self::send_full_async(id, title, body))
     }
 
-    /// Async form of [`Notification::send_full`].
     pub async fn send_full_async(
         id: &str,
         title: &str,
@@ -334,22 +272,17 @@ impl Notification {
     }
 }
 
-/// Monotonic-per-process id — good enough for notification IDs
-/// (they're per-app + short-lived, don't need to be globally unique).
+/// Monotonic-per-process id — good enough since notification ids are
+/// per-app and short-lived.
 fn monotonic_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis());
     format!("{epoch:x}-{n:x}")
 }
-
-// -----------------------------------------------------------------------------
-// Secret
-// -----------------------------------------------------------------------------
 
 /// The per-application secret portal — the portal keyring hands the
 /// app a stable random secret it can use to derive per-user keys.
@@ -361,7 +294,6 @@ impl Secret {
         block_on(Self::retrieve_async())
     }
 
-    /// Async form of [`Secret::retrieve`].
     pub async fn retrieve_async() -> Result<Vec<u8>, PortalError> {
         ashpd::desktop::secret::retrieve()
             .await
@@ -369,23 +301,16 @@ impl Secret {
     }
 }
 
-// -----------------------------------------------------------------------------
-// OpenUri
-// -----------------------------------------------------------------------------
-
 /// The `org.freedesktop.portal.OpenURI` portal — hands a URL back
 /// to the host to open in the appropriate default application.
 pub struct OpenUri;
 
 impl OpenUri {
-    /// Ask the host to open the given URL. Blocks until the portal
-    /// acknowledges (usually a few ms — the host app launches
-    /// asynchronously).
+    /// Ask the host to open the given URL; blocks until the portal acknowledges.
     pub fn open(uri: &str) -> Result<(), PortalError> {
         block_on(Self::open_async(uri))
     }
 
-    /// Async form of [`OpenUri::open`].
     pub async fn open_async(uri: &str) -> Result<(), PortalError> {
         use ashpd::desktop::open_uri::OpenFileRequest;
 
@@ -397,10 +322,6 @@ impl OpenUri {
         Ok(())
     }
 }
-
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -499,9 +420,6 @@ mod tests {
             OpenUri::open("https://example.org/"),
             Err(PortalError::NotAvailable)
         ));
-        assert!(matches!(
-            Secret::retrieve(),
-            Err(PortalError::NotAvailable)
-        ));
+        assert!(matches!(Secret::retrieve(), Err(PortalError::NotAvailable)));
     }
 }

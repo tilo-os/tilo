@@ -8,8 +8,8 @@
 //! `CollabRequest::SyncIncremental`, so a peer that joins the workspace simply
 //! starts following.
 //!
-//! This module holds only the CRDT-drive logic (host_step / ingest /
-//! follow_step), so it is fully unit-testable without a live socket; the app
+//! This module holds only the CRDT-drive logic (`host_step` / ingest /
+//! `follow_step`), so it is fully unit-testable without a live socket; the app
 //! ([`crate::app`]) owns the `CollaborationManager` and pumps bytes between it
 //! and this state.
 
@@ -29,7 +29,7 @@ impl Role {
     /// Host), so two instances on a shared workspace pick complementary roles.
     pub fn from_env() -> Self {
         match std::env::var("QOS_PLAYER_ROLE").ok().as_deref() {
-            Some("follower") | Some("Follower") => Role::Follower,
+            Some("follower" | "Follower") => Role::Follower,
             _ => Role::Host,
         }
     }
@@ -50,7 +50,11 @@ pub struct CollabPlayback {
 
 impl CollabPlayback {
     pub fn new(role: Role) -> Self {
-        Self { transport: CrdtTransport::new(), role, last_published: None }
+        Self {
+            transport: CrdtTransport::new(),
+            role,
+            last_published: None,
+        }
     }
 
     pub fn role(&self) -> Role {
@@ -111,7 +115,8 @@ impl CollabPlayback {
                 // Publish on a play/pause flip, or once the true playhead has
                 // drifted from what a follower would already project.
                 prev.playing != state.playing
-                    || prev.projected_position(now_ms).abs_diff(state.position_ms) > REPUBLISH_DRIFT_MS
+                    || prev.projected_position(now_ms).abs_diff(state.position_ms)
+                        > REPUBLISH_DRIFT_MS
             }
         }
     }
@@ -124,7 +129,9 @@ mod tests {
 
     fn engine_at(pos_ms: u64, playing: bool) -> MediaEngine {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.seek_ms(pos_ms);
         if playing {
             e.play();
@@ -139,7 +146,9 @@ mod tests {
 
         // Host is playing at 30s; broadcast that.
         let host_engine = engine_at(30_000, true);
-        let delta = host.host_step(&host_engine, 1_000).expect("first host step publishes");
+        let delta = host
+            .host_step(&host_engine, 1_000)
+            .expect("first host step publishes");
         follower.ingest(&delta);
 
         // A fresh follower engine at 0 must hard-seek to catch the host.
@@ -154,8 +163,14 @@ mod tests {
     fn host_does_not_republish_an_unchanged_state() {
         let mut host = CollabPlayback::new(Role::Host);
         let engine = engine_at(5_000, false); // paused, static
-        assert!(host.host_step(&engine, 0).is_some(), "first publish always fires");
-        assert!(host.host_step(&engine, 10).is_none(), "no change → nothing to send");
+        assert!(
+            host.host_step(&engine, 0).is_some(),
+            "first publish always fires"
+        );
+        assert!(
+            host.host_step(&engine, 10).is_none(),
+            "no change → nothing to send"
+        );
     }
 
     #[test]
@@ -164,13 +179,19 @@ mod tests {
         let paused = engine_at(5_000, false);
         host.host_step(&paused, 0);
         let playing = engine_at(5_000, true);
-        assert!(host.host_step(&playing, 0).is_some(), "play/pause flip re-broadcasts");
+        assert!(
+            host.host_step(&playing, 0).is_some(),
+            "play/pause flip re-broadcasts"
+        );
     }
 
     #[test]
     fn follower_never_publishes() {
         let mut follower = CollabPlayback::new(Role::Follower);
         let engine = engine_at(1_000, true);
-        assert!(follower.host_step(&engine, 0).is_none(), "a follower never broadcasts");
+        assert!(
+            follower.host_step(&engine, 0).is_none(),
+            "a follower never broadcasts"
+        );
     }
 }

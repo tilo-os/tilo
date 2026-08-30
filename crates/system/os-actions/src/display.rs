@@ -2,40 +2,30 @@
 //!
 //! # Why not `brightnessctl`
 //!
-//! This module used to shell out to `brightnessctl` for both the read and
-//! the write. That was wrong here in three separate ways:
+//! 1. **Not installed.** `os/Containerfile` doesn't pull it in, so on the shipped image
+//!    every brightness call would fail silently.
+//! 2. **A fork per keypress.** Brightness keys auto-repeat; shelling out at the typematic
+//!    rate means spawning, exec'ing and reaping a process tens of times a second from the
+//!    compositor, which must not stall.
+//! 3. **One more thing to keep in the image.** A bootc image is rebuilt and re-derived; a
+//!    package that exists only to `open()`/`write()`/`close()` a file we can open ourselves
+//!    is a dependency with no payload.
 //!
-//! 1. **It was not installed.** Nothing in `os/Containerfile` pulled it
-//!    in, so on the shipped image every brightness call returned
-//!    `"brightnessctl not installed"`, which `log_result` turned into a
-//!    `tracing::warn!` nobody sees. The slider moved and the screen did
-//!    not.
-//! 2. **A fork per keypress.** Brightness keys auto-repeat. Holding one
-//!    down at the typematic rate means spawning, exec'ing and reaping a
-//!    process tens of times a second — from the compositor, which is the
-//!    process that must not stall.
-//! 3. **It is one more thing to keep in the image.** A bootc image is
-//!    rebuilt and re-derived; a package that exists only to `open()`,
-//!    `write()` and `close()` a file we can open ourselves is a
-//!    dependency with no payload.
+//! Writing `/sys/class/backlight/<dev>/brightness` is what `brightnessctl` does anyway. The
+//! one thing it brings that a bare write doesn't is the udev rule granting the `video` group
+//! write access to that attribute — so qOS ships that rule itself
+//! (`os/usr/lib/udev/rules.d/`), smaller and under our control.
 //!
-//! Writing `/sys/class/backlight/<dev>/brightness` is what `brightnessctl`
-//! does anyway. The one thing it brings that a bare write does not is the
-//! udev rule granting the `video` group write access to that attribute —
-//! so qOS ships that rule itself (`os/usr/lib/udev/rules.d/`), which is
-//! both smaller and under our control.
-//!
-//! `brightnessctl` is still tried as a fallback when the sysfs write is
-//! refused, because a developer host may have it installed with its own
-//! rule in place, and because it costs nothing when it is absent.
+//! `brightnessctl` is still tried as a fallback when the sysfs write is refused, since a dev
+//! host may have it installed with its own rule, and it costs nothing when absent.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::process::{run, run_capture, which};
 
-/// The kernel's backlight class. A parameter on the inner functions so
-/// the tests can point at a fixture tree.
+/// The kernel's backlight class. A parameter on the inner functions so the tests can point
+/// at a fixture tree.
 const BACKLIGHT: &str = "/sys/class/backlight";
 
 /// Set the backlight brightness to `pct` percent, clamped to `[0, 100]`.
@@ -44,9 +34,8 @@ pub fn set_brightness(pct: f32) -> Result<(), String> {
     match set_brightness_in(Path::new(BACKLIGHT), clamped) {
         Ok(()) => Ok(()),
         Err(sysfs_err) => {
-            // Only worth a second attempt if the tool is actually there;
-            // otherwise report the real reason rather than "not installed",
-            // which would point at the wrong problem.
+            // Only worth a second attempt if the tool is actually there; otherwise report the real
+            // reason rather than "not installed", which would point at the wrong problem.
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
@@ -73,9 +62,8 @@ pub fn get_brightness() -> Result<f32, String> {
     }
 }
 
-/// Whether this machine has a controllable backlight at all. Desktops and
-/// most VMs do not, and the quick-settings panel uses this to leave the
-/// slider out rather than show one that cannot move.
+/// Whether this machine has a controllable backlight at all. Desktops and most VMs do not,
+/// and the quick-settings panel uses this to leave the slider out rather than show a dead one.
 pub fn has_backlight() -> bool {
     preferred_device(Path::new(BACKLIGHT)).is_some()
 }
@@ -97,22 +85,17 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
         return Err("backlight max_brightness is 0".to_string());
     }
     let raw = ((pct / 100.0) * max as f32).round().clamp(0.0, max as f32) as u32;
-    // Never write a hard 0 from a percentage above zero: some panels
-    // treat 0 as "backlight off" and the user has no way to see the
-    // screen well enough to bring it back.
+    // Never write a hard 0 from a percentage above zero: some panels treat 0 as "backlight off"
+    // with no way for the user to see the screen well enough to bring it back.
     let raw = if pct > 0.0 { raw.max(1) } else { raw };
     let path = dev.join("brightness");
-    fs::write(&path, raw.to_string())
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    fs::write(&path, raw.to_string()).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// Pick which backlight to drive when the kernel exposes several.
-///
-/// `acpi_video*` is the firmware's own generic interface and is usually
-/// either a no-op or a coarse duplicate of the native one; every desktop
-/// that gets this right prefers the native device (`intel_backlight`,
-/// `amdgpu_bl0`, `nv_backlight`, …). Ties break on name so the choice is
-/// the same on every call rather than following readdir order.
+/// Pick which backlight to drive when the kernel exposes several. `acpi_video*` is the
+/// firmware's generic interface, usually a no-op or coarse duplicate of the native one, so
+/// the native device (`intel_backlight`, `amdgpu_bl0`, `nv_backlight`, …) is preferred. Ties
+/// break on name so the choice is stable rather than following readdir order.
 fn preferred_device(root: &Path) -> Option<PathBuf> {
     let mut devices: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
@@ -225,9 +208,8 @@ mod tests {
 
     #[test]
     fn a_nonsense_percentage_never_writes_past_the_device_maximum() {
-        // The kernel rejects a value above max_brightness with EINVAL, so
-        // an out-of-range request must saturate rather than fail the whole
-        // write and leave the panel where it was.
+        // The kernel rejects a value above max_brightness with EINVAL, so an out-of-range request
+        // must saturate rather than fail the whole write and leave the panel where it was.
         let t = tree(&[("intel_backlight", 0, 100)]);
         set_brightness_in(t.path(), 500.0).unwrap();
         assert_eq!(
@@ -273,8 +255,7 @@ mod tests {
 
     #[test]
     fn parse_brightness_machine_clamps_above_one() {
-        // brightnessctl will never emit >100%, but a hypothetical 110%
-        // must not surface as a >1.0 fraction.
+        // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
         let s = "x,b,11,110%,10";
         assert_eq!(parse_brightness_machine(s).unwrap(), 1.0);
     }
@@ -284,9 +265,8 @@ mod tests {
         assert!(parse_brightness_machine("").is_err());
     }
 
-    /// The public setter must never panic, whatever the host looks like —
-    /// it runs on machines with a backlight, without one, and with a
-    /// root-owned one this process cannot write.
+    /// The public setter must never panic, whatever the host looks like — it runs on machines
+    /// with a backlight, without one, and with a root-owned one this process cannot write.
     #[test]
     fn set_brightness_never_panics_on_this_host() {
         let result = set_brightness(50.0);

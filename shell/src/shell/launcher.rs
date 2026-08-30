@@ -1,66 +1,16 @@
 //! Launching real applications from the desktop.
 //!
-//! An installed qOS application is a `.qpkg` that `qos-install` has
-//! unpacked and recorded in `~/.local/share/qos-apps/registry.toml`.
-//! This module is the shell's side of running one: enumerate what is
-//! installed, and start a chosen package as a **separate sandboxed
-//! process** that connects back to this compositor as a Wayland client.
+//! The shell never builds a sandbox itself — it execs `qos-launcher`, which
+//! reads the manifest, compiles the seccomp filter, mounts the signed
+//! runtime bundle, and re-execs as `__sandbox-exec` so Landlock applies
+//! after bwrap's mount setup. Out-of-process because the Landlock shim is
+//! `current_exe()`-relative and a broken package must not take the
+//! compositor down with it.
 //!
-//! ## What actually runs
-//!
-//! The shell does not build a sandbox itself. It execs `qos-launcher`
-//! (the [`launcher`] crate's binary), which is the canonical
-//! implementation of a qOS app launch:
-//!
-//! - reads the package manifest and derives every bind from it,
-//! - compiles the baseline seccomp filter and hands it to `bwrap` on an
-//!   fd,
-//! - mounts the signed runtime bundle the manifest pins,
-//! - re-execs itself inside the namespace as the `__sandbox-exec` shim
-//!   so Landlock is applied *after* bwrap finishes its mount setup,
-//! - resolves declared service sockets, and finally execs the app.
-//!
-//! Running it as a child process rather than calling the crate in-process
-//! is deliberate: the Landlock shim is `current_exe()`-relative, so the
-//! binary bwrap re-execs has to *be* `qos-launcher`. It also keeps a
-//! launch failure inside its own process — a broken package cannot take
-//! the compositor down with it.
-//!
-//! ## The display
-//!
-//! [`set_wayland_socket`] is called by the compositor once it knows which
-//! `wayland-N` it bound. Every launch passes that socket to
-//! `qos-launcher --wayland-socket`, which binds it into the sandbox at
-//! `/run/user/<uid>/wayland-0`. Nothing is inherited from the
-//! compositor's own environment: with no compositor socket published
-//! there is no display in the sandbox, and the launch is refused up
-//! front rather than silently starting an app that can never draw.
-//!
-//! ## Permissions
-//!
-//! The manifest is what the *packager* asked for. What the **user**
-//! granted lives on the workspace, as capabilities
-//! ([`crate::shell::state::Workspace::capabilities`]). Both have to be
-//! true before an app can reach a path, a device or the network, so
-//! every launch carries the workspace's capabilities across to
-//! `qos-launcher`: they are written to a private JSON file in the
-//! runtime dir and named on the command line with `--capabilities`.
-//!
-//! The launcher turns them into bind mounts and Landlock rules. That is
-//! the whole of what "Always allow" does — with no capability there is
-//! no mount, and an app cannot open what is not in its namespace. A
-//! launch with no capabilities (nothing published, nothing granted,
-//! file missing) gets exactly the sandbox the manifest describes;
-//! nothing here can widen one.
-//!
-//! ## Never on the frame thread
-//!
-//! [`launch`] resolves the package from an in-memory cache and hands the
-//! prepared command to a worker thread, which does the `fork`/`exec` and
-//! then blocks for the child's lifetime relaying its output. The
-//! compositor's 60fps loop only ever touches a `Mutex<Vec<_>>`. Outcomes
-//! come back through [`drain_events`], which the chrome drains once per
-//! frame and turns into notifications.
+//! Permissions are the manifest intersected with the workspace's granted
+//! capabilities. [`launch`] hands the command to a worker thread that
+//! forks/execs and blocks for the child's lifetime; outcomes come back
+//! through [`drain_events`], drained once per frame.
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
@@ -72,15 +22,14 @@ use std::time::{Duration, Instant};
 
 use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
 
-/// How long an enumeration of installed packages is reused before the
-/// registry + manifests are re-read. The palette queries this on every
-/// keystroke; a couple of seconds is short enough that an app installed
-/// in another terminal shows up while you are still typing its name.
+/// How long an installed-package enumeration is reused before re-reading
+/// the registry. Short enough that an app installed elsewhere shows up
+/// while the palette query is still being typed.
 const APP_CACHE_TTL: Duration = Duration::from_secs(2);
 
-/// Upper bound on the stderr we keep for a failed launch. Enough to
-/// carry `bwrap`'s complaint or the dynamic loader's, small enough that
-/// a chatty app can't grow the shell's memory.
+/// Stderr tail kept for a failed launch — enough to carry `bwrap`'s or
+/// the dynamic loader's complaint, small enough a chatty app can't grow
+/// the shell's memory.
 const STDERR_TAIL_LINES: usize = 12;
 
 /// One installed application the launcher can start.
@@ -88,33 +37,22 @@ const STDERR_TAIL_LINES: usize = 12;
 pub struct InstalledApp {
     /// Reverse-DNS package id — the identity `qos-install` records.
     pub package_id: String,
-    /// Human-facing name. The manifest's `[package].name` when the
-    /// publisher set one, else derived from the package id's trailing
-    /// component (`dev.qos.text-editor` → `Text Editor`) — the
-    /// derivation cannot know that `api-tester` means `API Tester`,
-    /// so a publisher that cares declares it.
+    /// Human-facing name — the manifest's `[package].name`, or derived
+    /// from the package id's trailing component when unset.
     pub display_name: String,
-    /// The manifest's `[package].category`, when declared. Matched by
-    /// the Applications provider so typing a category word offers the
-    /// apps in it.
+    /// The manifest's `[package].category`, when declared; matched by
+    /// the Applications search provider.
     pub category: Option<String>,
     pub version: String,
     pub manifest_path: PathBuf,
     pub payload_root: PathBuf,
-    /// Whether the package declares a GUI entrypoint. Pure-CLI packages
-    /// are installed the same way but have no window to show, so the
-    /// applications list hides them.
+    /// Whether the package declares a GUI entrypoint; CLI-only packages
+    /// have no window, so the applications list hides them.
     pub has_gui: bool,
     /// The manifest's `[providers].ext` — file extensions this package
-    /// declares it opens, lowercased and without the leading dot.
-    ///
-    /// This is the desktop's only answer to "which app owns `.odt`".
-    /// The document format registry (`qdoc`) knows which extensions are
-    /// editable documents and which codec parses them; it deliberately
-    /// knows nothing about installed packages. Joining the two here —
-    /// rather than in a table inside the compositor — means installing
-    /// an app is what teaches the desktop to open its file types, and
-    /// uninstalling it is what un-teaches that.
+    /// opens (lowercased, no leading dot). The desktop's only answer to
+    /// "which app owns `.odt`": installing an app is what teaches the
+    /// desktop its file types.
     pub opens_extensions: Vec<String>,
 }
 
@@ -123,15 +61,12 @@ impl InstalledApp {
     /// leading dot tolerated).
     pub fn opens_extension(&self, ext: &str) -> bool {
         let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-        !want.is_empty() && self.opens_extensions.iter().any(|e| *e == want)
+        !want.is_empty() && self.opens_extensions.contains(&want)
     }
 }
 
-/// Why a launch could not be started.
-///
-/// These are the failures we can see *before* forking. Everything after
-/// the fork (bwrap refusing, a missing loader, the app crashing on
-/// start) arrives asynchronously as a [`LaunchEvent`].
+/// Why a launch could not be started, before any fork. Failures after
+/// the fork arrive asynchronously as a [`LaunchEvent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchError {
     /// No package with this id in the registry.
@@ -140,19 +75,14 @@ pub enum LaunchError {
     NotAGuiApp { package_id: String },
     /// `qos-launcher` isn't anywhere we look.
     LauncherBinaryMissing { searched: Vec<PathBuf> },
-    /// The compositor hasn't published a Wayland socket, so a GUI app
-    /// would have nothing to connect to.
+    /// The compositor hasn't published a Wayland socket to connect to.
     NoDisplay,
-    /// There is no active workspace to launch into. A workspace is
-    /// both the app's sandbox policy and its collaboration room, so
-    /// there is nothing coherent to start without one.
+    /// No active workspace — both the app's sandbox policy and room.
     NoWorkspace,
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
-    /// No `.desktop` entry on this system has that id. Distinct from
-    /// [`LaunchError::NotInstalled`] because it is a different
-    /// namespace with a different fix: nothing qOS packaged is
-    /// missing, the host does not have that application.
+    /// No `.desktop` entry with this id (distinct from
+    /// [`LaunchError::NotInstalled`]: nothing qOS packaged is missing).
     HostAppNotFound { desktop_id: String },
 }
 
@@ -161,7 +91,7 @@ impl LaunchError {
     pub fn user_message(&self) -> String {
         match self {
             LaunchError::NotInstalled { package_id } => {
-                format!("{package_id} is not installed")
+                format!("this desktop has no app with the id {package_id}")
             }
             LaunchError::NotAGuiApp { package_id } => {
                 format!("{package_id} has no graphical entrypoint")
@@ -202,8 +132,7 @@ pub struct LaunchEvent {
 pub enum LaunchEventKind {
     /// `qos-launcher` is running with this host pid.
     Started { pid: u32 },
-    /// The child could not be spawned at all (e.g. `qos-launcher` was
-    /// deleted between resolution and fork).
+    /// The child could not be spawned at all.
     SpawnFailed { detail: String },
     /// The launch chain exited non-zero. `stderr_tail` is the last few
     /// lines it printed — usually the actual reason.
@@ -216,10 +145,8 @@ pub enum LaunchEventKind {
     Exited,
 }
 
-/// Who a running launch is, for the event stream.
-///
-/// Both kinds of launch report under a `(id, display name)` pair: a
-/// package id for a `.qpkg`, a desktop-file id for a host app.
+/// Who a running launch is, for the event stream — a package id for a
+/// `.qpkg`, a desktop-file id for a host app.
 struct LaunchIdentity {
     package_id: String,
     display_name: String,
@@ -233,70 +160,32 @@ struct LaunchIdentity {
 pub struct LaunchCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Environment *overrides* for the child. The launcher process needs
-    /// `XDG_RUNTIME_DIR` to find service sockets; the app's own
-    /// `WAYLAND_DISPLAY` is set inside the sandbox by `qos-launcher`, not
-    /// inherited from here.
+    /// Environment *overrides* for the child; `WAYLAND_DISPLAY` is set
+    /// inside the sandbox by `qos-launcher`, not inherited from here.
     pub env: Vec<(String, String)>,
 }
-
-// ---------------------------------------------------------------------
-// Process-wide state.
-//
-// The compositor is one process with one display and one app registry,
-// so this is genuinely process state rather than something worth
-// threading through every widget borrow.
-// ---------------------------------------------------------------------
 
 static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
 static EVENTS: Mutex<Vec<LaunchEvent>> = Mutex::new(Vec::new());
 static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None);
 /// `package_id` -> display name for everything this session has
-/// launched. Consulted when a foreign toplevel is adopted so the tab
-/// shows the app's name instead of a raw wayland app-id.
+/// launched, so an adopted foreign toplevel can show the app's name.
 static LAUNCHED: Mutex<Vec<(String, Vec<String>, String)>> = Mutex::new(Vec::new());
-/// The capability list of the workspace apps are being launched into.
-///
-/// Published by [`set_workspace_capabilities`] (or by
-/// [`launch_in_workspace`], which does it for you) the same way
-/// [`set_wayland_socket`] publishes the display. Empty is the safe
-/// default and the correct one: an app launched before anything is
-/// published gets its manifest's sandbox and nothing more.
+/// Capabilities of the workspace apps are being launched into, published
+/// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
+/// the safe default: an app launched before publish gets manifest-only.
 static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
-/// `package_id` -> where its next window should land, for launches
-/// that asked for something other than the default.
-///
-/// A launch and the toplevel it eventually maps are two events seconds
-/// apart, on two processes. This is the note the first leaves for the
-/// second; [`placement_for_toplevel`] reads it when the window arrives.
-///
-/// A note is *claimed* by the first surface that reads it, and then
-/// keeps answering for that surface. The compositor adopts every
-/// toplevel into two trees - the protocol-side one `XdgShellHandler`
-/// mutates and the rendered one the chrome paints from - so a note
-/// consumed on the first read would leave the tree the user actually
-/// sees falling back to the default, with the two trees disagreeing
-/// about where the window went. Claiming rather than consuming is what
-/// keeps them in step.
-///
-/// One note per package, and a *different* surface for the same package
-/// retires it: the only honest correlation available is the app-id, and
-/// it cannot distinguish two windows from one client.
+/// `package_id` -> where its next window should land; claimed (not
+/// consumed) by [`placement_for_toplevel`] since the compositor tracks each
+/// toplevel in two trees and consuming here would desync them.
 static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
 
 struct PendingPlacement {
-    /// The launch this note belongs to — a package id, or a
-    /// desktop-file id for a host app. Identities can overlap between
-    /// entries, so replacement is keyed on this rather than on them.
+    /// Package id, or desktop-file id for a host app; keys replacement.
     key: String,
-    /// Every string the window might announce itself as.
-    ///
-    /// A qOS package contributes its id and that id's trailing
-    /// component. A host app contributes what its `.desktop` entry
-    /// says: `StartupWMClass`, the desktop-file id, the Flatpak
-    /// application id. Either way the note is matched by *any* of them,
-    /// because the toolkit picks which one it reports and the desktop
-    /// does not get a say.
+    /// Every string the window might announce itself as (package id +
+    /// trailing component, or a host app's `.desktop` identities) —
+    /// matched by any of them.
     identities: Vec<String>,
     placement: crate::compositor::tab_binding::Placement,
     /// The surface that claimed this note, once one has.
@@ -315,17 +204,15 @@ fn identities_match(identities: &[String], app_id: &str) -> bool {
     !needle.is_empty() && identities.iter().any(|i| i.eq_ignore_ascii_case(needle))
 }
 
-/// The window identities a qOS package id implies.
-///
-/// Textual and deterministic: the id itself, and its trailing component
-/// (`dev.qos.hello` ↔ `hello`) — the reverse-DNS convention the package
-/// ids follow. Nothing here guesses by timing.
+/// The window identities a qOS package id implies: the id itself, and
+/// its trailing component (`dev.qos.hello` ↔ `hello`).
 fn identities_for_package(package_id: &str) -> Vec<String> {
     let mut out = vec![package_id.to_string()];
-    if let Some(last) = package_id.rsplit('.').next() {
-        if !last.is_empty() && last != package_id {
-            out.push(last.to_string());
-        }
+    if let Some(last) = package_id.rsplit('.').next()
+        && !last.is_empty()
+        && last != package_id
+    {
+        out.push(last.to_string());
     }
     out
 }
@@ -346,21 +233,10 @@ pub fn wayland_socket() -> Option<PathBuf> {
         .clone()
 }
 
-// ---------------------------------------------------------------------
-// Workspace capabilities.
-//
-// One publisher, one reader, one file per launch. The compositor knows
-// which workspace an app is being launched into; the launcher knows how
-// to turn a capability into a mount. This is the seam between them.
-// ---------------------------------------------------------------------
-
-/// Publish the capability list of the workspace apps launch into.
-///
-/// Call this whenever the active workspace changes or its capabilities
-/// do — a grant made in the permissions UI only reaches the next launch
-/// if the list is republished. The whole workspace list is published,
-/// not a per-app slice: [`launch`] filters it for the app it is starting
-/// and the launcher filters it again on the other side.
+/// Publish the capability list of the workspace apps launch into. Call
+/// whenever the active workspace or its capabilities change — a grant
+/// only reaches the next launch if republished. The whole list is
+/// published; [`launch`] and the launcher each filter their own slice.
 pub fn set_workspace_capabilities(capabilities: Vec<CapOverride>) {
     *WORKSPACE_CAPABILITIES
         .lock()
@@ -373,15 +249,11 @@ pub fn clear_workspace_capabilities() {
     set_workspace_capabilities(Vec::new());
 }
 
-/// The capabilities published for `app_id`, as the launcher will see
-/// them.
-///
-/// Filtered by subject: a capability naming a person, a room, or
-/// another app never reaches this app's file at all.
-///
-/// Both effects travel. A `Restrict` is not a grant, but the launcher's
-/// decision function needs it to be able to *narrow* one — filtering
-/// restrictions out here would silently widen the sandbox.
+/// The capabilities published for `app_id`, filtered by subject — a
+/// capability naming a person, room, or other app never reaches this
+/// app's file. Restrictions travel too: filtering them out here would
+/// silently widen the sandbox, since the launcher's decision function
+/// needs to be able to *narrow* a grant.
 pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
     let want = Subject::app(app_id);
     WORKSPACE_CAPABILITIES
@@ -393,30 +265,24 @@ pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
         .collect()
 }
 
-/// Where a launch's capability file lives: `<runtime>/qos/capabilities/`.
-///
-/// Under `$XDG_RUNTIME_DIR`, which is already a per-user `0700` tmpfs —
-/// the file describes what one app may reach and is readable by nobody
-/// else. It is deliberately *not* bound into the sandbox: the app never
-/// sees its own permission record.
+/// Where a launch's capability file lives: `<runtime>/qos/capabilities/`,
+/// under the per-user `0700` runtime tmpfs. Deliberately *not* bound into
+/// the sandbox: the app never sees its own permission record.
 fn capabilities_dir() -> PathBuf {
     runtime_dir().join("qos").join("capabilities")
 }
 
 /// Write `capabilities` where `qos-launcher --capabilities` will read
-/// them, returning the path.
-///
-/// `Ok(None)` means "nothing to write": the app was granted nothing, so
-/// there is no file and no flag, and the launcher applies the manifest
-/// alone. Any previously written file for this app is removed in that
-/// case — a revoked grant must not survive as a stale file on disk.
+/// them, returning the path. `Ok(None)` means nothing was granted — no
+/// file, no flag, the launcher applies the manifest alone — and any
+/// stale file for this app is removed so a revoked grant can't survive
+/// on disk.
 fn write_capabilities_file(
     package_id: &str,
     capabilities: &[CapOverride],
 ) -> std::io::Result<Option<PathBuf>> {
-    // A package id is reverse-DNS (`dev.qos.hello`), but it arrives from
-    // a registry file, so refuse anything that could escape the
-    // directory rather than trusting that.
+    // Reverse-DNS in principle, but this arrives from a registry file —
+    // refuse anything that could escape the directory.
     let file_name = format!("{package_id}.json");
     if package_id.is_empty() || package_id.contains('/') || package_id.contains("..") {
         return Err(std::io::Error::new(
@@ -461,19 +327,15 @@ fn write_capabilities_file(
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
 pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
     }
     // SAFETY: getuid always succeeds.
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/run/user/{uid}"))
 }
-
-// ---------------------------------------------------------------------
-// Enumeration.
-// ---------------------------------------------------------------------
 
 /// Every installed package, GUI or not, freshly read from the registry.
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
@@ -483,10 +345,8 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         })?;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
-        // A registry row whose manifest has gone missing (payload
-        // deleted behind the registry's back) is skipped rather than
-        // failing the whole enumeration — one broken package must not
-        // hide every other app from the launcher.
+        // A missing manifest (payload deleted behind the registry's
+        // back) is skipped, not a failure of the whole enumeration.
         let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
             continue;
         };
@@ -506,12 +366,9 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             version: manifest.version.clone(),
             manifest_path: entry.manifest_path,
             payload_root: entry.payload_root,
-            // Two independent conditions, and both have to hold. The
-            // entrypoint says the package can draw; `kind` says it is
-            // something a user opens. A package can satisfy the first
-            // and not the second — the on-screen keyboard draws a real
-            // surface the shell places itself, and a palette row that
-            // opened it as a tiled window would be nonsense.
+            // Both conditions must hold: the entrypoint says the package
+            // can draw, `kind` says it's something a user opens — the
+            // on-screen keyboard satisfies the first but not the second.
             has_gui: manifest.entrypoint.gui_bin().is_some()
                 && manifest.kind == launcher::manifest::KIND_APP,
             opens_extensions: manifest.opens_ext.clone(),
@@ -520,17 +377,16 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     Ok(out)
 }
 
-/// Installed packages, memoised for [`APP_CACHE_TTL`].
-///
-/// Errors are not cached: a transiently unreadable registry should not
-/// wedge the launcher for the rest of the TTL.
+/// Installed packages, memoised for [`APP_CACHE_TTL`]. Errors are not
+/// cached, so a transiently unreadable registry doesn't wedge the
+/// launcher for the rest of the TTL.
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     {
         let cache = APP_CACHE.lock().expect("APP_CACHE poisoned");
-        if let Some((apps, at)) = cache.as_ref() {
-            if at.elapsed() < APP_CACHE_TTL {
-                return Ok(apps.clone());
-            }
+        if let Some((apps, at)) = cache.as_ref()
+            && at.elapsed() < APP_CACHE_TTL
+        {
+            return Ok(apps.clone());
         }
     }
     let apps = read_installed_apps()?;
@@ -553,15 +409,9 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps
 }
 
-/// The installed GUI application that declares it opens `ext`.
-///
-/// Resolution is by manifest declaration only — there is no built-in
-/// table. Two packages claiming the same extension is a real situation
-/// (a viewer and an editor both claiming `.pdf`), and the tie is broken
-/// by display name so the answer is stable across boots rather than
-/// dependent on registry order. A user-visible default-app preference is
-/// the right long-term answer to that tie; this is the deterministic
-/// stand-in, not a design statement about it.
+/// Two packages can claim the same extension; the tie breaks by display
+/// name for a stable-across-boots answer. A user-visible default-app
+/// preference is the real long-term fix; this is the deterministic stand-in.
 pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
     let mut candidates: Vec<InstalledApp> = gui_apps()
         .into_iter()
@@ -571,37 +421,18 @@ pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
     candidates.into_iter().next()
 }
 
-/// `dev.qos.text-editor` → `Text Editor`.
-///
-/// The manifest carries no display name, so the trailing id component is
-/// the only signal we have. Separators become spaces and each word is
-/// title-cased; an id that is already a display-ish word (`Notes`) comes
-/// back unchanged.
-/// The derivation itself lives in the `launcher` crate, because the
-/// app catalogue needs the same one: a package must not be called
-/// `Hex Editor` once it is installed and something else while it is
-/// still only offered.
+/// `dev.qos.text-editor` → `Text Editor`, derived from the trailing id
+/// component since the manifest carries no display name. Lives in the
+/// `launcher` crate too, so a package's name can't differ between
+/// "offered" and "installed".
 pub fn display_name_for_package_id(package_id: &str) -> String {
     launcher::registry::display_name_for_package_id(package_id)
 }
 
-// ---------------------------------------------------------------------
-// Resolving `qos-launcher`.
-// ---------------------------------------------------------------------
-
-/// Where we look for `qos-launcher`, in order.
-///
-/// `QOS_LAUNCHER_BIN` first so a test (or a developer bisecting a
-/// launch) can point the shell at a specific build; then next to the
-/// running compositor, which is both how the OS image installs them and
-/// how a `cargo build` dev tree lays them out; then the system paths.
-///
-/// The environment entry is a **developer-build** seam
-/// ([`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]). `qos-launcher` is
-/// what builds every app's sandbox, so letting the environment name it means
-/// letting the environment decide that apps run unsandboxed. A dev tree does
-/// not need it — the compositor's own directory is already the second
-/// candidate — so a shipped build simply does not read it.
+/// Order: `QOS_LAUNCHER_BIN` (a **developer-build** seam only — see
+/// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]), next to the running
+/// compositor, then system paths. A shipped build must not let the
+/// environment name the binary that builds every app's sandbox.
 fn launcher_bin_candidates() -> Vec<PathBuf> {
     launcher_bin_candidates_from(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
@@ -618,12 +449,11 @@ fn launcher_bin_candidates_from(
     current_exe: Option<PathBuf>,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if dev_overrides {
-        if let Some(explicit) = explicit {
-            if !explicit.is_empty() {
-                out.push(PathBuf::from(explicit));
-            }
-        }
+    if dev_overrides
+        && let Some(explicit) = explicit
+        && !explicit.is_empty()
+    {
+        out.push(PathBuf::from(explicit));
     }
     if let Some(dir) = current_exe.as_ref().and_then(|exe| exe.parent()) {
         out.push(dir.join("qos-launcher"));
@@ -646,60 +476,15 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
     })
 }
 
-// ---------------------------------------------------------------------
-// Building + starting a launch.
-// ---------------------------------------------------------------------
-
-/// Render the `qos-launcher` invocation for `app`, launched into
-/// `room`.
-///
-/// Pure — no I/O, no spawning — so tests can assert on the exact command
-/// the production path builds.
-///
-/// `room` is the durable identity of the workspace the app is being
-/// opened into, **not** its local [`crate::shell::state::WorkspaceId`].
-/// It rides in as `--workspace-id`, which the launcher turns into
-/// `QOS_WORKSPACE_ID` inside the sandbox and the toolkit turns into the
-/// collaboration cluster every CRDT delta is addressed to. Taking the
-/// room rather than the local handle is what lets a peer's app and ours
-/// land in the same cluster: the local handle differs on every machine,
-/// so an app launched from it could only ever collaborate with apps on
-/// this one.
-///
-/// Without it an app has no room, so two apps the user opened side by
-/// side would never see each other's edits — which is why this is a
-/// required argument rather than an option: there is no such thing as
-/// launching an app into no workspace from the compositor.
-///
-/// `capabilities_file` is the path [`write_capabilities_file`] produced,
-/// or `None` when the app was granted nothing. `None` emits no
-/// `--capabilities` flag at all, which is what makes an ungranted app
-/// indistinguishable from one launched before capabilities existed: it
-/// gets its manifest's sandbox.
-///
-/// The two are independent on purpose: the workspace id says which room
-/// the app collaborates in, the capability file says what it may touch.
-/// Naming a room grants nothing.
-/// `render_node` is the DRM node this compositor renders on. Passing it
-/// down is what makes the compositor's GPU choice authoritative for the
-/// app: `qos-launcher` narrows the sandbox to that device and pins the
-/// app's EGL/Vulkan loaders to the drivers that match it. A client on a
-/// different GPU than its compositor cannot share dma-bufs with it
-/// without a cross-device copy, and on many multi-GPU machines cannot
-/// share them at all — so this is a correctness argument, not a tuning
-/// one. `None` (no node resolved on this machine) launches the app
-/// unpinned rather than refusing it: a software-rendered app is still
-/// an app.
-/// `document`, when set, is the file the app was asked to open. It rides
-/// across as `--open <path>` and reaches the app as its `argv[1]`.
-///
-/// Naming a path here grants nothing. The launcher binds what the
-/// manifest declares plus what the capability file allows, and nothing
-/// else — so an app handed a path it has no capability for finds it
-/// absent from its namespace and fails to open it. Passing the path and
-/// granting the path are two separate decisions on purpose, and callers
-/// opening a document on the user's behalf have to make both (see
-/// [`crate::shell::doc_open`]).
+/// Pure — no I/O, no spawning — so tests can assert on the exact command.
+/// `room` is the workspace's durable identity (not the local
+/// [`crate::shell::state::WorkspaceId`]): it becomes `QOS_WORKSPACE_ID`, the
+/// collaboration cluster every CRDT delta addresses. `capabilities_file` is
+/// `None` when nothing was granted (no `--capabilities` flag).
+/// `render_node` pins the app's EGL/Vulkan loaders to this compositor's GPU
+/// (dma-bufs generally can't cross GPUs). `document` rides across as
+/// `--open <path>` but grants nothing on its own — see
+/// [`crate::shell::doc_open`].
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
@@ -719,9 +504,8 @@ pub fn build_launch_command(
         wayland_socket.display().to_string(),
         "--workspace-id".to_string(),
         room.to_string(),
-        // The identity capabilities are addressed to. Always passed, so
-        // the launcher checks every capability against this id instead
-        // of trusting the file to have been filtered for it.
+        // Always passed, so the launcher checks every capability against
+        // this id rather than trusting the file to already be filtered.
         "--app-id".to_string(),
         app.package_id.clone(),
     ];
@@ -737,11 +521,8 @@ pub fn build_launch_command(
         args.push("--open".to_string());
         args.push(path.display().to_string());
     }
-    // Service sockets (collab, qos-fs, …) are resolved by the launcher
-    // against `$XDG_RUNTIME_DIR/qos/services`. Optional ones that are
-    // absent degrade to a warning; a package that declares a *required*
-    // service the session isn't running fails loudly, which is the
-    // behaviour we want.
+    // Service sockets are resolved by the launcher against
+    // `$XDG_RUNTIME_DIR/qos/services`; a required-but-absent one fails loudly.
     if std::env::var_os("QOS_LAUNCH_NO_SERVICES").is_some() {
         args.push("--no-services".to_string());
     }
@@ -756,23 +537,15 @@ pub fn build_launch_command(
 }
 
 /// Resolve `package_id` and start it in `room`, with whatever the
-/// published workspace granted it.
-///
-/// Returns as soon as the launch is handed to its worker thread — it
-/// never waits for the app to appear. The `Ok` value is the resolved
-/// app, so callers can name it in their UI without a second lookup.
-///
-/// `room` is the durable identity of the caller's active workspace; it
-/// becomes the app's collaboration room (see [`build_launch_command`]).
+/// published workspace granted it. Returns as soon as the launch is
+/// handed to its worker thread — it never waits for the app to appear.
 pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchError> {
     launch_with_document(package_id, room, None)
 }
 
-/// [`launch`], additionally asking the app to open `document`.
-///
-/// The path is an argument, not a permission: see
-/// [`build_launch_command`]. Grant it before calling this, or the app
-/// starts and finds nothing at the path it was pointed at.
+/// [`launch`], additionally asking the app to open `document`. Grant the
+/// path before calling this (see [`build_launch_command`]), or the app
+/// starts and finds nothing where it was pointed.
 pub fn launch_with_document(
     package_id: &str,
     room: RoomId,
@@ -792,10 +565,8 @@ pub fn launch_with_document(
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = resolve_launcher_bin()?;
 
-    // Hand the user's decision across to the process that can enforce
-    // it. A failure to write the file is *not* a launch failure: the app
-    // starts with manifest permissions only, which is the safe
-    // direction, and the reason is logged rather than swallowed.
+    // A failure to write the capability file is not a launch failure —
+    // the app starts with manifest-only permissions, the safe direction.
     let capabilities = capabilities_for_app(&app.package_id);
     let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
         Ok(path) => path,
@@ -824,11 +595,8 @@ pub fn launch_with_document(
     Ok(app)
 }
 
-/// Publish `workspace`'s capabilities and launch `package_id` into it.
-///
-/// The one call a caller holding a `&Workspace` needs: it keeps the
-/// grant the user made and the sandbox the app runs in from being two
-/// separate decisions.
+/// Publish `workspace`'s capabilities and launch `package_id` into it —
+/// keeps the grant and the sandbox from being two separate decisions.
 pub fn launch_in_workspace(
     package_id: &str,
     workspace: &Workspace,
@@ -837,12 +605,8 @@ pub fn launch_in_workspace(
 }
 
 /// [`launch_in_workspace`], additionally asking the app to open
-/// `document`.
-///
-/// The workspace's capability list is published first, exactly as for a
-/// plain launch — so a read grant the caller just added to the workspace
-/// for this document is what reaches the sandbox, and the path argument
-/// alone still reaches nothing.
+/// `document`. The workspace's capabilities are published first, so a
+/// read grant just added for this document actually reaches the sandbox.
 pub fn launch_document_in_workspace(
     package_id: &str,
     workspace: &Workspace,
@@ -853,31 +617,22 @@ pub fn launch_document_in_workspace(
 }
 
 /// Run `command` on a worker thread and report the outcome through
-/// [`EVENTS`].
-///
-/// Everything here — the fork, the wait, the output relay — happens off
-/// the compositor thread. The thread lives for as long as the app does.
+/// [`EVENTS`]; the thread lives as long as the app does.
 fn spawn_detached(app: InstalledApp, command: LaunchCommand) {
     spawn_launch(app.package_id, app.display_name, command);
 }
 
-/// Run `command` on a worker thread under the identity
-/// `(package_id, display_name)`, reporting through [`EVENTS`].
-///
-/// The shared spawn path for both kinds of launch: a `.qpkg` going
-/// through `qos-launcher run`, and a host application going through
-/// `qos-launcher run-host`. They differ entirely in what the launcher
-/// then does — one builds a sandbox, one deliberately does not — and
-/// not at all in how the compositor supervises the process, so this is
-/// one function rather than two that drift.
+/// Run `command` on a worker thread under `(package_id, display_name)`,
+/// reporting through [`EVENTS`]. Shared by both launch kinds — a `.qpkg`
+/// via `qos-launcher run` and a host app via `run-host` — since they
+/// differ only in what the launcher does, not in how it's supervised.
 pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCommand) {
     let app = LaunchIdentity {
         package_id,
         display_name,
     };
     let builder = std::thread::Builder::new().name("qos-app-launch".to_string());
-    // Kept for the "couldn't even start a thread" report below, since
-    // the closure takes `app` by move.
+    // Kept for the spawn-failure report below since the closure moves `app`.
     let identity = (app.package_id.clone(), app.display_name.clone());
     let spawn_result = builder.spawn(move || {
         let mut cmd = Command::new(&command.program);
@@ -885,9 +640,8 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
         for (k, v) in &command.env {
             cmd.env(k, v);
         }
-        // The app is not a terminal job: it gets no stdin, and its
-        // output is relayed (not inherited) so we can quote it back in a
-        // failure notification.
+        // Not a terminal job: no stdin, and output is relayed (not
+        // inherited) so it can be quoted back in a failure notification.
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -976,10 +730,6 @@ pub fn drain_events() -> Vec<LaunchEvent> {
     std::mem::take(&mut *events)
 }
 
-// ---------------------------------------------------------------------
-// Correlating a launch with the window it opens.
-// ---------------------------------------------------------------------
-
 pub(crate) fn remember_launch(app: &InstalledApp) {
     remember_launch_named(
         &app.package_id,
@@ -988,13 +738,8 @@ pub(crate) fn remember_launch(app: &InstalledApp) {
     );
 }
 
-/// Record that `key` was launched and its window may announce itself as
-/// any of `identities`, so a toplevel that arrives later can be given
-/// the app's real name.
-///
-/// The host-app path calls this with the identities its `.desktop`
-/// entry declared; see [`set_pending_placement_for_identities`] for why
-/// they cannot be derived.
+/// Records that `key`'s window may announce itself as any of `identities`,
+/// so a later toplevel can be given the app's real name.
 pub fn remember_launch_named(key: &str, identities: &[String], display_name: &str) {
     let mut launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
     if launched.iter().any(|(k, _, _)| k == key) {
@@ -1007,19 +752,18 @@ pub fn remember_launch_named(key: &str, identities: &[String], display_name: &st
     ));
 }
 
-/// Display name for a Wayland `app_id`, if this session launched the
-/// package it belongs to.
-///
-/// The match is textual and deterministic: either the client's app-id is
-/// the package id outright, or it is the package id's trailing component
-/// (`dev.qos.hello` ↔ `hello`) — the same reverse-DNS convention the
-/// package ids follow. Nothing here guesses by timing.
-///
-/// An app whose wayland app-id is unrelated to its package id is simply
-/// not matched, and its tab keeps the app-id-derived label. Closing that
-/// gap needs the toplevel's owning client correlated back to the pid we
-/// spawned (`SO_PEERCRED` at `insert_client` time), which is a change to
-/// the compositor's client bookkeeping rather than to this module.
+/// Forget every launch this session has recorded — for tests asserting
+/// the fallback resolution rather than a name a neighbouring test left,
+/// since the table is process-wide and append-only.
+#[cfg(test)]
+pub(crate) fn clear_launched_for_test() {
+    LAUNCHED.lock().expect("LAUNCHED poisoned").clear();
+}
+
+/// Matched textually: either the app-id is the package id, or its trailing
+/// component (`dev.qos.hello` ↔ `hello`). An unrelated app-id keeps its own
+/// label — closing that gap needs the client correlated back to the
+/// spawned pid (`SO_PEERCRED`), not this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     {
         let launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
@@ -1030,19 +774,23 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
             return Some(display_name.clone());
         }
     }
-    // Not something this session launched. It may still be a host
-    // application the user started another way — the entry is on disk
-    // either way, and a tab reading "Spotify" beats one reading
-    // "spotify".
+    // Not launched by this session, but the machine still has it: a
+    // package's manifest name is the app's name regardless of who
+    // started the window.
+    if let Ok(apps) = installed_apps()
+        && let Some(app) = apps
+            .iter()
+            .find(|a| app_id_matches_package(app_id, &a.package_id))
+    {
+        return Some(app.display_name.clone());
+    }
+    // Nor a package launched this session — maybe a host app started
+    // another way; its `.desktop` entry gives a nicer label than the raw id.
     crate::shell::host_apps::app_for_window_id(app_id).map(|app| app.name)
 }
 
-/// Whether a client's wayland app-id belongs to `package_id`.
-///
-/// Textual and deterministic: either the app-id *is* the package id, or
-/// it is the package id's trailing component (`dev.qos.hello` ↔
-/// `hello`) — the same reverse-DNS convention the package ids follow.
-/// Nothing here guesses by timing.
+/// Whether a client's wayland app-id belongs to `package_id`: either the
+/// app-id *is* the package id, or its trailing component.
 pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();
@@ -1050,9 +798,7 @@ pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
 }
 
 /// Record where the window of the launch about to start should land.
-///
-/// Replaces any note for the same package, claimed or not: if two
-/// launches of one app are in flight, the newer intent is the live one.
+/// Replaces any note for the same package — the newer intent wins.
 pub fn set_pending_placement(
     package_id: &str,
     placement: crate::compositor::tab_binding::Placement,
@@ -1064,15 +810,10 @@ pub fn set_pending_placement(
     );
 }
 
-/// [`set_pending_placement`] for a launch whose window identities are
-/// not derivable from its id.
-///
-/// A `.qpkg`'s app-id follows the package id by convention, so the qOS
-/// path can derive both. A host application's cannot be derived from
-/// anything: the `.desktop` entry states it (`StartupWMClass`), or the
-/// toolkit picks the desktop-file id, or a Flatpak reports its
-/// application id. The entry is the only source, so the caller that
-/// read the entry supplies them.
+/// [`set_pending_placement`] for a launch whose window identities can't
+/// be derived from its id — a host app's `.desktop` entry
+/// (`StartupWMClass`, desktop-file id, Flatpak app id) is the only
+/// source, so the caller that read it supplies them.
 pub fn set_pending_placement_for_identities(
     key: &str,
     identities: &[String],
@@ -1090,17 +831,9 @@ pub fn set_pending_placement_for_identities(
     });
 }
 
-/// The placement recorded for whichever package `app_id` belongs to, for
-/// the toplevel `surface_id`.
-///
-/// The first surface to ask claims the note, and every later ask for the
-/// same surface gets the same answer - see [`PENDING_PLACEMENT`] for why
-/// that matters. A surface arriving after another has claimed the note
-/// retires it and gets `None`.
-///
-/// `None` means "use the default": this client is not one we launched,
-/// its launch asked for nothing special, or its note already belongs to
-/// an earlier window.
+/// The first surface to ask claims the note and gets the same answer on
+/// every later ask; a different surface retires it and gets `None`. `None`
+/// also covers: not launched by us, or nothing special asked.
 pub fn placement_for_toplevel(
     app_id: &str,
     surface_id: u64,
@@ -1115,13 +848,22 @@ pub fn placement_for_toplevel(
             Some(pending[idx].placement)
         }
         Some(claimed) if claimed == surface_id => Some(pending[idx].placement),
-        // A second window from the same client. The note was for the
-        // first one; retire it so a third window can't inherit it either.
+        // A second window from the same client — the note was for the
+        // first one; retire it so a third can't inherit it either.
         Some(_) => {
             pending.remove(idx);
             None
         }
     }
+}
+
+/// Drop the placement note for `package_id`, if any — undoes a
+/// [`set_pending_placement`] whose launch then failed to start.
+pub fn clear_pending_placement(package_id: &str) {
+    let mut pending = PENDING_PLACEMENT
+        .lock()
+        .expect("PENDING_PLACEMENT poisoned");
+    pending.retain(|p| p.key != package_id);
 }
 
 /// Drop every placement note. Used by tests, which share this
@@ -1142,9 +884,10 @@ pub(crate) fn set_wayland_socket_path(path: Option<PathBuf>) {
 
 /// Rendered `OsString` form of the socket name for logging.
 pub fn wayland_socket_display() -> OsString {
-    wayland_socket()
-        .map(|p| p.into_os_string())
-        .unwrap_or_else(|| OsString::from("<none>"))
+    wayland_socket().map_or_else(
+        || OsString::from("<none>"),
+        std::path::PathBuf::into_os_string,
+    )
 }
 
 #[cfg(test)]
@@ -1165,8 +908,8 @@ mod tests {
 
     #[test]
     fn shipped_build_ignores_a_launcher_named_by_the_environment() {
-        // The launcher is what builds an app's sandbox; a shipped session
-        // must not take that binary's identity from its environment.
+        // A shipped session must not take the sandbox-building binary's
+        // identity from its environment.
         let got = launcher_bin_candidates_from(
             false,
             Some(std::ffi::OsString::from("/tmp/evil/qos-launcher")),
@@ -1198,14 +941,8 @@ mod tests {
         );
     }
 
-    // The tests that repoint `QOS_APPS_DATA_DIR` / `QOS_LAUNCHER_BIN` /
-    // the published wayland socket are serialised on `process_env` — the
-    // crate's one group for process-global environment. They used to
-    // hold a private mutex in this module instead, which serialised them
-    // against each other but not against the rest of the crate: any test
-    // elsewhere that repoints the same variables (`shell::doc_open`'s
-    // opens, for instance) raced them, and the failure landed in
-    // whichever of the two got there second.
+    // Tests that repoint process-global env vars are serialised on
+    // `process_env`, shared with other tests touching the same variables.
 
     /// Write a registry + manifest pair into `dir` and point the
     /// launcher's registry reader at it. Returns the app's payload root.
@@ -1240,8 +977,7 @@ mod tests {
             "Text Editor"
         );
         assert_eq!(display_name_for_package_id("Notes"), "Notes");
-        // A degenerate id (trailing separator, empty) neither panics nor
-        // produces an empty label — the row would be unclickable prose.
+        // A degenerate id must not produce an empty (unclickable) label.
         assert!(!display_name_for_package_id("dev.qos.").is_empty());
     }
 
@@ -1255,8 +991,7 @@ mod tests {
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         let apps = read_installed_apps().expect("registry readable");
-        // What the palette actually offers, from the same store.
-        let offered = gui_apps();
+        let offered = gui_apps(); // what the palette actually offers
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
 
@@ -1274,10 +1009,8 @@ mod tests {
             .expect("cli package present");
         assert!(!cli.has_gui, "a cli-only package is not a GUI app");
 
-        // Enumerating it is fine; offering it to launch is not. A headless
-        // package has no window to show, so a row that starts it would open
-        // nothing. This asserts
-        // the filter the applications provider actually calls.
+        // Enumerating it is fine; offering it to launch is not — a
+        // headless package has no window to show.
         let offered_ids: Vec<&str> = offered.iter().map(|a| a.package_id.as_str()).collect();
         assert_eq!(
             offered_ids,
@@ -1329,9 +1062,8 @@ mod tests {
         );
     }
 
-    /// A machine where no render node resolved launches the app with no
-    /// `--render-node` at all — an empty or invented value would pin the
-    /// loaders to nothing, which both loaders read as "no drivers".
+    /// No render node resolved means no `--render-node` flag at all — an
+    /// empty or invented value would read to both loaders as "no drivers".
     #[test]
     fn launch_command_omits_the_render_node_when_none_resolved() {
         let app = InstalledApp {
@@ -1376,7 +1108,16 @@ mod tests {
                 package_id: "dev.qos.nope".into()
             }
         );
-        assert!(err.user_message().contains("not installed"));
+        let message = err.user_message();
+        assert!(
+            message.contains("dev.qos.nope"),
+            "the message must name the id it could not find: {message}"
+        );
+        // "installed" is not a word this desktop says to a user.
+        assert!(
+            !message.contains("install"),
+            "user-facing text must not talk about installing: {message}"
+        );
     }
 
     #[test]
@@ -1413,9 +1154,9 @@ mod tests {
         assert_eq!(err, LaunchError::NoDisplay);
     }
 
-    /// The production `launch` path, end to end, with `qos-launcher`
-    /// replaced by a recorder: a real child process is forked, gets the
-    /// real argv, and its failure comes back as a `LaunchEvent`.
+    /// The production `launch` path end to end, with `qos-launcher`
+    /// replaced by a recorder that fails and is quoted back as a
+    /// `LaunchEvent`.
     #[test]
     #[serial_test::serial(process_env)]
     fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
@@ -1449,7 +1190,7 @@ mod tests {
         let app = launch("dev.qos.hello", RoomId::new()).expect("launch accepted");
         assert_eq!(app.display_name, "Hello");
 
-        // Wait for the worker to report the child's exit.
+        // wait for the worker to report the child's exit
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut failed = None;
         let mut saw_started = false;
@@ -1499,10 +1240,8 @@ mod tests {
                 .any(|a| a.ends_with("payloads/dev.qos.hello/manifest.toml")),
             "the resolved manifest path is passed through: {argv:?}"
         );
-        // The compositor's GPU choice reaches the launcher through the
-        // real `launch()` path, not just through the pure builder. On a
-        // machine with no render node there is nothing to forward, and
-        // the flag must then be absent rather than empty.
+        // The GPU choice must reach the launcher through the real
+        // `launch()` path here, not just the pure builder.
         match crate::compositor::render_node::resolved() {
             Some(node) => {
                 let pos = argv
@@ -1522,9 +1261,8 @@ mod tests {
         }
     }
 
-    /// The launch history is process-global (one session, one history),
-    /// so this test uses ids no other test registers rather than
-    /// clearing shared state out from under a parallel test.
+    /// The launch history is process-global, so this test uses ids no
+    /// other test registers rather than clearing shared state.
     #[test]
     fn launched_apps_are_matched_back_by_app_id() {
         remember_launch(&InstalledApp {
@@ -1537,7 +1275,7 @@ mod tests {
             has_gui: true,
             opens_extensions: Vec::new(),
         });
-        // Full package id, trailing component, and case-insensitivity.
+        // full package id, trailing component, case-insensitivity
         assert_eq!(
             display_name_for_app_id("dev.qos.matchfixture").as_deref(),
             Some("Match Fixture")
@@ -1550,13 +1288,9 @@ mod tests {
             display_name_for_app_id("MATCHFIXTURE").as_deref(),
             Some("Match Fixture")
         );
-        // An unrelated client keeps its own label.
+        // an unrelated client keeps its own label
         assert_eq!(display_name_for_app_id("org.gnome.NeverLaunched"), None);
     }
-
-    // -----------------------------------------------------------------
-    // Capabilities crossing to the launcher.
-    // -----------------------------------------------------------------
 
     use crate::shell::state::{Scope, Verb};
 
@@ -1632,8 +1366,8 @@ mod tests {
         set_workspace_capabilities(vec![
             fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read),
             fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write),
-            // A person's share of a file is a capability in the same
-            // list; it is not an app grant and must not travel.
+            // A person's share is a capability in the same list but not
+            // an app grant, and must not travel.
             CapOverride::grant(
                 Subject::person("alice"),
                 Scope::FsPath("/var/workspace/private".into()),
@@ -1658,10 +1392,9 @@ mod tests {
         );
     }
 
-    /// The whole handoff, end to end: publish a workspace capability,
-    /// write the file a launch would write, then read it back with
-    /// `qos-launcher`'s **own** loader and planner — the same code the
-    /// launcher process runs — and check the bind that comes out.
+    /// The whole handoff end to end: publish a capability, write the
+    /// file a launch would write, then read it back with `qos-launcher`'s
+    /// **own** loader and planner and check the bind that comes out.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_granted_path_survives_the_handoff_and_becomes_a_read_only_bind() {
@@ -1678,8 +1411,7 @@ mod tests {
             .expect("write capability file")
             .expect("a granted app gets a file");
 
-        // Readable only by the user: this file says what one app may
-        // reach.
+        // readable only by the user: this file says what one app may reach
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "capability file must not be world-readable");

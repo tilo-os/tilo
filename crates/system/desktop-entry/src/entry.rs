@@ -1,14 +1,8 @@
-//! One parsed `.desktop` file.
-//!
-//! The grammar is the freedesktop.org Desktop Entry Specification's:
-//! `#` comments, `[Group Name]` headers, and `Key=Value` or
-//! `Key[locale]=Value` lines inside a group. Only the `[Desktop Entry]`
-//! group is read here — `[Desktop Action foo]` groups describe extra
-//! launch verbs and are parsed into [`DesktopEntry::actions`].
-//!
-//! Values are unescaped per the spec (`\s` is a space, `\n` a newline,
-//! `\\` a backslash) and string *lists* are `;`-separated with `\;` as
-//! the escape for a literal semicolon.
+//! One parsed `.desktop` file, per the freedesktop.org Desktop Entry Specification: `#`
+//! comments, `[Group Name]` headers, `Key=Value`/`Key[locale]=Value` lines. Only
+//! `[Desktop Entry]` is read here — `[Desktop Action foo]` groups become
+//! [`DesktopEntry::actions`]. Values are unescaped per spec (`\s`/`\n`/`\\`), and lists are
+//! `;`-separated with `\;` for a literal semicolon.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,31 +13,26 @@ pub enum EntryType {
     Application,
     Link,
     Directory,
-    /// A `Type=` we do not know. Kept rather than dropped so a caller
-    /// can report "3 entries had an unrecognised Type" instead of the
-    /// files silently vanishing.
+    /// A `Type=` we do not know. Kept rather than dropped so a caller can report "3 entries had
+    /// an unrecognised Type" instead of the files silently vanishing.
     Other,
 }
 
-/// Where an entry came from, as far as it can be told from the file.
-///
-/// The distinction that matters to the desktop is *confinement*: a
-/// Flatpak carries its own sandbox and must not be wrapped in qOS's,
-/// while a plain system binary carries none at all. Both are
-/// "host applications" — neither is a qOS package — so this is a
-/// provenance label, not a permission.
+/// Where an entry came from, as far as it can be told from the file. What matters to the
+/// desktop is *confinement*: a Flatpak carries its own sandbox and must not be wrapped in
+/// qOS's, while a plain system binary carries none — both are "host applications", not qOS
+/// packages, so this is a provenance label, not a permission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntrySource {
-    /// Exported by Flatpak. The payload is the `X-Flatpak=` application
-    /// id, which is the id `flatpak run` takes.
+    /// Exported by Flatpak. The payload is the `X-Flatpak=` application id, which is what
+    /// `flatpak run` takes.
     Flatpak { app_id: String },
     /// Anything else: a distribution package, a locally-dropped file.
     Host,
 }
 
 impl EntrySource {
-    /// Short label for UI. Deliberately never "qOS" — nothing this
-    /// module produces is a qOS package.
+    /// Short label for UI. Deliberately never "qOS" — nothing this module produces is a qOS package.
     pub fn label(&self) -> &'static str {
         match self {
             EntrySource::Flatpak { .. } => "Flatpak",
@@ -63,24 +52,19 @@ pub struct DesktopAction {
 /// A parsed `[Desktop Entry]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopEntry {
-    /// The desktop-file ID: the path relative to the `applications`
-    /// directory it was found under, with `/` replaced by `-` and the
-    /// `.desktop` suffix removed. `kde/foo.desktop` → `kde-foo`.
-    ///
-    /// This is the identity the spec dedups on, and the string that
-    /// most toolkits also use as the Wayland `app_id`.
+    /// The desktop-file ID: the path relative to the `applications` directory, `/` replaced by
+    /// `-`, `.desktop` suffix removed (`kde/foo.desktop` → `kde-foo`). The identity the spec
+    /// dedups on, and what most toolkits also use as the Wayland `app_id`.
     pub id: String,
     /// Absolute path of the file this came from.
     pub path: PathBuf,
     pub entry_type: EntryType,
-    /// `Name=`, already locale-resolved. Never empty: an entry with no
-    /// usable name falls back to its id.
+    /// `Name=`, already locale-resolved. Never empty: an entry with no usable name falls back to its id.
     pub name: String,
     pub generic_name: Option<String>,
     pub comment: Option<String>,
-    /// Raw `Exec=` value, *unexpanded*. Field codes are expanded at
-    /// launch time by [`crate::exec`], because `%f`/`%u` depend on what
-    /// the caller is opening.
+    /// Raw `Exec=` value, *unexpanded* — field codes are expanded at launch time by
+    /// [`crate::exec`], since `%f`/`%u` depend on what the caller is opening.
     pub exec: Option<String>,
     /// `TryExec=` — a program whose presence gates the entry.
     pub try_exec: Option<String>,
@@ -88,16 +72,15 @@ pub struct DesktopEntry {
     pub categories: Vec<String>,
     pub mime_types: Vec<String>,
     pub keywords: Vec<String>,
-    /// `StartupWMClass=` — the window class the app sets. On Wayland
-    /// this is what most toolkits report as the toplevel `app_id`, so it
-    /// is the primary handle for correlating a window with the entry
-    /// that launched it.
+    /// `StartupWMClass=` — the window class the app sets. On Wayland this is what most toolkits
+    /// report as the toplevel `app_id`, the primary handle for correlating a window with the
+    /// entry that launched it.
     pub startup_wm_class: Option<String>,
-    /// `NoDisplay=true`: valid and launchable, but not to be offered in
-    /// a menu. Usually a MIME handler or a helper.
+    /// `NoDisplay=true`: valid and launchable, but not to be offered in a menu — usually a MIME
+    /// handler or a helper.
     pub no_display: bool,
-    /// `Hidden=true`: the spec's "deleted" tombstone. A user file with
-    /// this set suppresses a system file of the same id.
+    /// `Hidden=true`: the spec's "deleted" tombstone. A user file with this set suppresses a
+    /// system file of the same id.
     pub hidden: bool,
     pub terminal: bool,
     pub only_show_in: Vec<String>,
@@ -107,13 +90,10 @@ pub struct DesktopEntry {
 }
 
 impl DesktopEntry {
-    /// Whether this entry should be offered in a menu of `desktop`.
-    ///
-    /// Four independent reasons to say no, all from the spec:
-    /// wrong `Type`, `Hidden`, `NoDisplay`, and the
-    /// `OnlyShowIn`/`NotShowIn` desktop filter. `TryExec` is checked
-    /// separately by the scanner, which is the layer that can look at
-    /// the filesystem.
+    /// Whether this entry should be offered in a menu of `desktop`. Four independent reasons to
+    /// say no, all from the spec: wrong `Type`, `Hidden`, `NoDisplay`, and the
+    /// `OnlyShowIn`/`NotShowIn` filter. `TryExec` is checked separately by the scanner, which can
+    /// look at the filesystem.
     pub fn is_visible_in(&self, desktop: &[String]) -> bool {
         if self.entry_type != EntryType::Application || self.hidden || self.no_display {
             return false;
@@ -121,8 +101,7 @@ impl DesktopEntry {
         self.shows_in(desktop)
     }
 
-    /// The `OnlyShowIn` / `NotShowIn` filter alone, without the
-    /// `NoDisplay` / `Hidden` / `Type` checks.
+    /// The `OnlyShowIn` / `NotShowIn` filter alone, without the `NoDisplay` / `Hidden` / `Type` checks.
     pub fn shows_in(&self, desktop: &[String]) -> bool {
         let matches = |list: &[String]| {
             list.iter()
@@ -137,15 +116,11 @@ impl DesktopEntry {
         true
     }
 
-    /// Every string a window's `app_id` might plausibly equal, most
-    /// specific first.
-    ///
-    /// A foreign toplevel arrives with an `app_id` the desktop did not
-    /// mint, so correlating it back to the entry that launched it is a
-    /// matter of trying the handles the app could have used:
-    /// `StartupWMClass` (what the spec says the app sets), the
-    /// desktop-file id (what GTK and Qt default to), the Flatpak
-    /// application id, and the basename of the program in `Exec`.
+    /// Every string a window's `app_id` might plausibly equal, most specific first. A foreign
+    /// toplevel arrives with an `app_id` the desktop did not mint, so correlating it back to the
+    /// entry means trying every handle the app could have used: `StartupWMClass` (what the spec
+    /// says), the desktop-file id (GTK/Qt default), the Flatpak application id, and the basename
+    /// of the program in `Exec`.
     pub fn window_identities(&self) -> Vec<String> {
         let mut out = Vec::new();
         let mut push = |s: Option<String>| {
@@ -165,10 +140,8 @@ impl DesktopEntry {
         out
     }
 
-    /// Basename of `Exec`'s argv[0], if there is one. For a Flatpak
-    /// that is `flatpak` and therefore useless as an identity — so it
-    /// is skipped in that case rather than matching every Flatpak
-    /// window to the first Flatpak entry.
+    /// Basename of `Exec`'s argv[0], if there is one. For a Flatpak that's `flatpak`, useless as
+    /// an identity, so it's skipped rather than matching every Flatpak window to the first entry.
     fn exec_program_basename(&self) -> Option<String> {
         if matches!(self.source, EntrySource::Flatpak { .. }) {
             return None;
@@ -179,19 +152,16 @@ impl DesktopEntry {
         Path::new(program)
             .file_name()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 }
 
-/// Parse the contents of a `.desktop` file.
+/// Parse the contents of a `.desktop` file. `id` and `path` are supplied by the scanner
+/// (which knows the `applications` directory the file came from); `locales` is the caller's
+/// preferred-locale list, most specific first (see [`crate::locale::locale_candidates`]).
 ///
-/// `id` and `path` are supplied by the scanner, which is the layer that
-/// knows which `applications` directory the file was found under.
-/// `locales` is the caller's preferred-locale list, most specific
-/// first — see [`crate::locale::locale_candidates`].
-///
-/// Returns `None` only when the file has no `[Desktop Entry]` group at
-/// all, which makes it not a desktop entry rather than a broken one.
+/// Returns `None` only when the file has no `[Desktop Entry]` group at all — not a desktop
+/// entry, rather than a broken one.
 pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Option<DesktopEntry> {
     let groups = parse_groups(contents);
     let main = groups.get("Desktop Entry")?;
@@ -211,12 +181,9 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        // Older exports (and `flatpak override`d ones) do not carry
-        // X-Flatpak. The path is the fallback signal, and the app id is
-        // then the desktop-file id, which is how Flatpak names exports.
-        .or_else(|| {
-            is_flatpak_export_path(path).then(|| id.to_string())
-        });
+        // Older exports (and `flatpak override`d ones) carry no X-Flatpak; the path is the fallback
+        // signal, and the app id is then the desktop-file id, how Flatpak names exports.
+        .or_else(|| is_flatpak_export_path(path).then(|| id.to_string()));
     let source = match flatpak_id {
         Some(app_id) => EntrySource::Flatpak { app_id },
         None => EntrySource::Host,
@@ -233,11 +200,19 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         path: path.to_path_buf(),
         entry_type,
         name,
-        generic_name: get("GenericName").map(|s| unescape(&s)).filter(|s| !s.is_empty()),
-        comment: get("Comment").map(|s| unescape(&s)).filter(|s| !s.is_empty()),
+        generic_name: get("GenericName")
+            .map(|s| unescape(&s))
+            .filter(|s| !s.is_empty()),
+        comment: get("Comment")
+            .map(|s| unescape(&s))
+            .filter(|s| !s.is_empty()),
         exec,
-        try_exec: raw("TryExec").map(unescape).filter(|s| !s.trim().is_empty()),
-        icon: get("Icon").map(|s| unescape(&s)).filter(|s| !s.trim().is_empty()),
+        try_exec: raw("TryExec")
+            .map(unescape)
+            .filter(|s| !s.trim().is_empty()),
+        icon: get("Icon")
+            .map(|s| unescape(&s))
+            .filter(|s| !s.trim().is_empty()),
         categories: string_list(raw("Categories")),
         mime_types: string_list(raw("MimeType")),
         keywords: string_list(get("Keywords").as_deref()),
@@ -254,17 +229,14 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
     })
 }
 
-/// `.../flatpak/exports/share/applications/x.desktop` — the two export
-/// roots Flatpak writes into, system and per-user.
+/// `.../flatpak/exports/share/applications/x.desktop` — the two export roots Flatpak writes
+/// into, system and per-user.
 fn is_flatpak_export_path(path: &Path) -> bool {
     let s = path.to_string_lossy();
     s.contains("/flatpak/exports/")
 }
 
-fn parse_actions(
-    groups: &BTreeMap<String, Group>,
-    locales: &[String],
-) -> Vec<DesktopAction> {
+fn parse_actions(groups: &BTreeMap<String, Group>, locales: &[String]) -> Vec<DesktopAction> {
     let mut out = Vec::new();
     for (header, group) in groups {
         let Some(id) = header.strip_prefix("Desktop Action ") else {
@@ -274,9 +246,8 @@ fn parse_actions(
         if id.is_empty() {
             continue;
         }
-        let name = localised(group, "Name", locales)
-            .map(|s| unescape(&s))
-            .unwrap_or_else(|| id.to_string());
+        let name =
+            localised(group, "Name", locales).map_or_else(|| id.to_string(), |s| unescape(&s));
         out.push(DesktopAction {
             id: id.to_string(),
             name,
@@ -286,9 +257,7 @@ fn parse_actions(
     out
 }
 
-// ---------------------------------------------------------------------
-// The key/value grammar.
-// ---------------------------------------------------------------------
+// The key/value grammar
 
 /// One key's values: the unlocalised one plus every `Key[locale]=`.
 #[derive(Debug, Default, Clone)]
@@ -309,8 +278,7 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix('[') {
-            // A group header runs to the *last* `]` on the line so a
-            // group name containing one survives.
+            // A group header runs to the *last* `]` on the line so a group name containing one survives.
             if let Some(end) = rest.rfind(']') {
                 let header = rest[..end].to_string();
                 groups.entry(header.clone()).or_default();
@@ -319,8 +287,7 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
             continue;
         }
         let Some(group_name) = current.as_ref() else {
-            // A key before any group header is not in the spec. Skip it
-            // rather than inventing a group for it.
+            // A key before any group header is not in the spec. Skip it rather than inventing a group.
             continue;
         };
         let Some((key_part, value)) = trimmed.split_once('=') else {
@@ -329,35 +296,30 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
         let key_part = key_part.trim();
         let value = value.trim().to_string();
         let group = groups.entry(group_name.clone()).or_default();
-        match key_part.split_once('[') {
-            Some((key, locale)) => {
-                let Some(locale) = locale.strip_suffix(']') else {
-                    continue;
-                };
-                group
-                    .entry(key.trim().to_string())
-                    .or_default()
-                    .localised
-                    .insert(locale.trim().to_string(), value);
-            }
-            None => {
-                let slot = group.entry(key_part.to_string()).or_default();
-                // First value wins, matching the spec's "duplicate keys
-                // are an error" by taking the one a reader would have
-                // seen first.
-                if slot.default.is_empty() {
-                    slot.default = value;
-                }
+        if let Some((key, locale)) = key_part.split_once('[') {
+            let Some(locale) = locale.strip_suffix(']') else {
+                continue;
+            };
+            group
+                .entry(key.trim().to_string())
+                .or_default()
+                .localised
+                .insert(locale.trim().to_string(), value);
+        } else {
+            let slot = group.entry(key_part.to_string()).or_default();
+            // First value wins, matching the spec's "duplicate keys are an error" by taking the one a
+            // reader would have seen first.
+            if slot.default.is_empty() {
+                slot.default = value;
             }
         }
     }
     groups
 }
 
-/// The best value for `key` given the caller's locale preference list.
-///
-/// `locales` is already ordered most-specific-first, so this is a
-/// straight first-hit lookup with the unlocalised value as the floor.
+/// The best value for `key` given the caller's locale preference list. `locales` is already
+/// ordered most-specific-first, so this is a straight first-hit lookup with the unlocalised
+/// value as the floor.
 fn localised(group: &Group, key: &str, locales: &[String]) -> Option<String> {
     let value = group.get(key)?;
     for want in locales {
@@ -372,14 +334,14 @@ fn localised(group: &Group, key: &str, locales: &[String]) -> Option<String> {
     }
 }
 
-/// The spec's `true`/`false`. Anything else is false — including the
-/// `0`/`1` some old files use, which the spec dropped.
+/// The spec's `true`/`false`. Anything else is false — including the `0`/`1` some old files
+/// use, which the spec dropped.
 fn boolean(raw: Option<&str>) -> bool {
     matches!(raw.map(str::trim), Some("true"))
 }
 
-/// A `;`-separated list value. `\;` is a literal semicolon; the
-/// customary trailing `;` produces no empty final element.
+/// A `;`-separated list value. `\;` is a literal semicolon; a customary trailing `;`
+/// produces no empty final element.
 fn string_list(raw: Option<&str>) -> Vec<String> {
     let Some(raw) = raw else {
         return Vec::new();
@@ -484,9 +446,8 @@ X-Flatpak=com.spotify.Client
         assert!(!e.no_display);
     }
 
-    /// The identity list is what window correlation matches on. For a
-    /// Flatpak it must never include `flatpak` — that is the launcher,
-    /// not the app, and every Flatpak on the system would collide on it.
+    /// The identity list is what window correlation matches on. For a Flatpak it must never
+    /// include `flatpak` — that's the launcher, not the app, and every Flatpak would collide on it.
     #[test]
     fn window_identities_skip_the_flatpak_binary() {
         let e = parse_str(SPOTIFY, "com.spotify.Client");
@@ -581,8 +542,8 @@ X-Flatpak=com.spotify.Client
         assert_eq!(e.actions[0].exec.as_deref(), Some("x --new"));
     }
 
-    /// An entry with no `Name=` still has to be launchable — the id is
-    /// the fallback, not an empty row in the palette.
+    /// An entry with no `Name=` still has to be launchable — the id is the fallback, not an
+    /// empty row in the palette.
     #[test]
     fn a_missing_name_falls_back_to_the_id() {
         let e = parse_str("[Desktop Entry]\nType=Application\nExec=x\n", "org.x.Thing");

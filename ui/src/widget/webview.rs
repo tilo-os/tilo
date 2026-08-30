@@ -24,11 +24,12 @@ use vello::peniko::{Blob, Fill, ImageAlphaType, ImageData as PenikoImage, ImageF
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
+use crate::gesture::NavDirection;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::gesture::NavDirection;
 use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
@@ -42,11 +43,9 @@ pub struct WebView {
     scale_factor: f32,
     focused: bool,
     last_mouse: Point,
-    /// Physical size last sent as a `Resize`, to avoid spamming the
-    /// engine on every layout pass.
+    /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
-    /// Cached vello image wrapping the engine's latest frame, keyed by
-    /// the frame buffer's allocation pointer + dimensions.
+    /// Keyed by the frame buffer's allocation pointer + dimensions.
     cached_image: Option<PenikoImage>,
     cached_key: (usize, u32, u32),
     test_id: String,
@@ -67,44 +66,42 @@ impl WebView {
         }
     }
 
-    /// Override the e2e test identifier (default `"webview"`). Needed
-    /// only when one tree hosts several web views.
+    /// Override the e2e test identifier (default `"webview"`), for a tree
+    /// hosting several web views.
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
         self
     }
 
-    /// Place the view at an explicit logical rect (and scale factor) without
-    /// going through a taffy layout pass. Used by hosts that embed the view
-    /// inside their own immediate-mode drawing (e.g. an email reader rendering
-    /// an HTML body inline) rather than as a first-class node in the widget
-    /// tree. Sends a `Resize` to the engine when the physical size changes,
-    /// exactly like [`Widget::apply_layout`].
+    /// Place the view at an explicit logical rect without going through a
+    /// taffy layout pass — for hosts that embed the view inside their own
+    /// immediate-mode drawing (e.g. an email reader rendering an HTML body
+    /// inline) rather than as a first-class widget-tree node. Sends a
+    /// `Resize` when the physical size changes, like [`Widget::apply_layout`].
     pub fn set_viewport(&mut self, rect: Rect, scale_factor: f32) {
         self.rect = rect;
         self.scale_factor = scale_factor;
         self.send_resize_if_needed();
     }
 
-    /// The engine handle this view drives — so a host can send it commands
-    /// (Navigate to an email's sandboxed `data:` document, install a content
-    /// filter) directly.
+    /// The engine handle this view drives, so a host can send it commands
+    /// (Navigate to an email's sandboxed `data:` document, install a
+    /// content filter) directly.
     pub fn engine(&self) -> &SharedEngine {
         &self.engine
     }
 
-    /// Engine-space (physical, view-relative) coordinates for a
-    /// logical toolkit-space point.
+    /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
         (
-            ((p.x - self.rect.x0) * self.scale_factor as f64) as f32,
-            ((p.y - self.rect.y0) * self.scale_factor as f64) as f32,
+            ((p.x - self.rect.x0) * f64::from(self.scale_factor)) as f32,
+            ((p.y - self.rect.y0) * f64::from(self.scale_factor)) as f32,
         )
     }
 
     fn send_resize_if_needed(&mut self) {
-        let w = (self.rect.width() * self.scale_factor as f64).round() as u32;
-        let h = (self.rect.height() * self.scale_factor as f64).round() as u32;
+        let w = (self.rect.width() * f64::from(self.scale_factor)).round() as u32;
+        let h = (self.rect.height() * f64::from(self.scale_factor)).round() as u32;
         if w == 0 || h == 0 || (w, h) == self.last_sent_size {
             return;
         }
@@ -116,9 +113,9 @@ impl WebView {
         });
     }
 
-    /// Map a winit logical key to the engine's key model. Pure so tests
-    /// can pin the table without synthesising `winit::KeyEvent`s (whose
-    /// platform fields cannot be constructed portably).
+    /// Map a winit logical key to the engine's key model. Pure so tests can
+    /// pin the table without synthesising `winit::KeyEvent`s (whose
+    /// platform fields aren't portably constructible).
     fn map_key(key: &WKey) -> Option<KeyInput> {
         match key {
             WKey::Character(c) => Some(KeyInput::Character(c.to_string())),
@@ -156,27 +153,25 @@ impl Widget for WebView {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.send_resize_if_needed();
     }
@@ -189,8 +184,7 @@ impl Widget for WebView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Base fill: placeholder before the first frame, letterbox
-        // backing afterwards.
+        // Placeholder before the first frame, letterbox backing afterwards.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -206,11 +200,7 @@ impl Widget for WebView {
         };
 
         if let Some(frame) = latest {
-            let key = (
-                Arc::as_ptr(&frame.rgba) as usize,
-                frame.width,
-                frame.height,
-            );
+            let key = (Arc::as_ptr(&frame.rgba) as usize, frame.width, frame.height);
             if self.cached_image.is_none() || key != self.cached_key {
                 let expected = frame.width as usize * frame.height as usize * 4;
                 if frame.rgba.len() == expected && expected > 0 {
@@ -236,11 +226,10 @@ impl Widget for WebView {
             if iw == 0 || ih == 0 {
                 return;
             }
-            // The engine renders at physical resolution for our logical
-            // rect — scale down so hi-DPI frames map 1:1 to device
-            // pixels.
-            let sx = self.rect.width() / iw as f64;
-            let sy = self.rect.height() / ih as f64;
+            // The engine renders at physical resolution for our logical rect
+            // — scale down so hi-DPI frames map 1:1 to device pixels.
+            let sx = self.rect.width() / f64::from(iw);
+            let sy = self.rect.height() / f64::from(ih);
             let brush_transform =
                 Affine::translate((self.rect.x0, self.rect.y0)) * Affine::scale_non_uniform(sx, sy);
             let brush = vello::peniko::ImageBrush::new(img);
@@ -268,10 +257,9 @@ impl Widget for WebView {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if (self.scale_factor as f64 - scale_factor).abs() > f64::EPSILON {
+        if (f64::from(self.scale_factor) - scale_factor).abs() > f64::EPSILON {
             self.scale_factor = scale_factor as f32;
-            // Force a resize with the new factor; sending eagerly keeps
-            // engine DPI in step even without a re-layout.
+            // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
         }
@@ -316,8 +304,7 @@ impl Widget for WebView {
                         });
                         *handled = true;
                     }
-                    // Mouse side buttons drive history, as in every
-                    // desktop browser.
+                    // Mouse side buttons drive history, as in every desktop browser.
                     winit::event::MouseButton::Back => {
                         if down {
                             self.engine.send(WebViewCommand::GoBack);
@@ -339,8 +326,8 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        (*x as f64 * WHEEL_LINE_PX * scale_factor) as f32,
-                        (*y as f64 * WHEEL_LINE_PX * scale_factor) as f32,
+                        (f64::from(*x) * WHEEL_LINE_PX * scale_factor) as f32,
+                        (f64::from(*y) * WHEEL_LINE_PX * scale_factor) as f32,
                     ),
                     // PixelDelta is already physical.
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
@@ -350,7 +337,9 @@ impl Widget for WebView {
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
                 if !self.focused {
                     return;
                 }
@@ -374,7 +363,7 @@ impl Widget for WebView {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "WebView"
     }
 
@@ -393,15 +382,13 @@ impl Widget for WebView {
         let slot = self.engine.frames();
         let guard = slot.lock();
         match guard.ok().as_deref() {
-            Some(Some(f)) => {
-                (Arc::as_ptr(&f.rgba) as usize, f.width, f.height) != self.cached_key
-            }
+            Some(Some(f)) => (Arc::as_ptr(&f.rgba) as usize, f.width, f.height) != self.cached_key,
             _ => false,
         }
     }
 
     /// Two-finger swipe / edge-pull → browser-style history navigation.
-    /// Overriding this here makes every embedder of the WebView component
+    /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
     fn on_nav_gesture(
         &mut self,
@@ -465,7 +452,15 @@ mod tests {
         let mut focus = None;
         let mods = winit::event::Modifiers::default();
         w.handle_event(
-            &event, 1.0, &mods, &mut state, &root, &mut handled, &mut focus, node, tree,
+            &event,
+            1.0,
+            &mods,
+            &mut state,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            tree,
         );
     }
 

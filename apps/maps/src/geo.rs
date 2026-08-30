@@ -122,7 +122,10 @@ pub fn simplify_polyline(pts: &[LatLon], tolerance_m: f64) -> Vec<LatLon> {
     let m_per_deg = EARTH_RADIUS_M * PI / 180.0;
     let cos_lat0 = lat0.cos();
     let xy = |p: LatLon| -> (f64, f64) {
-        ((p.lon - pts[0].lon) * m_per_deg * cos_lat0, (p.lat - pts[0].lat) * m_per_deg)
+        (
+            (p.lon - pts[0].lon) * m_per_deg * cos_lat0,
+            (p.lat - pts[0].lat) * m_per_deg,
+        )
     };
     let plane: Vec<(f64, f64)> = pts.iter().map(|p| xy(*p)).collect();
 
@@ -188,7 +191,10 @@ pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f
         min_lon = min_lon.min(p.lon);
         max_lon = max_lon.max(p.lon);
     }
-    let center = LatLon::new((min_lat + max_lat) / 2.0, (min_lon + max_lon) / 2.0);
+    let center = LatLon::new(
+        f64::midpoint(min_lat, max_lat),
+        f64::midpoint(min_lon, max_lon),
+    );
     let avail_w = (w - 2.0 * pad).max(64.0);
     let avail_h = (h - 2.0 * pad).max(64.0);
 
@@ -239,8 +245,8 @@ pub fn fmt_duration(secs: f64) -> String {
 /// scale bar at the given latitude/zoom. Returns `(label, pixels)`.
 pub fn scale_bar(center: LatLon, zoom: f64, max_px: f64) -> (String, f64) {
     // Metres-per-pixel at this latitude.
-    let mpp = (2.0 * PI * EARTH_RADIUS_M * center.lat.to_radians().cos())
-        / (TILE_SIZE * 2f64.powf(zoom));
+    let mpp =
+        (2.0 * PI * EARTH_RADIUS_M * center.lat.to_radians().cos()) / (TILE_SIZE * 2f64.powf(zoom));
     let max_m = mpp * max_px;
     // Largest nice value ≤ max_m from the 1-2-5 sequence.
     let nice = [
@@ -298,8 +304,9 @@ mod tests {
     #[test]
     fn simplify_drops_collinear_shape_points() {
         // 100 points evenly along a straight east–west line.
-        let pts: Vec<LatLon> =
-            (0..100).map(|i| LatLon::new(48.0, 11.0 + i as f64 * 0.001)).collect();
+        let pts: Vec<LatLon> = (0..100)
+            .map(|i| LatLon::new(48.0, 11.0 + f64::from(i) * 0.001))
+            .collect();
         let out = simplify_polyline(&pts, 3.0);
         assert_eq!(out.len(), 2, "a straight run reduces to its endpoints");
         assert_eq!(out[0], pts[0], "start preserved");
@@ -313,13 +320,17 @@ mod tests {
         // An L-shape: east then north, with jitter points along each leg.
         let mut pts = Vec::new();
         for i in 0..20 {
-            pts.push(LatLon::new(48.0, 11.0 + i as f64 * 0.001));
+            pts.push(LatLon::new(48.0, 11.0 + f64::from(i) * 0.001));
         }
         for i in 1..20 {
-            pts.push(LatLon::new(48.0 + i as f64 * 0.001, 11.019));
+            pts.push(LatLon::new(48.0 + f64::from(i) * 0.001, 11.019));
         }
         let out = simplify_polyline(&pts, 3.0);
-        assert!(out.len() >= 3, "the corner vertex is retained, got {}", out.len());
+        assert!(
+            out.len() >= 3,
+            "the corner vertex is retained, got {}",
+            out.len()
+        );
         assert!(out.len() < pts.len(), "collinear jitter still dropped");
         assert_eq!(out.first(), pts.first());
         assert_eq!(out.last(), pts.last());
@@ -344,8 +355,16 @@ mod tests {
     #[test]
     fn simplify_handles_short_and_zero_tolerance() {
         let two = vec![LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)];
-        assert_eq!(simplify_polyline(&two, 3.0), two, "two points are already minimal");
-        let many: Vec<LatLon> = (0..10).map(|i| LatLon::new(i as f64, 0.0)).collect();
-        assert_eq!(simplify_polyline(&many, 0.0), many, "zero tolerance keeps everything");
+        assert_eq!(
+            simplify_polyline(&two, 3.0),
+            two,
+            "two points are already minimal"
+        );
+        let many: Vec<LatLon> = (0..10).map(|i| LatLon::new(f64::from(i), 0.0)).collect();
+        assert_eq!(
+            simplify_polyline(&many, 0.0),
+            many,
+            "zero tolerance keeps everything"
+        );
     }
 }

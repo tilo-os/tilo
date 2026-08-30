@@ -158,11 +158,7 @@ impl JobResult {
 /// `dst` is opened for writing (created if absent — for a block device the
 /// node already exists and is opened in place). This is the real copy loop:
 /// in tests `dst` is a temp file; in a gated production run it is `/dev/sdX`.
-pub fn stream_copy(
-    src: &Path,
-    dst: &Path,
-    mut on_progress: impl FnMut(u64),
-) -> io::Result<u64> {
+pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
     let mut reader = OpenOptions::new().read(true).open(src)?;
     let mut writer = OpenOptions::new().write(true).create(true).open(dst)?;
     let mut buf = vec![0u8; CHUNK];
@@ -327,7 +323,7 @@ fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
     let rate = 180_000_000u64; // 180 MB/s — a plausible USB3 figure for the ETA.
     let steps = 40;
     for i in 1..=steps {
-        let frac = i as f64 / steps as f64;
+        let frac = f64::from(i) / f64::from(steps);
         if tx
             .send(Progress {
                 phase: JobPhase::Writing,
@@ -342,7 +338,7 @@ fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
         std::thread::sleep(Duration::from_millis(30));
     }
     for i in 1..=steps {
-        let frac = i as f64 / steps as f64;
+        let frac = f64::from(i) / f64::from(steps);
         if tx
             .send(Progress {
                 phase: JobPhase::Verifying,
@@ -508,7 +504,10 @@ mod tests {
         assert!(result.is_success());
         // It really wrote the bytes and drove both phases to completion.
         assert_eq!(std::fs::read(dst.path()).unwrap(), data);
-        assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying, JobPhase::Success]);
+        assert_eq!(
+            phases,
+            vec![JobPhase::Writing, JobPhase::Verifying, JobPhase::Success]
+        );
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
     }

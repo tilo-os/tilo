@@ -1,46 +1,18 @@
-//! Toolkit-side collab client.
+//! Toolkit-side collab client: a synchronous, non-blocking `send` / `poll`
+//! pair trading typed [`CollabRequest`] / [`CollabEvent`] frames, stable so
+//! every downstream app keeps compiling while the transport underneath
+//! changes.
 //!
-//! Historical shape (still the public API, so every downstream app —
-//! `apps/notes`, `apps/word-processor`,
-//! the in-tree relay used by tests, plus the toolkit's own `ui::App` — keeps
-//! compiling): a synchronous, non-blocking `send` / `poll` pair
-//! trading typed [`CollabRequest`] / [`CollabEvent`] frames.
+//! The manager delegates to the `runtime-collab` Cap'n Proto SDK on a
+//! shovel thread it owns, bridging winit-side `send` / `poll` to the SDK
+//! over a pair of unbounded mpsc channels. On
+//! [`runtime_portal::NotAvailable`] it enters "disabled" mode instead of
+//! panicking — `poll()` returns empty, `send()` is a no-op, no thread is
+//! spawned.
 //!
-//! Under the hood the manager now delegates to the `runtime-collab`
-//! Cap'n Proto SDK. `try_connect` is called on a shovel thread the
-//! manager owns; on `Ok` it stands up a `tokio::task::LocalSet`,
-//! spawns fan-out subscription tasks for signed ops / roster
-//! updates / presence, and bridges winit-side `send` / `poll` to the
-//! SDK via a pair of `tokio::sync::mpsc::UnboundedChannel`s. On
-//! [`runtime_portal::NotAvailable`] the manager enters "disabled"
-//! mode — `poll()` returns empty, `send()` is a no-op, no thread is
-//! spawned, no panic ever fires. Widgets that already branch on
-//! [`Self::is_connected`] pick that up transparently.
-//!
-//! The legacy JSON-over-Unix-socket dialect is kept behind the
-//! `legacy-broker` feature flag (default on) so the in-tree test
-//! suites and the shell's production broker keep compiling while the
-//! fleet migrates onto the SDK.
-//!
-//! ## Flipping the feature off
-//!
-//! Once every app in the fleet talks the SDK, the `legacy-broker`
-//! default can be dropped. The recipe is:
-//!
-//! 1. Verify `cargo build -p ui --no-default-features` succeeds
-//!    (currently exercised on every push; the SDK code path resolves
-//!    without the JSON transport). The shell now serves the SDK's
-//!    capnp interface natively via `shell::shell::collab_broker_capnp`,
-//!    so every downstream app can pick up its connection from
-//!    `QOS_SVC_COLLAB_FD` without going through the JSON socket.
-//! 2. Change this crate's `Cargo.toml` `default` line to `[]`
-//!    (or a set that excludes `legacy-broker`).
-//! 3. Delete the `#[cfg(feature = "legacy-broker")]` gates in this
-//!    module and the `broker` sub-module once no consumer depends on
-//!    them.
-//!
-//! Downstream apps flip transparently — the public `send` / `poll`
-//! surface is unchanged; only the underlying transport differs.
+//! The legacy JSON-over-Unix-socket dialect stays behind the
+//! `legacy-broker` feature flag (default on) so in-tree tests and the
+//! shell's production broker keep compiling until every app moves off it.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -54,11 +26,6 @@ use std::io::{Read, Write};
 #[cfg(feature = "legacy-broker")]
 use std::os::unix::net::UnixStream;
 
-// `RawFd` is used unconditionally in the test-only `SdkConnectSource::Fd`
-// variant and in `from_sdk_fd_for_test`. Both are `#[cfg(test)]` so a
-// release build without tests doesn't need it — the cfg-gated import
-// below keeps the release build warning-free.
-#[cfg(test)]
 use std::os::fd::RawFd;
 use std::sync::mpsc;
 use std::thread;
@@ -66,14 +33,10 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
-/// How long an app waits for the collaboration connect path to report
-/// before opening without it.
-///
-/// This is spent on the main thread ahead of the first frame, so it is
-/// the window's worst-case delay when something upstream is wedged. It
-/// is set far above the path's real cost — every step before the report
-/// is a local syscall — so reaching it means something is wrong, not
-/// that the machine is slow.
+/// How long an app waits for the collab connect path to report before
+/// opening without it, spent on the main thread ahead of the first frame.
+/// Every step before the report is a local syscall, so reaching this means
+/// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -81,87 +44,52 @@ pub enum CollabRequest {
     Hello {
         app_id: String,
         cluster_id: Uuid,
-        /// Which **record** this connection carries, when the app has
-        /// one — the third and finest component of its address.
-        ///
-        /// A record is one document with one change graph
-        /// ([`crate::record`]). Announcing it is what makes "share
-        /// this document" expressible: the broker delivers a document
-        /// payload only to connections announcing the *same* record,
-        /// so two people editing two different files in one room stop
-        /// merging each other's state, and a peer given one record
-        /// receives that record and nothing else.
-        ///
-        /// `None` is an app that has not adopted records — its whole
-        /// state is still one document per `(app, room)` pair, which
-        /// is exactly how it behaved before, and it neither receives
-        /// record-scoped traffic nor sends any.
-        ///
-        /// `#[serde(default)]` so a frame from a peer that predates
-        /// records still parses as `None` rather than being dropped
-        /// as malformed.
+        /// Which **record** ([`crate::record`]) this connection carries, when
+        /// adopted. The broker delivers payloads only to connections
+        /// announcing the same record, so two people editing different
+        /// files in one room don't merge each other's state; `None` means
+        /// one document per `(app, room)`. `#[serde(default)]` so a frame
+        /// from a pre-record peer still parses as `None` instead of being
+        /// dropped.
         #[serde(default)]
         record: Option<String>,
-        /// How this connection wants to be named in presence — the
-        /// text on the caret pill other participants see. `None` lets
-        /// the broker stamp a synthetic `peer-<n>`. A person's app sets
-        /// it from the session (`QOS_USER_ID`); an agent sets its own
-        /// name. Informational only: it grants nothing and is never
-        /// used for routing.
+        /// Name on the caret pill; `None` gets a synthetic `peer-<n>`.
+        /// Informational only — never used for routing or grants.
         #[serde(default)]
         handle: Option<String>,
     },
-    /// Legacy: unsigned full-document state. Still accepted by the
-    /// broker. Apps using this path do not get role enforcement and
-    /// surface a "legacy / unsigned" badge in chrome.
+    /// Legacy: unsigned full-document state. Apps using this path do not
+    /// get role enforcement and surface a "legacy / unsigned" badge in
+    /// chrome.
     SyncCRDT { data: Vec<u8> },
-    /// Legacy: unsigned incremental Automerge change blob. Still
-    /// routed by the broker for backward compatibility while Phase 3
-    /// migration is in flight. New code should prefer
-    /// [`CollabRequest::SignedSyncIncremental`].
+    /// Legacy: unsigned incremental Automerge change blob. New code
+    /// should prefer [`CollabRequest::SignedSyncIncremental`].
     SyncIncremental { data: Vec<u8> },
-    /// Outbound presence update — the local user's pointer moved, caret
-    /// changed, selection shifted, or they arrived/left a keyed object.
-    /// The server fans this out to every connected peer as a
-    /// `CollabEvent::RemotePresenceUpdate`; the test relay uses the same
-    /// path. Round-trips complete the loop with `apply_remote_presence`.
-    Presence { key: PresenceKey, payload: PresencePayload },
-    /// Phase 3: signed incremental CRDT mutation. The broker validates
-    /// the envelope against the channel's role table (see
-    /// [`collab_types::validate_inbound_op`]) before fanning it
-    /// out. Invalid envelopes are dropped and a structured log line is
-    /// emitted; nothing reaches other peers.
+    /// Outbound presence update — pointer moved, caret changed, selection
+    /// shifted, or arrived/left a keyed object. Fanned out to every
+    /// connected peer as `CollabEvent::RemotePresenceUpdate`.
+    Presence {
+        key: PresenceKey,
+        payload: PresencePayload,
+    },
+    /// Signed incremental CRDT mutation. The broker validates against the
+    /// channel's role table before fanning out; invalid envelopes are
+    /// dropped and logged, never reaching peers.
     ///
-    /// `Box`ed so the discriminant + payload stay a thin handle on the
-    /// stack — `SignedOp` is large (32-byte pubkey + 64-byte sig +
-    /// payload + UUIDs) and growing the enum to its inline size would
-    /// bloat every `CollabRequest` value passed by value.
+    /// `Box`ed to keep the discriminant thin on the stack — `SignedOp` is
+    /// large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     SignedSyncIncremental { envelope: Box<SignedOp> },
-    /// Phase 6: late-join scrollback fetch. A peer that has just
-    /// joined a channel and wants to render older edits asks the
-    /// broker for up to `max` ops with `seq < before_seq` on the
-    /// given artifact. The broker replies with a single
-    /// [`CollabEvent::ScrollbackBatch`].
+    /// Late-join scrollback fetch: up to `max` ops with `seq < before_seq`,
+    /// answered with one [`CollabEvent::ScrollbackBatch`].
     ///
-    /// Apps drive this in two steps: a first request with
-    /// `before_seq` set to "the lowest seq I've already seen + 1",
-    /// then if `exhausted == false` repeat with `before_seq` set to
-    /// the lowest seq from the previous batch. When `exhausted ==
-    /// true` (or the batch is empty) the in-memory broker has no
-    /// more history; the cooperative scrollback path takes over
-    /// (broker queries gossipsub peers — see
-    /// `NeighbourMsg::ScrollbackRequest`).
+    /// Apps page by repeating with `before_seq` set to the lowest seq from
+    /// the previous batch until `exhausted == true`, then fall back to the
+    /// cooperative path (broker queries gossip peers).
     FetchScrollback {
-        /// The artifact whose log to scroll. Same id the app passes
-        /// when sending mutation ops.
         artifact: collab_types::ArtifactId,
-        /// Exclusive upper bound on `seq`. The broker returns ops
-        /// with `seq < before_seq`. To fetch "everything I haven't
-        /// seen", pass the lowest seq the app has rendered locally.
+        /// Exclusive upper bound on `seq`.
         before_seq: u64,
-        /// Page size cap. `u16` because individual scrollback pages
-        /// are bounded by chrome UX (~50 ops/page); a wider int would
-        /// be premature flexibility.
+        /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
 }
@@ -177,8 +105,8 @@ pub enum CollabEvent {
         x: f32,
         y: f32,
     },
-    /// Legacy: full unsigned document state. Apps drop into a merge of
-    /// the snapshot into their local Automerge doc.
+    /// Legacy: full unsigned document state, merged into the local
+    /// Automerge doc.
     CRDTUpdate {
         data: Vec<u8>,
     },
@@ -192,59 +120,66 @@ pub enum CollabEvent {
         key: PresenceKey,
         payload: PresencePayload,
     },
-    /// Phase 3: a validated signed envelope from another peer. The
-    /// validation pipeline ran on the broker side; receivers extract
-    /// `envelope.payload` and feed it into the same
-    /// `automerge::apply_changes` path the legacy
-    /// [`CollabEvent::CRDTIncremental`] uses.
+    /// A typed action another app in this room published, delivered to every
+    /// connection. A receiver decodes it via its own
+    /// [`ActionRegistry`](qos_actions::ActionRegistry); an action for a
+    /// different app decodes to nothing, making room-wide fan-out safe.
     ///
-    /// `from_user_id` mirrors the synthetic id minted by the broker for
-    /// [`CollabEvent::RemotePresenceUpdate`] (`"peer-<src_id>"`) so
-    /// downstream attribution code can use a single id shape.
+    /// `from_user_id` is who *sent* the frame, not necessarily who the
+    /// action says authored it.
+    ActionArrived {
+        type_id: String,
+        payload: Vec<u8>,
+        from_user_id: String,
+    },
+    /// A validated signed envelope from another peer (validation ran on the
+    /// broker). Receivers extract `envelope.payload` into the same
+    /// `automerge::apply_changes` path [`CollabEvent::CRDTIncremental`] uses.
+    ///
+    /// `from_user_id` mirrors the broker's synthetic id
+    /// (`"peer-<src_id>"`) so attribution code uses one id shape.
     SignedCRDTIncremental {
         envelope: Box<SignedOp>,
         from_user_id: String,
     },
-    /// Phase 6: response to a [`CollabRequest::FetchScrollback`].
-    /// Carries a page of previously-validated ops (or the empty
-    /// vector if the broker has nothing in the requested range) plus
-    /// an `exhausted` flag that tells the requester whether to stop
-    /// paging in-memory and fall back to the cooperative path.
+    /// Response to a [`CollabRequest::FetchScrollback`]: a page of
+    /// previously-validated ops plus `exhausted`.
     ///
-    /// Targeted send: the broker writes a `ScrollbackBatch` only to
-    /// the connection that issued the matching `FetchScrollback`, not
-    /// to every connected app. This is the first per-peer reply in
-    /// the broker — every prior event was fan-out.
+    /// Targeted send — unlike every other event here, the broker writes
+    /// this only to the connection that issued the matching request.
     ScrollbackBatch {
-        /// Echo of the original `FetchScrollback::artifact` so the
-        /// app can route the reply to the right history view when
-        /// multiple scrollback fetches are in flight.
+        /// Echoes `FetchScrollback::artifact` so multiple in-flight
+        /// fetches route to the right history view.
         artifact: collab_types::ArtifactId,
-        /// The page of ops, in ascending seq order. Empty when the
-        /// broker has no matching range (typically because compaction
-        /// has evicted it).
+        /// Ascending seq order. Empty when the broker has no matching
+        /// range (typically evicted by compaction).
         ops: Vec<Box<SignedOp>>,
-        /// True iff the broker holds no more history in the requested
-        /// range — i.e. the page is the complete answer from
-        /// in-memory storage. False means there's more on the broker
-        /// that the app can fetch with another request.
         exhausted: bool,
     },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum PresencePayload {
-    Pointer { x: f32, y: f32 },
-    Caret { pos: usize },
-    Selection { start: usize, end: usize },
-    /// The local user just inserted the run `start..end` under the scope
-    /// `key`. Peers render this as a fading textmarker "just typed" swipe
-    /// in the author's colour (see [`crate::presence::PresenceCtx::record_peer_typing`]).
-    /// Unlike `Caret`/`Selection` this is an *event*, not steady-state:
-    /// it's published once when the caret advances on an insert and then
-    /// decays on the receiver. It rides the same fan-out as every other
-    /// presence payload; the legacy broker relays it verbatim.
-    Typing { start: usize, end: usize },
+    Pointer {
+        x: f32,
+        y: f32,
+    },
+    Caret {
+        pos: usize,
+    },
+    Selection {
+        start: usize,
+        end: usize,
+    },
+    /// The local user just inserted `start..end` under scope `key`; peers
+    /// render a fading "just typed" swipe (see
+    /// [`crate::presence::PresenceCtx::record_peer_typing`]). Unlike
+    /// `Caret`/`Selection` this is an *event*, published once and decayed
+    /// on the receiver.
+    Typing {
+        start: usize,
+        end: usize,
+    },
     Arrived,
     Left,
 }
@@ -254,25 +189,29 @@ pub struct Collaborator {
     pub id: String,
     pub name: String,
     pub color: [f32; 3],
+    /// Defaulted on the wire so a peer that omits the field reads as a
+    /// person — a smaller lie than a roster that won't load.
+    #[serde(default)]
+    pub is_agent: bool,
+    /// Whether this row is the receiving machine's own participant.
+    /// Apps can't derive this themselves: `id` is the address *other*
+    /// machines use, and a machine never announces its own to its own apps.
+    ///
+    /// Defaulted on the wire, so a peer that predates this reads as someone
+    /// else.
+    #[serde(default)]
+    pub is_self: bool,
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
-///
-/// `NoIdentity` is the common path during migration: an app calls
-/// `send_signed_op` before the shell has provisioned an identity for
-/// it. App code can pattern-match on this and fall back to
-/// `send(CollabRequest::SyncIncremental {..})` if it wants legacy
-/// behaviour during the transition.
+/// `NoIdentity` is the common case — call before the shell provisions an
+/// identity — and callers can fall back to plain `SyncIncremental`.
 #[derive(Debug)]
 pub enum SignedSendError {
-    /// No [`SigningIdentity`] has been bound via
-    /// [`CollaborationManager::with_identity`] or
-    /// [`CollaborationManager::set_identity`].
+    /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
     NoIdentity,
-    /// Canonical-bytes serialisation of the envelope failed. The
-    /// underlying [`collab_types::CanonicalError`] carries the
-    /// postcard error message; in practice this only fires for
-    /// unrepresentable values, not for healthy inputs.
+    /// Canonical-bytes serialisation of the envelope failed; in practice
+    /// only fires for unrepresentable values.
     Canonical(collab_types::CanonicalError),
 }
 
@@ -290,54 +229,33 @@ impl std::fmt::Display for SignedSendError {
 impl std::error::Error for SignedSendError {}
 
 /// Identity-side handle used by [`CollaborationManager::send_signed_op`]
-/// to mint signed envelopes.
-///
-/// The toolkit deliberately keeps the secret key wrapped in a private
-/// struct (we do not re-export `ed25519_dalek::SigningKey` on the
-/// `CollaborationManager`'s public surface) so app code can only sign
-/// via the manager's helper, not handle the raw secret. The bound
-/// attestation id ties every minted envelope back to the role grant
-/// that authorises it; the broker uses that id to look up the role
-/// table entry.
-///
-/// In Phase 3 v1 a `SigningIdentity` is constructed by the shell at
-/// boot (mint a keypair, persist it under `~/.config/qos/identity/`
-/// per Phase 2, label it with the system username) and handed to every
-/// `CollaborationManager` it spins up via
-/// [`CollaborationManager::with_identity`]. The eventual threshold
-/// upgrade in Phase 8 swaps the `secret_key` field's representation
-/// without changing this struct's outward API.
+/// to mint signed envelopes. The secret key stays private — not
+/// re-exported on the manager's public surface — so app code can only
+/// sign via the manager's helper, never handle the raw secret.
 pub struct SigningIdentity {
     /// Local secret half — never serialised, never logged.
     pub(crate) secret_key: ed25519_dalek::SigningKey,
-    /// Public half — embedded as the `author` field on every signed
-    /// op.
+    /// Public half — embedded as the `author` field on every signed op.
     pub public_key: collab_types::Ed25519PublicKey,
-    /// The role attestation under which this identity emits ops. Set
-    /// at construction time by whichever flow minted the attestation
-    /// (the channel-owner's invite flow in production; the test
-    /// fixture in tests). One identity may hold attestations on
-    /// multiple channels; v1 pins to one per `CollaborationManager`.
+    /// Role attestation the broker looks up ops against. One identity may
+    /// hold attestations on multiple channels; this pins to one per manager.
     pub attestation_id: collab_types::AttestationId,
-    /// Monotonic per-author seq counter. Bumped on every successful
-    /// `sign` so the validator's replay check (`seq > last_seen`)
-    /// passes. Re-using a seq is the spec-defined replay attack and
-    /// the validator rejects it.
+    /// Monotonic per-author seq, bumped on every `sign` so the validator's
+    /// replay check (`seq > last_seen`) passes. Reusing a seq is the
+    /// spec-defined replay attack.
     pub(crate) seq: u64,
 }
 
 impl SigningIdentity {
-    /// Construct an identity from a fresh keypair and the attestation
-    /// id that authorises it. Mostly used in tests; production code
-    /// builds via the shell-side identity-loading helper that will
-    /// land alongside Phase 8's threshold sharing.
+    /// Construct an identity from a fresh keypair and the attestation id
+    /// that authorises it. Mostly used in tests; production code builds
+    /// via the shell-side identity-loading helper.
     pub fn new(
         secret_key: ed25519_dalek::SigningKey,
         attestation_id: collab_types::AttestationId,
     ) -> Self {
-        let public_key = collab_types::Ed25519PublicKey::from_bytes(
-            secret_key.verifying_key().to_bytes(),
-        );
+        let public_key =
+            collab_types::Ed25519PublicKey::from_bytes(secret_key.verifying_key().to_bytes());
         Self {
             secret_key,
             public_key,
@@ -346,10 +264,8 @@ impl SigningIdentity {
         }
     }
 
-    /// Build a fresh `SignedOp` envelope wrapping `payload`. Bumps the
-    /// internal seq so the validator's replay check passes on the
-    /// receiving side; callers do not need to track sequence numbers
-    /// themselves.
+    /// Build a fresh `SignedOp` envelope wrapping `payload`, bumping the
+    /// internal seq so callers don't need to track sequence numbers.
     pub fn sign_op(
         &mut self,
         payload: Vec<u8>,
@@ -372,72 +288,49 @@ impl SigningIdentity {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Backend + shovel machinery
-// -----------------------------------------------------------------------------
-
 /// Which transport the manager is speaking. Enum-per-mode instead of
-/// trait-object'ing because the runtime cost of a match on `send` /
-/// `poll` is negligible and the code stays flat for a reader.
+/// trait-object'ing because the match cost on `send` / `poll` is
+/// negligible and the code stays flat for a reader.
 enum Backend {
-    /// No collab service reachable. `poll` yields nothing, `send`
-    /// is a black hole. Every downstream widget already handles
-    /// "manager isn't connected" via [`CollaborationManager::is_connected`];
-    /// no widget contract changes.
+    /// No collab service reachable. `poll` yields nothing, `send` is a
+    /// black hole; every widget already handles this via
+    /// [`CollaborationManager::is_connected`].
     Disabled,
     /// Talking Cap'n Proto to `runtime-collab`. The shovel thread owns
     /// the SDK client + subscriptions; winit-side send / poll bridge
     /// through unbounded mpsc pairs.
     Sdk(SdkChannel),
-    /// Routing co-edit deltas + presence through the workspace host via
-    /// a [`qos_relay::RelayCoeditSession`]. A bridge task on the
-    /// caller's tokio runtime pumps the session; winit-side send / poll
-    /// bridge through unbounded mpsc pairs, exactly like [`Backend::Sdk`].
-    /// Document deltas then inherit the host's fan-out + on-disk
-    /// store-and-forward, so two peers that are never simultaneously
-    /// online still converge — transparently to the app.
+    /// Routes co-edit deltas + presence through the workspace host via a
+    /// [`qos_relay::RelayCoeditSession`], bridged like [`Backend::Sdk`].
+    /// Deltas inherit the host's on-disk store-and-forward, so an offline
+    /// peer still converges.
     Relay(RelayChannel),
-    /// Legacy JSON-over-Unix-socket dialect. Gated behind the
-    /// `legacy-broker` feature (default on). Preserved so tests and
-    /// the shell's existing broker keep working during the fleet
-    /// migration.
+    /// Legacy JSON-over-Unix-socket dialect, gated behind the
+    /// `legacy-broker` feature (default on) for tests and the shell's
+    /// existing broker.
     #[cfg(feature = "legacy-broker")]
     Legacy(LegacyStream),
 }
 
-/// Owned mpsc pair + shovel-thread handle for SDK mode.
+/// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions
+/// are unbounded — the winit side drains fully each non-blocking
+/// `poll()`, the tokio side always awaits `.recv()` — so neither has an
+/// upper bound in normal operation.
 ///
-/// **Channel sizing:** both directions use `tokio::sync::mpsc::unbounded_channel`.
-/// The winit side always drains completely each frame (`poll()` is
-/// non-blocking) and the tokio side always `.recv().await`s, so
-/// neither side has an upper bound in normal operation. Presence
-/// bursts from a very active peer stay small compared to the frame
-/// budget. If a future SDK contract requires backpressure we can swap
-/// in bounded channels and drop-on-full for outbound presence; that's
-/// a policy decision, not a wire change.
-///
-/// **Shutdown:** dropping `CollaborationManager` drops `outbound_tx`.
-/// The shovel thread's `.recv().await` on `outbound_rx` then yields
-/// `None`, its main task returns, the `LocalSet` drops every spawned
-/// subscription task, the runtime shuts down cleanly, and the thread
-/// exits. `_thread` is retained only so the thread's `JoinHandle` is
-/// not detached — `drop(handle)` is intentional.
+/// Dropping the manager drops `outbound_tx`; the shovel thread's
+/// `.recv()` then yields `None` and the thread exits. `_thread` is kept
+/// only so the `JoinHandle` isn't detached.
 struct SdkChannel {
     outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
     inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
     _thread: Option<thread::JoinHandle<()>>,
 }
 
-/// Owned mpsc pair + bridge-task handle for Relay mode.
-///
-/// Unlike [`SdkChannel`] there is no dedicated OS thread: the
-/// [`qos_relay::RelayCoeditSession`] and its underlying iroh transport
-/// were already stood up on the caller's tokio runtime (the shell's
-/// network actor in production; the test's multi-thread runtime in
-/// tests), so the bridge task that pumps the session is `spawn`ed
-/// there. Dropping the manager drops `outbound_tx` — the bridge's
-/// `select!` observes the closed channel and returns — and aborts the
-/// task via [`AbortOnDrop`] as a backstop.
+/// Owned mpsc pair + bridge-task handle for Relay mode. Unlike
+/// [`SdkChannel`] there's no dedicated OS thread — the session runs on
+/// the caller's tokio runtime, so the bridge task is `spawn`ed there.
+/// Dropping the manager closes `outbound_tx`, which the bridge's
+/// `select!` observes; [`AbortOnDrop`] is the backstop.
 struct RelayChannel {
     outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
     inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
@@ -458,34 +351,24 @@ impl Drop for AbortOnDrop {
 #[cfg(feature = "legacy-broker")]
 struct LegacyStream {
     stream: UnixStream,
-    /// Persistent read buffer. The socket is non-blocking, so a single
-    /// `poll` can see a frame split across reads (large `SyncCRDT`
-    /// payloads especially) or several frames coalesced. We accumulate
-    /// raw bytes here and only extract *complete* length-prefixed
-    /// frames, leaving any partial tail for the next poll.
+    /// Read buffer: the socket is non-blocking, so a `poll` can see a
+    /// frame split or several coalesced. Accumulate bytes, extract only
+    /// complete length-prefixed frames, keep the partial tail for next time.
     rbuf: Vec<u8>,
 }
 
-/// How the shovel thread reaches the broker.
-///
-/// `Env` is the production path: the launcher passed `QOS_SVC_COLLAB_FD`;
-/// `runtime_collab::try_connect()` reads it. `Fd` is for the in-tree
-/// tests — the mock server hands us a specific connected fd (no env
-/// var, no cross-test races).
+/// How the shovel thread reaches the broker. `Env` is production: the
+/// launcher passed `QOS_SVC_COLLAB_FD`. `Fd` is an already-connected typed
+/// endpoint, used by tests and headless diagnostics without environment races.
 enum SdkConnectSource {
     Env,
-    #[cfg(test)]
     Fd(RawFd),
 }
 
 impl SdkConnectSource {
-    /// Build a `CollabClient` on the current tokio `LocalSet` for
-    /// whichever source this is. Returns `NotAvailable` when the
-    /// fd cannot be lifted into RPC — same contract as `try_connect`.
     fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
         match self {
             SdkConnectSource::Env => runtime_collab::try_connect(),
-            #[cfg(test)]
             SdkConnectSource::Fd(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
                 let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
@@ -501,67 +384,103 @@ impl SdkConnectSource {
 
 pub struct CollaborationManager {
     backend: Backend,
-    /// Optional Phase 3 signing identity. When `Some`, calls to
-    /// [`Self::send_signed_op`] mint a [`collab_types::SignedOp`]
-    /// envelope and dispatch it as a
-    /// [`CollabRequest::SignedSyncIncremental`]. `None` is the legacy
-    /// path: apps that haven't migrated keep flowing unsigned
-    /// `SyncIncremental` frames and the broker fans them out without
-    /// validation.
+    /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
+    /// dispatches [`CollabRequest::SignedSyncIncremental`]. `None` is the
+    /// legacy path: unsigned frames, fanned out unvalidated.
     identity: Option<SigningIdentity>,
 }
 
 impl CollaborationManager {
-    /// Standard constructor.
+    /// Connect to the launcher-inherited typed collaboration service and
+    /// announce an explicit route. Headless participants use this instead of
+    /// relying on process-wide `QUICK_APP_ID` / `QOS_WORKSPACE_ID` variables.
+    pub fn for_route(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Env,
+            app_id.into(),
+            cluster_id,
+            record,
+            handle,
+        )
+    }
+
+    /// Explicit typed endpoint for diagnostics and headless harnesses that
+    /// are not launched through the app launcher. Takes ownership of `fd`.
+    pub fn for_route_fd(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            handle,
+        )
+    }
+
+    fn for_route_from(
+        source: SdkConnectSource,
+        app_id: String,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        let sdk = Self::spawn_sdk(source, Vec::new())?;
+        let mut manager = Self {
+            backend: Backend::Sdk(sdk),
+            identity: None,
+        };
+        manager.send(CollabRequest::Hello {
+            app_id,
+            cluster_id,
+            record,
+            handle,
+        });
+        Ok(manager)
+    }
+
+    /// If `legacy-broker` is on **and** `QUICK_COLLAB_SOCK` is set, uses the
+    /// legacy Unix-socket dialect; otherwise tries `runtime_collab::try_connect()`,
+    /// entering SDK mode on `Ok`, Disabled on `Err`.
     ///
-    /// Selection order:
-    /// 1. If the `legacy-broker` feature is on **and** `QUICK_COLLAB_SOCK`
-    ///    is set, use the legacy Unix-socket JSON dialect (unchanged
-    ///    behaviour for existing tests and the shell's in-process broker).
-    /// 2. Otherwise try `runtime_collab::try_connect()` and enter SDK
-    ///    mode on `Ok`; enter Disabled mode on `Err(NotAvailable)`.
-    ///
-    /// Both modes auto-send `Hello { app_id, cluster_id, record }` —
-    /// the address the broker routes this connection's traffic on. See
-    /// [`auto_hello_env`] for where the first two values come from and
-    /// in what order. This constructor announces **no record**, which
-    /// is the pre-record addressing: the app's whole state is one
-    /// document per `(app, room)`. An app that has adopted records
-    /// uses [`Self::for_record`].
+    /// Both modes auto-send `Hello` announcing **no record** (one document
+    /// per `(app, room)`); use [`Self::for_record`] for apps that have
+    /// adopted records.
     pub fn new() -> Self {
         Self::new_scoped(None)
     }
+}
 
-    /// A manager whose traffic is scoped to **one record** — one
-    /// document, one change graph, one channel.
-    ///
-    /// This is the whole of "apps announce a channel per record": the
-    /// broker keeps routing opaque bytes and never materialises a
-    /// document, and what changes is that the sender now says which
-    /// document its bytes belong to. Two people editing two different
-    /// files in one room therefore stop being handed each other's
-    /// state, and a peer given one record receives that record only.
-    ///
-    /// A process that has several records open holds several managers,
-    /// one per record. `ui::App` builds one for its live record and
-    /// replaces it when the checkout changes.
+impl Default for CollaborationManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CollaborationManager {
+    /// A manager scoped to **one record** — one document, one change graph,
+    /// one channel — so two people editing different files in one room
+    /// don't get handed each other's state. A process with several records
+    /// open holds several managers; `ui::App` swaps its manager on checkout
+    /// change.
     pub fn for_record(record: &crate::record::RecordId) -> Self {
         Self::new_scoped(Some(record.as_str().to_string()))
     }
 
     fn new_scoped(record: Option<String>) -> Self {
-        // Attempt to load the user's on-disk identity via the
-        // runtime SDK. When the file is present, its pubkey bytes
-        // ride along on the join_channel call the auto-Hello issues
-        // below — the previous behaviour (unconditional empty bytes)
-        // left presence unauthored on every connect.
-        //
-        // `runtime_identity::load` reports `ServiceFdMissing` when the
-        // env var is unset (not-a-qOS-session, unit test, etc.);
-        // that path is expected and quiet. Any other failure mode
-        // (unreadable file, malformed JSON) is worth a debug line so
-        // a maintainer investigating "why does presence look
-        // anonymous?" can find the reason in `RUST_LOG=ui=debug`.
+        // Pubkey bytes ride along on the join_channel call below, so presence
+        // is authored on connect. `ServiceFdMissing` (not a qOS session) is
+        // expected and quiet; any other failure gets a debug line so
+        // `RUST_LOG=ui=debug` can answer "why does presence look anonymous?".
         let runtime_identity = match runtime_identity::load() {
             Ok(id) => Some(id),
             Err(runtime_portal::NotAvailable::ServiceFdMissing) => {
@@ -582,24 +501,24 @@ impl CollaborationManager {
             .unwrap_or_default();
 
         #[cfg(feature = "legacy-broker")]
-        if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK") {
-            if let Ok(stream) = UnixStream::connect(&path) {
-                let mut manager = Self {
-                    backend: Backend::Legacy(LegacyStream {
-                        stream,
-                        rbuf: Vec::new(),
-                    }),
-                    identity: None,
-                };
-                let (app_id, cluster_id) = auto_hello_env();
-                manager.send(CollabRequest::Hello {
-                    app_id,
-                    cluster_id,
-                    record: record.clone(),
-                    handle: presence_handle_env(),
-                });
-                return manager;
-            }
+        if let Ok(path) = std::env::var("QUICK_COLLAB_SOCK")
+            && let Ok(stream) = UnixStream::connect(&path)
+        {
+            let mut manager = Self {
+                backend: Backend::Legacy(LegacyStream {
+                    stream,
+                    rbuf: Vec::new(),
+                }),
+                identity: None,
+            };
+            let (app_id, cluster_id) = auto_hello_env();
+            manager.send(CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                handle: presence_handle_env(),
+            });
+            return manager;
         }
 
         match Self::spawn_sdk(SdkConnectSource::Env, identity_bytes) {
@@ -624,27 +543,16 @@ impl CollaborationManager {
         }
     }
 
-    /// Route this manager's co-edit + presence through the workspace
-    /// host, over an already-joined [`qos_relay::RelayCoeditSession`].
+    /// Route this manager's co-edit + presence through an already-joined
+    /// [`qos_relay::RelayCoeditSession`], behind the same `send`/`poll`
+    /// surface. Deltas travel through the host's fan-out **and** on-disk
+    /// store-and-forward, so an offline peer still receives them on
+    /// reconnect.
     ///
-    /// The caller — the shell's network actor in production, the test
-    /// harness in tests — owns the iroh endpoint + device identity,
-    /// dials the host, and joins the workspace's co-edit session; this
-    /// constructor wraps that session behind the same synchronous
-    /// `send` / `poll` surface every app already uses. From the app's
-    /// point of view nothing changes: `SyncIncremental` deltas,
-    /// `SignedSyncIncremental` envelopes and `Presence` frames flow out
-    /// as before, but now travel through the host's fan-out **and** its
-    /// on-disk store-and-forward, so a peer that is offline when the
-    /// edit is made still receives it on reconnect.
-    ///
-    /// `handle` is a handle to the tokio runtime the session's iroh
-    /// transport lives on; the bridge task that pumps the session is
-    /// spawned there so it shares the runtime already driving the
-    /// connection. The manager owns no signing identity in this mode —
-    /// document ops are signed by the app before they reach `send`
-    /// (the `SignedSyncIncremental` path), and the session stamps
-    /// presence attribution itself from its own device key.
+    /// The manager owns no signing identity in this mode — ops must be
+    /// signed by the app before `send`; presence attribution comes from the
+    /// session's own device key. `handle` is the runtime the bridge task
+    /// spawns onto.
     pub fn from_relay_session(
         session: qos_relay::RelayCoeditSession,
         handle: tokio::runtime::Handle,
@@ -662,22 +570,16 @@ impl CollaborationManager {
         }
     }
 
-    /// Test-only: build a manager talking to an SDK broker on the
-    /// given already-connected client fd. Bypasses env-var lookup so
-    /// two tests in the same process do not race on `QOS_SVC_COLLAB_FD`.
-    ///
-    /// Auto-sends the same auto-Hello the production constructor
-    /// does, using the passed `app_id` / `cluster_id` for a
-    /// deterministic test fixture.
+    /// Test-only: build a manager talking to an SDK broker on the given
+    /// already-connected client fd, bypassing env-var lookup so two
+    /// tests in one process don't race on `QOS_SVC_COLLAB_FD`.
     #[cfg(test)]
     fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
     }
 
-    /// Test-only: like [`Self::from_sdk_fd_for_test`] but stamps the
-    /// join_channel call with a caller-supplied identity blob. Kept
-    /// alongside the empty-blob variant so tests that don't care
-    /// about the identity path stay concise.
+    /// Like [`Self::from_sdk_fd_for_test`] but stamps the join_channel
+    /// call with a caller-supplied identity blob.
     #[cfg(test)]
     fn from_sdk_fd_for_test_with_identity(
         fd: RawFd,
@@ -701,15 +603,11 @@ impl CollaborationManager {
     }
 
     /// Stand up the shovel thread + its tokio `current_thread` runtime.
-    ///
-    /// Runs `try_connect` **inside** the shovel thread's `LocalSet`
-    /// because capnp-rpc futures are `!Send` and the resulting
-    /// `CollabClient` cannot cross a thread boundary. Errors from the
-    /// initial connect are surfaced via [`InitStatus`] on a one-shot
-    /// std mpsc so the caller can pick "Disabled vs Sdk" before
-    /// returning; if we deferred the decision to the first `send`
-    /// call, apps that only ever `poll` would never notice they were
-    /// running against a dead broker.
+    /// Runs `try_connect` **inside** the thread's `LocalSet` because
+    /// capnp-rpc futures are `!Send` and can't cross a thread boundary.
+    /// The result surfaces via [`InitStatus`] on a one-shot mpsc so the
+    /// caller picks Disabled vs Sdk before returning, instead of an app
+    /// that only ever `poll`s silently running against a dead broker.
     fn spawn_sdk(
         source: SdkConnectSource,
         identity_bytes: Vec<u8>,
@@ -718,15 +616,8 @@ impl CollaborationManager {
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
 
-        // The source moves into the closure — `SdkConnectSource::Fd` is
-        // `!Send` in principle (RawFd is Send, but this keeps the
-        // intent explicit).
-        //
-        // A thread we cannot start is a service we cannot reach, which
-        // is a state this function already has a word for. It is not a
-        // reason to take the app down with us: `collab` is
-        // `optional@1`, and an app whose broker is unreachable has to
-        // open anyway.
+        // A thread we can't start is a service we can't reach — map to
+        // NotAvailable rather than panicking; an app must open even without collab.
         let handle = match thread::Builder::new()
             .name("ui-collab-shovel".into())
             .spawn(move || run_shovel(source, identity_bytes, outbound_rx, inbound_tx, init_tx))
@@ -735,20 +626,9 @@ impl CollaborationManager {
             Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
         };
 
-        // Wait for the shovel to report initial connect status.
-        //
-        // This runs on the app's main thread before its first frame, so
-        // whatever happens here happens instead of the window
-        // appearing. Two things therefore must not: waiting forever,
-        // and panicking.
-        //
-        // `run_shovel` reports before entering its event loop and every
-        // step to that point is local — no round trip to the broker —
-        // so the wait is short in every case we know how to produce.
-        // The deadline is for the ones we do not: a connect path that
-        // wedges costs a few seconds and a session without
-        // collaboration, never an app that will not open. Dropping the
-        // channels lets a thread that reports late exit on its own.
+        // Must not wait forever or panic — this runs before the app's first
+        // frame. A wedged connect costs a timeout and no collaboration, never
+        // an app that won't open.
         let status = match init_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
             Ok(status) => status,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -763,9 +643,6 @@ impl CollaborationManager {
                     ),
                 ));
             }
-            // The thread ended without reporting. There is nothing on
-            // the other end to hand out, so this is simply a service
-            // that is not available.
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 tracing::warn!(
                     "collab: the connect path ended without reporting; \
@@ -794,63 +671,39 @@ impl CollaborationManager {
         }
     }
 
-    /// True when connected to a live broker (SDK or legacy). The event
-    /// loop uses this to tick while collaborating so the socket / RPC
-    /// stream is drained promptly instead of only on local input.
+    /// True when connected to a live broker (SDK or legacy) — used by the
+    /// event loop to keep ticking so the stream drains promptly.
     pub fn is_connected(&self) -> bool {
         !matches!(self.backend, Backend::Disabled)
     }
 
-    /// Phase 3: bind a signing identity to this manager. Once set,
-    /// [`Self::send_signed_op`] is the canonical outbound CRDT-mutation
-    /// path; legacy unsigned `SyncIncremental` still works for apps
-    /// that haven't migrated.
-    ///
-    /// Builder-style so the shell can chain
-    /// `CollaborationManager::new().with_identity(id)` at boot. The
-    /// previous identity (if any) is replaced; the manager owns its
-    /// `SigningIdentity` and its seq counter outright.
+    /// Bind a signing identity, builder-style for chaining at boot.
+    /// Replaces any previous identity.
     pub fn with_identity(mut self, identity: SigningIdentity) -> Self {
         self.identity = Some(identity);
         self
     }
 
-    /// Replace the bound signing identity in-place. Used by the shell
-    /// to swap identities when the user switches the active identity
-    /// in the chrome's identity picker without tearing down the
-    /// manager.
+    /// Replace the bound identity in place, e.g. when the user switches
+    /// identities in the chrome's identity picker without tearing down the manager.
     pub fn set_identity(&mut self, identity: SigningIdentity) {
         self.identity = Some(identity);
     }
 
-    /// True when a [`SigningIdentity`] has been bound to this manager
-    /// (via [`Self::with_identity`] or [`Self::set_identity`]). Apps
-    /// can branch on this to decide whether to call
-    /// [`Self::send_signed_op`] or fall back to the legacy unsigned
-    /// path.
     pub fn has_identity(&self) -> bool {
         self.identity.is_some()
     }
 
-    /// Phase 3: sign and send a CRDT mutation envelope. Returns
-    /// `Err` if the manager has no identity bound, or the canonical
-    /// encoder fails (which is effectively unreachable for the wire
-    /// types in this crate — see [`collab_types::canonical`]).
-    ///
-    /// The send itself is best-effort, mirroring the legacy
-    /// [`Self::send`] path: a frame that doesn't reach the socket
-    /// won't be retried, but the next live edit will republish the
-    /// CRDT state so the loss is bounded by one round-trip.
+    /// Sign and send a CRDT mutation envelope. Best-effort like
+    /// [`Self::send`]: an unsent frame isn't retried, but the next live
+    /// edit republishes state, bounding the loss to one round-trip.
     pub fn send_signed_op(
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<(), SignedSendError> {
-        let identity = self
-            .identity
-            .as_mut()
-            .ok_or(SignedSendError::NoIdentity)?;
+        let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
         let envelope = identity
             .sign_op(payload, artifact, op_class)
             .map_err(SignedSendError::Canonical)?;
@@ -860,42 +713,26 @@ impl CollaborationManager {
         Ok(())
     }
 
-    /// Fire-and-forget send. Non-blocking on every backend:
-    /// - SDK: pushes onto the outbound mpsc; the shovel thread does
-    ///   the actual RPC.
-    /// - Legacy: writes the length-prefixed JSON frame directly.
-    /// - Disabled: no-op.
-    ///
-    /// Delivery failures never surface to the caller by design — the
-    /// legacy path already had that contract (the shell can recover
-    /// via the next sync round) and the SDK path preserves it. Apps
-    /// that need delivery confirmation build on top of `poll` events.
+    /// Fire-and-forget, non-blocking on every backend. Delivery failures
+    /// never surface — apps needing confirmation build on `poll` events.
     pub fn send(&mut self, req: CollabRequest) {
         match &mut self.backend {
             Backend::Disabled => {}
             Backend::Sdk(ch) => {
-                // UnboundedSender::send only errors when the receiver
-                // has been dropped, which for us means the shovel
-                // thread has exited. Silently ignore — the next poll
-                // will observe the same shutdown and the caller can
-                // check `is_connected` if they care.
+                // Only errors when the shovel thread has exited; the
+                // next poll observes the same shutdown.
                 let _ = ch.outbound_tx.send(req);
             }
             Backend::Relay(ch) => {
-                // Same fire-and-forget contract as SDK mode: push onto
-                // the outbound mpsc; the bridge task maps it onto the
-                // relay session's publish verbs.
                 let _ = ch.outbound_tx.send(req);
             }
             #[cfg(feature = "legacy-broker")]
             Backend::Legacy(l) => {
                 if let Ok(json) = serde_json::to_vec(&req) {
-                    // Block for writes so a large frame (a full-document
-                    // `SyncCRDT` snapshot) is sent in full. `poll` flips the
-                    // socket to non-blocking for reads; the two alternate on
-                    // one thread, so toggling here is safe. Without this a big
-                    // `write_all` on a non-blocking socket returns WouldBlock
-                    // partway and the frame is truncated.
+                    // Block for writes so a large snapshot sends in full —
+                    // `poll` flips back to non-blocking for reads. Without
+                    // this, write_all on a non-blocking socket can truncate
+                    // mid-frame.
                     let _ = l.stream.set_nonblocking(false);
                     let len = json.len() as u32;
                     let _ = l.stream.write_all(&len.to_le_bytes());
@@ -906,31 +743,17 @@ impl CollaborationManager {
     }
 
     /// Drain every event pending on the current backend. Non-blocking.
-    ///
-    /// The signature stays `Vec<CollabEvent>` (not `Option<...>`) because
-    /// every call-site — `ui::App::pump_collab_presence`, the test hook
-    /// `poll_and_apply_collab_events`, integration harnesses — is
-    /// already `for event in manager.poll()`. Migrating to Option would
-    /// touch every caller for zero win.
     pub fn poll(&mut self) -> Vec<CollabEvent> {
         match &mut self.backend {
             Backend::Disabled => Vec::new(),
             Backend::Sdk(ch) => {
                 let mut events = Vec::new();
-                // try_recv is the only shape that makes sense here:
-                // pump the queue empty and return. The shovel thread
-                // pushes concurrently so a rare bounded loop is fine —
-                // if it filled forever we would still drain a bounded
-                // slice per frame because the event loop calls us at
-                // most a few thousand times per second.
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
                     events.push(evt);
                 }
                 events
             }
             Backend::Relay(ch) => {
-                // Identical drain to SDK mode; the bridge task is the
-                // producer instead of the shovel thread.
                 let mut events = Vec::new();
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
                     events.push(evt);
@@ -955,9 +778,8 @@ impl CollaborationManager {
                     if l.rbuf.len() < 4 {
                         break;
                     }
-                    let len = u32::from_le_bytes([
-                        l.rbuf[0], l.rbuf[1], l.rbuf[2], l.rbuf[3],
-                    ]) as usize;
+                    let len =
+                        u32::from_le_bytes([l.rbuf[0], l.rbuf[1], l.rbuf[2], l.rbuf[3]]) as usize;
                     if l.rbuf.len() < 4 + len {
                         break; // frame not fully arrived yet
                     }
@@ -973,9 +795,8 @@ impl CollaborationManager {
     }
 }
 
-/// The presence handle this process announces on `Hello`: the name on
-/// the caret pill peers see. `QOS_PRESENCE_HANDLE` wins, then the
-/// session's `QOS_USER_ID`; absent both, the broker's synthetic name.
+/// The presence handle announced on `Hello`. `QOS_PRESENCE_HANDLE` wins,
+/// then `QOS_USER_ID`; absent both, the broker's synthetic name.
 pub fn presence_handle_env() -> Option<String> {
     ["QOS_PRESENCE_HANDLE", "QOS_USER_ID"]
         .iter()
@@ -984,12 +805,10 @@ pub fn presence_handle_env() -> Option<String> {
 
 /// The routing key one connection names on the capnp transport.
 ///
-/// An app's traffic is addressed by the triple `(app_id, cluster_id,
-/// record_id)` (`plan/collaboration.md` §8), but capnp's
-/// `joinChannel(channelId, identity)` carries a single string. The
-/// triple therefore travels *inside* the channel id, and this pair of
-/// functions is the only place that encoding is written down — the SDK
-/// formats a key here and the shell parses one here, so the two
+/// An app's traffic is addressed by `(app_id, cluster_id, record_id)`,
+/// but capnp's `joinChannel(channelId, identity)` carries a single
+/// string, so the triple travels *inside* the channel id. This pair of
+/// functions is the only place the encoding is written down, so the two
 /// halves cannot drift apart.
 ///
 /// # Shape
@@ -998,24 +817,15 @@ pub fn presence_handle_env() -> Option<String> {
 /// <cluster>[#app:<app_id>][#record:<record_id>]
 /// ```
 ///
-/// A uuid contains no `#`, so the cluster is always the text before the
-/// first marker. `#record:` is stripped first and takes *everything*
-/// after it, which keeps a record id that itself contains a `#` (a file
-/// path may) intact.
+/// A uuid contains no `#`. `#record:` is stripped first and takes
+/// everything after it, so a `#`-containing record id (a file path may
+/// have one) stays intact. Both suffixes are optional, so a missing
+/// `#app:` yields an empty app id rather than failing to parse — needed
+/// for the earlier two-field keys chrome traffic still rides.
 ///
-/// Both suffixes are optional, and that is what makes the earlier
-/// two-field keys — `<cluster>` and `<cluster>#record:<id>` — parse
-/// unchanged: a missing `#app:` yields an empty app id, which is the
-/// cluster-scoped address chrome traffic already rides.
-///
-/// # Why the app id is in here at all
-///
-/// Because the alternative is that it is nowhere. The transport every
-/// packaged app uses would then publish document deltas with an empty
-/// app id, and an empty app id means *cluster-scoped* — one app's
-/// changes delivered to every app in the room. Carrying it costs one
-/// optional segment and keeps the two transports addressing traffic
-/// the same way.
+/// Without the app id in this key, every packaged app would publish
+/// deltas cluster-scoped — one app's changes delivered to every app in
+/// the room.
 pub mod channel_key {
     /// Encode a route triple into one channel id.
     pub fn format(app_id: &str, cluster_id: &str, record_id: &str) -> String {
@@ -1031,11 +841,8 @@ pub mod channel_key {
         key
     }
 
-    /// Decode a channel id into `(app_id, cluster_id, record_id)`.
-    ///
-    /// Total: every string decodes. One naming no marker is a bare
-    /// cluster, which is exactly the address a connection announcing
-    /// neither an app nor a record should get.
+    /// Decode a channel id into `(app_id, cluster_id, record_id)`. Total:
+    /// every string decodes, and one naming no marker is a bare cluster.
     pub fn parse(key: &str) -> (String, String, String) {
         let (head, record_id) = match key.split_once("#record:") {
             Some((head, record)) => (head, record.to_string()),
@@ -1071,10 +878,8 @@ pub mod channel_key {
 
         #[test]
         fn keys_written_before_the_app_segment_still_parse() {
-            // The two shapes that were on the wire before an app id
-            // was carried. Both must decode to a cluster-scoped
-            // address rather than to nothing, or an app that has not
-            // been rebuilt stops being routed at all.
+            // Both must decode to a cluster-scoped address rather than
+            // nothing, or an app that hasn't been rebuilt stops routing.
             assert_eq!(
                 parse("cluster-1"),
                 (String::new(), "cluster-1".into(), String::new()),
@@ -1099,92 +904,117 @@ pub mod channel_key {
     }
 }
 
-/// The `(app_id, cluster_id)` pair this process announces in its
-/// [`CollabRequest::Hello`] — its address on the broker's fan-out.
+/// The `(app_id, cluster_id)` pair this process announces in
+/// [`CollabRequest::Hello`] — the broker delivers a CRDT delta only to
+/// connections announcing the same pair.
 ///
-/// The broker delivers a CRDT delta only to connections announcing the
-/// same pair, so these two values are the whole of "who am I allowed to
-/// collaborate with". Getting them from the environment (rather than
-/// letting each app invent them) is what makes two separately-launched
-/// processes recognise each other as the same app in the same room.
+/// # Precedence (each half resolves independently)
 ///
-/// # Precedence
+/// 1. `QOS_PACKAGE_ID` / `QOS_WORKSPACE_ID` — launcher-set for every
+///    compositor-started app (reverse-DNS app id, opened workspace).
+/// 2. `QUICK_APP_ID` / `QUICK_CLUSTER_ID` — standalone-dev override,
+///    ranked below `QOS_PACKAGE_ID` so a dev identity never fragments
+///    routing under a real session.
+/// 3. A fresh random app id + the nil cluster — fails closed: nothing
+///    else announces the same id, so nothing is ever delivered here.
 ///
-/// Both halves resolve independently, each in the same order:
-///
-/// 1. **`QOS_PACKAGE_ID` / `QOS_WORKSPACE_ID`** — set by the launcher
-///    for every app the compositor starts. This is the production
-///    path: the app id is the package's reverse-DNS id (so two windows
-///    of one app agree, and a different app never collides with it),
-///    and the cluster is the workspace the user opened it into.
-/// 2. **`QUICK_APP_ID` / `QUICK_CLUSTER_ID`** — the standalone-dev
-///    override, for running apps straight out of `cargo run` with no
-///    session behind them. `QUICK_APP_ID` doubles as a *per-instance*
-///    identity in the sample apps (`QUICK_APP_ID=alice` /
-///    `QUICK_APP_ID=bob` runs one app as two people), which is why it
-///    ranks below `QOS_PACKAGE_ID` instead of overriding it: under a
-///    real session the package id is the routing truth, and a
-///    per-instance name must not fragment it. Those sample setups
-///    still work because they run against the development broker in
-///    [`crate::collaboration::broker`], which reads `app_id` as a
-///    presence attribution and fans out to everyone — the compositor's
-///    broker is the one that routes.
-/// 3. **A fresh random app id and the nil cluster** — the last-resort
-///    default, for a process that was told nothing. The random app id
-///    is what makes this fail closed: no other process can announce
-///    the same one, so nothing is ever delivered here. An app that
-///    cannot say where it belongs must not be handed another app's
-///    document.
-///
-/// `QOS_WORKSPACE_ID` is only *used* as a cluster when it parses as a
-/// uuid, which is the shape the launcher writes. It is also read
-/// elsewhere as a bare "am I on qOS?" flag
-/// (`runtime_portal::is_qos_native`), so a value we cannot route on is
-/// passed over here rather than rejected — the next fallback applies
-/// and the flag keeps working.
+/// `QOS_WORKSPACE_ID` counts as the cluster only when it parses as a
+/// uuid — it's also read elsewhere as a bare "am I on qOS?" flag, so an
+/// unroutable value falls through instead of being rejected.
 fn auto_hello_env() -> (String, Uuid) {
     auto_hello_env_uncached()
 }
 
-/// The identity this process collaborates as — the same `user_id` the broker
-/// attributes its ops and presence to.
+/// The person sitting at this machine. Actions are stamped with this so
+/// undo can tell collaborators apart (see
+/// [`crate::state::State::undo_as`]): the id must be **stable** across a
+/// document's life and **distinct** between people, or one person's
+/// Ctrl+Z reverts another's work.
 ///
-/// Actions are stamped with this so undo can tell one collaborator's work from
-/// another's: see [`crate::state::State::undo_as`].
+/// Mirrors the shell-side `local_user_id` ladder rung for rung (plus a
+/// sandboxed-app rung) so a compositor-granted capability and an
+/// app-stamped undo entry always name the same subject:
+///
+/// 1. `QOS_USER_ID` — explicit override; the shell reads it first too.
+/// 2. The launcher-bound runtime identity (`QOS_USER_IDENTITY`) — the
+///    rung a packaged app actually lands on, since `/var/lib/qos` is
+///    outside its sandbox.
+/// 3. `$XDG_CONFIG_HOME/qos/identity/primary.json`, for the shell's
+///    own unsandboxed in-process apps.
+/// 4. `/var/lib/qos/user-identity/pubkey.bin`.
+/// 5. The OS account name, then a constant.
+///
+/// Not memoised — see [`auto_hello_env_uncached`]: a process hosting
+/// more than one identity must not be frozen into the first one.
 pub fn local_user_id() -> crate::permissions::UserId {
-    crate::permissions::UserId(auto_hello_env().0)
+    crate::permissions::UserId(resolve_local_user_id())
 }
 
-/// The room this process collaborates in — the cluster every CRDT delta
-/// it sends is addressed to.
+fn resolve_local_user_id() -> String {
+    if let Some(v) = non_empty_env("QOS_USER_ID") {
+        return v;
+    }
+    if let Some(id) = runtime_identity::load()
+        .ok()
+        .or_else(|| config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok()))
+    {
+        return person_id_from_key(id.group_public_key());
+    }
+    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
+    {
+        return person_id_from_key(key);
+    }
+    non_empty_env("USER").unwrap_or_else(|| "local".to_string())
+}
+
+/// `$XDG_CONFIG_HOME/qos/identity/primary.json`, else
+/// `$HOME/.config/qos/identity/primary.json`.
+fn config_identity_path() -> Option<std::path::PathBuf> {
+    let base = match non_empty_env("XDG_CONFIG_HOME") {
+        Some(v) => std::path::PathBuf::from(v),
+        None => std::path::PathBuf::from(non_empty_env("HOME")?).join(".config"),
+    };
+    let p = base.join("qos").join("identity").join("primary.json");
+    p.is_file().then_some(p)
+}
+
+/// A public key rendered as a person, in the one canonical form — so this
+/// string and the compositor's string for the same key are the same string.
+fn person_id_from_key(key: [u8; 32]) -> String {
+    match crate::permissions::Principal::person_from_key(
+        collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+    ) {
+        crate::permissions::Principal::Person(id) => id,
+        // `person_from_key` constructs `Person` unconditionally; this arm
+        // exists only because the return type is the whole enum.
+        _ => unreachable!("person_from_key returns a person"),
+    }
+}
+
+/// The application this process is, per `QOS_PACKAGE_ID` (falling back
+/// to `QUICK_APP_ID` for dev). Read from the same place the channel key
+/// is built, so what an app publishes can't disagree with its connection.
+pub fn local_app_id() -> String {
+    auto_hello_env().0
+}
+
+/// The room this process collaborates in. Exposed so presence scopes
+/// from the same source routing uses, rather than a derivation that
+/// could drift.
 ///
-/// Exposed so presence can be scoped from the *same* source the routing
-/// already uses. Deriving the two independently is how a window ends up
-/// publishing "who is here" into a room it is not addressing its
-/// documents to, and nothing would report the disagreement.
-///
-/// `Uuid::nil()` is the unaddressable value: no workspace in the
-/// environment. The broker rejects it deliberately (an unminted room
-/// would otherwise make every workspace on every machine one enormous
-/// shared room), so callers must treat it as "no room", not as a room.
+/// `Uuid::nil()` means no workspace — the broker rejects it
+/// deliberately, so callers must treat it as "no room", not a room.
 pub fn local_cluster_id() -> Uuid {
     auto_hello_env().1
 }
 
 fn auto_hello_env_uncached() -> (String, Uuid) {
-    // Only the last-resort random id is remembered, and only because a
-    // *fresh* uuid per call would hand a second manager in the same
-    // process a different identity — it would announce as two people,
-    // and undo attribution would not match the id the broker sees.
-    //
-    // The environment itself is re-read every time and is never
-    // memoised. It is the routing truth: which room an app belongs to
-    // is a property of the launch, not of the process image, and
-    // freezing the first answer puts every later reader in the first
-    // one's room. That is a room-isolation failure, not a caching
-    // detail — and it is exactly what a process hosting more than one
-    // identity (every collaboration test, and any future in-process
-    // multi-session host) does.
+    // Only the random fallback id is memoised — caching the env-derived
+    // answer would freeze every later reader into the first caller's
+    // room, since env is the routing truth (a property of the launch, not
+    // the process image) and can differ per manager in one process (every
+    // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     let app_id = non_empty_env("QOS_PACKAGE_ID")
@@ -1196,12 +1026,13 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
         });
 
     let cluster_id = non_empty_env("QOS_WORKSPACE_ID")
-        .and_then(|s| match Uuid::parse_str(&s) {
-            Ok(id) => Some(id),
-            Err(_) => {
+        .and_then(|s| {
+            if let Ok(id) = Uuid::parse_str(&s) {
+                Some(id)
+            } else {
                 tracing::debug!(
                     "QOS_WORKSPACE_ID={s:?} is not a uuid; \
-                     falling back to QUICK_CLUSTER_ID for collaboration routing"
+                 falling back to QUICK_CLUSTER_ID for collaboration routing"
                 );
                 None
             }
@@ -1212,30 +1043,24 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     (app_id, cluster_id)
 }
 
-/// `std::env::var` with empty treated as unset. An env var explicitly
-/// set to `""` is the shape a shell script produces when a variable it
-/// meant to forward was itself unset; taking it literally would give
-/// every such app the same empty identity, i.e. put them all in one
-/// room.
+/// `std::env::var` with empty treated as unset — an explicit `""` is
+/// the shape an unset forwarded shell variable produces, and taking it
+/// literally would put every such app in the same (empty-id) room.
 fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-/// One-shot init-result value emitted by the shovel thread before it
-/// enters its main loop. Lets `spawn_sdk` decide immediately whether
-/// to hand out `SdkChannel` or fall back to `Backend::Disabled`
-/// without polling the SDK for a "ready" signal.
+/// One-shot init result from the shovel thread's startup, letting
+/// `spawn_sdk` decide immediately between `SdkChannel` and `Disabled`.
 enum InitStatus {
     Ready,
     Failed(runtime_portal::NotAvailable),
 }
 
-/// The shovel thread's body. Owns a `current_thread` tokio runtime + a
-/// `LocalSet` (capnp-rpc futures are `!Send`), stands up the SDK
-/// client, subscribes the three streams (signed ops, roster context,
-/// presence), and forwards outbound `CollabRequest`s to matching SDK
-/// calls. Exits cleanly when `outbound_rx.recv()` returns `None`
-/// (i.e. the manager was dropped).
+/// The shovel thread's body: owns a `current_thread` runtime + `LocalSet`
+/// (capnp-rpc futures are `!Send`), stands up the SDK client, subscribes
+/// its three streams, and forwards outbound requests. Exits when
+/// `outbound_rx.recv()` returns `None` (manager dropped).
 fn run_shovel(
     source: SdkConnectSource,
     identity_bytes: Vec<u8>,
@@ -1243,9 +1068,8 @@ fn run_shovel(
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
     init_tx: mpsc::SyncSender<InitStatus>,
 ) {
-    // Building `current_thread` is fallible (it can OOM in extreme
-    // conditions). If that fires we can't do anything useful, so
-    // surface as Disabled — no service means the app runs local-only.
+    // Building `current_thread` is fallible (can OOM); surface as
+    // Disabled — no service means the app runs local-only.
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1275,51 +1099,36 @@ fn run_shovel(
     });
 }
 
-/// SDK-side event loop. Consumes outbound `CollabRequest`s, calls the
-/// matching SDK method, and spawns one `spawn_local` subscription task
-/// per stream on the first successful `join_channel`. Kept in its own
-/// async fn so the outer `run_shovel` handles all setup / teardown and
-/// this body reads as pure protocol translation.
+/// SDK-side event loop: dispatches outbound requests to SDK calls, and
+/// spawns one subscription task per stream on the first `join_channel`.
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
     identity_bytes: Vec<u8>,
     mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
     inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
 ) {
-    // Cached handles. `channel` is set on the first Hello; every
-    // downstream RPC (send / send_unsigned_*, fetch_scrollback,
-    // presence.publish_*) requires it.
+    // `channel` is set on the first Hello; every downstream RPC requires
+    // it.
     let mut channel: Option<runtime_collab::ChannelHandle> = None;
     let mut presence: Option<runtime_collab::PresenceHandle> = None;
 
     while let Some(req) = outbound_rx.recv().await {
         match req {
-            CollabRequest::Hello { app_id, cluster_id, record, .. } => {
-                // Ride the identity blob captured at manager
-                // construction — the loaded runtime-identity's raw
-                // pubkey bytes when the on-disk record was reachable,
-                // an empty vec otherwise. The broker treats empty as
-                // the "no identity" fallback (unchanged behaviour for
-                // apps outside a qOS session or missing an
-                // `QOS_USER_IDENTITY` env var).
-                //
-                // The capnp `joinChannel(channelId, identity)` surface
-                // carries neither an app nor a record field, so the
-                // full address this connection announced travels
-                // *inside* the channel id. The shell parses it back out
-                // with the same codec (`CrdtRoute::from_channel_key`),
-                // so one document's subscription never sees another's
-                // deltas on this transport, and one app's deltas are
-                // not addressed to every app in the room.
+            CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } => {
+                // `identity_bytes` is the loaded runtime-identity's pubkey when
+                // reachable, else empty (the broker's "no identity" fallback).
                 let channel_id = channel_key::format(
                     &app_id,
                     &cluster_id.to_string(),
                     record.as_deref().unwrap_or(""),
                 );
-                // Without a channel every later request falls through
-                // its `if let Some(ch)` and is dropped, while the app
-                // still reports itself connected — collaboration that
-                // is switched off and says nothing. Say something.
+                // Without a channel every later request is silently dropped while
+                // the app still reports itself connected — so warn here.
                 let ch = match client.join_channel(&channel_id, &identity_bytes).await {
                     Ok(ch) => ch,
                     Err(e) => {
@@ -1331,7 +1140,6 @@ async fn drive_shovel(
                     }
                 };
 
-                // subscribe(): forward signed op events.
                 if let Ok(sub) = ch.subscribe().await {
                     let itx = inbound_tx.clone();
                     tokio::task::spawn_local(async move {
@@ -1339,28 +1147,42 @@ async fn drive_shovel(
                             let Ok(evt) = sub.read().await else {
                                 break;
                             };
-                            // The SDK carries the postcard-encoded
-                            // SignedOp on the wire; decode into the
-                            // typed envelope callers already handle.
-                            let Ok(envelope) =
-                                postcard::from_bytes::<SignedOp>(&evt.op)
-                            else {
-                                continue;
+                            // Three frame kinds share this stream; only the broker
+                            // knows which, hence the tag — treating every frame as
+                            // signed would silently drop unsigned ones.
+                            let translated = match evt.kind {
+                                runtime_collab::OpKind::Signed => {
+                                    match postcard::from_bytes::<SignedOp>(&evt.op) {
+                                        Ok(envelope) => CollabEvent::SignedCRDTIncremental {
+                                            envelope: Box::new(envelope),
+                                            from_user_id: evt.from_user_id,
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "collab: op tagged signed but not a \
+                                                 postcard SignedOp ({e}); dropping"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // A delta, applied onto the document this app already holds.
+                                runtime_collab::OpKind::UnsignedIncremental => {
+                                    CollabEvent::CRDTIncremental { data: evt.op }
+                                }
+                                // A whole document, merged rather than applied —
+                                // what a late arrival adopts existing text from.
+                                runtime_collab::OpKind::UnsignedSnapshot => {
+                                    CollabEvent::CRDTUpdate { data: evt.op }
+                                }
                             };
-                            if itx
-                                .send(CollabEvent::SignedCRDTIncremental {
-                                    envelope: Box::new(envelope),
-                                    from_user_id: evt.from_user_id,
-                                })
-                                .is_err()
-                            {
+                            if itx.send(translated).is_err() {
                                 break;
                             }
                         }
                     });
                 }
 
-                // subscribeContext(): forward roster / permission snapshots.
                 if let Ok(ctx_stream) = ch.subscribe_context().await {
                     let itx = inbound_tx.clone();
                     tokio::task::spawn_local(async move {
@@ -1375,6 +1197,10 @@ async fn drive_shovel(
                                     id: c.user_id,
                                     name: c.display_name,
                                     color: unpack_color(c.color),
+                                    // `runtime_collab::Collaborator` doesn't carry these
+                                    // yet, so every row reads as a person and as somebody else.
+                                    is_agent: false,
+                                    is_self: false,
                                 })
                                 .collect();
                             if itx
@@ -1390,11 +1216,6 @@ async fn drive_shovel(
                     });
                 }
 
-                // presence + subscribeAll(): forward every presence
-                // variant. Cursor → RemoteCursorMoved (with the empty
-                // PresenceKey the legacy dialect used for pointers);
-                // every other payload → RemotePresenceUpdate keyed by
-                // the decoded PresenceKey.
                 if let Ok(ph) = ch.presence().await {
                     if let Ok(ps) = ph.subscribe_all().await {
                         let itx = inbound_tx.clone();
@@ -1416,10 +1237,10 @@ async fn drive_shovel(
                 channel = Some(ch);
             }
             CollabRequest::SignedSyncIncremental { envelope } => {
-                if let Some(ch) = channel.as_ref() {
-                    if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
-                        let _ = ch.send(&bytes).await;
-                    }
+                if let Some(ch) = channel.as_ref()
+                    && let Ok(bytes) = postcard::to_stdvec(&*envelope)
+                {
+                    let _ = ch.send(&bytes).await;
                 }
             }
             CollabRequest::SyncCRDT { data } => {
@@ -1433,10 +1254,15 @@ async fn drive_shovel(
                 }
             }
             CollabRequest::Presence { key, payload } => {
-                let Some(ph) = presence.as_ref() else { continue };
+                let Some(ph) = presence.as_ref() else {
+                    continue;
+                };
                 match payload {
                     PresencePayload::Pointer { x, y } => {
-                        let _ = ph.publish_cursor(x, y).await;
+                        // Keyed, unlike `publish_cursor(x, y)` which has nowhere to
+                        // put the pointer's coordinate-space key.
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph.publish_pointer(&key_bytes, x, y).await;
                     }
                     PresencePayload::Caret { pos } => {
                         let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
@@ -1449,13 +1275,9 @@ async fn drive_shovel(
                             .await;
                     }
                     PresencePayload::Typing { start, end } => {
-                        // The SDK presence surface has no dedicated typing
-                        // channel yet; carry the just-typed run as a
-                        // transient selection so SDK-connected peers still
-                        // see *where* a peer is editing. The legacy broker
-                        // path relays the real `Typing` variant verbatim,
-                        // so the fading textmarker is exact there. When the
-                        // SDK grows a `publishTyping`, swap this arm.
+                        // The SDK has no dedicated typing channel yet; carry the run
+                        // as a transient selection so peers still see where someone
+                        // is editing. Swap this arm when the SDK grows `publishTyping`.
                         let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
                         let _ = ph
                             .publish_selection(&key_bytes, start as u64, end as u64)
@@ -1477,7 +1299,7 @@ async fn drive_shovel(
                 max,
             } => {
                 let Some(ch) = channel.as_ref() else { continue };
-                match ch.fetch_scrollback(before_seq, max as u32).await {
+                match ch.fetch_scrollback(before_seq, u32::from(max)).await {
                     Ok(batch) => {
                         let mut ops = Vec::with_capacity(batch.ops.len());
                         for op_bytes in batch.ops {
@@ -1506,27 +1328,13 @@ async fn drive_shovel(
     }
 }
 
-// -----------------------------------------------------------------------------
-// Relay backend: bridge task + translation.
-// -----------------------------------------------------------------------------
-
-/// Bridge task for [`Backend::Relay`]. Owns the joined
-/// [`qos_relay::RelayCoeditSession`] and shuttles between the toolkit's
-/// synchronous `send` / `poll` surface and the session's async publish /
-/// recv verbs:
+/// Bridge task for [`Backend::Relay`]: shuttles between the toolkit's
+/// synchronous `send`/`poll` and the session's async publish/recv —
+/// outbound [`CollabRequest`]s map onto `publish_*`, inbound
+/// [`qos_relay::Inbound`] map onto [`CollabEvent`].
 ///
-/// - outbound [`CollabRequest`]s map onto `publish_delta` /
-///   `publish_signed` / `publish_presence` (or a synthetic
-///   empty-scrollback reply — the relay's store-and-forward is not a
-///   history-query API);
-/// - inbound [`qos_relay::Inbound`] events map back onto the matching
-///   [`CollabEvent`] the App layer already dispatches.
-///
-/// The two directions share a `select!` because both borrow the session
-/// immutably (`recv` / `publish_*` all take `&self`), and the recv
-/// future is dropped whenever an outbound request fires. Returns — ending
-/// the task — when the manager is dropped (outbound channel closed) or the
-/// host closes the session (`recv` yields `None`).
+/// The two directions share a `select!` since both borrow the session
+/// immutably. Returns on manager drop or host-closed session.
 async fn drive_relay(
     session: qos_relay::RelayCoeditSession,
     mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
@@ -1540,13 +1348,11 @@ async fn drive_relay(
                     break; // manager dropped — outbound channel closed.
                 };
                 match req {
-                    // The relay session is joined at construction, so the
-                    // legacy auto-Hello has no work to do here.
+                    // The relay session is joined at construction, so
+                    // auto-Hello has no work to do here.
                     CollabRequest::Hello { .. } => {}
-                    // Full snapshot + incremental both ride the unsigned
-                    // co-edit path; the host forwards the opaque delta
-                    // bytes and the receiver applies them with
-                    // `load_incremental`.
+                    // Both ride the unsigned co-edit path — the host forwards opaque
+                    // delta bytes, the receiver applies them with `load_incremental`.
                     CollabRequest::SyncCRDT { data }
                     | CollabRequest::SyncIncremental { data } => {
                         let _ = session.publish_delta(data);
@@ -1557,16 +1363,13 @@ async fn drive_relay(
                         }
                     }
                     CollabRequest::Presence { key, payload } => {
-                        // The session stamps the author; we only carry the
-                        // (key, payload) body it needs to reconstruct the
-                        // toolkit presence event on the far side.
+                        // The session stamps the author; we only carry
+                        // the (key, payload) body.
                         let _ = session.publish_presence(encode_relay_presence(&key, &payload));
                     }
                     CollabRequest::FetchScrollback { artifact, .. } => {
-                        // The host queues deltas per-peer for delivery, it
-                        // does not answer seq-range history queries. Reply
-                        // empty + exhausted so a paging caller unsticks
-                        // instead of hanging.
+                        // The host queues deltas per-peer; it doesn't answer seq-range
+                        // queries. Reply empty + exhausted so a paging caller unsticks.
                         if inbound_tx
                             .send(CollabEvent::ScrollbackBatch {
                                 artifact,
@@ -1584,35 +1387,30 @@ async fn drive_relay(
                 let Some(inbound) = inbound else {
                     break; // host closed the session.
                 };
-                if let Some(evt) = translate_relay_inbound(inbound) {
-                    if inbound_tx.send(evt).is_err() {
-                        break;
-                    }
+                if let Some(evt) = translate_relay_inbound(inbound)
+                    && inbound_tx.send(evt).is_err()
+                {
+                    break;
                 }
             }
         }
     }
 }
 
-/// Encode the toolkit `(PresenceKey, PresencePayload)` pair as the
-/// opaque body carried inside a relay presence frame. The session wraps
-/// it with author attribution before it hits the wire.
+/// Encode `(PresenceKey, PresencePayload)` as the opaque body of a
+/// relay presence frame; the session adds author attribution on send.
 fn encode_relay_presence(key: &PresenceKey, payload: &PresencePayload) -> Vec<u8> {
     postcard::to_stdvec(&(key, payload)).unwrap_or_default()
 }
 
-/// Inverse of [`encode_relay_presence`]. `None` for a body that is not a
-/// toolkit presence pair (a non-co-edit presence frame from another
-/// tier) — the caller skips it rather than surface a bogus event.
+/// Inverse of [`encode_relay_presence`]; `None` for a non-toolkit body
+/// so the caller skips it instead of surfacing a bogus event.
 fn decode_relay_presence(bytes: &[u8]) -> Option<(PresenceKey, PresencePayload)> {
     postcard::from_bytes(bytes).ok()
 }
 
-/// Derive a stable `user_id` string from a publishing device's public
-/// key. The relay attributes events by 32-byte device key; the toolkit's
-/// presence / remote-cursor layer keys on a `String`, so we render the
-/// key as `peer-<hex>` — the same `peer-` id shape the broker mints for
-/// its fan-out, keeping downstream attribution code on one id format.
+/// Render a device pubkey as `peer-<hex>` — the same shape the broker
+/// mints, keeping downstream attribution on one id format.
 fn user_id_from_author(author: [u8; 32]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(5 + 64);
@@ -1623,20 +1421,14 @@ fn user_id_from_author(author: [u8; 32]) -> String {
     s
 }
 
-/// Translate a host-side [`qos_relay::Inbound`] into the toolkit
-/// [`CollabEvent`] the App layer already dispatches. `None` for frames
-/// that carry no app-visible event (the subscribe `Ready` ack) or that
-/// fail to decode.
+/// Translate a host-side [`qos_relay::Inbound`] into a [`CollabEvent`];
+/// `None` for the `Ready` ack or a frame that fails to decode.
 fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
     match inbound {
-        // Unsigned document delta — the legacy incremental path apps
-        // already merge. (`CRDTIncremental` carries no author, matching
-        // the unsigned broker path; signed ops carry attribution below.)
-        qos_relay::Inbound::Delta { data, .. } => {
-            Some(CollabEvent::CRDTIncremental { data })
-        }
-        // Signed document op — decode the envelope and attribute it to
-        // the publishing device key.
+        // Unsigned document delta; carries no author, matching the
+        // unsigned broker path.
+        qos_relay::Inbound::Delta { data, .. } => Some(CollabEvent::CRDTIncremental { data }),
+        // Signed document op, attributed to the publishing device key.
         qos_relay::Inbound::SignedDelta { author, op_bytes } => {
             let envelope = postcard::from_bytes::<SignedOp>(&op_bytes).ok()?;
             Some(CollabEvent::SignedCRDTIncremental {
@@ -1644,8 +1436,8 @@ fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
                 from_user_id: user_id_from_author(author),
             })
         }
-        // Presence — the author rode inside the co-edit payload (the host
-        // envelope carries none), so it is preserved end-to-end here.
+        // The author rode inside the co-edit payload, since the host
+        // envelope carries none.
         qos_relay::Inbound::Presence { author, payload } => {
             let (key, payload) = decode_relay_presence(&payload)?;
             let user_id = user_id_from_author(author);
@@ -1665,9 +1457,9 @@ fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
     }
 }
 
-/// Unpack the SDK's 0x00RRGGBB u32 into normalised [R, G, B] floats.
-/// The legacy dialect carries colour as `[f32; 3]` in linear-0..1;
-/// preserving that gives every existing consumer identical rendering.
+/// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
+/// shape the legacy dialect already used, so existing consumers render
+/// identically.
 fn unpack_color(packed: u32) -> [f32; 3] {
     let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
     let g = ((packed >> 8) & 0xFF) as f32 / 255.0;
@@ -1675,18 +1467,12 @@ fn unpack_color(packed: u32) -> [f32; 3] {
     [r, g, b]
 }
 
-/// Translate a SDK-side [`runtime_collab::PresenceEvent`] into the
-/// public `CollabEvent` variant the App layer already dispatches.
-///
-/// Extracted so the subscription task body stays skimmable and the
-/// unit test can round-trip payloads without spinning a broker.
+/// Translate an SDK [`runtime_collab::PresenceEvent`] into a
+/// `CollabEvent`. Extracted so the unit test can exercise it without a broker.
 fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
-    // Cursor keeps the legacy shape: `user_id + x + y` on
-    // `RemoteCursorMoved`. Every other variant carries the
-    // (postcard-decoded) `PresenceKey` on
-    // `RemotePresenceUpdate`. If key decoding fails on a non-Cursor
-    // variant we fall back to a synthetic key; the peer's presence is
-    // still visible but bound to a placeholder scope.
+    // Cursor keeps the legacy `user_id + x + y` shape; every other
+    // variant carries the decoded `PresenceKey`, falling back to a
+    // synthetic key if decoding fails.
     match evt.payload {
         runtime_collab::PresencePayload::Cursor { x, y } => CollabEvent::RemoteCursorMoved {
             user_id: evt.user_id,
@@ -1694,15 +1480,14 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
             y,
         },
         other => {
-            let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| {
-                PresenceKey::Tab {
+            let key: PresenceKey =
+                postcard::from_bytes(&evt.key_bytes).unwrap_or_else(|_| PresenceKey::Tab {
                     id: String::from("<undecodable>"),
-                }
-            });
+                });
             let payload = match other {
-                runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
-                    pos: pos as usize,
-                },
+                runtime_collab::PresencePayload::Caret { pos } => {
+                    PresencePayload::Caret { pos: pos as usize }
+                }
                 runtime_collab::PresencePayload::Selection { start, end } => {
                     PresencePayload::Selection {
                         start: start as usize,
@@ -1711,6 +1496,11 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 runtime_collab::PresencePayload::Left => PresencePayload::Left,
+                // Keeps the coordinate space its key carries, where
+                // `Cursor` has nowhere to put one.
+                runtime_collab::PresencePayload::Pointer { x, y } => {
+                    PresencePayload::Pointer { x, y }
+                }
                 // Handled in the outer arm; make match exhaustive.
                 runtime_collab::PresencePayload::Cursor { .. } => unreachable!(),
             };
@@ -1723,27 +1513,15 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Legacy N-peer broker.
-// -----------------------------------------------------------------------------
-
-/// Standalone N-peer fan-out broker for `QUICK_COLLAB_SOCK`.
+/// Standalone N-peer fan-out broker for `QUICK_COLLAB_SOCK`. Carries no
+/// Automerge knowledge, just relays opaque frames: `Hello` registers
+/// `user_id` and is swallowed; `Sync*` and `Presence` forward verbatim
+/// to every *other* connected peer, `Presence` attributed with the
+/// sender's `user_id`.
 ///
-/// This is the production counterpart to the test relay in
-/// `ui/tests/real_socket_two_peer.rs`, generalized from a fixed two
-/// peers to any number that connect over the lifetime of the process.
-/// It carries no Automerge knowledge — it simply relays opaque frames:
-///
-///   * `Hello` registers the connection's `user_id` (from `app_id`) and
-///     is then swallowed (never fanned out).
-///   * `SyncIncremental` → `CRDTIncremental`, `SyncCRDT` → `CRDTUpdate`
-///     are forwarded verbatim to every *other* connected peer.
-///   * `Presence` → `RemotePresenceUpdate` is forwarded to every other
-///     peer, attributed with the sender's `user_id`.
-///
-/// Late-join document convergence is handled at the app layer (a new
-/// peer broadcasts `Presence::Arrived`; peers already in the room reply
-/// with a full `SyncCRDT`) — the broker needs no special case for it.
+/// Late-join convergence happens at the app layer (a new peer
+/// broadcasts `Arrived`, existing peers reply with a full `SyncCRDT`),
+/// so the broker needs no special case for it.
 #[cfg(feature = "legacy-broker")]
 pub mod broker {
     use std::collections::HashMap;
@@ -1791,13 +1569,12 @@ pub mod broker {
     /// connections. Blocks the calling thread; spawns one reader thread
     /// per peer plus an accept thread.
     pub fn serve(listener: UnixListener) {
-        let peers: Arc<Mutex<HashMap<usize, Peer>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let peers: Arc<Mutex<HashMap<usize, Peer>>> = Arc::new(Mutex::new(HashMap::new()));
         let (fwd_tx, fwd_rx) = mpsc::channel::<(usize, Vec<u8>)>();
 
-        // Accept connections on a side thread so the forwarding loop can
-        // own the calling thread. Each connection gets its own reader
-        // thread so a silent peer can't stall accept for the others.
+        // Accept on a side thread so the forwarding loop owns the calling
+        // thread; per-connection reader threads keep a silent peer from
+        // stalling accept for the others.
         let accept_peers = Arc::clone(&peers);
         thread::spawn(move || {
             let mut next_idx = 0usize;
@@ -1808,32 +1585,31 @@ pub mod broker {
                 let tx = fwd_tx.clone();
                 let peers = Arc::clone(&accept_peers);
                 thread::spawn(move || {
-                    let Ok(write) = stream.try_clone() else { return };
-                    // First frame establishes identity. The client sends
-                    // `Hello` immediately on connect; if it doesn't, fall
-                    // back to `peer-{idx}` and treat the frame as data.
+                    let Ok(write) = stream.try_clone() else {
+                        return;
+                    };
+                    // First frame establishes identity; if it isn't a `Hello`,
+                    // fall back to `peer-{idx}` and treat the frame as data.
                     match read_frame(&mut stream) {
-                        Some(frame) => match serde_json::from_slice::<CollabRequest>(&frame) {
-                            Ok(CollabRequest::Hello { app_id, handle, .. }) => {
-                                // Presence is named by the announced handle
-                                // when there is one — the name on the caret
-                                // pill — else by the app id, as before.
-                                let user_id = handle
-                                    .filter(|h| !h.trim().is_empty())
-                                    .unwrap_or(app_id);
+                        Some(frame) => {
+                            if let Ok(CollabRequest::Hello { app_id, handle, .. }) =
+                                serde_json::from_slice::<CollabRequest>(&frame)
+                            {
+                                // Announced handle when there is one, else the app id.
+                                let user_id =
+                                    handle.filter(|h| !h.trim().is_empty()).unwrap_or(app_id);
+                                peers.lock().unwrap().insert(idx, Peer { user_id, write });
+                            } else {
                                 peers.lock().unwrap().insert(
                                     idx,
-                                    Peer { user_id, write },
-                                );
-                            }
-                            _ => {
-                                peers.lock().unwrap().insert(
-                                    idx,
-                                    Peer { user_id: format!("peer-{idx}"), write },
+                                    Peer {
+                                        user_id: format!("peer-{idx}"),
+                                        write,
+                                    },
                                 );
                                 let _ = tx.send((idx, frame));
                             }
-                        },
+                        }
                         None => return, // closed before saying anything
                     }
 
@@ -1859,41 +1635,31 @@ pub mod broker {
                 .lock()
                 .unwrap()
                 .get(&src_idx)
-                .map(|p| p.user_id.clone())
-                .unwrap_or_else(|| format!("peer-{src_idx}"));
+                .map_or_else(|| format!("peer-{src_idx}"), |p| p.user_id.clone());
 
             let event = match req {
                 CollabRequest::Hello { .. } => continue,
-                CollabRequest::SyncIncremental { data } => {
-                    CollabEvent::CRDTIncremental { data }
-                }
-                CollabRequest::SyncCRDT { data } => {
-                    CollabEvent::CRDTUpdate { data }
-                }
-                CollabRequest::Presence { key, payload } => {
-                    CollabEvent::RemotePresenceUpdate { user_id, key, payload }
-                }
+                CollabRequest::SyncIncremental { data } => CollabEvent::CRDTIncremental { data },
+                CollabRequest::SyncCRDT { data } => CollabEvent::CRDTUpdate { data },
+                CollabRequest::Presence { key, payload } => CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                },
                 CollabRequest::SignedSyncIncremental { envelope } => {
-                    // The simple in-toolkit test broker is for two-peer
-                    // demos and does NOT enforce roles — it just routes
-                    // verbatim. Production fan-out is the
-                    // `shell::shell::collab_broker` which runs every
-                    // envelope through `validate_inbound_op` before
-                    // forwarding. Documenting the divergence here
-                    // explicitly so a reader doesn't assume the
-                    // test broker is the production security boundary.
+                    // This test broker does NOT enforce roles — it just routes
+                    // verbatim. Production fan-out (`shell::shell::collab_broker`)
+                    // validates every envelope first; this is not the production
+                    // security boundary.
                     CollabEvent::SignedCRDTIncremental {
                         envelope,
                         from_user_id: user_id,
                     }
                 }
                 CollabRequest::FetchScrollback { artifact, .. } => {
-                    // The in-toolkit test broker holds no op log
-                    // (Phase 6 is broker-side state), so the answer is
-                    // always "empty + exhausted". Apps using this
-                    // broker get no scrollback; production apps wire
-                    // through `shell::shell::collab_broker` which
-                    // does hold the log.
+                    // This test broker holds no op log, so the answer is always
+                    // "empty + exhausted"; production wires through
+                    // `shell::shell::collab_broker`, which does hold the log.
                     CollabEvent::ScrollbackBatch {
                         artifact,
                         ops: Vec::new(),
@@ -1902,7 +1668,9 @@ pub mod broker {
                 }
             };
 
-            let Ok(bytes) = serde_json::to_vec(&event) else { continue };
+            let Ok(bytes) = serde_json::to_vec(&event) else {
+                continue;
+            };
 
             let mut guard = peers.lock().unwrap();
             let recipients = guard.len().saturating_sub(1);
@@ -1912,7 +1680,10 @@ pub mod broker {
                     CollabEvent::CRDTIncremental { data } => {
                         format!("CRDTIncremental({}B)", data.len())
                     }
-                    CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
+                    CollabEvent::SignedCRDTIncremental {
+                        envelope,
+                        from_user_id,
+                    } => {
                         format!(
                             "SignedCRDTIncremental(from={from_user_id}, {}B payload)",
                             envelope.payload.len()
@@ -1934,12 +1705,19 @@ pub mod broker {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Unit tests: SDK translation + shovel-thread round-trip against a fake broker.
-// -----------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
+    // The `Fake*` capnp-rpc mock servers below implement generated `Server`
+    // traits by returning the concrete `Promise<T, capnp::Error>` capnp-rpc
+    // expects, which is more specific than (though it does satisfy) the
+    // trait's generic `impl Future` return -- the exact "refining" this
+    // lint polices, and the rustc note on it says to allow when intended.
+    // Rewriting every method's return type to the verbose `impl
+    // Future<Output = ...>` spelling wouldn't change any behaviour, only
+    // make capnp-generated-shaped code look less like the rest of the
+    // capnp-rpc code it's mocking.
+    #![allow(refining_impl_trait)]
+
     use super::*;
 
     use std::cell::RefCell;
@@ -1959,8 +1737,6 @@ mod tests {
         presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
     };
 
-    // --- shared capture / seed state -------------------------------------
-
     #[derive(Default)]
     struct Captures {
         joined: Vec<(String, Vec<u8>)>,
@@ -1968,6 +1744,7 @@ mod tests {
         unsigned_snapshots: Vec<Vec<u8>>,
         unsigned_incrementals: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
+        pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
         caret_publishes: Vec<(Vec<u8>, u64)>,
         selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         arrived: Vec<Vec<u8>>,
@@ -2011,8 +1788,6 @@ mod tests {
         done: bool,
     }
 
-    // --- fake presence stream -------------------------------------------
-
     struct FakePresenceStream {
         backlog: Rc<RefCell<Vec<SeedPresence>>>,
     }
@@ -2055,8 +1830,6 @@ mod tests {
         }
     }
 
-    // --- fake presence handle -------------------------------------------
-
     struct FakePresence {
         captures: SharedCaptures,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
@@ -2068,12 +1841,33 @@ mod tests {
             params: presence_handle::PublishCursorParams,
             _results: presence_handle::PublishCursorResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
             self.captures
                 .lock()
                 .unwrap()
                 .cursor_publishes
                 .push((r.get_x(), r.get_y()));
+            Promise::ok(())
+        }
+
+        fn publish_pointer(
+            self: Rc<Self>,
+            params: presence_handle::PublishPointerParams,
+            _results: presence_handle::PublishPointerResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
+            self.captures.lock().unwrap().pointer_publishes.push((
+                k.to_vec(),
+                r.get_x(),
+                r.get_y(),
+            ));
             Promise::ok(())
         }
 
@@ -2094,8 +1888,12 @@ mod tests {
             params: presence_handle::PublishCaretParams,
             _results: presence_handle::PublishCaretResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures
                 .lock()
                 .unwrap()
@@ -2109,8 +1907,12 @@ mod tests {
             params: presence_handle::PublishSelectionParams,
             _results: presence_handle::PublishSelectionResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures.lock().unwrap().selection_publishes.push((
                 k.to_vec(),
                 r.get_start(),
@@ -2124,8 +1926,12 @@ mod tests {
             params: presence_handle::PublishArrivedParams,
             _results: presence_handle::PublishArrivedResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures.lock().unwrap().arrived.push(k.to_vec());
             Promise::ok(())
         }
@@ -2135,8 +1941,12 @@ mod tests {
             params: presence_handle::PublishLeftParams,
             _results: presence_handle::PublishLeftResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(r) = params.get() else { return Promise::ok(()) };
-            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
             self.captures.lock().unwrap().left.push(k.to_vec());
             Promise::ok(())
         }
@@ -2154,10 +1964,11 @@ mod tests {
         }
     }
 
-    // --- fake op stream ---------------------------------------------------
+    /// `(op bytes, author)` pairs captured by a fake op/stream mock.
+    type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String)>>>;
 
     struct FakeOpStream {
-        backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+        backlog: OpBacklog,
     }
 
     impl stream::Server for FakeOpStream {
@@ -2177,8 +1988,6 @@ mod tests {
             Promise::ok(())
         }
     }
-
-    // --- fake context stream ---------------------------------------------
 
     struct FakeContextStream {
         backlog: Rc<RefCell<Vec<SeedContext>>>,
@@ -2217,11 +2026,9 @@ mod tests {
         }
     }
 
-    // --- fake channel handle ---------------------------------------------
-
     struct FakeChannel {
         captures: SharedCaptures,
-        op_backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+        op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
         scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
@@ -2274,7 +2081,11 @@ mod tests {
             let Ok(d) = params.get().and_then(|r| r.get_data()) else {
                 return Promise::ok(());
             };
-            self.captures.lock().unwrap().unsigned_snapshots.push(d.to_vec());
+            self.captures
+                .lock()
+                .unwrap()
+                .unsigned_snapshots
+                .push(d.to_vec());
             Promise::ok(())
         }
 
@@ -2311,7 +2122,9 @@ mod tests {
             params: channel_handle::FetchScrollbackParams,
             mut results: channel_handle::FetchScrollbackResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(p) = params.get() else { return Promise::ok(()) };
+            let Ok(p) = params.get() else {
+                return Promise::ok(());
+            };
             self.captures
                 .lock()
                 .unwrap()
@@ -2341,8 +2154,6 @@ mod tests {
         }
     }
 
-    // --- fake broker + wiring --------------------------------------------
-
     struct FakeBroker {
         captures: SharedCaptures,
         op_backlog: Vec<(Vec<u8>, String)>,
@@ -2357,7 +2168,9 @@ mod tests {
             params: collab_service::JoinChannelParams,
             mut results: collab_service::JoinChannelResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(reader) = params.get() else { return Promise::ok(()) };
+            let Ok(reader) = params.get() else {
+                return Promise::ok(());
+            };
             let channel_id = reader
                 .get_channel_id()
                 .and_then(|t| {
@@ -2370,7 +2183,11 @@ mod tests {
                 .get_identity()
                 .map(|b| b.to_vec())
                 .unwrap_or_default();
-            self.captures.lock().unwrap().joined.push((channel_id, identity));
+            self.captures
+                .lock()
+                .unwrap()
+                .joined
+                .push((channel_id, identity));
 
             let chan = FakeChannel {
                 captures: self.captures.clone(),
@@ -2385,15 +2202,10 @@ mod tests {
         }
     }
 
-    /// Stand up a fake `CollabService` on one end of a Unix socket
-    /// pair and return the client-side raw fd + the captures state so
-    /// tests can assert.
-    fn stand_up_fake_broker(
-        broker: FakeBroker,
-    ) -> (RawFd, SharedCaptures, thread::JoinHandle<()>) {
+    /// Stand up a fake `CollabService` on one end of a Unix socket pair;
+    /// returns the client-side raw fd + captures state for assertions.
+    fn stand_up_fake_broker(broker: FakeBroker) -> (RawFd, SharedCaptures, thread::JoinHandle<()>) {
         let captures = broker.captures.clone();
-        // Build the socket pair on the caller thread — pair() is
-        // synchronous.
         let (server_side, client_side) = std::os::unix::net::UnixStream::pair().unwrap();
         server_side.set_nonblocking(true).unwrap();
         client_side.set_nonblocking(true).unwrap();
@@ -2453,19 +2265,12 @@ mod tests {
         false
     }
 
-    // --- tests -----------------------------------------------------------
-
     #[test]
     #[serial_test::serial(qos_svc_collab_fd)]
     fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
-        // A connected socket whose far end is gone — the shape of a
-        // broker that died between the launcher's connect and the
-        // app's first call.
-        //
-        // `new()` runs on the main thread before the first frame, so
-        // whatever it does here it does instead of the window
-        // appearing. `collab` is `optional@1`: this has to come back,
-        // and the app has to keep working afterwards.
+        // A connected socket whose far end is gone — a broker that died
+        // between the launcher's connect and the app's first call. `new()`
+        // runs before the first frame, so this must return and keep working.
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
         drop(theirs);
         let fd = ours.into_raw_fd();
@@ -2489,16 +2294,16 @@ mod tests {
         );
         // Whichever backend it settled on, the app goes on calling these
         // every frame. Neither may panic.
-        mgr.send(CollabRequest::SyncCRDT { data: b"after the broker died".to_vec() });
+        mgr.send(CollabRequest::SyncCRDT {
+            data: b"after the broker died".to_vec(),
+        });
         let _ = mgr.poll();
     }
 
     #[test]
     #[serial_test::serial(qos_svc_collab_fd)]
     fn disconnected_manager_is_a_no_op() {
-        // No SDK, no legacy socket set. `new` cannot reach anything —
-        // falls through to `Backend::Disabled`.
-        // Guard the env var against pollution from a co-running test.
+        // No SDK, no legacy socket set — falls through to `Backend::Disabled`.
         // SAFETY: the crate is single-threaded per-test module here.
         unsafe {
             std::env::remove_var("QOS_SVC_COLLAB_FD");
@@ -2506,18 +2311,17 @@ mod tests {
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
-        mgr.send(CollabRequest::SyncCRDT { data: b"nope".to_vec() });
+        mgr.send(CollabRequest::SyncCRDT {
+            data: b"nope".to_vec(),
+        });
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
     }
 
     #[test]
     #[serial_test::serial(qos_user_identity)]
     fn join_channel_uses_empty_identity_when_env_var_unset() {
-        // The manager's public constructor (`new`) is what apps hit.
-        // With `QOS_USER_IDENTITY` unset, `runtime-identity::load()`
-        // returns `ServiceFdMissing` and the manager falls back to
-        // the empty-identity path — matching the pre-existing wire
-        // behaviour so a legacy broker sees no diff.
+        // With `QOS_USER_IDENTITY` unset, `load()` returns `ServiceFdMissing`
+        // and the manager falls back to the empty-identity path.
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
             op_backlog: vec![],
@@ -2531,8 +2335,12 @@ mod tests {
         // the `qos_user_identity` key, so nothing reads it concurrently.
         unsafe { std::env::remove_var(runtime_identity::IDENTITY_ENV_VAR) };
         let cluster = Uuid::new_v4();
-        let _mgr =
-            CollaborationManager::from_sdk_fd_for_test_with_identity(fd, "alice", cluster, Vec::new());
+        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
+            fd,
+            "alice",
+            cluster,
+            Vec::new(),
+        );
 
         assert!(
             wait_until(
@@ -2543,23 +2351,21 @@ mod tests {
         );
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
-        // The channel id is the whole address this connection
-        // announced, app id included. An id naming only the room would
-        // publish this app's document deltas cluster-scoped, and
-        // cluster-scoped means every app in the room receives them.
+        // The channel id carries the whole address, app id included.
         assert_eq!(
             joined[0].0,
             channel_key::format("alice", &cluster.to_string(), ""),
         );
-        assert!(joined[0].1.is_empty(), "identity blob must be empty when env unset");
+        assert!(
+            joined[0].1.is_empty(),
+            "identity blob must be empty when env unset"
+        );
     }
 
     #[test]
     fn join_channel_carries_pubkey_bytes_when_identity_loads() {
-        // A fresh single-device identity written to disk and pointed
-        // at via QOS_USER_IDENTITY must ride the join_channel call as
-        // its pubkey bytes. This is the property that makes presence
-        // authored and signed-op provenance meaningful.
+        // A fresh single-device identity on disk must ride the join_channel
+        // call as its pubkey bytes.
         use std::io::Write;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2585,11 +2391,8 @@ mod tests {
         f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
         drop(f);
 
-        // We can't call `CollaborationManager::new()` here — it also
-        // reaches for `QOS_SVC_COLLAB_FD` and would race any other
-        // test in the workspace using the same env var. Instead
-        // simulate the load-then-forward path explicitly against the
-        // fake broker via the identity-aware test constructor.
+        // `new()` also reaches for `QOS_SVC_COLLAB_FD` and would race other
+        // tests; use the identity-aware test constructor instead.
         let loaded = runtime_identity::load_from_path(path).expect("load identity");
         let identity_bytes = loaded.group_public_key().to_vec();
 
@@ -2619,8 +2422,7 @@ mod tests {
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
         assert_eq!(
-            joined[0].1,
-            identity_bytes,
+            joined[0].1, identity_bytes,
             "identity blob must equal the loaded pubkey bytes"
         );
         assert_eq!(joined[0].1.len(), 32, "Ed25519 pubkey is 32 bytes");
@@ -2639,23 +2441,21 @@ mod tests {
         let cluster = Uuid::new_v4();
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
-        // Auto-Hello reaches the broker.
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must be observed"
         );
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
-        // The channel id is the whole address this connection
-        // announced, app id included. An id naming only the room would
-        // publish this app's document deltas cluster-scoped, and
-        // cluster-scoped means every app in the room receives them.
+        // The channel id carries the whole address, app id included.
         assert_eq!(
             joined[0].0,
             channel_key::format("alice", &cluster.to_string(), ""),
         );
 
-        // Signed op forwarded.
         let mut op = SignedOp::new_unsigned(
             b"payload".to_vec(),
             collab_types::ArtifactId::new(),
@@ -2695,12 +2495,19 @@ mod tests {
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
 
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must be observed",
         );
 
-        mgr.send(CollabRequest::SyncCRDT { data: b"snap".to_vec() });
-        mgr.send(CollabRequest::SyncIncremental { data: b"delta".to_vec() });
+        mgr.send(CollabRequest::SyncCRDT {
+            data: b"snap".to_vec(),
+        });
+        mgr.send(CollabRequest::SyncIncremental {
+            data: b"delta".to_vec(),
+        });
 
         assert!(
             wait_until(
@@ -2717,6 +2524,9 @@ mod tests {
         assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
     }
 
+    /// Every presence variant reaches the SDK method that keeps its key —
+    /// a pointer publishes keyed, like a caret, rather than through
+    /// `publish_cursor(x, y)`, which has nowhere to put one.
     #[test]
     fn presence_variants_map_to_correct_sdk_publishes() {
         let broker = FakeBroker {
@@ -2729,11 +2539,16 @@ mod tests {
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must be observed",
         );
 
-        let key = PresenceKey::Tab { id: "note-1".to_owned() };
+        let key = PresenceKey::Tab {
+            id: "note-1".to_owned(),
+        };
         let expected_key_bytes = postcard::to_stdvec(&key).unwrap();
 
         mgr.send(CollabRequest::Presence {
@@ -2761,7 +2576,7 @@ mod tests {
             wait_until(
                 || {
                     let c = captures.lock().unwrap();
-                    c.cursor_publishes.len() == 1
+                    c.pointer_publishes.len() == 1
                         && c.caret_publishes.len() == 1
                         && c.selection_publishes.len() == 1
                         && c.arrived.len() == 1
@@ -2772,7 +2587,17 @@ mod tests {
             "every presence variant must reach the corresponding SDK method",
         );
         let c = captures.lock().unwrap();
-        assert_eq!(c.cursor_publishes, vec![(1.5, 2.5)]);
+        assert_eq!(
+            c.pointer_publishes,
+            vec![(expected_key_bytes.clone(), 1.5, 2.5)],
+            "a pointer carries the key its publisher chose, like every other \
+             keyed variant here",
+        );
+        assert!(
+            c.cursor_publishes.is_empty(),
+            "and does not go out through the keyless call, which would drop \
+             the space on the way",
+        );
         assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
         assert_eq!(
             c.selection_publishes,
@@ -2810,9 +2635,10 @@ mod tests {
         let signed: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {
-                CollabEvent::SignedCRDTIncremental { envelope, from_user_id } => {
-                    Some((envelope, from_user_id))
-                }
+                CollabEvent::SignedCRDTIncremental {
+                    envelope,
+                    from_user_id,
+                } => Some((envelope, from_user_id)),
                 _ => None,
             })
             .collect();
@@ -2864,7 +2690,9 @@ mod tests {
 
     #[test]
     fn presence_stream_translates_cursor_and_all_other_variants() {
-        let key = PresenceKey::Tab { id: "note-1".to_owned() };
+        let key = PresenceKey::Tab {
+            id: "note-1".to_owned(),
+        };
         let key_bytes = postcard::to_stdvec(&key).unwrap();
         let presence_backlog = vec![
             SeedPresence {
@@ -2904,7 +2732,6 @@ mod tests {
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         let events = drain_events(&mut mgr, Duration::from_secs(2));
 
-        // Extract the presence-relevant events in order.
         let mut cursor_moves = Vec::new();
         let mut updates = Vec::new();
         for e in events {
@@ -2965,7 +2792,10 @@ mod tests {
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         assert!(
-            wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2)
+            ),
             "join_channel must precede scrollback fetch",
         );
 
@@ -2995,15 +2825,13 @@ mod tests {
 
     #[test]
     fn translate_presence_event_is_symmetric_over_all_payload_variants() {
-        // Straight unit test of `translate_presence_event` — no broker
-        // required, no threading. Covers cursor / caret / selection /
-        // arrived / left and the undecodable-key fallback.
+        // Straight unit test of `translate_presence_event` — no broker or
+        // threading needed. Covers every payload variant + the undecodable-key fallback.
         let key = PresenceKey::Widget {
             path: vec![crate::presence::PathSegment::Field("body".into())],
         };
         let key_bytes = postcard::to_stdvec(&key).unwrap();
 
-        // Cursor
         let e = translate_presence_event(runtime_collab::PresenceEvent {
             user_id: "peer".into(),
             key_bytes: key_bytes.clone(),
@@ -3011,20 +2839,21 @@ mod tests {
         });
         matches!(e, CollabEvent::RemoteCursorMoved { .. });
 
-        // Caret
         let e = translate_presence_event(runtime_collab::PresenceEvent {
             user_id: "peer".into(),
             key_bytes: key_bytes.clone(),
             payload: SdkPayload::Caret { pos: 3 },
         });
-        if let CollabEvent::RemotePresenceUpdate { key: k, payload, .. } = e {
+        if let CollabEvent::RemotePresenceUpdate {
+            key: k, payload, ..
+        } = e
+        {
             assert_eq!(k, key);
             assert_eq!(payload, PresencePayload::Caret { pos: 3 });
         } else {
             panic!("expected RemotePresenceUpdate");
         }
 
-        // Undecodable key → fallback.
         let e = translate_presence_event(runtime_collab::PresenceEvent {
             user_id: "peer".into(),
             key_bytes: vec![0xFF, 0xFF, 0xFF],

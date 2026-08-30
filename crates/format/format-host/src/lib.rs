@@ -24,5 +24,7 @@ use std::path::PathBuf;
 /// Default on-disk registry path: `~/.config/qos/extensions/format-providers.toml`.
 pub fn default_registry_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("qos").join("extensions").join("format-providers.toml")
+    base.join("qos")
+        .join("extensions")
+        .join("format-providers.toml")
 }

@@ -53,7 +53,7 @@ fn main() {
     }
 
     let mean = total_us as f64 / iters as f64;
-    println!("shell draw at rest: iters={iters} mean={mean:.1}us min={min_us}us max={max_us}us",);
+    println!("shell draw at rest: iters={iters} mean={mean:.1}us min={min_us}us max={max_us}us");
     println!(
         "  → {:.1} Hz steady-state draw throughput (excludes layout + GPU + present)",
         1_000_000.0 / mean,

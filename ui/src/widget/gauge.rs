@@ -22,14 +22,13 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Alpha of a gauge's background track against the border colour.
 const TRACK_ALPHA: u8 = 150;
-/// Height of a [`BarGauge`]'s track in logical pixels.
 const BAR_TRACK_H: f64 = 8.0;
 
-/// Replace a colour's alpha with `a`, keeping RGB.
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
@@ -45,13 +44,14 @@ pub struct GaugeThresholds {
 
 impl Default for GaugeThresholds {
     fn default() -> Self {
-        Self { warning: 0.6, danger: 0.85 }
+        Self {
+            warning: 0.6,
+            danger: 0.85,
+        }
     }
 }
 
 impl GaugeThresholds {
-    /// Resolve the fill colour for `frac` against `theme`'s semantic ramp.
-    /// `>= danger` ⇒ danger, `>= warning` ⇒ warning, else success.
     pub fn color(&self, theme: &Theme, frac: f32) -> Color {
         let s = &theme.tokens.colors.semantic;
         if frac >= self.danger {
@@ -73,8 +73,6 @@ enum Fillcolor {
     Fixed(Color),
 }
 
-/// Circular arc gauge — a round-capped arc over a faint track, sweeping
-/// clockwise from 12 o'clock, with an optional centred big/small label.
 pub struct RingGauge {
     frac: f32,
     fill: Fillcolor,
@@ -88,8 +86,7 @@ pub struct RingGauge {
 }
 
 impl RingGauge {
-    /// Construct a ring gauge for `frac` (clamped to `0..1`). Defaults to
-    /// threshold colouring, no label, 96 px, and a radius-derived thickness.
+    /// `frac` is clamped to `0..1`.
     pub fn new(frac: f32) -> Self {
         Self {
             frac: frac.clamp(0.0, 1.0),
@@ -102,33 +99,31 @@ impl RingGauge {
         }
     }
 
-    /// Builder: centred labels — `big` (prominent, bold) over `small`
-    /// (dim caption). Either may be empty.
+    /// `big` (prominent, bold) over `small` (dim caption). Either may be
+    /// empty.
     pub fn with_label(mut self, big: impl Into<String>, small: impl Into<String>) -> Self {
         self.big = big.into();
         self.small = small.into();
         self
     }
 
-    /// Builder: custom threshold bands.
     pub fn with_thresholds(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = Fillcolor::Threshold(thresholds);
         self
     }
 
-    /// Builder: a fixed fill colour, bypassing the threshold bands.
+    /// Bypasses the threshold bands.
     pub fn with_color(mut self, color: Color) -> Self {
         self.fill = Fillcolor::Fixed(color);
         self
     }
 
-    /// Builder: box edge length in logical pixels.
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
-    /// Builder: explicit arc thickness (otherwise `radius * 0.16`).
+    /// Otherwise `radius * 0.16`.
     pub fn with_thickness(mut self, thickness: f64) -> Self {
         self.thickness = thickness;
         self
@@ -146,8 +141,6 @@ impl RingGauge {
         }
     }
 
-    /// Immediate-mode draw: paint a ring gauge into `scene` centred at
-    /// `center` with the given `radius`/`thickness`/`frac` and `color`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_at(
         scene: &mut Scene,
@@ -165,7 +158,6 @@ impl RingGauge {
         if radius <= 0.0 {
             return;
         }
-        // Faint full-circle track.
         let track = Circle::new(center, radius);
         scene.stroke(
             &Stroke::new(thickness),
@@ -175,21 +167,21 @@ impl RingGauge {
             &track,
         );
 
-        // Remaining arc, clockwise from 12 o'clock.
-        let frac = frac.clamp(0.0, 1.0) as f64;
+        let frac = f64::from(frac.clamp(0.0, 1.0));
         if frac > 0.0 {
             let arc = Arc::new(center, (radius, radius), -FRAC_PI_2, frac * TAU, 0.0);
-            let stroke = Stroke::new(thickness).with_caps(Cap::Round).with_join(Join::Round);
+            let stroke = Stroke::new(thickness)
+                .with_caps(Cap::Round)
+                .with_join(Join::Round);
             scene.stroke(&stroke, transform, color, None, &arc);
         }
 
-        // Centred labels.
         let tokens = &theme.tokens;
         if !big.is_empty() {
             let size = tokens.typography.scale.xl;
             let (bw, bh) = text_renderer.measure_weighted(big, size, None, TextWeight::Bold);
-            let bx = center.x - bw as f64 / 2.0;
-            let by = center.y - bh as f64 / 2.0 - if small.is_empty() { 0.0 } else { 4.0 };
+            let bx = center.x - f64::from(bw) / 2.0;
+            let by = center.y - f64::from(bh) / 2.0 - if small.is_empty() { 0.0 } else { 4.0 };
             text_renderer.draw_text_weighted(
                 scene,
                 big,
@@ -202,8 +194,8 @@ impl RingGauge {
             if !small.is_empty() {
                 let ss = tokens.typography.scale.xs;
                 let (sw, _) = text_renderer.measure(small, ss, None);
-                let sx = center.x - sw as f64 / 2.0;
-                let sy = center.y + bh as f64 / 2.0 - 2.0;
+                let sx = center.x - f64::from(sw) / 2.0;
+                let sy = center.y + f64::from(bh) / 2.0 - 2.0;
                 text_renderer.draw_text(
                     scene,
                     small,
@@ -226,27 +218,25 @@ impl Widget for RingGauge {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.size),
-                    height: Dimension::length(self.size),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(self.size),
+                height: Dimension::length(self.size),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -300,7 +290,7 @@ impl Widget for RingGauge {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "RingGauge"
     }
 
@@ -310,10 +300,10 @@ impl Widget for RingGauge {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // A read-only meter: expose the 0..1 fraction as a percentage so an AT
-        // announces "42 percent". The dim caption (`small`) names it; when no
-        // caption is set the prominent (`big`) readout stands in as the name.
-        // Labels are host-provided display strings, not FTL keys → no `i18n!`.
+        // Expose the 0..1 fraction as a percentage so an AT announces "42
+        // percent". The dim caption (`small`) names it, falling back to the
+        // prominent (`big`) readout. Both are host display strings, not FTL
+        // keys → no `i18n!`.
         let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
         let name = if !self.small.is_empty() {
             Some(self.small.clone())
@@ -346,8 +336,7 @@ pub struct BarGauge {
 }
 
 impl BarGauge {
-    /// Construct a bar gauge for `frac` (clamped to `0..1`). Defaults to
-    /// threshold colouring, no label/value, 32 px tall.
+    /// `frac` is clamped to `0..1`.
     pub fn new(frac: f32) -> Self {
         Self {
             frac: frac.clamp(0.0, 1.0),
@@ -359,26 +348,23 @@ impl BarGauge {
         }
     }
 
-    /// Builder: the top-left label and right-aligned value readout.
     pub fn with_label(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
         self.label = label.into();
         self.value = value.into();
         self
     }
 
-    /// Builder: custom threshold bands.
     pub fn with_thresholds(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = Fillcolor::Threshold(thresholds);
         self
     }
 
-    /// Builder: a fixed fill colour, bypassing the threshold bands.
+    /// Bypasses the threshold bands.
     pub fn with_color(mut self, color: Color) -> Self {
         self.fill = Fillcolor::Fixed(color);
         self
     }
 
-    /// Builder: intrinsic height in logical pixels.
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;
         self
@@ -396,7 +382,6 @@ impl BarGauge {
         }
     }
 
-    /// Immediate-mode draw of a bar gauge into `scene` at `rect`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_at(
         scene: &mut Scene,
@@ -413,7 +398,6 @@ impl BarGauge {
             return;
         }
         let tokens = &theme.tokens;
-        // Label + value row above the track.
         if !label.is_empty() {
             text_renderer.draw_text_weighted(
                 scene,
@@ -432,12 +416,11 @@ impl BarGauge {
                 value,
                 tokens.typography.scale.sm,
                 tokens.colors.text_dim,
-                transform * Affine::translate((rect.x1 - vw as f64, rect.y0)),
+                transform * Affine::translate((rect.x1 - f64::from(vw), rect.y0)),
                 None,
             );
         }
 
-        // Track along the bottom of the rect.
         let track = Rect::new(rect.x0, rect.y1 - BAR_TRACK_H, rect.x1, rect.y1);
         let radius = BAR_TRACK_H / 2.0;
         scene.fill(
@@ -448,10 +431,14 @@ impl BarGauge {
             &RoundedRect::from_rect(track, radius),
         );
 
-        // Fill, left-anchored, proportional to frac.
-        let frac = frac.clamp(0.0, 1.0) as f64;
+        let frac = f64::from(frac.clamp(0.0, 1.0));
         if frac > 0.0 {
-            let fill = Rect::new(track.x0, track.y0, track.x0 + track.width() * frac, track.y1);
+            let fill = Rect::new(
+                track.x0,
+                track.y0,
+                track.x0 + track.width() * frac,
+                track.y1,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -472,26 +459,24 @@ impl Widget for BarGauge {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(self.height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(self.height),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -531,7 +516,7 @@ impl Widget for BarGauge {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BarGauge"
     }
 
@@ -541,10 +526,9 @@ impl Widget for BarGauge {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // A read-only meter. `label` names it; the caller's `value` readout is
-        // the human-facing value string when present (e.g. "3.2 GB"), else the
-        // fraction rendered as a percentage. Both are display strings, not FTL
-        // keys → no `i18n!`.
+        // `label` names it; `value` is the caller's readout when present
+        // (e.g. "3.2 GB"), else the fraction as a percentage. Both are
+        // display strings, not FTL keys → no `i18n!`.
         let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
         let value = if self.value.is_empty() {
             format!("{pct}%")
@@ -602,13 +586,31 @@ mod tests {
 
         let mut zero = Scene::new();
         RingGauge::draw_at(
-            &mut zero, Affine::IDENTITY, &mut tr,
-            Point::new(50.0, 50.0), 40.0, 6.0, 0.0, theme.accent_primary, &theme, "", "",
+            &mut zero,
+            Affine::IDENTITY,
+            &mut tr,
+            Point::new(50.0, 50.0),
+            40.0,
+            6.0,
+            0.0,
+            theme.accent_primary,
+            &theme,
+            "",
+            "",
         );
         let mut half = Scene::new();
         RingGauge::draw_at(
-            &mut half, Affine::IDENTITY, &mut tr,
-            Point::new(50.0, 50.0), 40.0, 6.0, 0.5, theme.accent_primary, &theme, "", "",
+            &mut half,
+            Affine::IDENTITY,
+            &mut tr,
+            Point::new(50.0, 50.0),
+            40.0,
+            6.0,
+            0.5,
+            theme.accent_primary,
+            &theme,
+            "",
+            "",
         );
         assert!(
             count_color_tags(&half) > count_color_tags(&zero),
@@ -623,8 +625,17 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         RingGauge::draw_at(
-            &mut scene, Affine::IDENTITY, &mut tr,
-            Point::new(50.0, 50.0), 40.0, 6.0, 0.7, theme.accent_primary, &theme, "70%", "cpu",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            Point::new(50.0, 50.0),
+            40.0,
+            6.0,
+            0.7,
+            theme.accent_primary,
+            &theme,
+            "70%",
+            "cpu",
         );
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),
@@ -638,9 +649,15 @@ mod tests {
     fn ring_widget_uses_thresholds() {
         let theme = Theme::dark();
         let hot = RingGauge::new(0.9);
-        assert_eq!(hot.resolve_color(&theme), theme.tokens.colors.semantic.danger);
+        assert_eq!(
+            hot.resolve_color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
         let cool = RingGauge::new(0.3);
-        assert_eq!(cool.resolve_color(&theme), theme.tokens.colors.semantic.success);
+        assert_eq!(
+            cool.resolve_color(&theme),
+            theme.tokens.colors.semantic.success
+        );
         // Fixed colour overrides thresholds.
         let fixed = RingGauge::new(0.9).with_color(Color::from_rgb8(1, 2, 3));
         assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
@@ -656,14 +673,33 @@ mod tests {
 
         let mut zero = Scene::new();
         BarGauge::draw_at(
-            &mut zero, Affine::IDENTITY, &mut tr, rect, &theme, 0.0, theme.accent_primary, "", "",
+            &mut zero,
+            Affine::IDENTITY,
+            &mut tr,
+            rect,
+            &theme,
+            0.0,
+            theme.accent_primary,
+            "",
+            "",
         );
         let mut filled = Scene::new();
         BarGauge::draw_at(
-            &mut filled, Affine::IDENTITY, &mut tr, rect, &theme, 0.5, theme.accent_primary, "", "",
+            &mut filled,
+            Affine::IDENTITY,
+            &mut tr,
+            rect,
+            &theme,
+            0.5,
+            theme.accent_primary,
+            "",
+            "",
         );
         assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
-        assert!(count_color_tags(&filled) > count_color_tags(&zero), "fill adds a rect");
+        assert!(
+            count_color_tags(&filled) > count_color_tags(&zero),
+            "fill adds a rect"
+        );
     }
 
     /// A bar gauge with a label + value paints two glyph runs.
@@ -673,8 +709,15 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         BarGauge::draw_at(
-            &mut scene, Affine::IDENTITY, &mut tr,
-            Rect::new(0.0, 0.0, 200.0, 32.0), &theme, 0.4, theme.accent_primary, "Memory", "4.2 GB",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            &theme,
+            0.4,
+            theme.accent_primary,
+            "Memory",
+            "4.2 GB",
         );
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),

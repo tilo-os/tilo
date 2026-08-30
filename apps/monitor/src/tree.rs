@@ -220,7 +220,11 @@ fn cmp_nodes(a: &Row, b: &Row, key: SortKey, desc: bool) -> std::cmp::Ordering {
         SortKey::Mem => a.mem_bytes.cmp(&b.mem_bytes),
         SortKey::Threads => a.threads.cmp(&b.threads),
     };
-    let o = if o == Ordering::Equal { a.pid.cmp(&b.pid) } else { o };
+    let o = if o == Ordering::Equal {
+        a.pid.cmp(&b.pid)
+    } else {
+        o
+    };
     if desc { o.reverse() } else { o }
 }
 
@@ -377,8 +381,7 @@ impl Forest {
             // Force-open a node that only survived the filter via a descendant
             // (its own name doesn't match) so the matched child is reachable.
             let forced_open = filtering && !self.node_matches(i, opts.filter);
-            let expanded = row.has_children
-                && (opts.expanded.contains(&row.pid) || forced_open);
+            let expanded = row.has_children && (opts.expanded.contains(&row.pid) || forced_open);
             row.expanded = expanded;
             out.push(row);
             if expanded {
@@ -427,11 +430,7 @@ mod tests {
         ]
     }
 
-    fn opts<'a>(
-        sum: SumMode,
-        expanded: &'a HashSet<u32>,
-        filter: &'a str,
-    ) -> FlattenOpts<'a> {
+    fn opts<'a>(sum: SumMode, expanded: &'a HashSet<u32>, filter: &'a str) -> FlattenOpts<'a> {
         FlattenOpts {
             sum_mode: sum,
             sort_key: SortKey::Cpu,
@@ -458,7 +457,10 @@ mod tests {
         assert_eq!(f.nodes.len(), 3, "no process dropped");
         let root_pids: std::collections::HashSet<u32> =
             f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
-        assert!(root_pids.contains(&2), "a child of init is a top-level root");
+        assert!(
+            root_pids.contains(&2),
+            "a child of init is a top-level root"
+        );
         // init keeps no children — they were all promoted.
         let init = f.nodes.iter().find(|n| n.proc.pid == 1).unwrap();
         assert!(init.children.is_empty(), "init does not nest the world");
@@ -479,7 +481,10 @@ mod tests {
             f.roots.iter().map(|&i| f.nodes[i].proc.pid).collect();
         // Both systemds are roots, and the session leader (shell) is promoted
         // to a top-level root instead of hiding under systemd --user.
-        assert!(root_pids.contains(&1200), "shell promoted out of systemd --user");
+        assert!(
+            root_pids.contains(&1200),
+            "shell promoted out of systemd --user"
+        );
         // The editor stays nested under its real parent (the shell).
         let shell = f.nodes.iter().find(|n| n.proc.pid == 1200).unwrap();
         assert_eq!(shell.children.len(), 1, "editor stays under the shell");
@@ -507,7 +512,10 @@ mod tests {
         // Collapsed: only the single root row shows, with the FULL subtree sum.
         assert_eq!(rows.len(), 1, "collapsed root only");
         assert_eq!(rows[0].pid, 10);
-        assert!((rows[0].cpu - 65.0).abs() < 1e-3, "collapsed parent = subtree sum");
+        assert!(
+            (rows[0].cpu - 65.0).abs() < 1e-3,
+            "collapsed parent = subtree sum"
+        );
         assert!(rows[0].has_children && !rows[0].expanded);
     }
 
@@ -517,7 +525,10 @@ mod tests {
         let expanded = HashSet::new();
         let rows = f.flatten(&opts(SumMode::PerProcess, &expanded, ""));
         assert_eq!(rows.len(), 1);
-        assert!((rows[0].cpu - 2.0).abs() < 1e-3, "per-process = own usage only");
+        assert!(
+            (rows[0].cpu - 2.0).abs() < 1e-3,
+            "per-process = own usage only"
+        );
     }
 
     #[test]
@@ -546,7 +557,10 @@ mod tests {
         let expanded = HashSet::new();
         let summed = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""))[0].cpu;
         let per = f.flatten(&opts(SumMode::PerProcess, &expanded, ""))[0].cpu;
-        assert!(summed > per + 1.0, "sum {summed} must exceed per-process {per}");
+        assert!(
+            summed > per + 1.0,
+            "sum {summed} must exceed per-process {per}"
+        );
     }
 
     #[test]
@@ -560,7 +574,10 @@ mod tests {
         assert!(names.contains(&"discord"), "ancestor kept: {names:?}");
         assert!(names.contains(&"Renderer"), "ancestor kept: {names:?}");
         assert!(names.contains(&"Audio"), "match kept: {names:?}");
-        assert!(!names.contains(&"GPU"), "non-matching sibling pruned: {names:?}");
+        assert!(
+            !names.contains(&"GPU"),
+            "non-matching sibling pruned: {names:?}"
+        );
     }
 
     #[test]
@@ -578,7 +595,10 @@ mod tests {
         let rows = f.flatten(&hidden);
         assert!(rows.iter().all(|r| r.name != "kworker/0"), "kernel pruned");
         let shown = f.flatten(&opts(SumMode::SumSubtree, &expanded, ""));
-        assert!(shown.iter().any(|r| r.name == "kworker/0"), "kernel shown when on");
+        assert!(
+            shown.iter().any(|r| r.name == "kworker/0"),
+            "kernel shown when on"
+        );
     }
 
     #[test]

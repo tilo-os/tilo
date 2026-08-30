@@ -1,8 +1,7 @@
 //! Round-trip test: install a real .qpkg via the library surface,
 //! then resolve it and check the payload landed on disk.
 
-mod common;
-
+use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
 use app_host::store::Store;

@@ -142,13 +142,16 @@ impl RollbackToken {
     }
 
     pub fn decoded_public(&self) -> Result<Vec<u8>> {
-        B64.decode(&self.sealed_public).context("token sealed_public is not base64")
+        B64.decode(&self.sealed_public)
+            .context("token sealed_public is not base64")
     }
     pub fn decoded_private(&self) -> Result<Vec<u8>> {
-        B64.decode(&self.sealed_private).context("token sealed_private is not base64")
+        B64.decode(&self.sealed_private)
+            .context("token sealed_private is not base64")
     }
     pub fn decoded_key_name(&self) -> Result<Vec<u8>> {
-        B64.decode(&self.key_name).context("token key_name is not base64")
+        B64.decode(&self.key_name)
+            .context("token key_name is not base64")
     }
 
     pub fn decoded_predictions(&self) -> Result<Vec<Prediction>> {

@@ -1,10 +1,9 @@
 //! Workspace-path resolution for CLI apps.
 //!
-//! qOS apps read and write user data through the workspace FUSE
-//! at `/var/workspace/`. From the app's point of view it's a
-//! regular filesystem — no capnp gymnastics required for the
-//! common "write this file" case. This module gives CLI apps a
-//! one-line way to compute the right path plus a graceful
+//! qOS apps read and write user data through the workspace FUSE at
+//! `/var/workspace/` — from the app's view, a regular filesystem, no capnp
+//! gymnastics for the common "write this file" case. This module gives CLI
+//! apps a one-line way to compute the right path, plus a graceful
 //! standalone fallback.
 
 use std::path::{Path, PathBuf};
@@ -13,25 +12,21 @@ use anyhow::Result;
 
 use crate::{ensure_dir, package_id, standalone_state_dir};
 
-/// Env var the launcher sets pointing at the workspace root.
-/// Absent when we're outside qOS.
+/// Env var the launcher sets pointing at the workspace root; absent outside qOS.
 pub const QOS_WORKSPACE_ROOT_ENV: &str = "QOS_WORKSPACE_ROOT";
 
-/// Default workspace root when the env var is unset but we ARE
-/// inside qOS (detected via [`crate::is_qos_native`]).
+/// Default workspace root when inside qOS ([`crate::is_qos_native`]) but
+/// the env var is unset.
 pub const DEFAULT_WORKSPACE_ROOT: &str = "/var/workspace";
 
-/// Is the qOS workspace FUSE mounted and reachable? Cheap check:
-/// we just look at `QOS_WORKSPACE_ID` (the launcher's canonical
-/// "you're inside qOS" signal) and the workspace-root env var.
+/// Is the qOS workspace FUSE mounted and reachable? Checks
+/// `QOS_WORKSPACE_ID` and the workspace-root env var.
 pub fn is_workspace_available() -> bool {
     crate::is_qos_native() || std::env::var_os(QOS_WORKSPACE_ROOT_ENV).is_some()
 }
 
-/// Return the workspace root path the launcher points at, if any.
-/// Falls back to [`DEFAULT_WORKSPACE_ROOT`] when we're inside qOS
-/// but the env var isn't set. Returns `None` when we're
-/// standalone.
+/// The workspace root the launcher points at, if any: falls back to
+/// [`DEFAULT_WORKSPACE_ROOT`] inside qOS, `None` standalone.
 pub fn workspace_root() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os(QOS_WORKSPACE_ROOT_ENV) {
         return Some(PathBuf::from(root));
@@ -42,19 +37,13 @@ pub fn workspace_root() -> Option<PathBuf> {
     None
 }
 
-/// Resolve a workspace-relative path to something an app can
-/// `open()`. Two behaviours:
+/// Resolve a workspace-relative path to something an app can `open()`. In
+/// qOS, joins onto the workspace root (the FUSE hydrates on first read);
+/// standalone, falls back to `~/.local/share/<pkg-id>/` and creates the
+/// directory tree so callers can write immediately.
 ///
-/// - **In qOS** (workspace mounted): joins onto the workspace
-///   root. The FUSE hydrates on first read.
-/// - **Standalone**: falls back to `~/.local/share/<pkg-id>/`
-///   under the current package id (from `QOS_PACKAGE_ID`, or
-///   `qos-standalone` if unset). Creates the directory tree so
-///   callers can write straight away.
-///
-/// Rejects absolute paths and `..` traversal to keep the two
-/// modes symmetric — an app that writes into workspace must
-/// also be safe to run standalone.
+/// Rejects absolute paths and `..` traversal, so a path safe in workspace
+/// is also safe standalone.
 pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
     if rel.is_empty() {
         anyhow::bail!("workspace path is empty");
@@ -72,8 +61,8 @@ pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
     if let Some(root) = workspace_root() {
         return Ok(root.join(p));
     }
-    // Standalone fallback. Materialise the parent so callers can
-    // write immediately without pre-mkdir'ing.
+    // Standalone fallback: materialise the parent so callers can write without
+    // pre-mkdir'ing.
     let root = standalone_state_dir(&package_id());
     let target = root.join(p);
     if let Some(parent) = target.parent() {
@@ -82,10 +71,8 @@ pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Handle passed into [`act`] closures — carries the resolved
-/// workspace root plus the FS client (or `None` in standalone
-/// mode). Async apps that want direct FS RPC use the client;
-/// the more common "just call `std::fs`" path uses the root.
+/// Handle passed into [`act`] closures: the resolved workspace root plus
+/// the FS client (`None` standalone) for direct RPC vs. plain `std::fs`.
 pub struct WorkspaceHandle {
     pub root: PathBuf,
     pub fs: Option<runtime_fs::FsClient>,
@@ -100,14 +87,10 @@ impl std::fmt::Debug for WorkspaceHandle {
     }
 }
 
-/// Run a closure with a resolved [`WorkspaceHandle`]. In qOS the
-/// FS client is a live capnp connection; in standalone mode it's
-/// `None` and the closure operates through the plain filesystem.
-///
-/// The closure runs on the current tokio `LocalSet` (capnp-rpc
-/// futures are `!Send`). Callers that don't need the FS client
-/// can simply call the closure body directly against
-/// [`resolve_workspace_path`].
+/// Run a closure with a resolved [`WorkspaceHandle`]: a live capnp FS
+/// client in qOS, `None` standalone. Runs on the current tokio `LocalSet`
+/// (capnp-rpc futures are `!Send`); skip this and call
+/// [`resolve_workspace_path`] directly if you don't need the FS client.
 pub async fn act<T, F, Fut>(f: F) -> Result<T>
 where
     F: FnOnce(WorkspaceHandle) -> Fut,
@@ -167,7 +150,10 @@ mod tests {
         unsafe { std::env::set_var("QOS_PACKAGE_ID", "dev.example.notes") };
         let p = resolve_workspace_path("inbox.md").unwrap();
         assert!(p.starts_with(tmp.path().join("dev.example.notes")));
-        assert!(p.parent().unwrap().exists(), "parent dir should be pre-created");
+        assert!(
+            p.parent().unwrap().exists(),
+            "parent dir should be pre-created"
+        );
         unsafe {
             std::env::remove_var("XDG_DATA_HOME");
             std::env::remove_var("QOS_PACKAGE_ID");

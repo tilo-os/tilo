@@ -1,10 +1,10 @@
 //! Headless click-driving harness for Tube.
 //!
-//! Runs the real five-pass frame (sync → build_layout → compute_layout →
-//! apply_layout) against the app, then lets a test resolve a widget's laid-out
+//! Runs the real five-pass frame (sync → `build_layout` → `compute_layout` →
+//! `apply_layout`) against the app, then lets a test resolve a widget's laid-out
 //! [`Rect`] by `test_id` (or tree path) and inject a real winit click / key at
 //! those coordinates through `Widget::handle_event`. No GPU, no event loop —
-//! this exercises the exact production interaction path (ActionBus drain +
+//! this exercises the exact production interaction path (`ActionBus` drain +
 //! `apply`), which is what makes the assertions meaningful.
 
 use std::collections::HashMap;
@@ -15,8 +15,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
@@ -65,13 +65,18 @@ impl<W: Widget> Harness<W> {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
         self.app.sync(&mut self.state.doc, &self.state.root);
-        let child = self.app.build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+        let child = self
+            .app
+            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
         let (w, h) = self.viewport;
         let root = self
             .taffy
             .new_with_children(
                 Style {
-                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
                     ..Default::default()
                 },
                 &[child],
@@ -145,7 +150,7 @@ impl<W: Widget> Harness<W> {
 
     /// The taffy node of the first widget with `test_id == id` (via `node_map`).
     fn node_by_id(&self, id: &str) -> Option<NodeId> {
-        for (node, ptr) in self.node_map.iter() {
+        for (node, ptr) in &self.node_map {
             if unsafe { (**ptr).test_id() } == Some(id) {
                 return Some(*node);
             }
@@ -167,7 +172,10 @@ impl<W: Widget> Harness<W> {
         let pos = PhysicalPosition::new(p.x, p.y);
         let dev = DeviceId::dummy();
         self.last_focus = None;
-        self.dispatch(WindowEvent::CursorMoved { device_id: dev, position: pos });
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: dev,
+            position: pos,
+        });
         self.dispatch(WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Pressed,
@@ -202,7 +210,10 @@ impl<W: Widget> Harness<W> {
     pub fn click_at(&mut self, p: Point) {
         let pos = PhysicalPosition::new(p.x, p.y);
         let dev = DeviceId::dummy();
-        self.dispatch(WindowEvent::CursorMoved { device_id: dev, position: pos });
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: dev,
+            position: pos,
+        });
         self.dispatch(WindowEvent::MouseInput {
             device_id: dev,
             state: ElementState::Pressed,
@@ -223,43 +234,6 @@ impl<W: Widget> Harness<W> {
             .rect_by_id(id)
             .unwrap_or_else(|| panic!("no widget with test_id {id:?} in the laid-out tree"));
         self.click_at(r.center());
-    }
-
-    /// Inject a press → drag → release (move to `from`, press, move to `to`,
-    /// release), then relayout. Drives real pointer-capture drag handling
-    /// through `handle_event` — used to exercise the scrubber's drag-to-seek.
-    pub fn drag(&mut self, from: Point, to: Point) {
-        let dev = DeviceId::dummy();
-        self.dispatch(WindowEvent::CursorMoved {
-            device_id: dev,
-            position: PhysicalPosition::new(from.x, from.y),
-        });
-        self.dispatch(WindowEvent::MouseInput {
-            device_id: dev,
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.dispatch(WindowEvent::CursorMoved {
-            device_id: dev,
-            position: PhysicalPosition::new(to.x, to.y),
-        });
-        self.dispatch(WindowEvent::MouseInput {
-            device_id: dev,
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
-        self.frame();
-    }
-
-    /// Drag the horizontal scrubber addressed by `id` to `frac` of its width.
-    /// Returns the target x used, for callers that want to reason about it.
-    pub fn drag_scrubber_to(&mut self, id: &str, frac: f64) {
-        let r = self
-            .rect_by_id(id)
-            .unwrap_or_else(|| panic!("no widget with test_id {id:?} in the laid-out tree"));
-        let from = r.center();
-        let to = Point::new(r.x0 + r.width() * frac.clamp(0.0, 1.0), r.center().y);
-        self.drag(from, to);
     }
 
     /// Laid-out rects of the **direct children** of the widget with `test_id ==
@@ -297,7 +271,7 @@ impl<W: Widget> Harness<W> {
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         let permissions = PermissionContext::permissive();
-        let vp = presence.push_viewport(Rect::new(0.0, 0.0, w as f64, h as f64));
+        let vp = presence.push_viewport(Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
         self.app.draw_with_presence(
             &mut scene,
             Affine::IDENTITY,

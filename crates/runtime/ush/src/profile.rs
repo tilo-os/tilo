@@ -15,26 +15,22 @@ use seccompiler::{
 /// Which posture a session runs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
-    /// The sandbox. Namespaced, seccomp-filtered, Landlock-restricted, no
-    /// device beyond a pty, no route to the host's filesystem except what a
-    /// grant names.
+    /// The sandbox: namespaced, seccomp-filtered, Landlock-restricted, no
+    /// device beyond a pty, no host filesystem route except a grant.
     #[default]
     Ush,
     /// The developer profile.
     ///
     /// **`dsh` is a convenience for development, not a sandbox.** It keeps the
-    /// layer model and the read-only base — you still cannot write the host's
-    /// `/usr` — and it deliberately gives up the syscall filter that makes
-    /// `ush` a boundary, because nested rootless `podman` and `distrobox`
-    /// cannot work without `unshare`, `mount` and `setns`. A guest that can
-    /// build its own namespaces can also build one without the restrictions it
-    /// was given, so treat everything inside `dsh` as running with the
-    /// authority of the user who started it.
+    /// layer model and read-only base, but deliberately gives up the syscall
+    /// filter that makes `ush` a boundary — nested rootless `podman` and
+    /// `distrobox` need `unshare`/`mount`/`setns`. A guest that can build its
+    /// own namespaces can build one without the restrictions it was given, so
+    /// treat everything inside `dsh` as running with the user's own authority.
     ///
-    /// It exists so qOS can be developed from inside qOS. It is reachable only
-    /// by typing `dsh`: [`Profile::reachable_from_app_launch`] is what enforces
-    /// that, and the supervisor refuses a `dsh` session requested over the
-    /// service socket an app was handed.
+    /// Reachable only by typing `dsh`: [`Profile::reachable_from_app_launch`]
+    /// enforces that, and the supervisor refuses a `dsh` session requested over
+    /// an app's service socket.
     Dsh,
 }
 
@@ -46,10 +42,8 @@ impl Profile {
         }
     }
 
-    /// Resolve a profile name.
-    ///
-    /// Anything that is not exactly `dsh` is [`Profile::Ush`]. A typo must not
-    /// be a route to the weaker posture.
+    /// Resolve a profile name: anything not exactly `dsh` is [`Profile::Ush`] —
+    /// a typo must not be a route to the weaker posture.
     pub fn parse(name: &str) -> Self {
         match name {
             "dsh" => Profile::Dsh,
@@ -57,13 +51,10 @@ impl Profile {
         }
     }
 
-    /// May an app, having been handed the runtime's service socket at launch,
-    /// ask for a session in this profile?
-    ///
-    /// Never for `dsh`. Apps are untrusted, including first-party ones, and
-    /// `dsh` is authority without a boundary — if an app could request it, the
-    /// exception would stop being deliberate. The supervisor checks this on
-    /// every request and the answer does not depend on which app is asking.
+    /// May an app, handed the runtime's service socket at launch, ask for a
+    /// session in this profile? Never for `dsh`: apps are untrusted (including
+    /// first-party ones), and `dsh` is authority without a boundary — the
+    /// supervisor checks this on every request regardless of which app asks.
     pub fn reachable_from_app_launch(self) -> bool {
         matches!(self, Profile::Ush)
     }
@@ -73,22 +64,16 @@ impl Profile {
         matches!(self, Profile::Ush)
     }
 
-    /// Does the guest get `/dev/fuse`?
-    ///
-    /// Container and build tooling needs it (`fuse-overlayfs`, `squashfuse`).
-    /// A FUSE mount is a filesystem the guest implements, which is a way to
-    /// hand a path back to the host with contents the guest controls, so it
-    /// belongs on the `dsh` side of the line.
+    /// Does the guest get `/dev/fuse`? Container/build tooling needs it
+    /// (`fuse-overlayfs`, `squashfuse`); since a FUSE mount is a filesystem the
+    /// guest implements, it belongs on the `dsh` side of the line.
     pub fn grants_fuse(self) -> bool {
         matches!(self, Profile::Dsh)
     }
 
-    /// Does the guest get a subordinate id range?
-    ///
-    /// Rootless `podman` allocates uids out of `/etc/subuid` to own the files
-    /// in an image. With one uid mapped it can only run images whose files are
-    /// all uid 0, which in practice means it does not work. See
-    /// [`crate::guest::subid_range`].
+    /// Does the guest get a subordinate id range? Rootless `podman` allocates
+    /// uids out of `/etc/subuid` to own an image's files — with only one uid
+    /// mapped it can't run most images. See [`crate::guest::subid_range`].
     pub fn grants_subid_range(self) -> bool {
         matches!(self, Profile::Dsh)
     }
@@ -96,9 +81,7 @@ impl Profile {
     /// One line for `guard status` and for the shell prompt.
     pub fn posture_summary(self) -> &'static str {
         match self {
-            Profile::Ush => {
-                "sandboxed: namespaces + seccomp + Landlock, host filesystem read-only"
-            }
+            Profile::Ush => "sandboxed: namespaces + seccomp + Landlock, host filesystem read-only",
             Profile::Dsh => {
                 "developer profile — NOT a sandbox: namespace syscalls allowed, \
                  /dev/fuse present, subordinate ids mapped"
@@ -107,19 +90,15 @@ impl Profile {
     }
 }
 
-/// Syscalls the guest never gets under [`Profile::Ush`].
-///
-/// The set is the namespace- and mount-manipulation half of the deny-list in
-/// `crates/packaging/launcher/src/seccomp.rs`, which is itself Flatpak's
-/// published profile. Keeping the two lists textually separate is deliberate:
-/// this one is the *reason the runtime's own use of these syscalls does not
-/// propagate*, and it should be readable next to that claim rather than behind
-/// a dependency on the packaging crate.
-///
-/// `bwrap` installs the filter after it has finished unsharing and mounting and
-/// immediately before it execs the guest. So the supervisor holds these
-/// syscalls for exactly as long as it takes to build the confinement, and no
-/// descendant of the guest ever holds them.
+/// Syscalls the guest never gets under [`Profile::Ush`]: the namespace- and
+/// mount-manipulation half of the deny-list in
+/// `crates/packaging/launcher/src/seccomp.rs` (itself Flatpak's published
+/// profile). Kept textually separate because this is the *reason the
+/// runtime's own use of these syscalls does not propagate* — readable next
+/// to that claim rather than behind a dependency on the packaging crate.
+/// `bwrap` installs the filter right before it execs the guest, so the
+/// supervisor holds these syscalls only as long as it takes to build the
+/// confinement, and no descendant of the guest ever holds them.
 const NAMESPACE_DENIES: &[libc::c_long] = &[
     libc::SYS_unshare,
     libc::SYS_setns,
@@ -129,13 +108,10 @@ const NAMESPACE_DENIES: &[libc::c_long] = &[
     libc::SYS_chroot,
 ];
 
-/// Syscalls no profile gets, `dsh` included.
-///
-/// `dsh` gives up the namespace boundary; it does not give up everything.
-/// `ptrace` across the session, raw packet sockets and `bpf` are not needed by
-/// any container tool and are the classic escalation primitives, so they stay
-/// denied even there. Being explicit that `dsh` is not "seccomp off" is the
-/// point.
+/// Syscalls no profile gets, `dsh` included: it gives up the namespace
+/// boundary, not everything. `ptrace` across the session, raw packet
+/// sockets and `bpf` are classic escalation primitives no container tool
+/// needs, so they stay denied — `dsh` is not "seccomp off".
 const ALWAYS_DENIES: &[libc::c_long] = &[
     libc::SYS_ptrace,
     libc::SYS_bpf,
@@ -173,17 +149,17 @@ fn build_filter(profile: Profile) -> Result<SeccompFilter, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     for nr in ALWAYS_DENIES {
-        rules.insert(*nr as i64, Vec::new());
+        rules.insert(*nr, Vec::new());
     }
     if profile.confines_namespaces() {
         for nr in NAMESPACE_DENIES {
-            rules.insert(*nr as i64, Vec::new());
+            rules.insert(*nr, Vec::new());
         }
     }
 
     // socket(AF_PACKET, ...) — a raw link-layer socket, in every profile.
     rules.insert(
-        libc::SYS_socket as i64,
+        libc::SYS_socket,
         vec![SeccompRule::new(vec![SeccompCondition::new(
             0,
             SeccompCmpArgLen::Dword,
@@ -192,11 +168,9 @@ fn build_filter(profile: Profile) -> Result<SeccompFilter, SeccompError> {
         )?])?],
     );
 
-    // Deny-list, not allow-list, and denials return `EPERM` rather than
-    // `SIGSYS`. A shell hosts arbitrary programs compiled against arbitrary
-    // libcs; an allow-list would break on the next glibc that reaches for a
-    // syscall nobody enumerated, and killing the process would make that look
-    // like a crash rather than a policy.
+    // Deny-list, not allow-list, with `EPERM` rather than `SIGSYS`: a shell
+    // hosts arbitrary programs against arbitrary libcs, so an allow-list would
+    // break on the next syscall nobody enumerated, killing the process as if it crashed.
     Ok(SeccompFilter::new(
         rules,
         SeccompAction::Allow,
@@ -280,9 +254,8 @@ mod tests {
         }
     }
 
-    /// `dsh` relaxes the namespace rules and nothing else. A filter that
-    /// stopped denying `ptrace` or `bpf` would be a different claim from the
-    /// one its documentation makes.
+    /// `dsh` relaxes the namespace rules and nothing else — a filter that
+    /// stopped denying `ptrace` or `bpf` would be a different claim than documented.
     #[test]
     fn dsh_relaxes_only_the_namespace_rules() {
         let strict = compile_guest_filter(Profile::Ush).unwrap();
@@ -297,11 +270,9 @@ mod tests {
         assert!(!dev.is_empty(), "dsh must not be `seccomp off`");
     }
 
-    /// The kernel is the only opinion that counts. Install each filter in a
-    /// forked child and try the syscalls.
-    ///
-    /// Exit codes: 0 behaved as documented, 10 a denied syscall succeeded,
-    /// 11 an allowed syscall was refused, 12 the filter would not install.
+    /// The kernel is the only opinion that counts: install each filter in a
+    /// forked child and try the syscalls. Exit codes: 0 behaved as documented,
+    /// 10 a denied syscall succeeded, 11 an allowed one was refused, 12 install failed.
     fn probe_under(profile: Profile) -> i32 {
         let filter = build_filter(profile).expect("build");
         let program: BpfProgram = filter.try_into().expect("compile");
@@ -321,9 +292,8 @@ mod tests {
                 bail(12);
             }
 
-            // `unshare(CLONE_NEWUSER)` is the one that matters: it is how a
-            // guest would build a namespace it controls and climb out of the
-            // one it was given.
+            // `unshare(CLONE_NEWUSER)` is the one that matters — how a guest would
+            // build and climb out of its own namespace.
             // SAFETY: a plain syscall; failure is the expected outcome here.
             let unshared = unsafe { libc::syscall(libc::SYS_unshare, libc::CLONE_NEWUSER) };
             if denies_ns {
@@ -342,8 +312,8 @@ mod tests {
                 bail(10);
             }
 
-            // An ordinary syscall must keep working in both, or the filter has
-            // broken the shell rather than confined it.
+            // An ordinary syscall must keep working in both, or the filter broke the
+            // shell rather than confining it.
             // SAFETY: getpid has no failure mode.
             if unsafe { libc::syscall(libc::SYS_getpid) } <= 0 {
                 bail(11);
@@ -353,7 +323,7 @@ mod tests {
 
         let mut status = 0i32;
         // SAFETY: `pid` is our own child.
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
         assert!(libc::WIFEXITED(status), "child died: {status:#x}");
         libc::WEXITSTATUS(status)
     }

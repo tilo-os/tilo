@@ -31,20 +31,23 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
         .to_os_string();
 
     let mut watcher: RecommendedWatcher = {
-        let tx = tx.clone();
-        let registry_name = registry_name.clone();
+        let tx = tx;
+        let registry_name = registry_name;
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res {
-                if ev.paths.iter().any(|p| p.file_name() == Some(&registry_name)) {
-                    let _ = tx.blocking_send(());
-                }
+            if let Ok(ev) = res
+                && ev
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name() == Some(&registry_name))
+            {
+                let _ = tx.blocking_send(());
             }
         })?
     };
     watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
 
-    let router2 = router.clone();
-    let registry_path2 = registry_path.clone();
+    let router2 = router;
+    let registry_path2 = registry_path;
     tokio::spawn(async move {
         // Keep the watcher alive in this task.
         let _watcher = watcher;

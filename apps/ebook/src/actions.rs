@@ -1,24 +1,19 @@
 //! Books' exported **actions** and the **resource tree** it publishes to Ctrl+K.
 //!
-//! Every document-mutating operation Books performs on its shared annotation
-//! store is an [`EbookAction`]: a small serializable value that deterministically
-//! mutates the CRDT. Because the store already lives in the shared document
-//! (`root["annotations"]`, keyed by uuid — see [`crate::doc`]), an action
-//! replicates and replays for free, and feeds straight back into the reader's
-//! annotation list. The exact same [`EncodedAction`] is what the on-page
-//! affordances (the selection-toolbar swatch, the comment overlay's Add / Delete
-//! buttons, the annotation context menus) dispatch and what the Ctrl+K palette
-//! dispatches — one source of truth, one replay path.
+//! Every document-mutating operation on the shared annotation store is an
+//! [`EbookAction`]: a serializable value that deterministically mutates the
+//! CRDT. The exact same [`EncodedAction`] is what on-page affordances (the
+//! selection-toolbar swatch, the comment overlay's buttons) dispatch and what
+//! the Ctrl+K palette dispatches — one source of truth, one replay path.
 //!
-//! The nested resource tree mirrors the data model: a book owns its highlights,
-//! bookmarks and notes; a highlight owns its comments. Each resource exports the
-//! [`ActionSpec`]s Ctrl+K offers for it.
+//! The resource tree mirrors the data model: a book owns its highlights,
+//! bookmarks and notes; a highlight owns its comments.
 //!
-//! Presentation — which book is open, the live page, the current selection, an
-//! overlay being open — stays out of the document and never becomes an action.
+//! Presentation state (open book, live page, selection, overlay) stays out
+//! of the document and never becomes an action.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, Value, ROOT};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -133,10 +128,11 @@ impl Action for EbookAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             EbookAction::EditAnnotationNote { id, note } => {
-                if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? {
-                    if let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id.as_str())? {
-                        doc.put(&entry, "note", note.as_str())?;
-                    }
+                if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
+                    && let Some((Value::Object(ObjType::Map), entry)) =
+                        doc.get(&map, id.as_str())?
+                {
+                    doc.put(&entry, "note", note.as_str())?;
                 }
             }
             EbookAction::DeleteAnnotation { id } => {
@@ -186,7 +182,9 @@ impl Action for EbookAction {
                 // Deterministic against the document at the replay's base state.
                 let existing: Vec<Uuid> = BooksDoc::annotations_for(doc, book_id)
                     .into_iter()
-                    .filter(|a| a.kind == AnnoKind::Bookmark && a.chapter == *chapter && a.block == *block)
+                    .filter(|a| {
+                        a.kind == AnnoKind::Bookmark && a.chapter == *chapter && a.block == *block
+                    })
                     .map(|a| a.id)
                     .collect();
                 if existing.is_empty() {
@@ -308,18 +306,17 @@ impl Action for EbookAction {
             } => {
                 // Reposition exactly the one row; a missing id (never produced by
                 // our builder) is a no-op so a bad replay can't wedge a peer.
-                if let Ok(uuid) = id.parse::<Uuid>() {
-                    if let Some(mut a) = BooksDoc::list_annotations(doc)
+                if let Ok(uuid) = id.parse::<Uuid>()
+                    && let Some(mut a) = BooksDoc::list_annotations(doc)
                         .into_iter()
                         .find(|a| a.id == uuid)
-                    {
-                        a.chapter = *chapter;
-                        a.block = *block;
-                        a.start = *start;
-                        a.end = *end;
-                        a.excerpt = excerpt.clone();
-                        BooksDoc::upsert_annotation(doc, &a);
-                    }
+                {
+                    a.chapter = *chapter;
+                    a.block = *block;
+                    a.start = *start;
+                    a.end = *end;
+                    a.excerpt = excerpt.clone();
+                    BooksDoc::upsert_annotation(doc, &a);
                 }
             }
         }
@@ -343,13 +340,14 @@ pub fn encode(action: &EbookAction) -> EncodedAction {
     EncodedAction::encode(EBOOK_ACTION_TYPE, action).expect("EbookAction is always serializable")
 }
 
-// ===========================================================================
-// Action builders — the single source of truth shared by the on-page
-// affordances (see `crate::app`) and the Ctrl+K resource tree below.
-// ===========================================================================
+// --- Action builders: single source of truth shared by the on-page
+// affordances (see `crate::app`) and the Ctrl+K resource tree below. --------
 
 pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
-    EbookAction::EditAnnotationNote { id: id.to_string(), note: note.to_string() }
+    EbookAction::EditAnnotationNote {
+        id: id.to_string(),
+        note: note.to_string(),
+    }
 }
 
 pub fn delete_annotation_action(id: Uuid) -> EbookAction {
@@ -398,7 +396,10 @@ pub fn toggle_bookmark_action(
 }
 
 pub fn change_color_action(group: Uuid, color: HiColor) -> EbookAction {
-    EbookAction::ChangeHighlightColor { group: group.to_string(), color: color.as_str().to_string() }
+    EbookAction::ChangeHighlightColor {
+        group: group.to_string(),
+        color: color.as_str().to_string(),
+    }
 }
 
 /// Re-anchor a single annotation row (a highlight piece or a note) to a new
@@ -422,7 +423,9 @@ pub fn move_annotation_action(
 }
 
 pub fn delete_highlight_action(group: Uuid) -> EbookAction {
-    EbookAction::DeleteHighlight { group: group.to_string() }
+    EbookAction::DeleteHighlight {
+        group: group.to_string(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -502,10 +505,10 @@ fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
 
 /// One-line annotation preview for the palette label.
 fn anno_label(a: &Annotation) -> String {
-    let body = if !a.note.trim().is_empty() {
-        a.note.trim()
-    } else {
+    let body = if a.note.trim().is_empty() {
         a.excerpt.trim()
+    } else {
+        a.note.trim()
     };
     let mut t: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.chars().count() > 48 {
@@ -620,7 +623,14 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         // Add a comment — prompted; the comment id is minted at commit time and
         // the anchor is copied from the highlight's first piece.
         let bid = ctx.book_id.clone();
-        let anchor = (first.chapter, first.block, first.start, first.end, first.color, first.excerpt.clone());
+        let anchor = (
+            first.chapter,
+            first.block,
+            first.start,
+            first.end,
+            first.color,
+            first.excerpt.clone(),
+        );
         let gid = *group;
         hl = hl.with_action(ActionSpec::prompted(
             "add-comment",
@@ -630,8 +640,16 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             ExecutionLocus::ClientLocal,
             move |text: &str| {
                 encode(&add_comment_action(
-                    &bid, gid, Uuid::new_v4(), anchor.0, anchor.1, anchor.2, anchor.3, anchor.4,
-                    &anchor.5, text,
+                    &bid,
+                    gid,
+                    Uuid::new_v4(),
+                    anchor.0,
+                    anchor.1,
+                    anchor.2,
+                    anchor.3,
+                    anchor.4,
+                    &anchor.5,
+                    text,
                 ))
             },
         ));
@@ -671,13 +689,24 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
     for a in annos.iter().filter(|a| a.kind == AnnoKind::Bookmark) {
         let id = a.id;
         root = root.with_child(
-            Resource::new(format!("ebook.bookmark:{id}"), "ebook.bookmark", anno_label(a))
-                .with_action(encode_spec("delete", "Delete bookmark", &delete_annotation_action(id))),
+            Resource::new(
+                format!("ebook.bookmark:{id}"),
+                "ebook.bookmark",
+                anno_label(a),
+            )
+            .with_action(encode_spec(
+                "delete",
+                "Delete bookmark",
+                &delete_annotation_action(id),
+            )),
         );
     }
 
     // Standalone notes (note rows not attached to a highlight group) → edit + delete.
-    for a in annos.iter().filter(|a| a.kind == AnnoKind::Note && !highlight_groups.contains(&a.group)) {
+    for a in annos
+        .iter()
+        .filter(|a| a.kind == AnnoKind::Note && !highlight_groups.contains(&a.group))
+    {
         let id = a.id;
         let child = Resource::new(format!("ebook.note:{id}"), "ebook.note", anno_label(a))
             .with_action(ActionSpec::prompted(
@@ -688,7 +717,11 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 ExecutionLocus::ClientLocal,
                 move |text: &str| encode(&edit_note_action(id, text)),
             ))
-            .with_action(encode_spec("delete", "Delete note", &delete_annotation_action(id)));
+            .with_action(encode_spec(
+                "delete",
+                "Delete note",
+                &delete_annotation_action(id),
+            ));
         root = root.with_child(child);
     }
 
@@ -737,7 +770,11 @@ mod tests {
     /// plus a standalone note and a bookmark, in the CRDT.
     fn open_with_annotations() -> (BooksApp, AutoCommit, String, Uuid) {
         let app = BooksApp::with_library(crate::content::load_sample_library());
-        let book_id = app.open_book().expect("sample library is non-empty").id.clone();
+        let book_id = app
+            .open_book()
+            .expect("sample library is non-empty")
+            .id
+            .clone();
         let mut doc = AutoCommit::new();
         let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
         // Highlight piece.
@@ -794,7 +831,10 @@ mod tests {
         let book = &resources[0];
         assert_eq!(book.kind, "ebook.book");
         let book_actions: Vec<&str> = book.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(book_actions.contains(&"toggle-bookmark"), "{book_actions:?}");
+        assert!(
+            book_actions.contains(&"toggle-bookmark"),
+            "{book_actions:?}"
+        );
         assert!(book_actions.contains(&"add-note"), "{book_actions:?}");
 
         // Highlight resource with its nested comment, plus bookmark + note.
@@ -807,7 +847,11 @@ mod tests {
         assert!(hl_actions.contains(&"change-color"), "{hl_actions:?}");
         assert!(hl_actions.contains(&"delete-highlight"), "{hl_actions:?}");
         assert!(hl_actions.contains(&"add-comment"), "{hl_actions:?}");
-        assert_eq!(hl.children.len(), 2, "both comments nest under the highlight");
+        assert_eq!(
+            hl.children.len(),
+            2,
+            "both comments nest under the highlight"
+        );
         let comment = &hl.children[0];
         assert_eq!(comment.kind, "ebook.comment");
         let cm_actions: Vec<&str> = comment.actions.iter().map(|a| a.id.as_str()).collect();
@@ -829,9 +873,18 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Toggle bookmark")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete highlight")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete comment")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Toggle bookmark")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete highlight")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete comment")),
+            "{labels:?}"
+        );
     }
 
     /// Deleting the highlight through its action removes the highlight *and*
@@ -839,7 +892,11 @@ mod tests {
     #[test]
     fn delete_highlight_removes_the_group_and_its_comments() {
         let (_app, mut doc, book_id, group) = open_with_annotations();
-        assert_eq!(BooksDoc::annotations_for(&doc, &book_id).len(), 5, "hl + 2 comments + note + bookmark");
+        assert_eq!(
+            BooksDoc::annotations_for(&doc, &book_id).len(),
+            5,
+            "hl + 2 comments + note + bookmark"
+        );
 
         let action = delete_highlight_action(group);
         let encoded = encode(&action);
@@ -879,28 +936,20 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             BooksDoc::annotations_for(&state.doc, &book_id).len(),
             before_len + 1,
             "the action added a bookmark"
         );
-        assert_eq!(state.peek_last_undo().is_some(), true, "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         // Ctrl+Z reverts exactly this action.
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             BooksDoc::annotations_for(&state.doc, &book_id).len(),
             before_len,
@@ -919,7 +968,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = add_comment_action(
             &book_id,
@@ -939,7 +992,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(
             BooksDoc::annotations_for(&a, &book_id).len(),
             BooksDoc::annotations_for(&b, &book_id).len(),
@@ -962,27 +1019,41 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = move_annotation_action(hl.id, 0, 9, 0, 5, "moved");
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "the re-anchor replays byte-identically");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "the re-anchor replays byte-identically"
+        );
         // The same highlight row moved — its id is preserved.
         let moved = BooksDoc::annotations_for(&a, &book_id)
             .into_iter()
             .find(|x| x.id == hl.id)
             .expect("the highlight still exists after the move");
-        assert_eq!(moved.block, 9, "the highlight re-anchored to the target block");
+        assert_eq!(
+            moved.block, 9,
+            "the highlight re-anchored to the target block"
+        );
         assert_eq!((moved.start, moved.end), (0, 5), "with the moved range");
         // Its two comments (Note rows sharing the group) are untouched.
         let comments = BooksDoc::annotations_for(&a, &book_id)
             .into_iter()
             .filter(|x| x.kind == AnnoKind::Note && x.group == group)
             .count();
-        assert_eq!(comments, 2, "the highlight's comments survived the re-anchor");
+        assert_eq!(
+            comments, 2,
+            "the highlight's comments survived the re-anchor"
+        );
     }
 
     /// Single source of truth: a prompted "Edit comment" spec and a directly
@@ -998,19 +1069,33 @@ mod tests {
             .unwrap();
         // The highlight's delete-highlight spec is the same encoded action the
         // on-page trash button dispatches (`delete_highlight_action(group)`).
-        let spec = hl.actions.iter().find(|a| a.id == "delete-highlight").unwrap();
+        let spec = hl
+            .actions
+            .iter()
+            .find(|a| a.id == "delete-highlight")
+            .unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&delete_highlight_action(group));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth"
+        );
 
         // And a comment's edit spec matches the edit builder for the same text.
         let comment = &hl.children[0];
         let cid = comment.id.as_str().trim_start_matches("ebook.comment:");
         let cid: Uuid = cid.parse().unwrap();
-        let edit_spec = comment.actions.iter().find(|a| a.id == "edit-comment").unwrap();
+        let edit_spec = comment
+            .actions
+            .iter()
+            .find(|a| a.id == "edit-comment")
+            .unwrap();
         let from_spec = prompted_encode(edit_spec, "revised");
         let from_builder = encode(&edit_note_action(cid, "revised"));
-        assert_eq!(from_spec.payload, from_builder.payload, "edit is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "edit is one source of truth"
+        );
     }
 }

@@ -1,0 +1,350 @@
+//! What a sandboxed app's environment actually contains.
+//!
+//! The app's environment is meant to be a closed set — a list of
+//! variables the launcher puts there, beside the binds that make each
+//! mean something. `bwrap` doesn't do that by default: it hands the
+//! child whatever the parent was carrying, the compositor's own
+//! environment.
+//!
+//! These tests start the real thing under `bwrap`, through the same
+//! `run_with_captured` path the launcher uses, and read the answer out
+//! of the process's own `environ` after `exec`. **They deliberately do
+//! not assert on the argv** — a `--setenv` spliced ahead of
+//! `--clearenv` leaves the intention intact and the environment full.
+//! The environment the process has is the boundary.
+//!
+//! Not `#[ignore]`d, for the reason `room_confinement.rs` gives: bwrap
+//! is how a qOS app runs at all, so a machine that can't run these
+//! can't run the product.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::run::{RunOptions, run_with_captured};
+
+const PACKAGE: &str = "dev.qos.envtest";
+
+/// A variable name no part of qOS sets, so its presence inside the
+/// sandbox can only mean one thing: it walked in from the parent.
+const MARKER: &str = "QOS_ENV_LEAK_MARKER";
+
+/// Stand-ins for the compositor's own wiring: the privileged clipboard
+/// socket, the local collaboration broker, and the user's identity
+/// file — real names an app genuinely must not be handed.
+const SESSION_PRIVATE: &[(&str, &str)] = &[
+    ("QOS_WAYLAND_PRIVILEGED", "wayland-priv-9"),
+    ("QUICK_COLLAB_SOCK", "/run/user/1000/qos-collab.sock"),
+    (
+        "QOS_USER_IDENTITY",
+        "/home/somebody/.config/qos/identity/primary.json",
+    ),
+];
+
+fn build_fixture(out_dir: &Path) -> PathBuf {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/roomtest/src/main.rs");
+    let bin = out_dir.join("bin").join("roomtest");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    let status = std::process::Command::new("rustc")
+        .arg("--edition=2021")
+        .arg("-O")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("invoke rustc");
+    assert!(status.success(), "rustc failed to build the fixture");
+    bin
+}
+
+fn manifest() -> MinimalManifest {
+    MinimalManifest {
+        package_id: PACKAGE.to_string(),
+        name: None,
+        category: None,
+        icon: None,
+        version: "0.0.0".to_string(),
+        kind: "app".to_string(),
+        runtime: None,
+        entrypoint: Entrypoint {
+            bin: "bin/roomtest".to_string(),
+            r#type: launcher::manifest::EntrypointType::Gui,
+            gui_bin: None,
+            cli_bin: None,
+        },
+        sandbox: Sandbox {
+            net: Net {
+                mode: "off".to_string(),
+                ..Net::default()
+            },
+            fs: Fs::default(),
+            services: BTreeMap::new(),
+            portals: BTreeMap::new(),
+            ..Sandbox::default()
+        },
+        cli_commands: Vec::new(),
+        opens_ext: Vec::new(),
+    }
+}
+
+/// Resolved on `PATH` rather than at a fixed `/usr/bin/bwrap`, since
+/// the distro decides where it lives.
+fn bwrap() -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("bwrap"))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "bwrap is not on PATH ({path:?}). It is how a qOS app runs, so \
+                 this is a broken environment rather than a reason to skip the \
+                 test."
+            )
+        })
+}
+
+/// Variables set on *this* process for the duration of one test, put
+/// back afterwards — what the launcher carries when it builds the
+/// launch is the whole subject here.
+struct ParentEnv {
+    previous: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl ParentEnv {
+    fn with(vars: &[(&str, &str)]) -> Self {
+        let mut previous = Vec::new();
+        for (k, v) in vars {
+            previous.push(((*k).to_string(), std::env::var_os(k)));
+            // SAFETY: every caller is in the `process_env` serial group, and
+            // `Drop` restores what was there.
+            unsafe { std::env::set_var(k, v) };
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ParentEnv {
+    fn drop(&mut self) {
+        for (k, previous) in self.previous.drain(..) {
+            // SAFETY: as above.
+            unsafe {
+                match previous {
+                    Some(v) => std::env::set_var(&k, v),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
+    }
+}
+
+fn run(payload: &Path, argv: &[&str]) -> String {
+    let opts = RunOptions {
+        no_services: true,
+        bwrap_bin: Some(bwrap()),
+        landlock_enforce: false,
+        mode: launcher::run::LaunchMode::Cli {
+            command: "roomtest".to_string(),
+            passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
+        },
+        ..RunOptions::default()
+    };
+    let (status, out) = run_with_captured(&manifest(), payload, &opts).expect("launch");
+    let text = String::from_utf8_lossy(&out).trim().to_string();
+    assert!(
+        status.success(),
+        "fixture exited {status:?} with stdout {text:?}"
+    );
+    text
+}
+
+/// Every variable name the sandboxed process has, from its own `environ`.
+fn env_names_inside(payload: &Path) -> Vec<String> {
+    let line = run(payload, &["envall"]);
+    let names = line
+        .strip_prefix("ENVALL ")
+        .unwrap_or_else(|| panic!("fixture did not answer envall: {line:?}"));
+    names
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The launcher's environment does not become the app's.
+#[test]
+#[serial_test::serial(process_env)]
+fn the_sessions_environment_does_not_reach_a_sandboxed_app() {
+    let payload = tempfile::tempdir().unwrap();
+    build_fixture(payload.path());
+
+    let mut planted: Vec<(&str, &str)> = vec![(MARKER, "the-parent-was-here")];
+    planted.extend_from_slice(SESSION_PRIVATE);
+    let _env = ParentEnv::with(&planted);
+
+    // Without this the test would pass on a launcher that never had the
+    // variable to leak in the first place.
+    assert_eq!(
+        std::env::var(MARKER).as_deref(),
+        Ok("the-parent-was-here"),
+        "the marker must be set on the launching process, or this test cannot \
+         tell a cleared environment from an empty one"
+    );
+
+    let inside = env_names_inside(payload.path());
+
+    assert!(
+        !inside.iter().any(|k| k == MARKER),
+        "{MARKER} was set on the launching process and reached the sandbox; \
+         the app inherits the session's environment. Saw: {inside:?}"
+    );
+    for (key, _) in SESSION_PRIVATE {
+        assert!(
+            !inside.iter().any(|k| k == key),
+            "{key} describes the session's own wiring and must not be in a \
+             sandboxed app's environment. Saw: {inside:?}"
+        );
+    }
+}
+
+/// The app's environment is a closed set, not a filtered one.
+///
+/// Stronger than naming variables that must be absent: a variable
+/// arriving some other way fails this even though nobody named it —
+/// the point, since the leak this closes was exactly a variable nobody
+/// had thought of.
+#[test]
+#[serial_test::serial(process_env)]
+fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
+    let payload = tempfile::tempdir().unwrap();
+    build_fixture(payload.path());
+
+    let _env = ParentEnv::with(&[
+        ("EDITOR", "vi"),
+        ("SSH_AUTH_SOCK", "/run/user/1000/keyring/ssh"),
+        ("XDG_SESSION_TYPE", "wayland"),
+        (MARKER, "the-parent-was-here"),
+    ]);
+
+    // What the launcher gives an app: `PATH` and the allowlist from
+    // `push_clean_environment`, plus one set beside each bind that makes
+    // it reachable.
+    let mut allowed: Vec<String> = vec![
+        "PATH".to_string(),
+        // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather
+        // than anything of the session's.
+        "PWD".to_string(),
+        "QOS_PACKAGE_ID".to_string(),
+        "QOS_APP_NAME".to_string(),
+        "QOS_APP_ICON".to_string(),
+        "QOS_APP_DIR".to_string(),
+        "QOS_USER_HOME".to_string(),
+        "QOS_USER_IDENTITY".to_string(),
+        "QOS_WORKSPACE_ID".to_string(),
+        "QOS_WORKSPACE_ROOTS".to_string(),
+        "QOS_PARTICIPATION".to_string(),
+        "QOS_CLI_COMMAND".to_string(),
+        // The egress gate and proxy variables naming it. Absent here (this
+        // fixture declares `net = "off"`), but part of the set.
+        "QOS_NET_GATE".to_string(),
+        "HTTPS_PROXY".to_string(),
+        "HTTP_PROXY".to_string(),
+        "ALL_PROXY".to_string(),
+        "https_proxy".to_string(),
+        "http_proxy".to_string(),
+        "all_proxy".to_string(),
+        "NO_PROXY".to_string(),
+        "no_proxy".to_string(),
+        "HOME".to_string(),
+        "XDG_DATA_HOME".to_string(),
+        "XDG_STATE_HOME".to_string(),
+        "XDG_CONFIG_HOME".to_string(),
+        "XDG_CACHE_HOME".to_string(),
+        "XDG_RUNTIME_DIR".to_string(),
+        "WAYLAND_DISPLAY".to_string(),
+        "DBUS_SESSION_BUS_ADDRESS".to_string(),
+        "LD_LIBRARY_PATH".to_string(),
+        "LD_PRELOAD".to_string(),
+        "GLIBC_TUNABLES".to_string(),
+    ];
+    allowed.extend(
+        launcher::sandbox::INHERITED_ENV
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
+
+    let inside = env_names_inside(payload.path());
+    assert!(
+        !inside.is_empty(),
+        "the fixture reported no environment at all, which would make every \
+         other assertion here vacuous"
+    );
+
+    let unexpected: Vec<&String> = inside
+        .iter()
+        // Service-socket descriptors are named per service.
+        .filter(|k| !allowed.contains(k) && !k.starts_with("QOS_SVC_"))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "a sandboxed app's environment must hold only what the launcher put \
+         there; these arrived some other way: {unexpected:?}"
+    );
+}
+
+/// The user's language crosses the boundary, since it's the user's,
+/// not the session's — clearing the environment without putting the
+/// locale back would leave every app in the C locale.
+#[test]
+#[serial_test::serial(process_env)]
+fn the_users_locale_is_carried_across_explicitly() {
+    let payload = tempfile::tempdir().unwrap();
+    build_fixture(payload.path());
+
+    let _env = ParentEnv::with(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")]);
+
+    let lang = run(payload.path(), &["env", "LANG"]);
+    assert_eq!(
+        lang, "ENV LANG=en_US.UTF-8",
+        "the session's locale must reach the app; without it every app answers \
+         in the C locale"
+    );
+}
+
+/// `PATH` inside the sandbox is the sandbox's, not the session's: the
+/// inherited one named host directories outside the namespace, and
+/// could name a writable directory that decides which binary the
+/// app's `exec` resolves to.
+#[test]
+#[serial_test::serial(process_env)]
+fn path_is_the_sandboxes_own() {
+    let payload = tempfile::tempdir().unwrap();
+    build_fixture(payload.path());
+
+    let _env = ParentEnv::with(&[("PATH", "/home/somebody/bin:/usr/bin")]);
+
+    let path = run(payload.path(), &["env", "PATH"]);
+    assert_eq!(
+        path,
+        format!("ENV PATH={}", launcher::sandbox::SANDBOX_PATH),
+        "a sandboxed app must not inherit the session's PATH"
+    );
+}
+
+/// What the session asked its applications to say out loud crosses
+/// too: without `RUST_LOG` a sandboxed app falls back to errors only,
+/// its only account of what happened inside it.
+#[test]
+#[serial_test::serial(process_env)]
+fn the_sessions_logging_preference_reaches_the_app() {
+    let payload = tempfile::tempdir().unwrap();
+    build_fixture(payload.path());
+
+    let _env = ParentEnv::with(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
+
+    let seen = run(payload.path(), &["env", "RUST_LOG"]);
+    assert_eq!(
+        seen, "ENV RUST_LOG=info,file_explorer::drag=debug",
+        "the session's log filter must reach the app; without it every app \
+         inside the sandbox is silent below error level"
+    );
+}

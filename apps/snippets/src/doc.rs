@@ -80,7 +80,7 @@ impl SnippetsDoc {
         put_if_changed(doc, &snip, "language", s.language.slug());
         put_if_changed(doc, &snip, "folder", s.folder.as_str());
         put_if_changed(doc, &snip, "favorite", s.favorite);
-        put_if_changed(doc, &snip, "uses", s.uses as i64);
+        put_if_changed(doc, &snip, "uses", i64::from(s.uses));
 
         // Tags list: only rewrite when the set differs to avoid churn.
         let cur_tags = Self::read_tags(doc, &snip);
@@ -109,10 +109,10 @@ impl SnippetsDoc {
         let len = doc.length(&list);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
-                if let ScalarValue::Str(s) = v.as_ref() {
-                    out.push(s.to_string());
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
+                && let ScalarValue::Str(s) = v.as_ref()
+            {
+                out.push(s.to_string());
             }
         }
         out
@@ -175,7 +175,9 @@ impl SnippetsDoc {
         };
         let mut out = Vec::new();
         for key in doc.keys(&map) {
-            let Ok(id) = key.parse::<SnippetId>() else { continue };
+            let Ok(id) = key.parse::<SnippetId>() else {
+                continue;
+            };
             let Ok(Some((Value::Object(ObjType::Map), snip))) = doc.get(&map, key.as_str()) else {
                 continue;
             };
@@ -192,7 +194,7 @@ impl SnippetsDoc {
                 uses: Self::read_int(doc, &snip, "uses"),
             });
         }
-        out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        out.sort_by_key(|a| a.title.to_lowercase());
         out
     }
 
@@ -260,7 +262,11 @@ mod tests {
         let s = sample();
         SnippetsDoc::upsert(&mut doc, &s);
         SnippetsDoc::upsert(&mut doc, &s);
-        assert_eq!(SnippetsDoc::list(&doc).len(), 1, "second upsert must not duplicate");
+        assert_eq!(
+            SnippetsDoc::list(&doc).len(),
+            1,
+            "second upsert must not duplicate"
+        );
     }
 
     #[test]

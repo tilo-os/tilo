@@ -1,5 +1,5 @@
 //! Self-critique screenshot harness: render the live app in N
-//! states + dump PNGs. Not a CI test — gated on NOTES_CRITIQUE_DIR
+//! states + dump PNGs. Not a CI test — gated on `NOTES_CRITIQUE_DIR`
 //! env var.
 
 use std::collections::HashMap;
@@ -78,7 +78,9 @@ fn render_state(app: &mut NotesApp, out: &str, w: u32, h: u32) {
 
 #[test]
 fn critique_state_dump() {
-    let Ok(dir) = std::env::var("NOTES_CRITIQUE_DIR") else { return; };
+    let Ok(dir) = std::env::var("NOTES_CRITIQUE_DIR") else {
+        return;
+    };
     std::fs::create_dir_all(&dir).unwrap();
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
@@ -109,8 +111,12 @@ fn critique_state_dump() {
 
     // 5) Many pages in the sidebar so the tree pattern shows up.
     let many = [
-        "Daily 2026-06-01", "Daily 2026-06-02", "Project: notes",
-        "Ideas", "Reading list", "Inbox",
+        "Daily 2026-06-01",
+        "Daily 2026-06-02",
+        "Project: notes",
+        "Ideas",
+        "Reading list",
+        "Inbox",
     ];
     for title in many {
         let id = uuid::Uuid::new_v4();

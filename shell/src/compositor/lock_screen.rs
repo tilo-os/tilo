@@ -2,17 +2,15 @@
 //!
 //! When [`crate::compositor::idle::SessionManager::is_locked`] is set,
 //! [`crate::compositor::native::run`] paints *this* scene instead of the
-//! chrome's. The overlay is fully opaque (it fills the viewport), so app /
-//! chrome content is hidden, and the loop routes every keystroke into the
+//! chrome's, hiding app/chrome content and routing every keystroke into the
 //! lock screen's password field ([`crate::compositor::lock_controller`]) —
-//! the session only unlocks on a verified password. Hidden content + captured
-//! input + credential-gated unlock together are the lock's security boundary.
-//! (`ext-session-lock-v1` is also served as a standard external lock trigger;
-//! qOS renders this overlay rather than a client lock surface.)
+//! hidden content + captured input + credential-gated unlock together are
+//! the lock's security boundary. (`ext-session-lock-v1` is also served as a
+//! standard trigger; qOS renders this overlay rather than a client lock
+//! surface.)
 //!
-//! The visual is a padlock glyph, a clock/date, and a masked password field
-//! with an inline error line. The colours come from the OS [`Theme`] so the
-//! lock screen matches the rest of the desktop.
+//! Colours come from the OS [`Theme`] so the lock screen matches the rest of
+//! the desktop.
 
 use std::f64::consts::PI;
 
@@ -23,9 +21,8 @@ use vello::peniko::Fill;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-/// The live lock-screen state to render, computed by the caller so this
-/// paint stays pure and unit-testable (no clock reads, no auth state of its
-/// own). Everything shown on the lock surface is derived from these fields.
+/// Live lock-screen state to render, computed by the caller so this paint
+/// stays pure and unit-testable (no clock reads, no auth state of its own).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LockView<'a> {
     /// Number of password characters typed so far — rendered as masked
@@ -40,19 +37,17 @@ pub struct LockView<'a> {
     pub date: &'a str,
     /// Active notification count (count-only — never content).
     pub notification_count: usize,
-    /// A credential verification is running on the worker thread
-    /// ([`crate::compositor::lock_controller::LockController::is_verifying`]).
-    /// Renders a "Verifying…" state and suppresses the empty-field
-    /// placeholder so the screen reads as "checking", not "type here".
+    /// Credential verification running on the worker thread
+    /// ([`crate::compositor::lock_controller::LockController::is_verifying`]);
+    /// renders "Verifying…" and suppresses the empty-field placeholder so
+    /// the screen reads as checking, not "type here".
     pub verifying: bool,
 }
 
 /// One output the lock overlay must cover, in the compositor's combined
-/// coordinate space. The overlay draws its interactive widget (padlock,
-/// clock, password field) **centred within each output's rectangle**, so a
-/// two-monitor setup shows a usable lock on every screen rather than one
-/// widget stranded across the bezel. For a single output at the origin this
-/// is exactly the old single-viewport behaviour.
+/// coordinate space. The overlay draws its interactive widget centred
+/// within each output's rectangle, so a two-monitor setup shows a usable
+/// lock on every screen rather than one stranded across the bezel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LockOutput {
     /// Top-left of this output in the combined space.
@@ -83,25 +78,20 @@ fn combined_extent(outputs: &[LockOutput]) -> (f64, f64) {
     (w.max(0.0), h.max(0.0))
 }
 
-/// Build the lock-screen scene spanning every output in `outputs`, themed via
-/// `theme`, using `text` for the glyph-shaped labels, from the live
+/// Build the lock-screen scene spanning every output in `outputs`, themed
+/// via `theme`, using `text` for glyph-shaped labels, from the live
 /// [`LockView`].
 ///
-/// The overlay is fully opaque and fills the **combined** geometry of all
-/// outputs, so app/chrome content is hidden behind it on every screen — each
-/// output presents its own sub-rect of this one scene (see
-/// [`crate::compositor::backend::combined_geometry`]). The interactive widget
-/// (clock, padlock, password field) is drawn **once per output, centred on
-/// that output**, so a multi-monitor session shows a usable lock on each
-/// screen rather than one widget stranded across the seam. A single output at
-/// the origin yields exactly the previous single-viewport layout.
+/// The overlay fills the **combined** geometry of all outputs so app/chrome
+/// content is hidden everywhere (see
+/// [`crate::compositor::backend::combined_geometry`]); the interactive
+/// widget is drawn once per output, centred on that output (see
+/// [`LockOutput`]).
 ///
-/// `view.notification_count`, when non-zero, shows "N notifications" so the
-/// user knows something arrived **without** leaking any app name, summary, or
-/// body (lock-suppression — bodies are never rendered here).
+/// `view.notification_count`, when non-zero, shows "N notifications" —
+/// never any app name, summary, or body.
 ///
-/// Returns a fresh [`Scene`] the backend can submit exactly like a chrome
-/// frame — no special-casing downstream.
+/// Returns a fresh [`Scene`] the backend can submit exactly like a chrome frame.
 pub fn draw_lock_scene(
     outputs: &[LockOutput],
     theme: &Theme,
@@ -110,15 +100,19 @@ pub fn draw_lock_scene(
 ) -> Scene {
     let mut scene = Scene::new();
 
-    // 1. Opaque backdrop covering the combined geometry of every output —
-    //    hides everything behind it on all screens. Use the app background so
-    //    the lock screen reads as part of the same desktop. Painting the full
-    //    bounding box (not just per-output rects) guarantees no gap between
-    //    outputs ever shows app content.
+    // 1. Opaque backdrop over the combined geometry of every output — the
+    //    full bounding box (not per-output rects) guarantees no gap ever
+    //    shows app content.
     let (ext_w, ext_h) = combined_extent(outputs);
     if ext_w > 0.0 && ext_h > 0.0 {
         let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &backdrop);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.bg_app,
+            None,
+            &backdrop,
+        );
     }
 
     // 2. One interactive lock widget per output, centred on that output.
@@ -129,10 +123,10 @@ pub fn draw_lock_scene(
     scene
 }
 
-/// Draw the interactive lock widget — clock, padlock glyph, masked password
-/// field, status line, and the count-only notification summary — centred at
-/// `(cx, cy)`. Factored out of [`draw_lock_scene`] so it can be stamped once
-/// per output; it draws no backdrop of its own.
+/// Draw the interactive lock widget (clock, padlock, password field, status
+/// line, notification summary) centred at `(cx, cy)`. Factored out of
+/// [`draw_lock_scene`] so it can be stamped once per output; draws no
+/// backdrop of its own.
 fn draw_lock_widget(
     scene: &mut Scene,
     (cx, cy): (f64, f64),
@@ -140,8 +134,7 @@ fn draw_lock_widget(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
-    // 2. Clock + date, centred in the upper third — the ambient info a
-    //    lock screen shows before you authenticate.
+    // 2. Clock + date, centred in the upper third.
     if !view.clock.is_empty() {
         let clock_size = 64.0_f32;
         let (cw, _) = text.measure(view.clock, clock_size, None);
@@ -150,7 +143,7 @@ fn draw_lock_widget(
             view.clock,
             clock_size,
             theme.text_primary,
-            Affine::translate((cx - cw as f64 / 2.0, cy - 170.0)),
+            Affine::translate((cx - f64::from(cw) / 2.0, cy - 170.0)),
             None,
         );
     }
@@ -162,7 +155,7 @@ fn draw_lock_widget(
             view.date,
             date_size,
             theme.text_dim,
-            Affine::translate((cx - dw as f64 / 2.0, cy - 120.0)),
+            Affine::translate((cx - f64::from(dw) / 2.0, cy - 120.0)),
             None,
         );
     }
@@ -180,9 +173,8 @@ fn draw_lock_widget(
         &body,
     );
 
-    // 4. Shackle — an upper semicircle resting on the body's top edge.
-    //    In screen (y-down) space, start_angle = PI sweeping +PI traces
-    //    the upper half (passing through the topmost point at 1.5*PI).
+    // 4. Shackle — upper semicircle on the body's top edge. In screen
+    //    (y-down) space, start_angle = PI sweeping +PI traces the upper half.
     let r = bw / 3.2;
     let shackle = Arc::new(Point::new(cx, body_y), (r, r), PI, PI, 0.0);
     scene.stroke(
@@ -193,8 +185,7 @@ fn draw_lock_widget(
         &shackle,
     );
 
-    // 5. Keyhole — a small dot punched into the body in the backdrop
-    //    colour so the glyph reads as a padlock.
+    // 5. Keyhole — a dot punched into the body in the backdrop colour.
     let keyhole = Circle::new(Point::new(cx, body_y + bh / 2.0), 6.0);
     scene.fill(
         Fill::NonZero,
@@ -214,12 +205,12 @@ fn draw_lock_widget(
         title,
         title_size,
         theme.text_primary,
-        Affine::translate((cx - tw as f64 / 2.0, title_y)),
+        Affine::translate((cx - f64::from(tw) / 2.0, title_y)),
         None,
     );
 
-    // 7. Password field — a rounded pill with one dot per typed character.
-    //    The plaintext is never available here; only the length is.
+    // 7. Password field — rounded pill, one dot per typed character. Only
+    //    the length is available here, never the plaintext.
     let field_w = 280.0_f64;
     let field_h = 44.0_f64;
     let field_x = cx - field_w / 2.0;
@@ -242,9 +233,8 @@ fn draw_lock_widget(
         &field,
     );
     if view.verifying {
-        // Verifying: the buffer has been handed to the worker, so the field
-        // shows no dots and no placeholder — the status line below reads
-        // "Verifying…".
+        // Buffer handed to the worker: no dots, no placeholder — the
+        // status line below reads "Verifying…".
     } else if view.password_len == 0 {
         // Placeholder prompt when empty.
         let ph = "Enter password";
@@ -256,8 +246,8 @@ fn draw_lock_widget(
             ph_size,
             theme.text_dim,
             Affine::translate((
-                cx - pw as f64 / 2.0,
-                field_y + field_h / 2.0 + ph_h as f64 / 2.0 - 3.0,
+                cx - f64::from(pw) / 2.0,
+                field_y + field_h / 2.0 + f64::from(ph_h) / 2.0 - 3.0,
             )),
             None,
         );
@@ -294,7 +284,7 @@ fn draw_lock_widget(
             verifying,
             v_size,
             theme.text_dim,
-            Affine::translate((cx - vw as f64 / 2.0, line_y)),
+            Affine::translate((cx - f64::from(vw) / 2.0, line_y)),
             None,
         );
     } else if let Some(err) = view.error {
@@ -305,7 +295,7 @@ fn draw_lock_widget(
             err,
             err_size,
             theme.tokens.colors.semantic.danger,
-            Affine::translate((cx - ew as f64 / 2.0, line_y)),
+            Affine::translate((cx - f64::from(ew) / 2.0, line_y)),
             None,
         );
     } else {
@@ -317,7 +307,7 @@ fn draw_lock_widget(
             hint,
             hint_size,
             theme.text_dim,
-            Affine::translate((cx - hw as f64 / 2.0, line_y)),
+            Affine::translate((cx - f64::from(hw) / 2.0, line_y)),
             None,
         );
     }
@@ -333,15 +323,15 @@ fn draw_lock_widget(
             &label,
             label_size,
             theme.text_dim,
-            Affine::translate((cx - lw as f64 / 2.0, line_y + 34.0)),
+            Affine::translate((cx - f64::from(lw) / 2.0, line_y + 34.0)),
             None,
         );
     }
 }
 
-/// Lock-screen count label: "N notifications" (or empty for zero). Kept
-/// next to [`draw_lock_scene`] and re-using the shell's redaction helper
-/// so the lock screen and the toast stack agree on wording.
+/// Lock-screen count label: "N notifications" (empty for zero); reuses the
+/// shell's redaction helper so the lock screen and toast stack agree on
+/// wording.
 fn count_label(count: usize) -> String {
     crate::shell::notification::lock_suppressed_label(count)
 }
@@ -367,9 +357,9 @@ mod tests {
         }]
     }
 
-    /// The lock scene must encode *something* (backdrop + glyph + text).
-    /// A blank scene would mean the overlay never paints and app content
-    /// would leak through — the whole point of the lock is defeated.
+    /// The lock scene must encode *something* — a blank scene would mean
+    /// the overlay never paints and app content leaks through, defeating
+    /// the lock.
     #[test]
     fn lock_scene_is_non_empty() {
         let theme = Theme::dark();
@@ -448,9 +438,9 @@ mod tests {
         assert!(!scene.encoding().is_empty());
     }
 
-    /// The count-only summary never renders content. We can't read text
+    /// The count-only summary never renders content; we can't read text
     /// back out of a Vello scene, so assert the contract at the label
-    /// helper: it is count-only and empty for zero.
+    /// helper instead.
     #[test]
     fn count_label_is_count_only() {
         assert_eq!(count_label(0), "");

@@ -13,14 +13,14 @@ use std::path::PathBuf;
 use qos_bluez::{PairingPrompt, PairingRequest};
 use shell::bluetooth_prompt::PairingPromptView;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use ui::State;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::State;
-use vello::kurbo::{Affine, Point};
 use vello::Scene;
+use vello::kurbo::{Affine, Point};
 
 const WIDTH: u32 = 720;
 const HEIGHT: u32 = 480;
@@ -46,10 +46,9 @@ fn shoot(theme: &Theme, out: PathBuf, name: &str, prompt: PairingPrompt) {
                 height: AvailableSpace::Definite(HEIGHT as f32),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .unwrap();
@@ -67,8 +66,8 @@ fn shoot(theme: &Theme, out: PathBuf, name: &str, prompt: PairingPrompt) {
 
 fn main() {
     ui::i18n::I18nManager::init("en-US");
-    let dir = std::env::var("PAIRING_SHOTS_OUT")
-        .unwrap_or_else(|_| "target/pairing-shots".to_string());
+    let dir =
+        std::env::var("PAIRING_SHOTS_OUT").unwrap_or_else(|_| "target/pairing-shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 
@@ -83,7 +82,10 @@ fn main() {
             &theme,
             dir.join(format!("display-{suffix}.png")),
             "MX KEYS S",
-            PairingPrompt::DisplayPasskey { passkey: 731_908, entered: 3 },
+            PairingPrompt::DisplayPasskey {
+                passkey: 731_908,
+                entered: 3,
+            },
         );
         shoot(
             &theme,

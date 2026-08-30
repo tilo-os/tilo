@@ -100,7 +100,7 @@ impl CalcScreen {
     /// has been laid out. Used by the headless interaction bench + tests.
     #[doc(hidden)]
     pub fn key_center(&self, i: usize) -> Option<Point> {
-        self.key_rects.get(i).map(|r| r.center())
+        self.key_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     /// Bench/test helper: index of the first keypad key whose label is `label`.
@@ -112,7 +112,7 @@ impl CalcScreen {
     /// Test helper: screen-space center of memory-bar button `i`, once laid out.
     #[doc(hidden)]
     pub fn mem_center(&self, i: usize) -> Option<Point> {
-        self.mem_rects.get(i).map(|r| r.center())
+        self.mem_rects.get(i).map(ui::kurbo::Rect::center)
     }
 
     /// Test helper: screen-space center of the history row for entry `i`, if it
@@ -162,11 +162,12 @@ impl CalcScreen {
         // The panel's drawn rect (docked column or overlay drawer). Driven by
         // the eased reveal so BOTH opening and collapsing slide; zero once fully
         // hidden so `layout_history` skips it.
-        self.sidebar_rect = if self.drawer.reveal() > 0.001 && self.drawer.sidebar_rect().width() > 0.5 {
-            self.drawer.sidebar_rect()
-        } else {
-            Rect::ZERO
-        };
+        self.sidebar_rect =
+            if self.drawer.reveal() > 0.001 && self.drawer.sidebar_rect().width() > 0.5 {
+                self.drawer.sidebar_rect()
+            } else {
+                Rect::ZERO
+            };
 
         if self.drawer.is_docked() {
             // Keypad gets the (eased) content column beside the docked history.
@@ -225,8 +226,9 @@ impl CalcScreen {
         let mem_btn_w = 64.0;
         let mem_gap = 8.0;
         for i in 0..4 {
-            let x0 = left.x0 + i as f64 * (mem_btn_w + mem_gap);
-            self.mem_rects.push(Rect::new(x0, mem_top, x0 + mem_btn_w, mem_top + mem_h));
+            let x0 = left.x0 + f64::from(i) * (mem_btn_w + mem_gap);
+            self.mem_rects
+                .push(Rect::new(x0, mem_top, x0 + mem_btn_w, mem_top + mem_h));
         }
 
         // Keypad grid (column count is layout-dependent).
@@ -261,8 +263,12 @@ impl CalcScreen {
         let right = self.sidebar_rect;
         let header_h = 48.0;
         let row_h = 56.0;
-        self.clear_hist_rect =
-            Rect::new(right.x1 - 76.0, right.y0 + 12.0, right.x1 - 16.0, right.y0 + 36.0);
+        self.clear_hist_rect = Rect::new(
+            right.x1 - 76.0,
+            right.y0 + 12.0,
+            right.x1 - 16.0,
+            right.y0 + 36.0,
+        );
         self.history_view = Rect::new(right.x0, right.y0 + header_h, right.x1, right.y1);
         self.history_content_h = model.history.len() as f64 * row_h;
         let max_scroll = (self.history_content_h - self.history_view.height()).max(0.0);
@@ -270,7 +276,12 @@ impl CalcScreen {
 
         let mut y = self.history_view.y0 - self.history_scroll;
         for (i, _) in model.history.iter().enumerate() {
-            let r = Rect::new(self.history_view.x0 + 12.0, y, self.history_view.x1 - 12.0, y + row_h);
+            let r = Rect::new(
+                self.history_view.x0 + 12.0,
+                y,
+                self.history_view.x1 - 12.0,
+                y + row_h,
+            );
             if r.y1 > self.history_view.y0 && r.y0 < self.history_view.y1 {
                 self.history_rects.push((i, r));
             }
@@ -311,35 +322,109 @@ impl CalcScreen {
         // ---- Display panel -------------------------------------------------
         let display = Rect::new(left.x0, display_top, left.x1, display_top + 124.0);
         draw::fill_rrect(scene, t, display, theme.radius_standard, c.neutral[0]);
-        draw::stroke_rrect(scene, t, display, theme.radius_standard, c.border_standard, 1.0);
+        draw::stroke_rrect(
+            scene,
+            t,
+            display,
+            theme.radius_standard,
+            c.border_standard,
+            1.0,
+        );
 
         // status line: angle mode + Ans
-        let status = Rect::new(display.x0 + 16.0, display.y0 + 8.0, display.x1 - 16.0, display.y0 + 30.0);
+        let status = Rect::new(
+            display.x0 + 16.0,
+            display.y0 + 8.0,
+            display.x1 - 16.0,
+            display.y0 + 30.0,
+        );
         let mode_txt = if model.deg { "DEG" } else { "RAD" };
-        draw::text_in(scene, tr, t, status, mode_txt, 12.0, c.accent[6], Align::Left, TextWeight::Semibold);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            status,
+            mode_txt,
+            12.0,
+            c.accent[6],
+            Align::Left,
+            TextWeight::Semibold,
+        );
         let ans_txt = format!("Ans = {}", engine::format_number(model.ans));
-        draw::text_in(scene, tr, t, status, &ans_txt, 12.0, c.text_dim, Align::Right, TextWeight::Regular);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            status,
+            &ans_txt,
+            12.0,
+            c.text_dim,
+            Align::Right,
+            TextWeight::Regular,
+        );
 
         // expression line
-        let expr_rect = Rect::new(display.x0 + 16.0, display.y0 + 30.0, display.x1 - 16.0, display.y0 + 78.0);
+        let expr_rect = Rect::new(
+            display.x0 + 16.0,
+            display.y0 + 30.0,
+            display.x1 - 16.0,
+            display.y0 + 78.0,
+        );
         let expr_shown = if model.expr.trim().is_empty() {
             "0".to_string()
         } else {
             engine::prettify(&model.expr)
         };
-        let expr_color = if model.expr.trim().is_empty() { c.text_dim } else { c.text_primary };
-        draw::text_in(scene, tr, t, expr_rect, &expr_shown, 30.0, expr_color, Align::Right, TextWeight::Medium);
+        let expr_color = if model.expr.trim().is_empty() {
+            c.text_dim
+        } else {
+            c.text_primary
+        };
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            expr_rect,
+            &expr_shown,
+            30.0,
+            expr_color,
+            Align::Right,
+            TextWeight::Medium,
+        );
 
         // result / preview line
-        let res_rect = Rect::new(display.x0 + 16.0, display.y0 + 78.0, display.x1 - 16.0, display.y1 - 6.0);
+        let res_rect = Rect::new(
+            display.x0 + 16.0,
+            display.y0 + 78.0,
+            display.x1 - 16.0,
+            display.y1 - 6.0,
+        );
         let (res_txt, res_color, weight) = match engine::evaluate(&model.expr, &model.ctx()) {
             Ok(v) if !model.expr.trim().is_empty() => {
-                let col = if model.after_equals { c.accent[5] } else { c.text_dim };
-                (format!("= {}", engine::format_number(v)), col, TextWeight::Bold)
+                let col = if model.after_equals {
+                    c.accent[5]
+                } else {
+                    c.text_dim
+                };
+                (
+                    format!("= {}", engine::format_number(v)),
+                    col,
+                    TextWeight::Bold,
+                )
             }
             _ => (String::new(), c.text_dim, TextWeight::Regular),
         };
-        draw::text_in(scene, tr, t, res_rect, &res_txt, 34.0, res_color, Align::Right, weight);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            res_rect,
+            &res_txt,
+            34.0,
+            res_color,
+            Align::Right,
+            weight,
+        );
 
         // ---- Memory bar ----------------------------------------------------
         for (i, key) in MEM_KEYS.iter().enumerate() {
@@ -349,12 +434,41 @@ impl CalcScreen {
             let fill = if hovered { c.neutral[3] } else { c.neutral[2] };
             draw::fill_rrect(scene, t, r, 8.0, fill);
             let txt_col = if active { c.accent[6] } else { c.text_dim };
-            draw::text_in(scene, tr, t, r, key.label(), 13.0, txt_col, Align::Center, TextWeight::Semibold);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                key.label(),
+                13.0,
+                txt_col,
+                Align::Center,
+                TextWeight::Semibold,
+            );
         }
-        let mem_label = Rect::new(self.mem_rects[3].x1 + 12.0, self.mem_rects[3].y0, left.x1, self.mem_rects[3].y1);
+        let mem_label = Rect::new(
+            self.mem_rects[3].x1 + 12.0,
+            self.mem_rects[3].y0,
+            left.x1,
+            self.mem_rects[3].y1,
+        );
         let mem_txt = format!("M = {}", engine::format_number(model.memory));
-        let mem_col = if model.memory != 0.0 { c.accent[6] } else { c.text_dim };
-        draw::text_in(scene, tr, t, mem_label, &mem_txt, 14.0, mem_col, Align::Right, TextWeight::Medium);
+        let mem_col = if model.memory == 0.0 {
+            c.text_dim
+        } else {
+            c.accent[6]
+        };
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            mem_label,
+            &mem_txt,
+            14.0,
+            mem_col,
+            Align::Right,
+            TextWeight::Medium,
+        );
 
         // ---- Keypad --------------------------------------------------------
         for (i, key) in self.keys.iter().enumerate() {
@@ -370,7 +484,17 @@ impl CalcScreen {
                 KeyRole::Digit | KeyRole::Operator | KeyRole::Accent => 22.0,
                 _ => 16.0,
             };
-            draw::text_in(scene, tr, t, r, key.label(), size, text_col, Align::Center, TextWeight::Medium);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                r,
+                key.label(),
+                size,
+                text_col,
+                Align::Center,
+                TextWeight::Medium,
+            );
         }
 
         // ---- History sidebar ----------------------------------------------
@@ -389,24 +513,63 @@ impl CalcScreen {
 
     /// Draw the standard sidebar-toggle affordance owned by the primitive.
     fn draw_toggle(&self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
-        self.drawer.draw_toggle(scene, t, theme, self.toggle_rect, false);
+        self.drawer
+            .draw_toggle(scene, t, theme, self.toggle_rect, false);
     }
 
-    fn draw_history(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel) {
+    fn draw_history(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+    ) {
         let c = &theme.tokens.colors;
         let right = self.sidebar_rect;
 
         // A docked column blends with the base; a floating drawer reads as a
         // raised surface with its own left edge + shadow-ish border.
         let overlay = self.drawer.is_overlay();
-        let panel_bg = if overlay { c.surfaces.raised } else { c.surfaces.base };
+        let panel_bg = if overlay {
+            c.surfaces.raised
+        } else {
+            c.surfaces.base
+        };
         draw::fill_rect(scene, t, right, panel_bg);
-        draw::line(scene, t, Point::new(right.x0, right.y0), Point::new(right.x0, right.y1), c.border_standard, if overlay { 1.5 } else { 1.0 });
+        draw::line(
+            scene,
+            t,
+            Point::new(right.x0, right.y0),
+            Point::new(right.x0, right.y1),
+            c.border_standard,
+            if overlay { 1.5 } else { 1.0 },
+        );
 
         let header = Rect::new(right.x0 + 16.0, right.y0, right.x1 - 16.0, right.y0 + 48.0);
-        draw::text_in(scene, tr, t, header, "History", 16.0, c.text_primary, Align::Left, TextWeight::Semibold);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            header,
+            "History",
+            16.0,
+            c.text_primary,
+            Align::Left,
+            TextWeight::Semibold,
+        );
         draw::fill_rrect(scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
-        draw::text_in(scene, tr, t, self.clear_hist_rect, "Clear", 12.0, c.text_dim, Align::Center, TextWeight::Medium);
+        draw::text_in(
+            scene,
+            tr,
+            t,
+            self.clear_hist_rect,
+            "Clear",
+            12.0,
+            c.text_dim,
+            Align::Center,
+            TextWeight::Medium,
+        );
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -490,7 +653,11 @@ impl CalcScreen {
         self.drawer.is_open() && self.clear_hist_rect.contains(p)
     }
     pub fn history_viewport(&self) -> Rect {
-        if self.drawer.is_open() { self.history_view } else { Rect::ZERO }
+        if self.drawer.is_open() {
+            self.history_view
+        } else {
+            Rect::ZERO
+        }
     }
 
     /// Whether `p` hit the standard sidebar-toggle affordance.
@@ -529,7 +696,10 @@ fn key_colors(theme: &Theme, role: KeyRole, hovered: bool, pressed: bool) -> (Co
         // while staying a clear visual tier below the number pad.
         KeyRole::Function => (draw::mix(c.surfaces.base, c.neutral[2], 0.55), c.neutral[7]),
         KeyRole::Accent => (c.accent[5], Color::WHITE),
-        KeyRole::Warm => (draw::mix(c.neutral[2], c.semantic.danger, 0.28), c.text_primary),
+        KeyRole::Warm => (
+            draw::mix(c.neutral[2], c.semantic.danger, 0.28),
+            c.text_primary,
+        ),
     };
     let fill = if pressed {
         draw::mix(base, Color::BLACK, 0.18)
@@ -555,7 +725,10 @@ mod tests {
         let mut s = CalcScreen::default();
         let m = CalcModel::seeded();
         s.layout(body(1200.0), &m);
-        assert!(s.sidebar_open(), "wide window should default to history shown");
+        assert!(
+            s.sidebar_open(),
+            "wide window should default to history shown"
+        );
         assert!(s.drawer.is_docked(), "wide window should dock, not overlay");
         assert!(s.sidebar_rect.width() > 0.0);
         // Docked on the RIGHT: the history column hugs the right edge.
@@ -570,9 +743,19 @@ mod tests {
         let mut s = CalcScreen::default();
         let m = CalcModel::seeded();
         s.layout(body(520.0), &m);
-        assert!(!s.sidebar_open(), "narrow window must NOT force the sidebar open");
-        assert!(s.drawer.is_overlay(), "narrow window uses the overlay drawer mode");
-        assert_eq!(s.history_viewport(), Rect::ZERO, "collapsed → no history viewport");
+        assert!(
+            !s.sidebar_open(),
+            "narrow window must NOT force the sidebar open"
+        );
+        assert!(
+            s.drawer.is_overlay(),
+            "narrow window uses the overlay drawer mode"
+        );
+        assert_eq!(
+            s.history_viewport(),
+            Rect::ZERO,
+            "collapsed → no history viewport"
+        );
     }
 
     #[test]
@@ -586,7 +769,10 @@ mod tests {
         s.layout(body(520.0), &m);
         assert!(s.sidebar_open());
         assert!(s.drawer.is_overlay(), "still an overlay at this width");
-        assert!(s.drawer.scrim_rect().width() > 0.0, "overlay must lay down a dismiss scrim");
+        assert!(
+            s.drawer.scrim_rect().width() > 0.0,
+            "overlay must lay down a dismiss scrim"
+        );
         // a scrim tap (left of the right-anchored drawer) dismisses it
         let scrim_pt = Point::new(body(520.0).x0 + 10.0, s.drawer.scrim_rect().center().y);
         assert!(s.scrim_at(scrim_pt));
@@ -605,7 +791,11 @@ mod tests {
         s.layout(body(520.0), &m);
         // a point inside the drawer is not a keypad/mem press
         let over = Point::new(s.sidebar_rect.center().x, s.sidebar_rect.center().y);
-        assert_eq!(s.key_at(over), None, "drawer must not press the key behind it");
+        assert_eq!(
+            s.key_at(over),
+            None,
+            "drawer must not press the key behind it"
+        );
         assert_eq!(s.mem_at(over), None);
     }
 

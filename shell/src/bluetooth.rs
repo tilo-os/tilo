@@ -1,31 +1,27 @@
 //! The compositor's Bluetooth pairing agent.
 //!
-//! BlueZ asks the desktop a question in the middle of a pairing — "these six
-//! digits, do they match what the headphones are showing?" — and holds the
-//! pairing open until the answer comes back. Whoever answers that question
-//! decides whether a nearby device gets to inject keystrokes and read audio.
+//! `BlueZ` asks the desktop a question mid-pairing — "these six digits, do
+//! they match what the headphones are showing?" — and holds the pairing
+//! open until the answer comes back. Whoever answers decides whether a
+//! nearby device gets to inject keystrokes and read audio.
 //!
-//! That makes it the compositor's job and nobody else's. An application must
-//! not be able to draw a pairing dialog, and must not be able to answer one.
-//! `qos-bluez` provides the agent object; this module owns it, keeps it
-//! registered for the life of the session, and turns each question into
-//! something the OS chrome can render and reply to.
+//! That makes it the compositor's job and nobody else's: an application
+//! must not be able to draw a pairing dialog, or answer one. `qos-bluez`
+//! provides the agent object; this module owns it, keeps it registered
+//! for the session's life, and turns each question into something the OS chrome can render and reply to.
 //!
-//! The Settings app can *start* a pairing — that is just `Device1.Pair` — but
-//! the prompt that results belongs here.
+//! The Settings app can *start* a pairing (`Device1.Pair`), but the prompt that results belongs here.
 
 use std::sync::{Arc, Mutex};
 
 use qos_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
 use qos_bluez::{BluezClient, PairingReply, PairingRequest};
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// The prompt currently on screen, if any, and the channel that answers it.
 ///
-/// One at a time by construction: BlueZ pairs one device at a time, and a
-/// second dialog stacking on the first would be a way to trick someone into
-/// answering the wrong question.
+/// One at a time by construction: `BlueZ` pairs one device at a time, and
+/// a second dialog stacking on the first would be a way to trick someone into answering the wrong question.
 #[derive(Default)]
 pub struct PairingState {
     current: Option<Pending>,
@@ -60,8 +56,7 @@ impl PairingPromptHandle {
     }
 
     /// Post a question. Any prompt already up is refused rather than
-    /// silently replaced — dropping its reply channel is read as a decline
-    /// by the agent, so an abandoned pairing fails closed.
+    /// silently replaced — dropping its reply channel is read as a decline by the agent, so an abandoned pairing fails closed.
     fn post(&self, request: PairingRequest, reply: tokio::sync::oneshot::Sender<PairingReply>) {
         if let Ok(mut s) = self.inner.lock() {
             if let Some(prev) = s.current.take() {
@@ -76,8 +71,7 @@ impl PairingPromptHandle {
         }
     }
 
-    /// Answer the prompt and clear it. Returns false when there was nothing
-    /// to answer, so a stray click cannot invent a consent.
+    /// Answer the prompt and clear it. Returns false when there was nothing to answer, so a stray click cannot invent a consent.
     pub fn answer(&self, reply: PairingReply) -> bool {
         let Ok(mut s) = self.inner.lock() else {
             return false;
@@ -95,9 +89,8 @@ impl PairingPromptHandle {
         true
     }
 
-    /// Dismiss without answering — the user closed it, or BlueZ withdrew the
-    /// request. Dropping the channel makes the agent refuse, which is the
-    /// only safe reading of "no answer".
+    /// Dismiss without answering — the user closed it, or `BlueZ` withdrew the
+    /// request. Dropping the channel makes the agent refuse, the only safe reading of "no answer".
     pub fn dismiss(&self) -> bool {
         let Ok(mut s) = self.inner.lock() else {
             return false;
@@ -106,8 +99,7 @@ impl PairingPromptHandle {
     }
 }
 
-/// A registered agent plus the task pumping its events. Dropping this stops
-/// the pump; call [`Self::shutdown`] to also unregister from BlueZ.
+/// A registered agent plus the task pumping its events. Dropping this stops the pump; call [`Self::shutdown`] to also unregister from `BlueZ`.
 pub struct PairingService {
     registration: AgentRegistration,
     pump: tokio::task::JoinHandle<()>,
@@ -115,19 +107,17 @@ pub struct PairingService {
 }
 
 impl PairingService {
-    /// Connect to BlueZ, register the pairing agent, and start feeding
+    /// Connect to `BlueZ`, register the pairing agent, and start feeding
     /// prompts to `handle`.
     ///
-    /// Failing to reach BlueZ is not fatal to the session: a desktop with no
-    /// Bluetooth is a desktop, so the caller logs and continues. What must
-    /// never happen is the agent appearing to be registered when it is not,
-    /// because then pairings would silently fail with no prompt.
+    /// Failing to reach `BlueZ` is not fatal — a desktop with no Bluetooth is
+    /// a desktop, so the caller logs and continues. What must never happen
+    /// is the agent appearing registered when it isn't, since then pairings would silently fail with no prompt.
     pub async fn start(handle: PairingPromptHandle) -> Result<Self, String> {
         let client = BluezClient::connect()
             .await
             .map_err(|e| format!("cannot reach org.bluez: {e}"))?;
-        // Prime the name cache so the first prompt can title itself without
-        // calling back into a daemon that is blocked waiting on us.
+        // Prime the name cache so the first prompt can title itself without calling back into a daemon blocked waiting on us.
         if let Err(e) = client.devices().await {
             warn!(target: "qos::bluetooth", error = %e, "could not preload device names");
         }
@@ -143,8 +133,7 @@ impl PairingService {
                 match ev {
                     AgentEvent::Ask { request, reply } => pump_handle.post(request, reply),
                     AgentEvent::Cancelled => {
-                        // BlueZ withdrew it. Take the prompt down rather than
-                        // leaving a dead dialog the user can answer.
+                        // BlueZ withdrew it — take the prompt down rather than leaving a dead dialog the user can answer.
                         pump_handle.dismiss();
                     }
                     AgentEvent::Released => {
@@ -166,8 +155,7 @@ impl PairingService {
         &self.client
     }
 
-    /// Unregister cleanly, so the daemon is not left holding a dead object
-    /// path across a compositor restart.
+    /// Unregister cleanly, so the daemon isn't left holding a dead object path across a compositor restart.
     pub async fn shutdown(self) {
         self.pump.abort();
         if let Err(e) = self.registration.unregister().await {
@@ -176,8 +164,7 @@ impl PairingService {
     }
 }
 
-/// Convenience for the compositor boot path: start the service on `rt`,
-/// logging rather than failing when there is no Bluetooth on this machine.
+/// Convenience for the compositor boot path: start the service on `rt`, logging rather than failing when there's no Bluetooth on this machine.
 pub fn spawn_on(
     rt: &tokio::runtime::Handle,
     handle: PairingPromptHandle,
@@ -227,8 +214,7 @@ mod tests {
         assert!(!h.dismiss());
     }
 
-    /// Two questions must not stack. The older one is declined rather than
-    /// left behind a new dialog where the user might answer the wrong one.
+    /// Two questions must not stack. The older one is declined rather than left behind a new dialog where the user might answer the wrong one.
     #[tokio::test]
     async fn a_second_question_declines_the_first() {
         let h = PairingPromptHandle::new();
@@ -247,8 +233,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         h.post(request("A"), tx);
         assert!(h.dismiss());
-        // The sender was dropped, so the agent sees a closed channel — which
-        // it reads as a refusal.
+        // The sender was dropped, so the agent sees a closed channel — which it reads as a refusal.
         assert!(rx.await.is_err(), "no answer was sent");
     }
 

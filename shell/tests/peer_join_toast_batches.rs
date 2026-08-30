@@ -20,12 +20,10 @@ fn three_joins_within_one_second_produce_one_toast() {
         t0 + Duration::from_millis(400),
     );
 
-    // Drain after the batch window closes.
     let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
     assert_eq!(ready.len(), 1, "3 rapid joins must batch into one toast");
     assert_eq!(ready[0].kind, PeerEventKind::Joined);
     assert_eq!(ready[0].title, "3 peers joined");
-    // Body lists the peer names.
     assert!(ready[0].body.contains("alice"));
     assert!(ready[0].body.contains("bob"));
     assert!(ready[0].body.contains("charlie"));
@@ -67,9 +65,7 @@ fn events_after_window_form_a_new_batch() {
     let ready_first = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
     assert_eq!(ready_first.len(), 1);
     assert_eq!(ready_first[0].title, "alice joined");
-    // Bob still pending.
     assert_eq!(q.pending(), 1);
-    // Advance past bob's window.
     let ready_second = q.drain_ready(t0 + BATCH_WINDOW * 2 + Duration::from_secs(2));
     assert_eq!(ready_second.len(), 1);
     assert_eq!(ready_second[0].title, "bob joined");

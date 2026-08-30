@@ -65,7 +65,10 @@ pub struct StripGrid {
 /// line (see `draw_summary_strip`) — mirroring the "adapt horizontally, don't
 /// collapse vertically" rule the process table itself follows.
 pub fn summary_grid(_avail_w: f64) -> StripGrid {
-    StripGrid { cols: STRIP_CELLS, rows: 1 }
+    StripGrid {
+        cols: STRIP_CELLS,
+        rows: 1,
+    }
 }
 
 /// Height the summary strip occupies once wrapped to `g`.
@@ -93,11 +96,7 @@ pub const OVERVIEW_SYS_H: f64 = 150.0;
 /// Columns the overview row uses: three abreast when wide, else a single
 /// full-width stacked column.
 pub fn overview_cols(avail_w: f64) -> usize {
-    if avail_w >= 720.0 {
-        3
-    } else {
-        1
-    }
+    if avail_w >= 720.0 { 3 } else { 1 }
 }
 
 /// Height the overview row occupies for `avail_w` — one card tall when the
@@ -113,11 +112,7 @@ pub fn overview_h(avail_w: f64) -> f64 {
 /// Columns the Resources chart grid uses: two-up when wide, a single column
 /// when narrow so each chart stays legible.
 pub fn charts_cols(avail_w: f64) -> usize {
-    if avail_w >= 620.0 {
-        2
-    } else {
-        1
-    }
+    if avail_w >= 620.0 { 2 } else { 1 }
 }
 
 /// Rows the four-chart Resources grid wraps to for `avail_w`.
@@ -238,11 +233,8 @@ impl Column {
 /// the five essentials themselves overflow and the table scrolls.
 pub fn process_columns(avail_w: f64) -> Vec<Column> {
     let show_user = avail_w >= ALL_COLUMNS_MIN_W;
-    let fixed = COL_PID_W
-        + COL_CPU_W
-        + COL_MEM_W
-        + COL_THR_W
-        + if show_user { COL_USER_W } else { 0.0 };
+    let fixed =
+        COL_PID_W + COL_CPU_W + COL_MEM_W + COL_THR_W + if show_user { COL_USER_W } else { 0.0 };
     // NAME takes the slack but never drops below its minimum; when there is
     // no slack the columns sum past `avail_w` and the table scrolls.
     let name_w = (avail_w - fixed).max(COL_NAME_MIN_W);
@@ -263,7 +255,13 @@ pub fn process_columns(avail_w: f64) -> Vec<Column> {
     specs
         .into_iter()
         .map(|(key, header, w, right)| {
-            let c = Column { key, header, x0: x, w, right };
+            let c = Column {
+                key,
+                header,
+                x0: x,
+                w,
+                right,
+            };
             x += w;
             c
         })
@@ -274,7 +272,7 @@ pub fn process_columns(avail_w: f64) -> Vec<Column> {
 /// content width. When this exceeds the table's inner width the table needs
 /// a horizontal scrollbar.
 pub fn process_columns_total_w(cols: &[Column]) -> f64 {
-    cols.last().map(Column::x1).unwrap_or(0.0)
+    cols.last().map_or(0.0, Column::x1)
 }
 
 /// Inset the rail-card / panel rectangle by its padding, matching
@@ -299,7 +297,11 @@ mod tests {
             let g = summary_grid(w);
             assert_eq!(g.rows, 1, "w={w}: the strip must stay a single row");
             assert_eq!(g.cols, STRIP_CELLS, "w={w}: all four cells on the one row");
-            assert_eq!(g.cols * g.rows, STRIP_CELLS, "w={w}: holds exactly every cell");
+            assert_eq!(
+                g.cols * g.rows,
+                STRIP_CELLS,
+                "w={w}: holds exactly every cell"
+            );
             assert!(
                 (summary_strip_h(g) - base_h).abs() < f64::EPSILON,
                 "w={w}: strip height must be constant across widths"
@@ -409,7 +411,10 @@ mod tests {
                 .iter()
                 .find(|c| c.key == SortKey::Threads)
                 .expect("THR is always shown");
-            assert_eq!(thr.w, COL_THR_W, "THR keeps its full width at avail={avail}");
+            assert_eq!(
+                thr.w, COL_THR_W,
+                "THR keeps its full width at avail={avail}"
+            );
             // The whole table fits: THR's right edge is inside the viewport, so
             // its header reads in full with no horizontal scroll.
             assert!(
@@ -439,7 +444,10 @@ mod tests {
         // minimum and the total exceeds the width — the renderer must scroll,
         // not squeeze THR over the border. (USER is already dropped here.)
         let avail = 300.0;
-        assert!(avail < ESSENTIAL_COLUMNS_MIN_W, "chosen width is below the essentials");
+        assert!(
+            avail < ESSENTIAL_COLUMNS_MIN_W,
+            "chosen width is below the essentials"
+        );
         let cols = process_columns(avail);
         let total = process_columns_total_w(&cols);
         assert!(

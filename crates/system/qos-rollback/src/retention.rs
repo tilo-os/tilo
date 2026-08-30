@@ -1,8 +1,8 @@
 //! Which generations keep a sealed keyslot, and which floor follows from that.
 //!
-//! Pure arithmetic, deliberately separated from the TPM and cryptsetup drivers:
-//! these are the decisions that decide whether a user can still boot, so they
-//! are the ones that most need to be provable without hardware.
+//! Pure arithmetic, deliberately separated from the TPM and cryptsetup drivers: these are
+//! the decisions that decide whether a user can still boot, so they most need to be provable
+//! without hardware.
 
 use anyhow::{Result, bail};
 
@@ -11,9 +11,8 @@ use anyhow::{Result, bail};
 pub struct FloorPlan {
     /// Floor implied purely by the retention window.
     pub window_floor: u64,
-    /// Floor the update itself declared, if any. Lets a security update jump
-    /// past a known-vulnerable generation instead of leaving it inside the
-    /// window.
+    /// Floor the update itself declared, if any. Lets a security update jump past a
+    /// known-vulnerable generation instead of leaving it inside the window.
     pub declared_floor: Option<u64>,
     /// Floor currently in the TPM.
     pub current_floor: u64,
@@ -31,15 +30,13 @@ impl FloorPlan {
 }
 
 /// Decide the floor to move to when generation `confirmed` is confirmed good.
+/// `retained_generations` counts the current generation, so 3 keeps `N`, `N-1` and `N-2`
+/// bootable and puts the floor at `N-2`.
 ///
-/// `retained_generations` counts the current generation, so 3 keeps `N`, `N-1`
-/// and `N-2` bootable and puts the floor at `N-2`.
-///
-/// SAFETY-CRITICAL: a declared floor above the generation being confirmed is
-/// **refused**, not clamped. Clamping would quietly repair an authoring mistake
-/// that would otherwise be caught in test; letting it through would raise the
-/// floor above every token that exists, which is a machine that boots and then
-/// asks for the recovery key forever.
+/// SAFETY-CRITICAL: a declared floor above the generation being confirmed is **refused**,
+/// not clamped — clamping would quietly repair an authoring mistake that testing should
+/// catch, and letting it through would raise the floor above every existing token, leaving a
+/// machine that boots and then asks for the recovery key forever.
 pub fn plan_floor(
     confirmed: u64,
     current_floor: u64,
@@ -65,7 +62,9 @@ pub fn plan_floor(
         );
     }
     let window_floor = confirmed.saturating_sub(u64::from(retained_generations - 1));
-    let target_floor = window_floor.max(current_floor).max(declared_floor.unwrap_or(0));
+    let target_floor = window_floor
+        .max(current_floor)
+        .max(declared_floor.unwrap_or(0));
     Ok(FloorPlan {
         window_floor,
         declared_floor,
@@ -76,29 +75,22 @@ pub fn plan_floor(
 
 /// How many generations *newer* than the running one keep their keyslot.
 ///
-/// At least one, always, and this is the sharp edge: staging an update seals the
-/// incoming generation's keyslot before the reboot, so at the moment generation
-/// `N` is confirmed there is normally a sealed keyslot for `N+1` sitting in the
-/// header. Treating "newer than the running generation" as stale — which reads
-/// perfectly reasonably, and is what this code did first — deletes the keyslot the
-/// *next* boot depends on, and that boot lands on the recovery key.
+/// At least one, always — the sharp edge: staging an update seals the incoming
+/// generation's keyslot before reboot, so confirming `N` normally finds a sealed keyslot for
+/// `N+1` already in the header. Treating "newer than running" as stale deletes the keyslot
+/// the *next* boot depends on, landing that boot on the recovery key.
 ///
-/// Two rather than one leaves room for a second update staged while the first is
-/// still unconfirmed. Beyond that they are pruned oldest-first: a generation newer
-/// than the running one that is not among the newest two is one that was staged,
-/// superseded, and never booted, and re-staging it would seal a fresh keyslot
-/// anyway.
+/// Two rather than one leaves room for a second update staged while the first is still
+/// unconfirmed. Beyond that, pruned oldest-first: a newer generation not among the newest
+/// two was staged, superseded, and never booted, and re-staging would seal a fresh keyslot anyway.
 pub const RETAINED_NEWER_GENERATIONS: usize = 2;
 
-/// Generations whose sealed keyslot should be kept, newest first, when
-/// generation `current` is enrolled or confirmed.
+/// Generations whose sealed keyslot should be kept, newest first, when generation `current`
+/// is enrolled or confirmed. Two groups, kept for different reasons:
 ///
-/// Two groups, kept for different reasons:
-///
-/// * up to [`RETAINED_NEWER_GENERATIONS`] generations *newer* than `current` —
-///   the staged update whose keyslot the next boot needs;
-/// * the `retained_generations` newest at or below `current` — the rollback
-///   window itself.
+/// * up to [`RETAINED_NEWER_GENERATIONS`] generations *newer* than `current` — the staged
+///   update whose keyslot the next boot needs;
+/// * the `retained_generations` newest at or below `current` — the rollback window itself.
 pub fn keep_set(current: u64, present: &[u64], retained_generations: u32) -> Vec<u64> {
     let mut all: Vec<u64> = present.to_vec();
     if !all.contains(&current) {
@@ -116,8 +108,7 @@ pub fn keep_set(current: u64, present: &[u64], retained_generations: u32) -> Vec
     newer
 }
 
-/// Generations whose sealed keyslot should be removed: anything outside
-/// [`keep_set`].
+/// Generations whose sealed keyslot should be removed: anything outside [`keep_set`].
 pub fn drop_set(current: u64, present: &[u64], retained_generations: u32) -> Vec<u64> {
     let keep = keep_set(current, present, retained_generations);
     let mut out: Vec<u64> = present
@@ -130,12 +121,10 @@ pub fn drop_set(current: u64, present: &[u64], retained_generations: u32) -> Vec
     out
 }
 
-/// SAFETY-CRITICAL guard: is it safe to prune `drop` given `survivors`?
-///
-/// A prune is only permitted when at least one *verified* generation slot
-/// survives it and the recovery key has been verified. Both are passed in as
-/// facts the caller has already established by actually unlocking with them —
-/// not as intentions.
+/// SAFETY-CRITICAL guard: is it safe to prune `drop` given `survivors`? Only permitted when
+/// at least one *verified* generation slot survives it and the recovery key has been
+/// verified — both passed in as facts the caller already established by actually unlocking
+/// with them, not as intentions.
 pub fn prune_is_safe(
     drop: &[u64],
     verified_survivors: &[u64],
@@ -157,7 +146,9 @@ pub fn prune_is_safe(
         );
     }
     if let Some(bad) = drop.iter().find(|g| verified_survivors.contains(g)) {
-        bail!("internal error: generation {bad} is in both the drop set and the verified survivors");
+        bail!(
+            "internal error: generation {bad} is in both the drop set and the verified survivors"
+        );
     }
     Ok(())
 }
@@ -191,8 +182,8 @@ mod tests {
 
     #[test]
     fn the_floor_never_goes_backwards() {
-        // Confirmed generation 10 with a window of 3 wants floor 8, but the
-        // floor is already 9 (a security update jumped it). Stay at 9.
+        // Confirmed generation 10 with a window of 3 wants floor 8, but the floor is already 9
+        // (a security update jumped it). Stay at 9.
         let p = plan_floor(10, 9, 3, None).unwrap();
         assert_eq!(p.window_floor, 8);
         assert_eq!(p.target_floor, 9);
@@ -202,8 +193,8 @@ mod tests {
 
     #[test]
     fn a_declared_floor_can_jump_past_a_vulnerable_generation() {
-        // Generation 10 is a security fix; 8 and 9 are vulnerable. Declaring
-        // floor 10 closes the window immediately.
+        // Generation 10 is a security fix; 8 and 9 are vulnerable. Declaring floor 10 closes the
+        // window immediately.
         let p = plan_floor(10, 5, 3, Some(10)).unwrap();
         assert_eq!(p.window_floor, 8);
         assert_eq!(p.target_floor, 10);
@@ -241,8 +232,8 @@ mod tests {
 
     #[test]
     fn a_staged_generations_keyslot_is_never_dropped() {
-        // Generation 11 has been staged and its keyslot sealed; confirming 10 must
-        // not remove it, or the next boot has nothing to unseal with.
+        // Generation 11 has been staged and its keyslot sealed; confirming 10 must not remove it,
+        // or the next boot has nothing to unseal with.
         assert_eq!(keep_set(10, &[8, 9, 10, 11], 3), vec![11, 10, 9, 8]);
         assert_eq!(drop_set(10, &[8, 9, 10, 11], 3), Vec::<u64>::new());
     }
@@ -250,8 +241,8 @@ mod tests {
     #[test]
     fn two_staged_generations_are_kept_and_a_third_is_not() {
         assert_eq!(keep_set(10, &[10, 11, 12], 3), vec![12, 11, 10]);
-        // 11 and 12 are the newest two; 13 arriving means 11 was superseded
-        // without ever booting, and re-staging it would seal a fresh keyslot.
+        // 11 and 12 are the newest two; 13 arriving means 11 was superseded without ever booting,
+        // and re-staging it would seal a fresh keyslot.
         assert_eq!(drop_set(10, &[10, 11, 12, 13], 3), vec![11]);
     }
 
@@ -263,10 +254,22 @@ mod tests {
 
     #[test]
     fn pruning_needs_a_verified_survivor_and_a_verified_recovery_key() {
-        assert!(prune_is_safe(&[], &[], false).is_ok(), "nothing to prune is always safe");
-        assert!(prune_is_safe(&[7], &[10], false).is_err(), "recovery key unverified");
-        assert!(prune_is_safe(&[7], &[], true).is_err(), "no verified survivor");
+        assert!(
+            prune_is_safe(&[], &[], false).is_ok(),
+            "nothing to prune is always safe"
+        );
+        assert!(
+            prune_is_safe(&[7], &[10], false).is_err(),
+            "recovery key unverified"
+        );
+        assert!(
+            prune_is_safe(&[7], &[], true).is_err(),
+            "no verified survivor"
+        );
         assert!(prune_is_safe(&[7], &[10], true).is_ok());
-        assert!(prune_is_safe(&[7], &[7, 10], true).is_err(), "contradictory sets");
+        assert!(
+            prune_is_safe(&[7], &[7, 10], true).is_err(),
+            "contradictory sets"
+        );
     }
 }

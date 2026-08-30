@@ -1,16 +1,15 @@
 //! Pixel-level test for `ui::presence::draw_remote_cursors`. Renders a
 //! single remote cursor at a known position into an offscreen surface,
 //! then samples pixels around the apex to assert that *something*
-//! non-background was painted there. This is the lightest possible
-//! proof that the helper actually emits geometry; the existing
-//! `presence_remote_cursors_test` covers data-side population and the
-//! new `cross_process_presence_pump` covers wire integration.
+//! non-background was painted there — the lightest possible proof the
+//! helper emits geometry (data-side population and wire integration are
+//! covered by `presence_remote_cursors_test` and `cross_process_presence_pump`).
 
 use vello::Scene;
 use vello::peniko::Color;
 
 use ui::offscreen::OffscreenRenderer;
-use ui::presence::{draw_remote_cursors, PresenceCtx};
+use ui::presence::{PresenceCtx, draw_remote_cursors};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
@@ -46,10 +45,8 @@ fn ghost_cursor_rendered_at_remote_position() {
     // every channel from black.
     let rgba = offscreen.render(&scene, Color::BLACK);
 
-    // Sample a small grid around the apex looking for SOMETHING the
-    // helper painted. The triangle is ~10 px tall, so we sweep
-    // (apex.x, apex.x+8) × (apex.y, apex.y+8) and assert at least
-    // one of those pixels diverged from the BLACK background.
+    // The triangle is ~10 px tall, so sweep (apex.x, apex.x+8) ×
+    // (apex.y, apex.y+8) for a pixel diverging from BLACK.
     let apex_xi = apex_x as u32;
     let apex_yi = apex_y as u32;
     let mut hits = 0;
@@ -62,12 +59,9 @@ fn ghost_cursor_rendered_at_remote_position() {
                 continue;
             }
             let (r, g, b, a) = OffscreenRenderer::sample(&rgba, width, x, y);
-            // Any pixel diverging from BLACK background counts as a
-            // hit. Anti-aliased edges produce weaker hits than the
-            // interior; the threshold is conservative so we still
-            // catch the AA edge. `as u32` widens before summing so a
-            // bright (255,255,255) doesn't overflow u8 add.
-            if r as u32 + g as u32 + b as u32 > 16 && a > 16 {
+            // Threshold 16 catches weak AA-edge hits; `as u32` widens
+            // before summing so a bright (255,255,255) doesn't overflow u8 add.
+            if u32::from(r) + u32::from(g) + u32::from(b) > 16 && a > 16 {
                 hits += 1;
                 if first_hit.is_none() {
                     first_hit = Some((x, y, r, g, b, a));
@@ -81,10 +75,8 @@ fn ghost_cursor_rendered_at_remote_position() {
         9 * 9,
     );
     let (hx, hy, r, g, b, _a) = first_hit.unwrap();
-    // The caret should be pink-ish (alice's palette is #ec4899 → mostly
-    // R + B). We only assert "warm-tinted" (R > B > G in the broadcast
-    // case) loosely so AA borders don't trip the test, but we DO assert
-    // that the helper picked the palette colour and not "pure white".
+    // Alice's palette is #ec4899 (mostly R+B); assert loosely "warm-tinted"
+    // so AA borders don't trip the test, while still ruling out pure white.
     assert!(
         r > g,
         "ghost cursor at ({hx},{hy}) should reflect alice's warm palette colour; got ({r},{g},{b})"
@@ -93,9 +85,9 @@ fn ghost_cursor_rendered_at_remote_position() {
 
 #[test]
 fn ghost_cursor_with_empty_presence_paints_nothing() {
-    // Regression guard: an empty `remote_cursors` vec must short-
-    // circuit cleanly. Otherwise an idle peer-list would still drag
-    // through TextRenderer / theme lookups every frame.
+    // An empty `remote_cursors` vec must short-circuit cleanly, or an
+    // idle peer-list would still drag through TextRenderer / theme
+    // lookups every frame.
     let presence = PresenceCtx::empty();
     let mut scene = Scene::new();
     let mut text_renderer = TextRenderer::new();
@@ -111,9 +103,7 @@ fn ghost_cursor_with_empty_presence_paints_nothing() {
 
     let mut offscreen = OffscreenRenderer::new(32, 32);
     let rgba = offscreen.render(&scene, Color::BLACK);
-    // Every pixel in the surface must be BLACK (or close to it,
-    // accounting for AA filter taps in shader). We check the four
-    // corners + center as a cheap proxy for "the scene was empty".
+    // Four corners + center as a cheap proxy for "the scene was empty".
     for (x, y) in [(0, 0), (31, 0), (0, 31), (31, 31), (16, 16)] {
         let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, 32, x, y);
         assert_eq!(

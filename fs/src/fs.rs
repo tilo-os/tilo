@@ -2,54 +2,37 @@
 //!
 //! # A denial is presented as an absence
 //!
-//! The access decision lives in [`crate::acl`]; this module decides how a
-//! denial *looks*. It looks like nothing:
+//! The access decision lives in [`crate::acl`]; this module decides how
+//! a denial *looks*. It looks like nothing: a path outside the view is
+//! `ENOENT` with no `readdir` entry; a path in the view but not writable
+//! is `EROFS`; a path in the view and readable is the real thing.
 //!
-//! | situation | what the app sees |
-//! |---|---|
-//! | path outside the view | `ENOENT`, and no entry in `readdir` |
-//! | path in the view, not writable | `EROFS` |
-//! | path in the view, readable | the real thing |
-//!
-//! `EACCES` is never returned for a policy decision. It is the errno most
-//! software handles by aborting or by asking the user to fix something
-//! they cannot fix; "the directory contains these two files", "no such
-//! file" and "read-only file system" are all states programs handle
-//! correctly today, because they occur naturally.
-//!
-//! Consequences that are deliberate rather than incidental:
-//!
-//! - `readdir` omits entries outside the view. It does not list them and
-//!   fail on access — they are not there.
-//! - `lookup` answers `ENOENT` for a name outside the view, and does the
-//!   *same work* either way: the namespace is consulted and the view is
-//!   evaluated on every call, in the same order, whether or not the entry
-//!   exists. There is no fast path whose absence is a signal.
-//! - A directory's link count is computed from the filtered listing, so
-//!   `nlink` matches what the app can see. A count taken from the real
-//!   tree would report subdirectories the listing denies.
-//! - Every inode number an app can name it learned from `lookup` or
-//!   `readdir`, so it can only address what is already in its view.
+//! `EACCES` is never returned for a policy decision — it's the errno
+//! most software handles by aborting, while "no such file" and
+//! "read-only filesystem" are states programs already handle correctly.
+//! `readdir` omits hidden entries rather than listing-then-failing them;
+//! `lookup` does the *same work* (namespace consult + view check)
+//! whether or not a name exists, so there's no fast path whose absence
+//! is a signal; a directory's `nlink` is computed from the filtered
+//! listing, never the real tree, so it can't announce hidden subdirectories.
 //!
 //! ## Where the illusion has an edge, and why it is not reachable
 //!
 //! Creating a name that already exists but is outside the view answers
-//! `EROFS` rather than creating it, because the alternative is writing
-//! over state the app is not allowed to see. In principle that is one bit
-//! per guessed name: "this name is taken by something I cannot see".
-//!
-//! The capability model cannot produce that situation. A `Restrict` is
-//! phrased as a ceiling and every verb implies `Read`, so no capability
-//! can take reading away from a subtree it left writable — inside a
-//! writable directory, nothing is hidden. `acl::tests::
-//! a_restriction_narrows_writing_without_hiding_anything` pins that.
+//! `EROFS` rather than creating it — the alternative is writing over
+//! state the app can't see. The capability model can't produce that
+//! situation: a `Restrict` is a ceiling and every verb implies `Read`,
+//! so no capability can hide a name inside a directory it left writable.
 //! Reaching the edge needs a direct [`crate::acl::AclEntry`] with
-//! `write` but not `read`, which no production caller writes.
-//!
-//! The same reasoning covers `rmdir` on a directory whose only remaining
-//! children are outside the view: it answers `EROFS`, not `ENOTEMPTY`, so
-//! it does not announce that something is in there.
-use fuser::*;
+//! `write` but not `read`, which no production caller writes. The same
+//! reasoning covers `rmdir` on a directory whose only remaining children
+//! are hidden: `EROFS`, not `ENOTEMPTY`.
+use fuser::{
+    BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
+    KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, ReplyXattr, Request,
+    TimeOrNow, WriteFlags,
+};
 use libc::{EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -81,25 +64,15 @@ pub struct QuickFS {
     /// so a multi-chunk read exports once (and getattr's size stays current).
     doc_exports: Mutex<HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>>,
     /// The workspace ACL and the identity it is evaluated as — the real
-    /// access-control check. `None` leaves the pre-existing
-    /// Unix-veneer-only behaviour intact (single-user unshared mounts).
-    /// When `Some`, every open/read/write is checked against the ACL as
-    /// that identity: the app runs as the OS user, the fs enforces the
-    /// qOS per-identity policy on top. See [`crate::acl`].
-    ///
-    /// The two are one field precisely so an ACL can never be attached
-    /// without the identity it answers for — there is no placeholder
-    /// identity to accidentally enforce against.
-    ///
-    /// It is a *handle* rather than the ACL itself so the policy can be
-    /// replaced while the mount is up. `/var/workspace` is mounted once
-    /// at boot; binding the list by value made a grant issued afterwards
-    /// unreachable until the next remount. See [`crate::CapabilityFile`].
+    /// access-control check. `None` keeps Unix-veneer-only behaviour;
+    /// `Some` checks every open/read/write against the ACL as that identity.
+    /// One field so an ACL can never be attached without the identity it
+    /// answers for. A *handle*, not the ACL itself, so the policy can be
+    /// replaced while the mount is up — see [`crate::CapabilityFile`].
     enforcement: Option<(AclHandle, crate::acl::IdentityKey)>,
     /// Host-side thumbnail generation + cache. `Some` when the mount has a
-    /// persistent cache directory; the driver then serves a preview through the
-    /// `user.qos.thumb` xattr and gossips its hash. `None` leaves the mount
-    /// thumbnail-less (an in-memory test mount, unless one is attached).
+    /// persistent cache directory (serves previews via `user.qos.thumb` and
+    /// gossips the hash); `None` leaves the mount thumbnail-less.
     thumbs: Option<crate::thumbs::ThumbProvider>,
 }
 
@@ -139,7 +112,9 @@ impl QuickFS {
     /// The codec key for `name`'s extension if it's a recognized document.
     fn document_codec_for(&self, name: &str) -> Option<String> {
         let ext = name.rsplit('.').next().filter(|e| *e != name)?;
-        self.registry.provider_for_ext(ext).map(|_| ext.to_lowercase())
+        self.registry
+            .provider_for_ext(ext)
+            .map(|_| ext.to_lowercase())
     }
 
     /// Whether `ino` is a CRDT-backed document (vs. opaque content).
@@ -147,10 +122,10 @@ impl QuickFS {
         self.namespace.lock().unwrap().document_codec(ino).is_some()
     }
 
-    /// The hydration state of `ino` (the value served for the `user.qos.sync`
-    /// xattr). `None` when the inode doesn't exist. Directories, CRDT documents,
-    /// and empty files are always [`SyncState::Local`]; a regular file's state
-    /// comes from the hydrator (is its content — every chunk — in the cache?).
+    /// The hydration state of `ino`, served for the `user.qos.sync` xattr.
+    /// `None` when the inode doesn't exist. Directories, CRDT documents and
+    /// empty files are always [`SyncState::Local`]; a regular file's state
+    /// comes from the hydrator (is every chunk in the cache?).
     fn sync_state_for(&self, ino: u64) -> Option<crate::syncstate::SyncState> {
         use crate::syncstate::SyncState;
         let (exists, is_dir, is_doc, hash) = {
@@ -184,15 +159,11 @@ impl QuickFS {
         Some(state)
     }
 
-    /// Attribute/entry TTL: zero for documents (their size is computed live from
-    /// the CRDT and changes as peers edit, so the kernel must not cache a stale
-    /// `i_size` and truncate reads), the normal TTL otherwise.
+    /// Attribute/entry TTL: zero for documents (size is computed live from
+    /// the CRDT and changes as peers edit, so the kernel must not cache a
+    /// stale `i_size`), the normal TTL otherwise.
     fn ttl_for(&self, is_doc: bool) -> Duration {
-        if is_doc {
-            Duration::ZERO
-        } else {
-            TTL
-        }
+        if is_doc { Duration::ZERO } else { TTL }
     }
 
     /// Commit an in-flight write buffer: import it as a document, or ingest it
@@ -225,10 +196,10 @@ impl QuickFS {
     /// change and cached so multi-chunk reads and `getattr` are cheap + consistent.
     fn document_export(&self, ino: u64) -> Option<Vec<u8>> {
         let heads = self.namespace.lock().unwrap().heads();
-        if let Some((h, bytes)) = self.doc_exports.lock().unwrap().get(&ino) {
-            if *h == heads {
-                return Some(bytes.clone());
-            }
+        if let Some((h, bytes)) = self.doc_exports.lock().unwrap().get(&ino)
+            && *h == heads
+        {
+            return Some(bytes.clone());
         }
         let (heads, bytes) = {
             let mut ns = self.namespace.lock().unwrap();
@@ -256,29 +227,21 @@ impl QuickFS {
         self
     }
 
-    /// The thumbnail (PNG bytes) for a file, generated as **metadata ahead of /
-    /// independent of the content**, or `None` when unavailable. This is the
-    /// value the `user.qos.thumb` xattr serves.
-    ///
-    /// Resolution order:
-    /// 1. **Cache** — a content-addressed hit returns instantly (survives
-    ///    remount).
-    /// 2. **Projected from a peer** — if a peer has gossiped a thumbnail blob
-    ///    hash onto this node, hydrate that *tiny* blob (before the file's
-    ///    content) and adopt it. This is the preview-before-download path.
-    /// 3. **Host generation** — if the file's content is fully local, generate a
-    ///    preview from it, cache it, ingest it as a content blob, and record the
-    ///    blob's hash on the node so the pointer gossips to peers.
-    ///
-    /// Never hydrates the file's *content* from the network to make a preview —
-    /// only the host (which already has the bytes) generates.
+    /// The thumbnail (PNG bytes) for a file, generated as metadata ahead
+    /// of/independent of content, or `None` when unavailable. Resolution
+    /// order: (1) content-addressed cache hit, (2) a peer-gossiped
+    /// thumbnail blob hash, hydrated (tiny, ahead of the file's content) and
+    /// adopted, (3) host generation from fully-local content, cached and
+    /// ingested so the hash gossips to peers. Never hydrates the file's
+    /// *content* from the network to make a preview — only the host, which
+    /// already has the bytes, generates.
     pub fn thumbnail_for(&self, ino: u64) -> Option<Vec<u8>> {
         let provider = self.thumbs.as_ref()?;
         let (name, content_hash, thumb_hash) = {
             let ns = self.namespace.lock().unwrap();
-            let name = ns.path_for(ino).and_then(|p| {
-                p.rsplit('/').next().map(|s| s.to_string())
-            })?;
+            let name = ns
+                .path_for(ino)
+                .and_then(|p| p.rsplit('/').next().map(std::string::ToString::to_string))?;
             (name, ns.hash_for(ino), ns.thumb_hash(ino))
         };
         let category = thumbnail::category_for_path(std::path::Path::new(&name));
@@ -289,28 +252,24 @@ impl QuickFS {
         let content_hash = content_hash?;
         let ch = *content_hash.as_bytes();
 
-        // 1. Cache hit.
         if let Some(png) = provider.cached(ch) {
             return Some(png);
         }
 
-        // 2. A peer gossiped a thumbnail blob — hydrate the tiny blob (ahead of
-        //    the content) and adopt it.
-        if let Some(tbh) = thumb_hash {
-            if let Some(png) = self.read_blob_blocking(tbh) {
-                if let Some(out) = provider.adopt(ch, png) {
-                    return Some(out);
-                }
-            }
+        // A peer gossiped a thumbnail blob — hydrate the tiny blob (ahead of
+        // the content) and adopt it.
+        if let Some(tbh) = thumb_hash
+            && let Some(png) = self.read_blob_blocking(tbh)
+            && let Some(out) = provider.adopt(ch, png)
+        {
+            return Some(out);
         }
 
-        // 3. Host path: generate from local content only.
         let bytes = self.local_content_blocking(content_hash)?;
         let png = provider.generate(ch, category, &bytes)?;
 
-        // Ingest the preview as a content blob and record its hash on the node,
-        // so the pointer projects to peers (who then hydrate the blob, not the
-        // whole file, to show a preview).
+        // Record the hash on the node so the pointer projects to peers, who
+        // then hydrate the blob (not the whole file) to show a preview.
         if let Some(tbh) = self.ingest_blob_blocking(&png) {
             let delta = {
                 let mut ns = self.namespace.lock().unwrap();
@@ -324,9 +283,9 @@ impl QuickFS {
         Some(png)
     }
 
-    /// Full content of `hash` **only if it is entirely local** (every chunk in
-    /// the cache); `None` otherwise, so making a preview never pulls content
-    /// from the network. Runs the hydrator on the shared runtime.
+    /// Full content of `hash` **only if entirely local** (every chunk in the
+    /// cache); `None` otherwise, so making a preview never pulls content
+    /// from the network.
     fn local_content_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
         use crate::syncstate::SyncState;
         let hydrator = self.hydrator.clone();
@@ -359,15 +318,12 @@ impl QuickFS {
         tokio::task::block_in_place(|| rt.block_on(async move { store.ingest(data).await.ok() }))
     }
 
-    /// Bind this mount to a workspace ACL, enforcing per-identity access
-    /// for `identity`. Every subsequent open/read/write is checked
-    /// against `acl` as `identity`; without this the mount keeps the
-    /// Unix-veneer-only behaviour. See [`crate::acl`].
-    ///
-    /// Takes anything that becomes an [`AclHandle`]: a [`WorkspaceAcl`]
-    /// for a policy that will not change, or a handle held by a
-    /// [`crate::CapabilityFile`] for one that reloads under the live
-    /// mount.
+    /// Bind this mount to a workspace ACL, enforcing per-identity access for
+    /// `identity`. Every subsequent open/read/write is checked against `acl`
+    /// as `identity`; without this the mount keeps Unix-veneer-only
+    /// behaviour. Takes anything that becomes an [`AclHandle`]: a
+    /// [`WorkspaceAcl`] for a policy that won't change, or a handle held by
+    /// a [`crate::CapabilityFile`] for one that reloads under the live mount.
     pub fn with_acl(
         mut self,
         acl: impl Into<AclHandle>,
@@ -377,24 +333,10 @@ impl QuickFS {
         self
     }
 
-    /// The identity ACL check every open/read/write routes through.
-    ///
-    /// Returns `Ok(())` when the mount has no ACL attached (the Unix
-    /// veneer alone governs) or when the bound identity holds `access`
-    /// on the inode's path.
-    ///
-    /// A denial is **never** `EACCES`:
-    ///
-    /// - a path outside the identity's view is `ENOENT`, the same answer
-    ///   the app would get for a name that was never there;
-    /// - a path inside the view that the identity may not write is
-    ///   `EROFS`, which says nothing about the path and everything about
-    ///   the mount — and is the failure every program already handles by
-    ///   staying read-only instead of by prompting.
-    ///
-    /// This is the single production decision point — `open`, `read`,
-    /// `write`, `setattr` and the directory mutations all reach it, so a
-    /// test that drives it exercises the real access path.
+    /// The identity ACL check every open/read/write routes through. `Ok(())`
+    /// when the mount has no ACL, or the bound identity holds `access`.
+    /// Never `EACCES`: outside the view is `ENOENT`; inside but not
+    /// writable is `EROFS`. The single production decision point.
     pub fn check_access(&self, ino: u64, access: Access) -> Result<(), i32> {
         if self.enforcement.is_none() {
             return Ok(());
@@ -422,11 +364,9 @@ impl QuickFS {
         Err(ENOENT)
     }
 
-    /// Is `path` part of the view this mount serves?
-    ///
-    /// `true` for every path on a mount with no ACL attached — the
-    /// filtered view is the ACL's, so without one there is nothing to
-    /// filter.
+    /// Is `path` part of the view this mount serves? `true` for every path
+    /// on a mount with no ACL attached — the filtered view is the ACL's, so
+    /// without one there is nothing to filter.
     fn in_view(&self, path: &str) -> bool {
         match &self.enforcement {
             Some((acl, identity)) => acl.visible(identity, path),
@@ -447,10 +387,8 @@ impl QuickFS {
     }
 
     /// The entries of `ino` that belong in the view, as `readdir` would
-    /// report them. `None` when `ino` is not a directory in the view.
-    ///
-    /// `.` and `..` always survive: they are the directory itself and its
-    /// parent, both of which the app reached this directory through.
+    /// report them. `None` when `ino` is not a directory in the view. `.`
+    /// and `..` always survive — both are reached through this directory.
     fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, String)>> {
         let (entries, dir_path) = {
             let mut ns = self.namespace.lock().unwrap();
@@ -468,48 +406,38 @@ impl QuickFS {
             entries
                 .into_iter()
                 .filter(|(_, _, name)| {
-                    name == "." || name == ".." || acl.visible(identity, &child_path(&dir_path, name))
+                    name == "."
+                        || name == ".."
+                        || acl.visible(identity, &child_path(&dir_path, name))
                 })
                 .collect(),
         )
     }
 
-    /// The link count to report for a directory: `2` (itself and `..`)
-    /// plus one per subdirectory **in the view**.
-    ///
-    /// Taken from the filtered listing rather than from the namespace so
-    /// that `nlink` and `readdir` cannot disagree. A count taken from the
-    /// real tree would announce the number of subdirectories the listing
-    /// hides, which is the whole property this module exists to keep.
+    /// The link count to report for a directory: `2` plus one per
+    /// subdirectory **in the view**, taken from the filtered listing rather
+    /// than the namespace so `nlink` and `readdir` can't disagree — a count
+    /// from the real tree would announce hidden subdirectories.
     fn visible_dir_nlink(&self, ino: u64) -> u32 {
-        let subdirs = self
-            .visible_entries(ino)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|(_, kind, name)| {
-                        *kind == FileType::Directory && name != "." && name != ".."
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        let subdirs = self.visible_entries(ino).map_or(0, |entries| {
+            entries
+                .iter()
+                .filter(|(_, kind, name)| {
+                    *kind == FileType::Directory && name != "." && name != ".."
+                })
+                .count()
+        });
         2u32.saturating_add(subdirs as u32)
     }
 
-    /// The check every "make a new name in this directory" operation
-    /// runs: `create`, `mkdir`, and the destination half of `rename`.
-    ///
-    /// A parent outside the view is `ENOENT`. Otherwise the new path must
-    /// be writable, and **that question is asked before the name is
-    /// looked up**: a name the app may not create there gets the same
-    /// answer whether or not something is already sitting on it. Asking
-    /// the other way round turned `create` into an existence oracle —
-    /// `EROFS` for a taken name against `ENOENT` for a free one.
-    ///
-    /// Only once the app *may* create the name does a collision with
-    /// something outside the view matter, and then it is refused with
-    /// `EROFS` rather than written over. Reaching that needs a grant that
-    /// is writable but not readable, which no capability can express.
+    /// The check every "make a new name in this directory" operation runs
+    /// (`create`, `mkdir`, rename's destination). A parent outside the view
+    /// is `ENOENT`. The new path must be writable, and **that question is
+    /// asked before the name is looked up** — a name the app may not create
+    /// gets the same answer whether or not something already sits on it
+    /// (otherwise `create` becomes an existence oracle). Only once the app
+    /// *may* create the name does a collision with something hidden matter,
+    /// refused with `EROFS` rather than written over.
     fn check_new_name(&self, parent: u64, name: &str) -> Result<(), i32> {
         let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
@@ -525,7 +453,12 @@ impl QuickFS {
         }
         let child = child_path(&parent_path, name);
         self.check_path(&child, Access::Write)?;
-        let taken = self.namespace.lock().unwrap().lookup(parent, name).is_some();
+        let taken = self
+            .namespace
+            .lock()
+            .unwrap()
+            .lookup(parent, name)
+            .is_some();
         if taken && !acl.visible(identity, &child) {
             return Err(EROFS);
         }
@@ -557,9 +490,9 @@ impl QuickFS {
         }
     }
 
-    /// Synchronously content-chunk + ingest bytes, returning the manifest hash.
-    /// `Ok(None)` for empty data; `Err` if ingest fails (so callers never
-    /// persist a non-empty file with a missing hash).
+    /// Synchronously content-chunk + ingest bytes, returning the manifest
+    /// hash. `Ok(None)` for empty data; `Err` if ingest fails, so callers
+    /// never persist a non-empty file with a missing hash.
     fn write_content_blocking(&self, data: &[u8]) -> io::Result<Option<Hash>> {
         let store = self.hydrator.store.clone();
         let rt = self.hydrator.runtime_handle.clone();
@@ -568,10 +501,10 @@ impl QuickFS {
             .map_err(|e| io::Error::other(e.to_string()))
     }
 
-    /// Current full content of an inode: the in-flight buffer if any, else the
-    /// hydrated blob. `Ok(empty)` only for a genuinely empty/hashless file;
-    /// a hydration failure is `Err` (so a write never seeds from empty and
-    /// silently truncates a not-yet-local file).
+    /// Current full content of an inode: the in-flight buffer if any, else
+    /// the hydrated blob. `Ok(empty)` only for a genuinely empty/hashless
+    /// file; a hydration failure is `Err` so a write never seeds from empty
+    /// and silently truncates a not-yet-local file.
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
         if let Some(buf) = self.write_buffers.lock().unwrap().get(&ino) {
             return Ok(buf.clone());
@@ -596,8 +529,8 @@ impl QuickFS {
     }
 
     /// Ingest `data` as the new content of `ino` and broadcast the change.
-    /// Aborts (returns Err) WITHOUT mutating the entry if the ingest fails, so
-    /// a failed write preserves the previously-committed content.
+    /// Aborts WITHOUT mutating the entry if ingest fails, preserving the
+    /// previously-committed content.
     fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
         let hash = self.write_content_blocking(data)?;
         let delta = {
@@ -635,23 +568,17 @@ impl QuickFS {
             }
             if expect_dir {
                 // A directory must be empty to rmdir (entries beyond "." "..").
-                if let Some(entries) = ns.readdir(attr.ino.0) {
-                    if entries.len() > 2 {
-                        // Emptiness is judged on the real tree, because
-                        // removing the directory would take its hidden
-                        // children with it. When the app's own listing
-                        // says empty, saying `ENOTEMPTY` would announce
-                        // that something it cannot see is in there — so
-                        // the answer is the same `EROFS` every other
-                        // refusal to write over unseen state gives.
-                        drop(ns);
-                        let visible = self
-                            .visible_entries(attr.ino.0)
-                            .map(|e| e.len())
-                            .unwrap_or(0);
-                        reply.error(to_errno(if visible > 2 { ENOTEMPTY } else { EROFS }));
-                        return;
-                    }
+                if let Some(entries) = ns.readdir(attr.ino.0)
+                    && entries.len() > 2
+                {
+                    // Emptiness is judged on the real tree, since removing the directory
+                    // takes its hidden children with it — if the app's own listing said
+                    // empty, `ENOTEMPTY` would announce something it can't see, so this
+                    // gets the same `EROFS` as any other refusal to write over unseen state.
+                    drop(ns);
+                    let visible = self.visible_entries(attr.ino.0).map_or(0, |e| e.len());
+                    reply.error(to_errno(if visible > 2 { ENOTEMPTY } else { EROFS }));
+                    return;
                 }
             }
             if !ns.remove(attr.ino.0) {
@@ -694,8 +621,7 @@ fn child_path(dir: &str, name: &str) -> String {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
@@ -705,7 +631,7 @@ fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
 }
 
 /// The ACL accesses an open of the given mode requires: read for
-/// O_RDONLY, write for O_WRONLY, both for O_RDWR.
+/// `O_RDONLY`, write for `O_WRONLY`, both for `O_RDWR`.
 fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
     match mode {
         OpenAccMode::O_RDONLY => &[Access::Read],
@@ -720,14 +646,9 @@ impl Filesystem for QuickFS {
         Ok(())
     }
 
-    /// Resolve one name in a directory.
-    ///
-    /// Both halves — the namespace lookup and the view evaluation — run on
-    /// every call, in the same order, and the answer is only assembled
-    /// afterwards. A name that does not exist and a name that exists
-    /// outside the view therefore cost the same two operations and return
-    /// the same `ENOENT`; neither the errno nor the shape of the work
-    /// distinguishes them.
+    /// Resolve one name in a directory. Namespace lookup and view evaluation
+    /// run on every call in the same order, so a nonexistent name and a name
+    /// hidden by the view cost the same work and return the same `ENOENT`.
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let Some(name) = name.to_str() else {
             reply.error(to_errno(EINVAL));
@@ -787,10 +708,8 @@ impl Filesystem for QuickFS {
                     attr.blocks = len.div_ceil(512);
                 }
                 if attr.kind == FileType::Directory {
-                    // Matches the filtered listing, including at the mount
-                    // root: an identity granted nothing sees `nlink == 2`
-                    // and `size == 0` — an ordinary empty directory. Only
-                    // directories pay for it.
+                    // Matches the filtered listing: an identity granted
+                    // nothing sees an ordinary empty directory (nlink == 2).
                     attr.nlink = self.visible_dir_nlink(ino.0);
                 }
                 reply.attr(&self.ttl_for(is_doc), &attr);
@@ -807,10 +726,8 @@ impl Filesystem for QuickFS {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        // The filtered listing. Entries outside the view are not reported
-        // as entries that error — they are simply not in the directory,
-        // and the offsets below are indices into what the app can see, so
-        // a paged listing never has a gap where something was removed.
+        // Entries outside the view simply aren't in the directory; offsets
+        // below index what the app can see, so paging never has a gap.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
@@ -837,12 +754,9 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        // Per-identity ACL: an open requires the identity to hold the
-        // access implied by the open mode (read for O_RDONLY, write for
-        // O_WRONLY, both for O_RDWR). Outside the view ⇒ `ENOENT`; in the
-        // view but not writable ⇒ `EROFS`, so an app that opens for
-        // writing falls back to read-only the way it would on any
-        // read-only mount.
+        // Requires the identity to hold the access the open mode implies.
+        // Outside the view ⇒ `ENOENT`; in the view but not writable ⇒
+        // `EROFS`, so opening for writing falls back to read-only.
         for access in required_accesses(flags.acc_mode()) {
             if let Err(e) = self.check_access(ino.0, *access) {
                 reply.error(to_errno(e));
@@ -906,7 +820,7 @@ impl Filesystem for QuickFS {
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
         let res = tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, size as u64).await })
+            rt.block_on(async move { hydrator.read(hash, offset, u64::from(size)).await })
         });
         match res {
             Ok(data) => reply.data(&data),
@@ -950,7 +864,10 @@ impl Filesystem for QuickFS {
             return;
         };
         // Start a fresh empty buffer so subsequent writes accumulate.
-        self.write_buffers.lock().unwrap().insert(attr.ino.0, Vec::new());
+        self.write_buffers
+            .lock()
+            .unwrap()
+            .insert(attr.ino.0, Vec::new());
         self.publish(delta);
         reply.created(
             &self.ttl_for(codec.is_some()),
@@ -978,19 +895,18 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        // Seed the buffer with current content if this is the first write.
-        // Done outside the buffer lock (it may do blocking I/O); a hydration
+        // Seed the buffer with current content if this is the first write,
+        // outside the buffer lock (may do blocking I/O) — a hydration
         // failure must fail the write, never seed-from-empty and truncate.
         let absent = self.write_buffers.lock().unwrap().get(&ino.0).is_none();
         let seed = if absent {
             // Seed from current content (export for documents, hydrated bytes
             // for opaque files) so a partial/append write modifies it correctly.
-            match self.read_full_blocking(ino.0) {
-                Ok(d) => Some(d),
-                Err(_) => {
-                    reply.error(to_errno(EIO));
-                    return;
-                }
+            if let Ok(d) = self.read_full_blocking(ino.0) {
+                Some(d)
+            } else {
+                reply.error(to_errno(EIO));
+                return;
             }
         } else {
             None
@@ -1031,7 +947,14 @@ impl Filesystem for QuickFS {
         reply.ok();
     }
 
-    fn fsync(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+    fn fsync(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
         let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
         if let Some(data) = buffered {
             self.commit_buffer(ino.0, &data);
@@ -1074,28 +997,27 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        // Truncation is a write. Everything else here (perm/owner/time) is
-        // ignored anyway, but a `setattr` on something outside the view
-        // must not describe it, so the visibility check runs regardless.
+        // Truncation is a write. Everything else here is ignored anyway, but
+        // a `setattr` on something outside the view must not describe it, so
+        // the visibility check runs regardless.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
         }
-        if size.is_some() {
-            if let Err(e) = self.check_access(ino.0, Access::Write) {
-                reply.error(to_errno(e));
-                return;
-            }
+        if size.is_some()
+            && let Err(e) = self.check_access(ino.0, Access::Write)
+        {
+            reply.error(to_errno(e));
+            return;
         }
         // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
             let is_doc = self.is_document(ino.0);
-            let mut data = match self.read_full_blocking(ino.0) {
-                Ok(d) => d,
-                Err(_) => {
-                    reply.error(to_errno(EIO));
-                    return;
-                }
+            let mut data = if let Ok(d) = self.read_full_blocking(ino.0) {
+                d
+            } else {
+                reply.error(to_errno(EIO));
+                return;
             };
             data.resize(new_size as usize, 0);
             let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
@@ -1208,36 +1130,24 @@ impl Filesystem for QuickFS {
         reply.ok();
     }
 
-    /// Serve the `user.qos.sync` extended attribute: the entry's hydration state
-    /// (`local` / `projected` / `downloading`). Every other attribute name is
-    /// reported absent (`ENODATA`) — the collaborative FS owns only this one.
-    fn getxattr(
-        &self,
-        _req: &Request,
-        ino: INodeNo,
-        name: &OsStr,
-        size: u32,
-        reply: ReplyXattr,
-    ) {
-        // Outside the view the inode does not exist, and that answer comes
-        // before the attribute name is considered — otherwise the sync
-        // state would report on a file the app cannot see.
+    /// Serve the `user.qos.sync` extended attribute: the entry's hydration
+    /// state (`local`/`projected`/`downloading`). Every other attribute name
+    /// reports absent (`ENODATA`) — the collaborative FS owns only this one.
+    fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
+        // Outside the view the inode doesn't exist — checked before the
+        // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
         }
-        // The thumbnail attribute carries the generated PNG preview (binary),
-        // served ahead of / independent of the file's content bytes.
         if name.to_str() == Some(crate::syncstate::THUMB_XATTR) {
             match self.thumbnail_for(ino.0) {
-                // The kernel caps a single xattr value at 64 KiB, so a larger
-                // preview cannot be delivered this way — report it absent and let
-                // the client fall back rather than fail the read with ERANGE.
+                // The kernel caps a single xattr value at 64 KiB — report an
+                // oversize preview as absent so the client falls back, rather than
+                // failing with ERANGE.
                 Some(png) if png.len() <= crate::thumbs::MAX_XATTR_THUMB => {
                     reply_xattr_bytes(reply, &png, size);
                 }
-                // Not a previewable type, no local content to generate from, no
-                // peer has gossiped one, or an oversize preview: simply absent.
                 _ => reply.error(to_errno(libc::ENODATA)),
             }
             return;
@@ -1265,7 +1175,7 @@ impl Filesystem for QuickFS {
             let exists = ns.getattr(ino.0).is_some();
             let name = ns
                 .path_for(ino.0)
-                .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()));
+                .and_then(|p| p.rsplit('/').next().map(std::string::ToString::to_string));
             (exists, name)
         };
         if !exists {
@@ -1275,14 +1185,12 @@ impl Filesystem for QuickFS {
         let mut buf = Vec::with_capacity(crate::syncstate::SYNC_XATTR.len() + 1);
         buf.extend_from_slice(crate::syncstate::SYNC_XATTR.as_bytes());
         buf.push(0);
-        // Advertise the thumbnail attribute on files whose type can carry a
-        // preview (cheap check by extension — no generation here). A `getxattr`
-        // of it may still be `ENODATA` if the content isn't local yet.
+        // Cheap extension check, no generation — a `getxattr` of it may
+        // still be `ENODATA` if the content isn't local yet.
         let previewable = self.thumbs.is_some()
-            && name
-                .as_deref()
-                .map(|n| thumbnail::category_for_path(std::path::Path::new(n)).has_preview())
-                .unwrap_or(false);
+            && name.as_deref().is_some_and(|n| {
+                thumbnail::category_for_path(std::path::Path::new(n)).has_preview()
+            });
         if previewable {
             buf.extend_from_slice(crate::syncstate::THUMB_XATTR.as_bytes());
             buf.push(0);
@@ -1299,15 +1207,15 @@ impl Filesystem for QuickFS {
 
 #[cfg(test)]
 mod thumb_tests {
-    //! The host-side thumbnail metadata path: `QuickFS::thumbnail_for` is the
-    //! exact code `getxattr(user.qos.thumb)` runs, so driving it exercises the
-    //! production path end to end.
+    //! The host-side thumbnail metadata path: `QuickFS::thumbnail_for` is
+    //! the exact code `getxattr(user.qos.thumb)` runs, so driving it
+    //! exercises the production path end to end.
     use super::*;
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use crate::thumbs::ThumbProvider;
-    use iroh::endpoint::presets;
     use iroh::endpoint::Endpoint;
+    use iroh::endpoint::presets;
     use std::io::Cursor;
 
     fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
@@ -1331,12 +1239,12 @@ mod thumb_tests {
         let namespace = Arc::new(Mutex::new(Namespace::new("host")));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let provider = ThumbProvider::open(&thumb_dir).unwrap();
-        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics).with_thumbs(provider);
+        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
         (namespace, store, fs)
     }
 
-    /// The headline: the host generates a preview from a file's local content,
-    /// serves it as metadata (PNG bytes), records its blob hash on the node so
+    /// The headline: the host generates a preview from a file's local
+    /// content, serves it as metadata, records its blob hash on the node so
     /// it projects to peers, and a second request hits the cache.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn host_generates_a_thumbnail_and_records_its_hash() {
@@ -1359,7 +1267,11 @@ mod thumb_tests {
         let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
         let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
         assert!(decoded.is_valid());
-        assert_eq!(decoded.max_edge(), crate::thumbs::HOST_EDGE, "downscaled to the host preview size");
+        assert_eq!(
+            decoded.max_edge(),
+            crate::thumbs::HOST_EDGE,
+            "downscaled to the host preview size"
+        );
         assert!(
             decoded.max_edge() < png.len() as u32,
             "the preview is far smaller than the source"
@@ -1372,15 +1284,21 @@ mod thumb_tests {
             .unwrap()
             .thumb_hash(ino)
             .expect("thumbnail hash recorded on the node → projects to peers");
-        assert!(store.has(tbh).await, "the thumbnail blob is stored for peers");
+        assert!(
+            store.has(tbh).await,
+            "the thumbnail blob is stored for peers"
+        );
 
         // A second request returns the identical bytes from the cache.
         let again = fs.thumbnail_for(ino).expect("cached");
-        assert_eq!(again, thumb, "second request is a cache hit, identical bytes");
+        assert_eq!(
+            again, thumb,
+            "second request is a cache hit, identical bytes"
+        );
     }
 
-    /// A preview survives a remount: a fresh mount over the same cache directory
-    /// serves the same thumbnail without re-reading the file's content.
+    /// A preview survives a remount: a fresh mount over the same cache
+    /// directory serves the same thumbnail without re-reading the file's content.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn thumbnail_survives_a_remount() {
         let dir = tempfile::tempdir().unwrap();
@@ -1391,28 +1309,35 @@ mod thumb_tests {
             let mh = store.write_content(&png).await.unwrap().unwrap();
             let ino = {
                 let mut ns = namespace.lock().unwrap();
-                ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1).unwrap()
+                ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
+                    .unwrap()
             };
             fs.thumbnail_for(ino).expect("generated")
         };
 
-        // A brand-new mount (fresh store, so the content is NOT local) over the
-        // same thumb cache still serves the preview — proof it came from the
-        // persistent, content-addressed cache, not a re-decode.
+        // A brand-new mount (fresh store, content NOT local) over the same
+        // thumb cache still serves the preview — proof it came from the
+        // persistent cache, not a re-decode.
         let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
         // Same content hash → same cache key. Register the node without the bytes.
         let mh = store2.write_content(&png).await.unwrap().unwrap();
         // Remove the content so it is not local on this mount.
         let ino2 = {
             let mut ns = namespace2.lock().unwrap();
-            ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1).unwrap()
+            ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
+                .unwrap()
         };
-        let served = fs2.thumbnail_for(ino2).expect("served from the on-disk cache");
-        assert_eq!(served, thumb, "same content → same cached preview after remount");
+        let served = fs2
+            .thumbnail_for(ino2)
+            .expect("served from the on-disk cache");
+        assert_eq!(
+            served, thumb,
+            "same content → same cached preview after remount"
+        );
     }
 
     /// A file whose content is not local yields no thumbnail (the host never
-    /// hydrates content just to preview it), and a badge-only type never does.
+    /// hydrates content just to preview it); a badge-only type never does either.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn no_local_content_and_badge_types_yield_no_thumbnail() {
         let dir = tempfile::tempdir().unwrap();
@@ -1422,7 +1347,8 @@ mod thumb_tests {
         let projected = iroh_blobs::Hash::from([3u8; 32]);
         let img_ino = {
             let mut ns = namespace.lock().unwrap();
-            ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1).unwrap()
+            ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1)
+                .unwrap()
         };
         assert!(
             fs.thumbnail_for(img_ino).is_none(),
@@ -1432,13 +1358,17 @@ mod thumb_tests {
         // A non-previewable type is never a thumbnail regardless of content.
         let zip_ino = {
             let mut ns = namespace.lock().unwrap();
-            ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1).unwrap()
+            ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
+                .unwrap()
         };
-        assert!(fs.thumbnail_for(zip_ino).is_none(), "a .zip is a badge, not a preview");
+        assert!(
+            fs.thumbnail_for(zip_ino).is_none(),
+            "a .zip is a badge, not a preview"
+        );
     }
 
-    /// The projected-preview-before-content path: a peer that has only gossiped
-    /// metadata (the thumbnail blob hash + the blob) shows a preview WITHOUT the
+    /// The projected-preview-before-content path: a peer with only gossiped
+    /// metadata (thumbnail blob hash + blob) shows a preview WITHOUT the
     /// file's content ever being local.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gossiped_thumbnail_is_served_before_content() {
@@ -1458,12 +1388,19 @@ mod thumb_tests {
         let projected = iroh_blobs::Hash::from([5u8; 32]);
         let ino = {
             let mut ns = namespace.lock().unwrap();
-            let ino = ns.create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1).unwrap();
+            let ino = ns
+                .create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1)
+                .unwrap();
             ns.set_thumb(ino, &thumb_blob);
             ino
         };
 
-        let served = fs.thumbnail_for(ino).expect("a projected preview is served before content");
-        assert_eq!(served, preview, "the gossiped thumbnail is served without local content");
+        let served = fs
+            .thumbnail_for(ino)
+            .expect("a projected preview is served before content");
+        assert_eq!(
+            served, preview,
+            "the gossiped thumbnail is served without local content"
+        );
     }
 }

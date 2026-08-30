@@ -36,9 +36,9 @@ pub const INVIDIOUS_INSTANCES: &[&str] = &[
     "https://iv.melmac.space",
 ];
 
-/// Progressive **muxed** YouTube itags (video *and* audio in one MP4), best
+/// Progressive **muxed** `YouTube` itags (video *and* audio in one MP4), best
 /// first. itag 22 is 720p H.264+AAC, itag 18 is 360p H.264+AAC — both decode on
-/// any stock GStreamer (avc1 + aac) and, crucially, are a single file so one
+/// any stock `GStreamer` (avc1 + aac) and, crucially, are a single file so one
 /// rangeable URL carries picture *and* sound. Adaptive (video-only / audio-only)
 /// formats would need two synchronized URLs `playbin` can't take at once, so we
 /// deliberately stick to muxed here for a reliable "audio+video plays" result.
@@ -57,7 +57,7 @@ pub struct ResolvedVideo {
     /// Directly-playable, fully-rangeable media URL (an Invidious `local=true`
     /// proxy of a progressive muxed format).
     pub url: String,
-    /// YouTube stream format id (itag).
+    /// `YouTube` stream format id (itag).
     pub itag: u32,
     /// Full MIME (e.g. `video/mp4; codecs="avc1.42001E, mp4a.40.2"`).
     pub mime: String,
@@ -83,7 +83,7 @@ pub struct MuxedFormat {
 }
 
 impl MuxedFormat {
-    /// Whether this is an MP4/H.264 muxed format stock GStreamer decodes.
+    /// Whether this is an MP4/H.264 muxed format stock `GStreamer` decodes.
     pub fn is_mp4(&self) -> bool {
         let m = self.mime.to_ascii_lowercase();
         m.contains("mp4") && (m.contains("avc1") || m.contains("h264") || m.contains("mp4v"))
@@ -105,7 +105,11 @@ pub fn proxy_media_url(instance: &str, video_id: &str, itag: u32) -> String {
 
 /// The Invidious video-info endpoint for a video id.
 pub fn video_info_url(instance: &str, video_id: &str) -> String {
-    format!("{}/api/v1/videos/{}", instance.trim_end_matches('/'), video_id)
+    format!(
+        "{}/api/v1/videos/{}",
+        instance.trim_end_matches('/'),
+        video_id
+    )
 }
 
 /// Parse the progressive **muxed** entries out of an Invidious
@@ -139,7 +143,12 @@ pub fn parse_format_streams(json: &serde_json::Value) -> Vec<MuxedFormat> {
                 .and_then(|h| h.parse::<u32>().ok())
                 .or_else(|| quality.trim_end_matches('p').parse::<u32>().ok())
                 .unwrap_or(0);
-            Some(MuxedFormat { itag, mime, quality, height })
+            Some(MuxedFormat {
+                itag,
+                mime,
+                quality,
+                height,
+            })
         })
         .collect()
 }
@@ -147,11 +156,12 @@ pub fn parse_format_streams(json: &serde_json::Value) -> Vec<MuxedFormat> {
 /// Read a numeric JSON field that Invidious may send as a number *or* a string.
 fn num_field(it: &serde_json::Value, key: &str) -> Option<u64> {
     let v = it.get(key)?;
-    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    v.as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// Pick the best muxed MP4 format to play: highest resolution among the
-/// H.264/MP4 muxed streams (stock GStreamer decodes them everywhere), else the
+/// H.264/MP4 muxed streams (stock `GStreamer` decodes them everywhere), else the
 /// highest-resolution muxed stream of any container.
 pub fn best_muxed(list: &[MuxedFormat]) -> Option<&MuxedFormat> {
     list.iter()
@@ -172,14 +182,17 @@ pub fn instances() -> Vec<String> {
             }
         }
     }
-    out.extend(INVIDIOUS_INSTANCES.iter().map(|s| s.to_string()));
+    out.extend(
+        INVIDIOUS_INSTANCES
+            .iter()
+            .map(std::string::ToString::to_string),
+    );
     out
 }
 
 /// A plain browser `User-Agent` for talking to an Invidious `local` proxy (it is
 /// not a signed googlevideo URL, so no client-specific UA is needed).
-pub const BROWSER_UA: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+pub const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
 /// Resolve a video id to a **fully-rangeable** proxied muxed video+audio stream.
 ///
@@ -231,9 +244,7 @@ fn proxy_serves_bytes(client: &reqwest::blocking::Client, url: &str) -> bool {
         .header(reqwest::header::RANGE, "bytes=0-2047")
         .send()
     {
-        Ok(resp) => {
-            resp.status().is_success() && resp.bytes().map(|b| !b.is_empty()).unwrap_or(false)
-        }
+        Ok(resp) => resp.status().is_success() && resp.bytes().is_ok_and(|b| !b.is_empty()),
         Err(_) => false,
     }
 }
@@ -335,7 +346,11 @@ mod tests {
             eprintln!("[proxy test] skipped — no Invidious instance reachable");
             return;
         };
-        assert!(stream.url.contains("local=true"), "resolved a proxied URL: {}", stream.url);
+        assert!(
+            stream.url.contains("local=true"),
+            "resolved a proxied URL: {}",
+            stream.url
+        );
         assert!(stream.has_audio, "a muxed format carries audio");
         let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
@@ -347,16 +362,15 @@ mod tests {
         };
         // Request a range well past the first-segment boundary raw googlevideo
         // URLs refuse (~2 MB in).
-        let resp = match client
+        let resp = if let Ok(r) = client
             .get(&stream.url)
             .header(reqwest::header::RANGE, "bytes=2000000-2100000")
             .send()
         {
-            Ok(r) => r,
-            Err(_) => {
-                eprintln!("[proxy test] skipped — proxy fetch failed");
-                return;
-            }
+            r
+        } else {
+            eprintln!("[proxy test] skipped — proxy fetch failed");
+            return;
         };
         if !resp.status().is_success() {
             eprintln!("[proxy test] skipped — proxy returned {}", resp.status());

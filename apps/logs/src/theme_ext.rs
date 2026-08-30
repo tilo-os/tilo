@@ -3,8 +3,8 @@
 //! direct dependency on the full theme struct while still resolving
 //! every colour from the OS palette (never hard-coded).
 
-use ui::theme::Theme;
 use ui::ColorCompat;
+use ui::theme::Theme;
 use vello::peniko::Color;
 
 /// The semantic colours the severity mapping consumes, snapshotted from

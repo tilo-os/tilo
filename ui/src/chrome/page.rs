@@ -3,9 +3,9 @@
 //! from drawing because the page's height usually depends on content laid out
 //! against [`PageGeometry::content_width`] first.
 
+use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 /// Where a centered page sits within a canvas, plus its inner content band.
 pub struct PageGeometry {
@@ -32,11 +32,29 @@ pub fn geometry(canvas: Rect, max_width: f64, top_gap: f64, content_margin: f64)
     }
 }
 
-/// Draw a rounded paper sheet with a soft drop shadow.
-pub fn draw(scene: &mut Scene, transform: Affine, page: Rect, paper: Color, shadow: Color) {
-    let sh = Rect::new(page.x0 - 1.0, page.y0 + 4.0, page.x1 + 1.0, page.y1 + 6.0);
-    scene.fill(Fill::NonZero, transform, shadow, None, &RoundedRect::from_rect(sh, 4.0));
-    scene.fill(Fill::NonZero, transform, paper, None, &RoundedRect::from_rect(page, 3.0));
+/// Corner radius of the sheet. A page is nearly square-cornered — paper
+/// is not a card.
+const PAGE_RADIUS: f64 = 3.0;
+
+/// Draw a rounded paper sheet lifted off the desk by `elevation`.
+///
+/// The lift comes from the shared painter, so a page is raised by the
+/// same material as every other surface.
+pub fn draw(
+    scene: &mut Scene,
+    transform: Affine,
+    page: Rect,
+    paper: Color,
+    elevation: &crate::tokens::Shadow,
+) {
+    crate::surface::shadow(scene, transform, page, PAGE_RADIUS, elevation);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        paper,
+        None,
+        &RoundedRect::from_rect(page, PAGE_RADIUS),
+    );
 }
 
 #[cfg(test)]
@@ -52,6 +70,10 @@ mod tests {
         assert_eq!(g.content_width, 820.0 - 128.0);
 
         let narrow = geometry(Rect::new(0.0, 0.0, 400.0, 800.0), 820.0, 28.0, 64.0);
-        assert_eq!(narrow.page_width, 400.0 - 56.0, "narrow canvas shrinks the page");
+        assert_eq!(
+            narrow.page_width,
+            400.0 - 56.0,
+            "narrow canvas shrinks the page"
+        );
     }
 }

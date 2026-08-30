@@ -170,7 +170,9 @@ impl HwReport {
     /// software decoder was plugged and when nothing has been plugged yet —
     /// so a caller can never read "not yet known" as "yes".
     pub fn is_hardware(&self) -> bool {
-        self.decoder_kind.map(DecoderKind::is_hardware).unwrap_or(false)
+        self.decoder_kind
+            .map(DecoderKind::is_hardware)
+            .unwrap_or(false)
     }
 
     /// Whether frames arrive as dmabufs (the zero-copy path).
@@ -205,8 +207,14 @@ impl HwReport {
             (Some(el), Some(kind)) => format!(
                 "{el} ({}, {}) → {}",
                 kind.as_str(),
-                if kind.is_hardware() { "hardware" } else { "software" },
-                self.negotiated_caps.as_deref().unwrap_or("caps not yet negotiated"),
+                if kind.is_hardware() {
+                    "hardware"
+                } else {
+                    "software"
+                },
+                self.negotiated_caps
+                    .as_deref()
+                    .unwrap_or("caps not yet negotiated"),
             ),
             _ => "no decoder plugged yet".to_string(),
         }
@@ -229,8 +237,19 @@ pub fn looks_like_video_decoder(name: &str) -> bool {
     }
     // Audio decoders and generic converters would otherwise match on "dec".
     for audio in [
-        "aac", "mp3", "mpegaudio", "vorbis", "opus", "flac", "alaw", "mulaw", "ac3", "dts", "wma",
-        "sbc", "audio",
+        "aac",
+        "mp3",
+        "mpegaudio",
+        "vorbis",
+        "opus",
+        "flac",
+        "alaw",
+        "mulaw",
+        "ac3",
+        "dts",
+        "wma",
+        "sbc",
+        "audio",
     ] {
         if n.contains(audio) {
             return false;
@@ -239,8 +258,22 @@ pub fn looks_like_video_decoder(name: &str) -> bool {
     // Anything left containing a known video codec token, or an explicit
     // video-decoder plugin prefix.
     const VIDEO: &[&str] = &[
-        "h264", "h265", "hevc", "av1", "vp8", "vp9", "mpeg2", "mpeg4", "mpegvideo", "jpeg",
-        "theora", "av1dec", "prores", "dnxhd", "vc1", "wmv",
+        "h264",
+        "h265",
+        "hevc",
+        "av1",
+        "vp8",
+        "vp9",
+        "mpeg2",
+        "mpeg4",
+        "mpegvideo",
+        "jpeg",
+        "theora",
+        "av1dec",
+        "prores",
+        "dnxhd",
+        "vc1",
+        "wmv",
     ];
     VIDEO.iter().any(|c| n.contains(c))
 }
@@ -331,13 +364,25 @@ mod tests {
         assert!(looks_like_video_decoder("nvh264dec0"));
         assert!(looks_like_video_decoder("vah264dec0"));
         assert!(looks_like_video_decoder("avdec_h264-0"));
-        assert!(!looks_like_video_decoder("h264parse0"), "a parser is not a decoder");
-        assert!(!looks_like_video_decoder("decodebin3-0"), "a bin is not a decoder");
+        assert!(
+            !looks_like_video_decoder("h264parse0"),
+            "a parser is not a decoder"
+        );
+        assert!(
+            !looks_like_video_decoder("decodebin3-0"),
+            "a bin is not a decoder"
+        );
         assert!(!looks_like_video_decoder("uridecodebin3-0"));
         assert!(!looks_like_video_decoder("parsebin0"));
-        assert!(!looks_like_video_decoder("avdec_aac0"), "audio decoder excluded");
+        assert!(
+            !looks_like_video_decoder("avdec_aac0"),
+            "audio decoder excluded"
+        );
         assert!(!looks_like_video_decoder("opusdec0"));
-        assert!(!looks_like_video_decoder("videoconvert0"), "a converter is not a decoder");
+        assert!(
+            !looks_like_video_decoder("videoconvert0"),
+            "a converter is not a decoder"
+        );
         assert!(!looks_like_video_decoder("qtdemux0"));
     }
 
@@ -348,7 +393,10 @@ mod tests {
         assert!(!r.is_dmabuf());
         assert_eq!(r.describe(), "no decoder plugged yet");
 
-        assert!(r.note_element("nvh264dec0"), "first video decoder is the chosen one");
+        assert!(
+            r.note_element("nvh264dec0"),
+            "first video decoder is the chosen one"
+        );
         assert!(r.is_hardware());
         assert_eq!(r.decoder_kind, Some(DecoderKind::NvCodec));
     }
@@ -372,8 +420,7 @@ mod tests {
         assert!(!r.is_dmabuf(), "hardware alone does not imply dmabuf");
         r.negotiated_caps = Some("video/x-raw(memory:CUDAMemory), format=(string)NV12".into());
         assert!(!r.is_dmabuf(), "CUDA memory is hardware but not dmabuf");
-        r.negotiated_caps =
-            Some("video/x-raw(memory:DMABuf), drm-format=(string)NV12:0x0".into());
+        r.negotiated_caps = Some("video/x-raw(memory:DMABuf), drm-format=(string)NV12:0x0".into());
         assert!(r.is_dmabuf());
     }
 
@@ -388,7 +435,12 @@ mod tests {
 
     #[test]
     fn policy_auto_lifts_every_hardware_family_above_software() {
-        for k in [DecoderKind::Va, DecoderKind::NvCodec, DecoderKind::V4l2, DecoderKind::Vulkan] {
+        for k in [
+            DecoderKind::Va,
+            DecoderKind::NvCodec,
+            DecoderKind::V4l2,
+            DecoderKind::Vulkan,
+        ] {
             assert!(
                 rank_for(HwPolicy::Auto, k) > rank_for(HwPolicy::Auto, DecoderKind::Software),
                 "{} must outrank software under auto",

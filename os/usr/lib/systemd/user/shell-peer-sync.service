@@ -1,8 +1,8 @@
 [Unit]
-Description=qOS libp2p peer-sync (opt-in)
+Description=qOS Iroh peer-sync (opt-in)
 Documentation=file:///usr/share/doc/qos/peer-sync.md
-# Peer-sync is privacy-sensitive (mdns broadcasts the device, gossipsub
-# accepts connections from peers). We deliberately do NOT bind this to
+# Peer-sync is privacy-sensitive because it makes the device reachable to
+# invited peers. We deliberately do NOT bind this to
 # graphical-session.target so a `systemctl --user enable` only takes
 # effect on the *next* session — preventing a silent enable from being
 # the user's first surprise at login.
@@ -20,12 +20,12 @@ After=graphical-session-pre.target
 Type=oneshot
 RemainAfterExit=yes
 # Marker path mirrors what the `shell` binary actually reads
-# (see `quick-shell/src/compositor/mod.rs::XdgConfigMarkerSource`):
-# `$XDG_CONFIG_HOME/shell/peer-sync.enabled` with a fallback
-# to `~/.config/qos/peer-sync.enabled`. Persistent across
+# (see `shell/src/compositor/mod.rs::XdgConfigMarkerSource`):
+# `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled` with a fallback
+# to `~/.config/quick-desktop/peer-sync.enabled`. Persistent across
 # reboots — matches "opt in until I turn it off."
-ExecStart=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; mkdir -p "$XDG/shell" && touch "$XDG/shell/peer-sync.enabled"'
-ExecStop=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; rm -f "$XDG/shell/peer-sync.enabled"'
+ExecStart=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; mkdir -p "$XDG/quick-desktop" && touch "$XDG/quick-desktop/peer-sync.enabled"'
+ExecStop=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; rm -f "$XDG/quick-desktop/peer-sync.enabled"'
 
 [Install]
 # NOT WantedBy=graphical-session.target on purpose — users opt in

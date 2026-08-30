@@ -27,7 +27,7 @@ pub struct Autoconfig {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_tls: bool,
-    /// True when the provider's `authentication` element asks for OAuth2 —
+    /// True when the provider's `authentication` element asks for `OAuth2` —
     /// the account then presets to [`AuthMethod::OAuth`].
     pub oauth: bool,
 }
@@ -45,10 +45,10 @@ impl Autoconfig {
         if self.oauth {
             cfg.auth = AuthMethod::OAuth;
         }
-        if cfg.display_name.trim().is_empty() {
-            if let Some(name) = &self.display_name {
-                cfg.display_name = name.clone();
-            }
+        if cfg.display_name.trim().is_empty()
+            && let Some(name) = &self.display_name
+        {
+            cfg.display_name = name.clone();
         }
     }
 }
@@ -87,13 +87,24 @@ pub fn parse_autoconfig(xml: &str) -> Option<Autoconfig> {
 
 fn parse_server(block: &str) -> Option<Server> {
     let host = inner_text(block, "hostname").unwrap_or_default();
-    let port = inner_text(block, "port").and_then(|p| p.parse().ok()).unwrap_or(0);
-    let socket = inner_text(block, "socketType").unwrap_or_default().to_ascii_uppercase();
+    let port = inner_text(block, "port")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(0);
+    let socket = inner_text(block, "socketType")
+        .unwrap_or_default()
+        .to_ascii_uppercase();
     // SSL / STARTTLS both encrypt; only an explicit "plain" is cleartext.
     let tls = !matches!(socket.as_str(), "PLAIN" | "NONE" | "");
-    let auth = inner_text(block, "authentication").unwrap_or_default().to_ascii_lowercase();
+    let auth = inner_text(block, "authentication")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let oauth = auth.contains("oauth");
-    Some(Server { host, port, tls, oauth })
+    Some(Server {
+        host,
+        port,
+        tls,
+        oauth,
+    })
 }
 
 /// Return the inner text of the first `<tag ...>` element in `xml`, or `None`.
@@ -118,10 +129,11 @@ fn extract_block<'a>(xml: &'a str, tag: &str, attr_value: &str) -> Option<&'a st
         // The byte right after the prefix must be a delimiter, so `<incoming>`
         // doesn't match the prefix of `<incomingServer`.
         let after = xml[open_start + open_prefix.len()..].chars().next();
-        let is_boundary = matches!(after, Some(c) if c == ' ' || c == '>' || c == '\t' || c == '\n' || c == '/');
-        let gt = match xml[open_start..].find('>') {
-            Some(g) => open_start + g,
-            None => return None,
+        let is_boundary =
+            matches!(after, Some(c) if c == ' ' || c == '>' || c == '\t' || c == '\n' || c == '/');
+        let gt = {
+            let g = xml[open_start..].find('>')?;
+            open_start + g
         };
         let opening = &xml[open_start..gt];
         let attr_ok = attr_value.is_empty()
@@ -280,9 +292,15 @@ pub fn builtin_autoconfig(domain: &str) -> Option<Autoconfig> {
 pub fn provider_from_mx_host(mx_host: &str) -> Option<KnownProvider> {
     let h = mx_host.to_ascii_lowercase();
     let h = h.trim_end_matches('.');
-    if h.ends_with("google.com") || h.ends_with("googlemail.com") || h.ends_with("aspmx.l.google.com") {
+    if h.ends_with("google.com")
+        || h.ends_with("googlemail.com")
+        || h.ends_with("aspmx.l.google.com")
+    {
         Some(KnownProvider::Google)
-    } else if h.ends_with("outlook.com") || h.ends_with("protection.outlook.com") || h.ends_with("office365.com") {
+    } else if h.ends_with("outlook.com")
+        || h.ends_with("protection.outlook.com")
+        || h.ends_with("office365.com")
+    {
         Some(KnownProvider::Microsoft)
     } else if h.ends_with("yahoodns.net") || h.ends_with("yahoo.com") {
         Some(KnownProvider::Yahoo)
@@ -300,7 +318,9 @@ pub fn provider_from_mx_host(mx_host: &str) -> Option<KnownProvider> {
 /// in ascending preference. Pure + unit-tested.
 pub fn provider_from_mx_records(mut records: Vec<(u16, String)>) -> Option<KnownProvider> {
     records.sort_by_key(|(pref, _)| *pref);
-    records.iter().find_map(|(_, host)| provider_from_mx_host(host))
+    records
+        .iter()
+        .find_map(|(_, host)| provider_from_mx_host(host))
 }
 
 /// Parse a DNS-over-HTTPS JSON answer (RFC 8484 / the `application/dns-json`
@@ -317,7 +337,7 @@ pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
     answers
         .iter()
         // MX record type is 15.
-        .filter(|a| a.get("type").and_then(|t| t.as_u64()) == Some(15))
+        .filter(|a| a.get("type").and_then(serde_json::Value::as_u64) == Some(15))
         .filter_map(|a| {
             let data = a.get("data")?.as_str()?.trim();
             let (pref, host) = data.split_once(char::is_whitespace)?;
@@ -332,7 +352,9 @@ pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
     let enc_email = email.replace('@', "%40");
     vec![
         format!("https://autoconfig.{domain}/mail/config-v1.1.xml?emailaddress={enc_email}"),
-        format!("https://{domain}/.well-known/autoconfig/mail/config-v1.1.xml?emailaddress={enc_email}"),
+        format!(
+            "https://{domain}/.well-known/autoconfig/mail/config-v1.1.xml?emailaddress={enc_email}"
+        ),
         format!("https://autoconfig.thunderbird.net/v1.1/{domain}"),
     ]
 }
@@ -353,7 +375,9 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
 
     // 1. Thunderbird ISPDB + provider `.well-known` autoconfig XML.
     for url in discovery_urls(domain, email) {
-        let Ok(resp) = client.get(&url).send() else { continue };
+        let Ok(resp) = client.get(&url).send() else {
+            continue;
+        };
         if !resp.status().is_success() {
             continue;
         }
@@ -382,7 +406,7 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
 }
 
 /// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
-/// provider. Tries Google and Cloudflare DoH endpoints. Network — `live` only.
+/// provider. Tries Google and Cloudflare `DoH` endpoints. Network — `live` only.
 #[cfg(feature = "live")]
 fn discover_via_mx(client: &reqwest::blocking::Client, domain: &str) -> Option<KnownProvider> {
     let endpoints = [
@@ -494,16 +518,31 @@ mod tests {
             <outgoingServer type="smtp"><hostname>smtp.x</hostname><port>465</port>
             <socketType>SSL</socketType></outgoingServer>
             </emailProvider></clientConfig>"#;
-        assert!(parse_autoconfig(xml).is_none(), "no IMAP server → no config");
+        assert!(
+            parse_autoconfig(xml).is_none(),
+            "no IMAP server → no config"
+        );
     }
 
     #[test]
     fn discovery_urls_cover_wellknown_and_ispdb() {
         let urls = discovery_urls("example.com", "me@example.com");
-        assert!(urls.iter().any(|u| u.contains("autoconfig.example.com/mail/config-v1.1.xml")));
-        assert!(urls.iter().any(|u| u.contains("example.com/.well-known/autoconfig")));
-        assert!(urls.iter().any(|u| u.contains("autoconfig.thunderbird.net/v1.1/example.com")));
-        assert!(urls.iter().all(|u| u.contains("me%40example.com") || u.ends_with("example.com")));
+        assert!(
+            urls.iter()
+                .any(|u| u.contains("autoconfig.example.com/mail/config-v1.1.xml"))
+        );
+        assert!(
+            urls.iter()
+                .any(|u| u.contains("example.com/.well-known/autoconfig"))
+        );
+        assert!(
+            urls.iter()
+                .any(|u| u.contains("autoconfig.thunderbird.net/v1.1/example.com"))
+        );
+        assert!(
+            urls.iter()
+                .all(|u| u.contains("me%40example.com") || u.ends_with("example.com"))
+        );
     }
 
     // The real ISPDB document for outlook.com — an `@outlook.de` address must
@@ -541,7 +580,10 @@ mod tests {
         assert!(cfg.imap_tls && cfg.smtp_tls);
         assert!(cfg.oauth, "Microsoft consumer mail requires OAuth");
         // Applying it to an @outlook.de account presets OAuth.
-        let mut acct = AccountConfig { email: "person@outlook.de".into(), ..Default::default() };
+        let mut acct = AccountConfig {
+            email: "person@outlook.de".into(),
+            ..Default::default()
+        };
         cfg.apply_to(&mut acct);
         assert_eq!(acct.auth, AuthMethod::OAuth);
         assert_eq!(acct.imap_host, "outlook.office365.com");
@@ -561,14 +603,39 @@ mod tests {
         assert_eq!(o.imap_host, "outlook.office365.com");
         assert_eq!(o.smtp_host, "smtp.office365.com");
         // The large free webmail hosts the ISPDB may miss offline.
-        assert_eq!(builtin_autoconfig("gmx.net").unwrap().imap_host, "imap.gmx.net");
-        assert_eq!(builtin_autoconfig("web.de").unwrap().smtp_host, "smtp.web.de");
-        assert_eq!(builtin_autoconfig("fastmail.com").unwrap().imap_host, "imap.fastmail.com");
-        assert_eq!(builtin_autoconfig("yahoo.co.uk").unwrap().imap_host, "imap.mail.yahoo.com");
-        assert_eq!(builtin_autoconfig("icloud.com").unwrap().imap_host, "imap.mail.me.com");
-        assert_eq!(builtin_autoconfig("zoho.com").unwrap().smtp_host, "smtp.zoho.com");
+        assert_eq!(
+            builtin_autoconfig("gmx.net").unwrap().imap_host,
+            "imap.gmx.net"
+        );
+        assert_eq!(
+            builtin_autoconfig("web.de").unwrap().smtp_host,
+            "smtp.web.de"
+        );
+        assert_eq!(
+            builtin_autoconfig("fastmail.com").unwrap().imap_host,
+            "imap.fastmail.com"
+        );
+        assert_eq!(
+            builtin_autoconfig("yahoo.co.uk").unwrap().imap_host,
+            "imap.mail.yahoo.com"
+        );
+        assert_eq!(
+            builtin_autoconfig("icloud.com").unwrap().imap_host,
+            "imap.mail.me.com"
+        );
+        assert_eq!(
+            builtin_autoconfig("zoho.com").unwrap().smtp_host,
+            "smtp.zoho.com"
+        );
         // Encryption is on for every built-in provider.
-        for d in ["gmail.com", "outlook.com", "gmx.net", "web.de", "zoho.com", "aol.com"] {
+        for d in [
+            "gmail.com",
+            "outlook.com",
+            "gmx.net",
+            "web.de",
+            "zoho.com",
+            "aol.com",
+        ] {
             let ac = builtin_autoconfig(d).unwrap();
             assert!(ac.imap_tls && ac.smtp_tls, "{d} must use TLS");
         }
@@ -579,11 +646,26 @@ mod tests {
     #[test]
     fn known_provider_covers_microsoft_consumer_domains_across_tlds() {
         // The whole point: pick by domain family, not the .com TLD.
-        assert_eq!(known_provider_for_domain("outlook.de"), Some(KnownProvider::Microsoft));
-        assert_eq!(known_provider_for_domain("hotmail.co.uk"), Some(KnownProvider::Microsoft));
-        assert_eq!(known_provider_for_domain("live.fr"), Some(KnownProvider::Microsoft));
-        assert_eq!(known_provider_for_domain("Gmail.com"), Some(KnownProvider::Google));
-        assert_eq!(known_provider_for_domain("yahoo.co.jp"), Some(KnownProvider::Yahoo));
+        assert_eq!(
+            known_provider_for_domain("outlook.de"),
+            Some(KnownProvider::Microsoft)
+        );
+        assert_eq!(
+            known_provider_for_domain("hotmail.co.uk"),
+            Some(KnownProvider::Microsoft)
+        );
+        assert_eq!(
+            known_provider_for_domain("live.fr"),
+            Some(KnownProvider::Microsoft)
+        );
+        assert_eq!(
+            known_provider_for_domain("Gmail.com"),
+            Some(KnownProvider::Google)
+        );
+        assert_eq!(
+            known_provider_for_domain("yahoo.co.jp"),
+            Some(KnownProvider::Yahoo)
+        );
         // An unknown vanity domain must fall through to network discovery.
         assert_eq!(known_provider_for_domain("some-company.de"), None);
     }
@@ -603,7 +685,10 @@ mod tests {
             (5, "alt1.aspmx.l.google.com".to_string()),
             (1, "aspmx.l.google.com".to_string()),
         ];
-        assert_eq!(provider_from_mx_records(google), Some(KnownProvider::Google));
+        assert_eq!(
+            provider_from_mx_records(google),
+            Some(KnownProvider::Google)
+        );
 
         // Microsoft 365 tenant.
         let ms = vec![(0, "example-com.mail.protection.outlook.com".to_string())];
@@ -622,7 +707,10 @@ mod tests {
             (20, "backup.self-hosted.example".to_string()),
             (10, "aspmx.l.google.com".to_string()),
         ];
-        assert_eq!(provider_from_mx_records(records), Some(KnownProvider::Google));
+        assert_eq!(
+            provider_from_mx_records(records),
+            Some(KnownProvider::Google)
+        );
     }
 
     #[test]

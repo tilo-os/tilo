@@ -1,36 +1,21 @@
 //! `Popover` — an anchored overlay **menu of selectable options**.
 //!
 //! Where [`ContextMenu`](crate::widget::context_menu::ContextMenu) is an
-//! *action* list (each row fires an `Arc<dyn Fn()>` and closes) and
-//! [`PopoverWidget`](crate::widget::popover_widget::PopoverWidget) is a
-//! generic *content container* (arbitrary child tree with chrome), this is
-//! the specialised primitive callers reach for again and again: pick one
-//! option out of a short set, right next to the control that owns the value.
-//! It is the widget behind a "cycle-on-click, long-press for the full list"
-//! pill, a units selector, a sort-order chooser, a refresh-cadence menu.
+//! *action* list, this is the primitive for picking one option out of a
+//! short set next to the control that owns the value — a cycle-on-click
+//! pill, a units selector, a refresh-cadence menu.
 //!
-//! What it provides, once, so every consumer inherits it:
-//!   - **Anchored placement** next to an `anchor` rect (opens below, flips
-//!     above when there's no room, clamps horizontally into the viewport).
-//!   - **A current selection** (a check-marked row) distinct from the
-//!     keyboard/hover **highlight**, so re-opening lands on the active value.
-//!   - **Full keyboard navigation**: ↑/↓ move the highlight, Home/End jump
-//!     to the ends, Enter selects, Esc closes.
-//!   - **Focus capture** while open: every key press is consumed so keystrokes
-//!     don't leak to the app behind, and [`modal_capture`](Widget::modal_capture)
-//!     / [`traps_focus`](Widget::traps_focus) tell the host to stop competing
-//!     for the keyboard.
-//!   - **Accessibility**: a `Role::Menu` container carrying one
-//!     `Role::MenuItem` child per option, each with its 1-based position, its
-//!     `selected` flag, and `focused` on the highlighted row — the same
-//!     semantic model every other widget uses.
-//!   - **Theme-driven chrome** and **dismiss on outside-click**.
+//! Provides once, for every consumer: anchored placement (flips above /
+//! clamps horizontally when there's no room below), a current selection
+//! distinct from the keyboard/hover highlight (so re-opening lands on the
+//! active value), full keyboard nav, focus capture while open
+//! ([`modal_capture`](Widget::modal_capture) / [`traps_focus`](Widget::traps_focus)),
+//! `Role::Menu` accessibility, and dismiss-on-outside-click.
 //!
-//! The primitive is usable two ways: mounted as a real tree widget (its
-//! `handle_event` is fully self-contained), or driven by a hand-drawn host
-//! that owns its own input routing (like the activity monitor's header) via
-//! the [`Popover::open_at`], [`Popover::item_at`], [`Popover::move_highlight`],
-//! [`Popover::select`] and [`Popover::take_selection`] helpers.
+//! Usable two ways: mounted as a real tree widget, or driven by a
+//! hand-drawn host via [`Popover::open_at`], [`Popover::item_at`],
+//! [`Popover::move_highlight`], [`Popover::select`] and
+//! [`Popover::take_selection`].
 
 use std::collections::HashMap;
 
@@ -44,6 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Height of one option row.
@@ -62,11 +48,9 @@ const MIN_W: f64 = 160.0;
 /// An anchored overlay menu of selectable string options. See the module
 /// docs for the full contract.
 pub struct Popover {
-    /// The option labels, in display order.
     items: Vec<String>,
     /// Accessible name for the menu as a whole (e.g. "Refresh interval").
     label: Option<String>,
-    /// Whether the menu is currently shown.
     open: bool,
     /// The control the menu is anchored to (positions the body).
     anchor: Rect,
@@ -109,7 +93,6 @@ impl Popover {
         }
     }
 
-    /// Builder: seed the option labels.
     pub fn with_items<I, S>(mut self, items: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -119,7 +102,6 @@ impl Popover {
         self
     }
 
-    /// Builder: set the menu's accessible name.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -137,12 +119,10 @@ impl Popover {
         }
     }
 
-    /// The option labels, in order.
     pub fn items(&self) -> &[String] {
         &self.items
     }
 
-    /// Set the menu's accessible name.
     pub fn set_label(&mut self, label: impl Into<String>) {
         self.label = Some(label.into());
     }
@@ -159,7 +139,10 @@ impl Popover {
     pub fn open_at(&mut self, anchor: Rect, selected: Option<usize>) {
         self.anchor = anchor;
         self.selected = selected.filter(|&i| i < self.items.len());
-        self.highlighted = self.selected.unwrap_or(0).min(self.items.len().saturating_sub(1));
+        self.highlighted = self
+            .selected
+            .unwrap_or(0)
+            .min(self.items.len().saturating_sub(1));
         self.open = true;
         self.pending = None;
     }
@@ -169,17 +152,14 @@ impl Popover {
         self.open = false;
     }
 
-    /// `true` while the menu is visible.
     pub fn is_open(&self) -> bool {
         self.open
     }
 
-    /// The currently-applied option index, if any.
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
 
-    /// The row the highlight currently sits on.
     pub fn highlighted(&self) -> usize {
         self.highlighted
     }
@@ -198,18 +178,16 @@ impl Popover {
         self.highlighted = (self.highlighted as i32 + dir).clamp(0, max) as usize;
     }
 
-    /// Jump the highlight to the first row.
     pub fn highlight_first(&mut self) {
         self.highlighted = 0;
     }
 
-    /// Jump the highlight to the last row.
     pub fn highlight_last(&mut self) {
         self.highlighted = self.items.len().saturating_sub(1);
     }
 
-    /// Choose the option at `idx`: record it as selected + pending and close.
-    /// Out-of-range indices are ignored.
+    /// Record `idx` as selected + pending and close. Out-of-range indices
+    /// are ignored.
     pub fn select(&mut self, idx: usize) {
         if idx < self.items.len() {
             self.selected = Some(idx);
@@ -245,19 +223,18 @@ impl Popover {
         (idx < self.items.len()).then_some(idx)
     }
 
-    /// Whether `point` is inside the open menu body.
     pub fn contains(&self, point: Point) -> bool {
         self.open && self.rect.contains(point)
     }
 
     /// Resolve `self.rect` from the anchor, measured option widths, and the
-    /// viewport (flip above / clamp horizontally). Callable standalone so a
-    /// hand-drawn host — or a test — can place the menu without a full draw.
+    /// viewport. Callable standalone so a hand-drawn host — or a test — can
+    /// place the menu without a full draw.
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let fs = theme.tokens.typography.scale.sm;
         let mut w = MIN_W.max(self.anchor.width());
         for label in &self.items {
-            let tw = tr.measure(label, fs, None).0 as f64;
+            let tw = f64::from(tr.measure(label, fs, None).0);
             w = w.max(tw + CHECK_W + PAD_X * 2.0);
         }
         let n = self.items.len().max(1);
@@ -285,7 +262,6 @@ impl Popover {
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + ROW_H)
     }
 
-    /// Draw a small check mark centred in the check column of `row`.
     fn draw_check(scene: &mut Scene, t: Affine, row: Rect, color: vello::peniko::Color) {
         let cx = row.x0 + PAD_X + CHECK_W / 2.0 - 6.0;
         let cy = row.center().y;
@@ -317,16 +293,14 @@ impl Widget for Popover {
         // A zero-extent leaf: the body is positioned manually against the
         // anchor + viewport in `place`, not by the parent's flexbox. Register
         // in the node map so the host's overlay/hit sweeps still reach us.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -355,7 +329,7 @@ impl Widget for Popover {
         }
         self.place(text_renderer, theme);
         let c = &theme.tokens.colors;
-        let radius = theme.tokens.radii.md as f64;
+        let radius = f64::from(theme.tokens.radii.md);
 
         // Drop shadow rings (themed black at low alpha) so the menu reads as
         // floating above the content — the same 4-ring pattern the toolkit's
@@ -376,10 +350,21 @@ impl Widget for Popover {
             );
         }
 
-        // Body + border.
         let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(vello::peniko::Fill::NonZero, transform, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &shape,
+        );
 
         let fs = theme.tokens.typography.scale.sm;
         for (idx, label) in self.items.iter().enumerate() {
@@ -392,16 +377,26 @@ impl Widget for Popover {
                     transform,
                     c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
-                    &RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64),
+                    &RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm)),
                 );
             }
-            let text_color = if is_hl { vello::peniko::Color::WHITE } else { c.text_primary };
+            let text_color = if is_hl {
+                c.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                c.text_primary
+            };
             if self.selected == Some(idx) {
-                let check_color = if is_hl { vello::peniko::Color::WHITE } else { c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX] };
+                // The tick is a mark, not text, so it answers to the lower
+                // non-text floor — but it still has to answer to something.
+                let check_color = if is_hl {
+                    c.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
+                } else {
+                    c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                };
                 Self::draw_check(scene, transform, row, check_color);
             }
             let (_lw, lh) = text_renderer.measure_weighted(label, fs, None, TextWeight::Medium);
-            let ty = row.center().y - lh as f64 / 2.0;
+            let ty = row.center().y - f64::from(lh) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 label,
@@ -437,7 +432,12 @@ impl Widget for Popover {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: key, state: ElementState::Pressed, .. },
+                event:
+                    KeyEvent {
+                        logical_key: key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 match key {
@@ -471,7 +471,7 @@ impl Widget for Popover {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Popover"
     }
 
@@ -590,7 +590,7 @@ mod tests {
 
     fn dispatch(p: &mut Popover, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
@@ -613,9 +613,15 @@ mod tests {
     fn arrow_keys_move_highlight_and_are_consumed() {
         let mut p = opened();
         assert_eq!(p.highlighted(), 1, "opens highlighting the selected row");
-        assert!(dispatch(&mut p, &key(NamedKey::ArrowDown)), "ArrowDown consumed");
+        assert!(
+            dispatch(&mut p, &key(NamedKey::ArrowDown)),
+            "ArrowDown consumed"
+        );
         assert_eq!(p.highlighted(), 2);
-        assert!(dispatch(&mut p, &key(NamedKey::ArrowUp)), "ArrowUp consumed");
+        assert!(
+            dispatch(&mut p, &key(NamedKey::ArrowUp)),
+            "ArrowUp consumed"
+        );
         assert_eq!(p.highlighted(), 1);
     }
 
@@ -648,9 +654,17 @@ mod tests {
         dispatch(&mut p, &key(NamedKey::ArrowDown)); // 2 -> 3
         assert!(dispatch(&mut p, &key(NamedKey::Enter)), "Enter consumed");
         assert!(!p.is_open(), "selecting closes the menu");
-        assert_eq!(p.take_selection(), Some(3), "the chosen index is reported once");
+        assert_eq!(
+            p.take_selection(),
+            Some(3),
+            "the chosen index is reported once"
+        );
         assert_eq!(p.take_selection(), None, "selection drains exactly once");
-        assert_eq!(p.selected(), Some(3), "the applied option sticks as selected");
+        assert_eq!(
+            p.selected(),
+            Some(3),
+            "the applied option sticks as selected"
+        );
     }
 
     #[test]
@@ -667,10 +681,16 @@ mod tests {
         // reach the app behind the overlay. A letter that maps to no action
         // must still return `handled == true` and leave the menu open.
         let mut p = opened();
-        assert!(dispatch(&mut p, &char_key("x")), "an unrelated key is swallowed");
+        assert!(
+            dispatch(&mut p, &char_key("x")),
+            "an unrelated key is swallowed"
+        );
         assert!(p.is_open(), "a no-op key does not close the menu");
         assert_eq!(p.take_selection(), None);
-        assert!(dispatch(&mut p, &key(NamedKey::Tab)), "Tab is swallowed too (no focus escape)");
+        assert!(
+            dispatch(&mut p, &key(NamedKey::Tab)),
+            "Tab is swallowed too (no focus escape)"
+        );
         assert!(p.is_open());
     }
 
@@ -710,8 +730,14 @@ mod tests {
             assert_eq!(child.set_size, Some(5));
         }
         // The highlighted row carries focus; the selected row carries selected.
-        assert!(node.children[1].state.focused, "row 1 opens highlighted (== selected)");
-        assert!(node.children[1].state.selected, "row 1 is the current selection");
+        assert!(
+            node.children[1].state.focused,
+            "row 1 opens highlighted (== selected)"
+        );
+        assert!(
+            node.children[1].state.selected,
+            "row 1 is the current selection"
+        );
         assert!(!node.children[0].state.focused);
     }
 
@@ -741,7 +767,10 @@ mod tests {
     fn open_menu_traps_focus_and_captures_input() {
         let p = opened();
         assert!(Widget::traps_focus(&p), "open popover traps focus");
-        assert!(Widget::modal_capture(&p).is_some(), "open popover reports modal capture");
+        assert!(
+            Widget::modal_capture(&p).is_some(),
+            "open popover reports modal capture"
+        );
         let closed = Popover::new();
         assert!(!Widget::traps_focus(&closed));
         assert!(Widget::modal_capture(&closed).is_none());
@@ -753,6 +782,10 @@ mod tests {
         p.select(3);
         assert_eq!(p.take_selection(), Some(3));
         p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
-        assert_eq!(p.highlighted(), 3, "re-opening highlights the applied option");
+        assert_eq!(
+            p.highlighted(),
+            3,
+            "re-opening highlights the applied option"
+        );
     }
 }

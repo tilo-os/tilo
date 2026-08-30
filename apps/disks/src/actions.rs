@@ -185,9 +185,20 @@ mod tests {
         // off — proving this isn't a "saved presets are actions" case and that we
         // did not fabricate a saved-configs model.
         for forbidden in [
-            "presets", "preset", "saved", "configs", "config", "jobs", "schedule",
-            "benchmarks", "history", "bookmarks", "favourites", "favorites",
-            "settings", "prefs",
+            "presets",
+            "preset",
+            "saved",
+            "configs",
+            "config",
+            "jobs",
+            "schedule",
+            "benchmarks",
+            "history",
+            "bookmarks",
+            "favourites",
+            "favorites",
+            "settings",
+            "prefs",
         ] {
             assert!(
                 doc.get(&ROOT, forbidden).unwrap().is_none(),
@@ -258,7 +269,10 @@ mod tests {
             program: "qos-no-such-disk-tool".to_string(),
             args: Vec::new(),
         }]);
-        assert!(chain.is_err(), "the CLI fallback is a process effect, not a doc write");
+        assert!(
+            chain.is_err(),
+            "the CLI fallback is a process effect, not a doc write"
+        );
 
         assert_eq!(
             doc.get_heads(),

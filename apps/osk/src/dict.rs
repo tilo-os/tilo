@@ -88,7 +88,7 @@ impl Dictionary {
         // Frequency order (most common first); break ties lexicographically
         // for determinism.
         entries.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.word.cmp(&b.word)));
-        let max_weight = entries.first().map(|e| e.weight).unwrap_or(1).max(1);
+        let max_weight = entries.first().map_or(1, |e| e.weight).max(1);
 
         let mut by_lex: Vec<u32> = (0..entries.len() as u32).collect();
         by_lex.sort_by(|&a, &b| entries[a as usize].word.cmp(&entries[b as usize].word));
@@ -182,9 +182,9 @@ impl Dictionary {
         // Upper bound: first word that does not start with prefix. We compare
         // against `prefix` truncated-then-incremented conceptually by checking
         // the `starts_with` boundary directly.
-        let hi = self.by_lex[lo..].partition_point(|&i| {
-            self.entries[i as usize].word.as_str().starts_with(prefix)
-        }) + lo;
+        let hi = self.by_lex[lo..]
+            .partition_point(|&i| self.entries[i as usize].word.as_str().starts_with(prefix))
+            + lo;
         (lo, hi)
     }
 }

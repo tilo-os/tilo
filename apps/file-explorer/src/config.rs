@@ -26,7 +26,7 @@ pub const ZOOM_MAX: i32 = 6;
 /// zoom level. Level `0` → `1.0`; every step is +15 %.
 pub fn zoom_scale(level: i32) -> f64 {
     let l = level.clamp(ZOOM_MIN, ZOOM_MAX);
-    1.0 + 0.15 * l as f64
+    1.0 + 0.15 * f64::from(l)
 }
 
 /// Clamp a level into the supported range.
@@ -40,8 +40,7 @@ pub fn load_zoom(dir: &Path) -> i32 {
     std::fs::read_to_string(dir.join("zoom"))
         .ok()
         .and_then(|s| s.trim().parse::<i32>().ok())
-        .map(clamp_zoom)
-        .unwrap_or(0)
+        .map_or(0, clamp_zoom)
 }
 
 /// Write the zoom level to `dir/zoom` (creating `dir` if needed). Errors are

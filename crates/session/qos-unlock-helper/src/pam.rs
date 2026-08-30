@@ -104,9 +104,7 @@ extern "C" fn converse(
     // this array and each `resp` with `free`, so it must come from the same
     // C allocator.
     let n = num_msg as usize;
-    let arr = unsafe {
-        libc::calloc(n, std::mem::size_of::<PamResponse>()) as *mut PamResponse
-    };
+    let arr = unsafe { libc::calloc(n, std::mem::size_of::<PamResponse>()).cast::<PamResponse>() };
     if arr.is_null() {
         return PAM_CONV_ERR;
     }
@@ -126,10 +124,10 @@ extern "C" fn converse(
                 for j in 0..i {
                     let s = unsafe { &mut *arr.add(j) };
                     if !s.resp.is_null() {
-                        unsafe { libc::free(s.resp as *mut c_void) };
+                        unsafe { libc::free(s.resp.cast::<c_void>()) };
                     }
                 }
-                unsafe { libc::free(arr as *mut c_void) };
+                unsafe { libc::free(arr.cast::<c_void>()) };
                 return PAM_CONV_ERR;
             }
             slot.resp = dup;
@@ -186,7 +184,7 @@ impl Drop for Pam {
 
 /// Resolve one non-null symbol or `None`.
 unsafe fn sym(handle: *mut c_void, name: &[u8]) -> Option<*mut c_void> {
-    let p = unsafe { libc::dlsym(handle, name.as_ptr() as *const c_char) };
+    let p = unsafe { libc::dlsym(handle, name.as_ptr().cast::<c_char>()) };
     if p.is_null() { None } else { Some(p) }
 }
 
@@ -219,7 +217,14 @@ pub fn authenticate(lib: &str, service: &str, user: &str, password: &str) -> Out
         appdata_ptr: c_pass.as_ptr() as *mut c_void,
     };
     let mut pamh: PamHandle = ptr::null_mut();
-    let rc = unsafe { (pam.start)(c_service.as_ptr(), c_user.as_ptr(), &conv, &mut pamh) };
+    let rc = unsafe {
+        (pam.start)(
+            c_service.as_ptr(),
+            c_user.as_ptr(),
+            &raw const conv,
+            &raw mut pamh,
+        )
+    };
     if rc != PAM_SUCCESS || pamh.is_null() {
         return Outcome::Error;
     }

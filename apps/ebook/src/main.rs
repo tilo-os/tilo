@@ -1,26 +1,36 @@
 //! Books — thin binary entry point. All logic lives in the library.
 //!
-//! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
-//!
-//! Optional flags for `--shots` (to capture states the single-frame renderer
-//! can't reach through live input):
-//!   * `--scenario NAME` — stage a frame (`narrow`); see
-//!                          [`ebook::app_root_for_shot`].
-//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 720x900`
-//!                          to exercise the narrow-window overlay flap).
+//! Modes: default runs the live winit event loop via `ui::App`; `--shots
+//! PATH` renders one offscreen frame to a PNG and exits (identical passes
+//! to the live app). `--shots` also accepts `--scenario NAME` (see
+//! [`ebook::app_root_for_shot`]) and `--viewport WxH` to capture states the
+//! single-frame renderer can't reach through live input.
+
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
 
 use std::collections::HashMap;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -114,7 +124,7 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),

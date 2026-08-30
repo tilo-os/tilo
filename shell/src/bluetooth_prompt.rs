@@ -1,23 +1,22 @@
 //! The pairing prompt, drawn as OS chrome.
 //!
-//! Every variant of this dialog is the same question in different clothes:
-//! *is the thing in front of you the thing that is asking?* The passkey
-//! comparison is the strongest form — two screens showing the same six digits
-//! is what makes a man-in-the-middle detectable — so the number is the
-//! largest thing on the surface, and the device's name sits right next to it.
+//! Every variant of this dialog is the same question in different
+//! clothes: *is the thing in front of you the thing that is asking?*
+//! The passkey comparison is the strongest form — two screens showing
+//! the same six digits is what makes a man-in-the-middle detectable —
+//! so the number is the largest thing on the surface, with the device's name right next to it.
 //!
-//! Built from shared `ui` widgets so it inherits the system theme and focus
-//! handling. Nothing here is hand-drawn.
+//! Built from shared `ui` widgets, so it inherits the system theme and focus handling. Nothing here is hand-drawn.
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use qos_bluez::{PairingPrompt, PairingReply, PairingRequest};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Banner, Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
-use vello::kurbo::{Affine, Point, Rect};
+use ui::widget::{Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 pub const KEY_ACCEPT: &str = "bluetooth.pair.accept";
@@ -28,8 +27,7 @@ pub const KEY_ENTRY: &str = "bluetooth.pair.entry";
 /// Width of the dialog in logical px.
 const DIALOG_WIDTH: f32 = 460.0;
 
-/// The prompt widget. Holds the question and, once the user acts, the answer
-/// for the host to drain.
+/// The prompt widget. Holds the question and, once the user acts, the answer for the host to drain.
 pub struct PairingPromptView {
     request: PairingRequest,
     answer: Option<PairingReply>,
@@ -58,8 +56,7 @@ impl PairingPromptView {
         self.answer.take()
     }
 
-    /// Headline. Names the device, because "Pair with a device?" tells the
-    /// user nothing they can check.
+    /// Headline. Names the device, because "Pair with a device?" tells the user nothing they can check.
     fn title(&self) -> String {
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
@@ -81,8 +78,7 @@ impl PairingPromptView {
         }
     }
 
-    /// The sentence under the headline. Says what accepting actually grants,
-    /// in terms of what the device will be able to do.
+    /// The sentence under the headline. Says what accepting actually grants, in terms of what the device will be able to do.
     fn explanation(&self) -> &'static str {
         match &self.request.prompt {
             PairingPrompt::ConfirmPasskey { .. } => {
@@ -119,9 +115,7 @@ impl PairingPromptView {
             ));
 
         // The number, when there is one. Large and monospaced: the whole
-        // security value of this dialog is someone comparing two of these,
-        // and proportional digits at body size make that harder than it
-        // needs to be.
+        // security value of this dialog is comparing two of these, and proportional digits at body size make that harder than it needs to be.
         if let Some(code) = self.request.prompt.passkey_text() {
             body = body.push(Box::new(Card::new(Box::new(
                 Row::new()
@@ -135,14 +129,14 @@ impl PairingPromptView {
             ))));
         }
 
-        if let PairingPrompt::DisplayPasskey { entered, .. } = &self.request.prompt {
-            if *entered > 0 {
-                body = body.push(Box::new(
-                    Text::new(&format!("{entered} of 6 digits entered"))
-                        .with_size(12.0)
-                        .with_color(theme.text_dim),
-                ));
-            }
+        if let PairingPrompt::DisplayPasskey { entered, .. } = &self.request.prompt
+            && *entered > 0
+        {
+            body = body.push(Box::new(
+                Text::new(&format!("{entered} of 6 digits entered"))
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
+            ));
         }
 
         if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
@@ -166,15 +160,22 @@ impl PairingPromptView {
             ));
         }
 
-        // A display-only prompt has nothing to accept — offering an OK button
-        // would suggest pressing it completes the pairing, when the other
-        // device is what completes it.
+        // A display-only prompt has nothing to accept — an OK button would
+        // suggest pressing it completes the pairing, when the other device does.
         let actions: Vec<Box<dyn Widget>> = if self.request.prompt.expects_answer() {
             vec![
-                Box::new(Button::new("bluetooth.pair.reject", "Don't pair", Some(KEY_REJECT))),
+                Box::new(Button::new(
+                    "bluetooth.pair.reject",
+                    "Don't pair",
+                    Some(KEY_REJECT),
+                )),
                 Box::new(
-                    Button::new("bluetooth.pair.accept", accept_label(&self.request.prompt), Some(KEY_ACCEPT))
-                        .with_style(ButtonStyle::Primary),
+                    Button::new(
+                        "bluetooth.pair.accept",
+                        accept_label(&self.request.prompt),
+                        Some(KEY_ACCEPT),
+                    )
+                    .with_style(ButtonStyle::Primary),
                 ),
             ]
         } else {
@@ -190,7 +191,11 @@ impl PairingPromptView {
         }
         body = body.push(Box::new(row));
 
-        Box::new(Column::new().with_no_padding().push(Box::new(Card::new(Box::new(body)))))
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .push(Box::new(Card::new(Box::new(body)))),
+        )
     }
 }
 
@@ -203,8 +208,7 @@ fn accept_label(prompt: &PairingPrompt) -> &'static str {
     }
 }
 
-/// `123456` → `123 456`. Six digits in one run is read as a number; split in
-/// half it is read as two triples, which is how people actually compare them.
+/// `123456` → `123 456`. Six digits in one run is read as a number; split in half it's read as two triples, how people actually compare them.
 fn spaced(code: &str) -> String {
     if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
         format!("{} {}", &code[..3], &code[3..])
@@ -240,10 +244,8 @@ impl Widget for PairingPromptView {
             self.answer = Some(PairingReply::Reject);
         } else if read_bool(state, root, KEY_ACCEPT) {
             let _ = state.put(root, KEY_ACCEPT, ScalarValue::Boolean(false));
-            // The typed prompts answer with what was typed. A blank or
-            // unparseable entry is a refusal rather than a zero passkey,
-            // which the device would reject anyway and which reads to the
-            // user as "pairing mysteriously failed".
+            // The typed prompts answer with what was typed — a blank or unparseable
+            // entry is a refusal, not a zero passkey, which the device would reject anyway and read as "pairing mysteriously failed".
             self.answer = Some(match self.request.prompt {
                 PairingPrompt::RequestPasskey => {
                     match read_text(state, root, KEY_ENTRY).trim().parse::<u32>() {
@@ -295,24 +297,23 @@ impl Widget for PairingPromptView {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -342,20 +343,30 @@ impl Widget for PairingPromptView {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.as_ref().map(|c| c.as_ref()).into_iter().collect()
+        self.composed
+            .as_ref()
+            .map(std::convert::AsRef::as_ref)
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -366,7 +377,7 @@ impl Widget for PairingPromptView {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PairingPromptView"
     }
 
@@ -383,8 +394,7 @@ impl Widget for PairingPromptView {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -433,8 +443,7 @@ mod tests {
         assert_eq!(v.take_answer(), Some(PairingReply::Reject));
     }
 
-    /// Reject must win over accept when both keys are somehow set — the safe
-    /// reading of an ambiguous state is "no".
+    /// Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
     #[test]
     fn reject_wins_over_a_simultaneous_accept() {
         let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
@@ -449,14 +458,17 @@ mod tests {
     fn a_typed_passkey_is_parsed_and_returned() {
         let mut v = view(PairingPrompt::RequestPasskey);
         let mut doc = AutoCommit::new();
-        let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("654321".into()));
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_ENTRY,
+            ScalarValue::Str("654321".into()),
+        );
         press(&mut doc, KEY_ACCEPT);
         v.sync(&mut doc, &automerge::ROOT);
         assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
     }
 
-    /// A blank or nonsense entry refuses rather than sending a zero, which
-    /// the device rejects anyway and which reads as an unexplained failure.
+    /// A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
     #[test]
     fn an_unparseable_passkey_refuses_rather_than_sending_zero() {
         for entry in ["", "   ", "abcdef"] {
@@ -465,7 +477,11 @@ mod tests {
             let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
             press(&mut doc, KEY_ACCEPT);
             v.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(v.take_answer(), Some(PairingReply::Reject), "entry {entry:?}");
+            assert_eq!(
+                v.take_answer(),
+                Some(PairingReply::Reject),
+                "entry {entry:?}"
+            );
         }
     }
 
@@ -485,8 +501,7 @@ mod tests {
         assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
     }
 
-    /// The just-works prompt must say out loud that there is nothing to
-    /// check, because it is the weakest flow and looks identical otherwise.
+    /// The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
     #[test]
     fn the_just_works_prompt_admits_it_cannot_be_verified() {
         let v = view(PairingPrompt::ConfirmPairing);
@@ -501,12 +516,17 @@ mod tests {
     fn every_prompt_builds_a_layout() {
         let prompts = [
             PairingPrompt::ConfirmPasskey { passkey: 424_242 },
-            PairingPrompt::DisplayPasskey { passkey: 1, entered: 3 },
+            PairingPrompt::DisplayPasskey {
+                passkey: 1,
+                entered: 3,
+            },
             PairingPrompt::DisplayPinCode { pin: "0000".into() },
             PairingPrompt::RequestPasskey,
             PairingPrompt::RequestPinCode,
             PairingPrompt::ConfirmPairing,
-            PairingPrompt::AuthorizeService { uuid: "0000110b-0000-1000-8000-00805f9b34fb".into() },
+            PairingPrompt::AuthorizeService {
+                uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
+            },
         ];
         for p in prompts {
             let mut v = view(p);

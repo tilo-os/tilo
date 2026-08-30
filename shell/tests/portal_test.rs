@@ -1,31 +1,22 @@
-//! Integration tests for the xdg-desktop-portal D-Bus backend.
-//!
-//! Sandbox Phase 4.3 (`docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`):
-//! one round-trip per interface (FileChooser / ScreenCast / Access),
-//! plus the "Always-grant skips the prompt" fast path.
-//!
-//! We **don't** use the real session bus. Each test sets up an
-//! in-process peer-to-peer zbus connection via
-//! `tokio::net::UnixStream::pair()` — same pattern the upstream zbus
-//! `e2e.rs` fixtures use for their `iface_and_proxy_unix_p2p` test
-//! (`~/.cargo/registry/src/.../zbus-4.4.0/tests/e2e.rs` line 851ff).
-//! That means no broker, no real file dialog ever pops, and the test
-//! is hermetic.
+//! Integration tests for the xdg-desktop-portal D-Bus backend: one
+//! round-trip per interface (`FileChooser` / `ScreenCast` / Access), plus the
+//! "Always-grant skips the prompt" fast path. No real session bus — each
+//! test uses an in-process p2p zbus connection via
+//! `tokio::net::UnixStream::pair()`, so no broker and no real file dialog.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use shell::portal::{
-    self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
-    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
+    self, BUS_NAME, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
+    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner, OBJECT_PATH,
     PortalCaller, PortalContext, PrintSpoolerHandle, PromptQueueHandle, PromptResolver,
     RecordingInjector, RecordingSpooler, RemoteInputInjectorHandle,
-    ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
+    ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::state::{
-    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Principal, Subject, Workspace,
-    WorkspaceId,
+    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, Principal, Subject, Workspace, WorkspaceId,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -40,12 +31,9 @@ fn empty_workspace(id: u64, name: &str) -> Workspace {
     Workspace::test_default(WorkspaceId(id), name)
 }
 
-/// Spin up a server zbus connection serving the portal and a paired
-/// client connection. Both connections are p2p — no session bus needed.
-///
-/// Returns `(server_conn, client_conn, ctx_for_assertions)`. The
-/// `ctx_for_assertions` clone shares the underlying GrantStore +
-/// PromptQueue, so tests can poke / inspect them across the wire.
+/// Server + paired client zbus connections, both p2p. The returned ctx
+/// clone shares the underlying `GrantStore` + `PromptQueue`, so tests can
+/// poke/inspect them across the wire.
 async fn bring_up_pair(
     grants: GrantStoreHandle,
     prompts: PromptQueueHandle,
@@ -56,9 +44,9 @@ async fn bring_up_pair(
         prompts,
         caller_map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "test"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "test",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -88,12 +76,9 @@ async fn bring_up_pair_with_spawners(
     };
     let ctx_clone = ctx.clone();
 
-    // Build server with the three portal interfaces installed via
-    // `serve_at` so the object server is ready before the client
-    // dispatches its first call. We use a `try_join!` for the build
-    // pair so both ends of the socket negotiate auth concurrently —
-    // serial `await` calls deadlock because the server-side handshake
-    // wants bytes the client hasn't sent yet.
+    // `try_join!` on the build pair so both ends negotiate auth
+    // concurrently — serial `await` calls deadlock because the
+    // server-side handshake wants bytes the client hasn't sent yet.
     use shell::portal::{
         AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
     };
@@ -126,11 +111,9 @@ async fn bring_up_pair_with_spawners(
     (server_conn, client_conn, ctx_clone)
 }
 
-/// Build a proxy that targets our portal object on the peer-to-peer
-/// connection. We set a placeholder destination (matching the portal's
-/// real bus name) because zbus's `Builder` requires one — on a p2p
-/// connection that field is informational only; the message is sent
-/// directly down the pipe and dispatched on the remote object server.
+/// A placeholder destination is set only because zbus's `Builder` requires
+/// one — on p2p it's informational; the message is dispatched directly on
+/// the remote object server.
 async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Proxy<'a> {
     zbus::proxy::Builder::<Proxy<'a>>::new(client)
         .destination(BUS_NAME)
@@ -146,11 +129,6 @@ async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Pr
 
 #[tokio::test]
 async fn file_chooser_open_file_round_trips_auto_allow() {
-    // Replaces the prior placeholder-URI assertion (4.3 v1 returned a
-    // fixed `file:///work/.portal-tmp/...`). The follow-up wires a
-    // real `FilePickerSpawner`; this test injects a `MockFilePickerSpawner`
-    // returning `/tmp/picked.txt` and asserts the response carries
-    // `file:///tmp/picked.txt`.
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(101, "ws"));
     let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
     let caller_map = CallerMap::new();
@@ -197,11 +175,8 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
     if let Some(v) = results.get("uris") {
         let owned: OwnedValue = v.try_clone().expect("clone OwnedValue");
         let parsed: Vec<String> = Vec::<String>::try_from(owned).expect("as -> Vec<String>");
-        // The mock spawner returned `/tmp/picked.txt`; the URI we
-        // emit is `file:///tmp/picked.txt`.
         assert_eq!(parsed, vec!["file:///tmp/picked.txt".to_string()]);
     }
-    // The mock spawner recorded the title forwarded by the backend.
     let seen = mock.requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].1, "Open File (test)");
@@ -268,16 +243,12 @@ async fn access_dialog_camera_round_trips_auto_allow() {
 
 #[tokio::test]
 async fn always_grant_skips_prompt_queue() {
-    // Pre-seed an `Always`-scoped Camera grant for the caller's app id.
-    // Use `PromptResolver::Channel` (production-shaped) — if the
-    // backend pumps the request through the queue we'd see it in
-    // `queued_len` and the call would hang. The fast-path bypasses
-    // the queue entirely, so the queue stays at 0 and the call
-    // resolves with response=0.
+    // Pre-seed an `Always`-scoped Camera grant. `PromptResolver::Channel`
+    // means a request pumped through the queue would show in `queued_len`
+    // and hang — the fast path bypasses the queue entirely.
     let mut ws = empty_workspace(104, "ws");
-    // Seed through the production granting path. `app_grants_snapshot`
-    // hands back a fresh map by value, so inserting into it stored
-    // nothing and this test used to run against an empty workspace.
+    // `app_grants_snapshot` hands back a fresh map by value — inserting
+    // into it stores nothing, so seeding must go through `grant_app`.
     ws.grant_app(
         "org.example.always",
         &Capability::Camera {
@@ -287,10 +258,9 @@ async fn always_grant_skips_prompt_queue() {
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let queue = PromptQueueHandle::new(PromptResolver::Channel);
 
-    // P2p sockets don't surface a unique-name on the request header,
-    // so the `caller_map`'s key-based lookup misses. Use the
-    // `force_caller_for_tests` override so the request resolves to
-    // our seeded workspace + app-id every time.
+    // P2p sockets don't surface a unique-name on the request header, so
+    // the `caller_map`'s key-based lookup misses; `force_caller_for_tests`
+    // resolves the request to our seeded workspace + app-id every time.
     let caller_map = CallerMap::new();
     let caller = PortalCaller::new(ws_id, "org.example.always");
     caller_map.force_caller_for_tests(caller);
@@ -300,9 +270,8 @@ async fn always_grant_skips_prompt_queue() {
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Access").await;
     let handle: ObjectPath<'_> = "/h/3".try_into().unwrap();
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
-    // 30s timeout so a regression in the fast-path (e.g. accidentally
-    // pumping every request through the queue) fails the test
-    // explicitly instead of hanging CI.
+    // 30s timeout so a fast-path regression (e.g. accidentally pumping
+    // every request through the queue) fails explicitly instead of hanging CI.
     let reply = timeout(
         Duration::from_secs(30),
         proxy.call_method(
@@ -325,16 +294,13 @@ async fn always_grant_skips_prompt_queue() {
         reply.body().deserialize().expect("deserialize reply");
 
     assert_eq!(response, 0, "Always-grant fast-path returns 0");
-    // The fast-path skips `enqueue` — if any prompt got queued, we'd
-    // see a non-zero length. (`Channel` resolver buffers without
-    // resolving the oneshot.)
+    // The fast-path skips `enqueue` — if any prompt got queued, we'd see a
+    // non-zero length (`Channel` resolver buffers without resolving the oneshot).
     assert_eq!(
         queue.queued_len(),
         0,
         "Always grant must not enqueue a prompt"
     );
-    // Sanity: the grant store is still the same one our context
-    // points at.
     let _ = ctx;
 }
 
@@ -396,20 +362,13 @@ async fn session_outcome_persists_into_grant_store() {
         .deserialize()
         .expect("deserialize reply");
     assert_eq!(response, 0);
-    // Session-scoped grant should now be persisted under the same
-    // workspace + app-id pair. We can't guarantee the caller-map
-    // resolves correctly across all zbus versions, so soften the
-    // assertion to "either the grant landed (resolution worked) or
-    // the call still succeeded (which is the round-trip we care
-    // about)". The lib tests above cover the resolver path
+    // Session-scoped grant should now be persisted, but caller-map
+    // resolution isn't guaranteed across zbus versions — soften to "the
+    // round trip succeeded"; lib tests cover the resolver path
     // deterministically.
     let _ = (store, ctx);
 }
 
-/// Helper: confirm the `BUS_NAME` constant matches the
-/// `xdg-desktop-portal` backend convention. Sandbox Phase 4.3's
-/// `os/.../portals/nirios.portal` config file points at this string;
-/// keeping the assertion here makes the contract obvious.
 #[test]
 fn bus_name_matches_freedesktop_portal_convention() {
     // Must match the shipped `os/.../portals/qos.portal` `DBusName`, its
@@ -418,20 +377,13 @@ fn bus_name_matches_freedesktop_portal_convention() {
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
 }
 
-/// Required test from the Sandbox 4.3 follow-up brief —
-/// `screencast_start_provisions_pipewire_stream`. Uses a
-/// `MockScreenCastProvisioner` (real Pipewire is a system dep we
-/// can't assume on every build host) and asserts the
-/// `ScreenCast.Start` response carries a non-empty `streams` array
-/// whose first entry is the mock's pre-baked node id.
+/// Uses a `MockScreenCastProvisioner` — real Pipewire isn't assumed on
+/// every build host.
 #[tokio::test]
 async fn screencast_start_provisions_pipewire_stream() {
     let mut ws = empty_workspace(108, "ws");
-    // Pre-seed an Always-scoped Screencast grant so `Start` takes the
-    // fast path (skips the prompt). The portal calls into the
-    // provisioner regardless of whether the consent came via fast or
-    // slow path; this just avoids needing to fulfil a queued prompt
-    // from the test harness.
+    // Pre-seed an Always-scoped Screencast grant so `Start` skips the prompt;
+    // the provisioner is called either way.
     ws.grant_app(
         "org.example.cast",
         &Capability::Screencast {
@@ -462,7 +414,6 @@ async fn screencast_start_provisions_pipewire_stream() {
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
     let handle: ObjectPath<'_> = "/h/6".try_into().unwrap();
     let session: ObjectPath<'_> = "/s/6".try_into().unwrap();
-    // Forward a custom size so we can assert the provisioner saw it.
     let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
     let size: (u32, u32) = (1280, 720);
     opts.insert("size", OwnedValue::try_from(Value::new(size)).unwrap());
@@ -484,7 +435,6 @@ async fn screencast_start_provisions_pipewire_stream() {
         Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned).expect("Vec<(u32, dict)>");
     assert_eq!(streams.len(), 1, "exactly one stream provisioned");
     assert_eq!(streams[0].0, 77, "mock's node id round-trips");
-    // The mock recorded the request — size came through the options.
     let seen = provisioner.requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].width, 1280);
@@ -493,9 +443,8 @@ async fn screencast_start_provisions_pipewire_stream() {
 
 #[test]
 fn capability_kind_round_trips_through_grant_store() {
-    // Quick non-D-Bus check that the integration-test crate can
-    // round-trip the public types — guards against a stray re-export
-    // miss that would silently break the test harness.
+    // Non-D-Bus check that the integration-test crate can round-trip the
+    // public types — guards against a stray re-export miss.
     let mut ws = empty_workspace(107, "ws");
     ws.grant_app(
         "x",
@@ -513,19 +462,19 @@ fn capability_kind_round_trips_through_grant_store() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// ScreenCast: standards coverage — source types, cursor modes, `multiple`,
-// restore_token round-trip, OpenPipeWireRemote, and the interface properties.
-// ---------------------------------------------------------------------------
+// ScreenCast: source types, cursor modes, `multiple`, restore_token
+// round-trip, OpenPipeWireRemote, interface properties.
 
-/// A workspace pre-seeded with an `Always` Screencast grant + a forced caller,
-/// so the handshake fast-paths past the prompt in a hermetic test.
-fn screencast_always(
-    ws_num: u64,
-    app: &str,
-) -> (GrantStoreHandle, CallerMap, WorkspaceId) {
+/// Pre-seeded with an `Always` Screencast grant + a forced caller, so the
+/// handshake fast-paths past the prompt.
+fn screencast_always(ws_num: u64, app: &str) -> (GrantStoreHandle, CallerMap, WorkspaceId) {
     let mut ws = empty_workspace(ws_num, "ws");
-    ws.grant_app(app, &Capability::Screencast { scope: GRANT_ALWAYS });
+    ws.grant_app(
+        app,
+        &Capability::Screencast {
+            scope: GRANT_ALWAYS,
+        },
+    );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let map = CallerMap::new();
     map.force_caller_for_tests(PortalCaller::new(ws_id, app));
@@ -581,8 +530,7 @@ async fn screencast_start_honors_selected_source_type_and_cursor_mode() {
     let (r, _) = sc_call(&proxy, "SelectSources", &(&h, &session, app, &opts)).await;
     assert_eq!(r, 0);
 
-    let (r2, results) =
-        sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
+    let (r2, results) = sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
     assert_eq!(r2, 0);
     let streams = streams_of(&results);
     assert_eq!(streams.len(), 1);
@@ -605,9 +553,9 @@ async fn screencast_multiple_yields_one_stream_per_source() {
         PromptQueueHandle::new(PromptResolver::Channel),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(80, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            80, "t",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -637,9 +585,9 @@ async fn screencast_restore_token_skips_reprompt() {
         queue.clone(),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(90, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            90, "t",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -648,7 +596,7 @@ async fn screencast_restore_token_skips_reprompt() {
     let h: ObjectPath<'_> = "/h/p".try_into().unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
 
-    // Phase 1 — issue a token (fast-path via the Always grant).
+    // Issue a token first (fast-path via the Always grant).
     let s1: ObjectPath<'_> = "/sc/p1".try_into().unwrap();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &s1, app, &empty)).await;
     let mut opts1: HashMap<&str, OwnedValue> = HashMap::new();
@@ -658,28 +606,30 @@ async fn screencast_restore_token_skips_reprompt() {
     assert_eq!(r, 0);
     let (rs, results) = sc_call(&proxy, "Start", &(&h, &s1, app, "", &empty)).await;
     assert_eq!(rs, 0);
-    let token: String =
-        String::try_from(results.get("restore_token").expect("token").try_clone().unwrap())
-            .unwrap();
+    let token: String = String::try_from(
+        results
+            .get("restore_token")
+            .expect("token")
+            .try_clone()
+            .unwrap(),
+    )
+    .unwrap();
     assert!(!token.is_empty());
     assert_eq!(queue.queued_len(), 0, "fast path: no prompt queued");
 
-    // Remove the Always grant so ONLY the token can authorize phase 2.
+    // Remove the Always grant so only the token can authorize what follows.
     {
         let handle = ctx.grants.tree_handle();
         let mut t = handle.write();
         if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
-            // Drop every app-subject grant: the test is asserting that a
-            // restore token cannot resurrect access after a revoke.
-            ws.revoke_matching(|c| {
-                matches!(&c.subject, Subject::Principal(Principal::App(_)))
-            });
+            // Revoking every app-subject grant proves a restore token
+            // can't resurrect access after a revoke.
+            ws.revoke_matching(|c| matches!(&c.subject, Subject::Principal(Principal::App(_))));
         }
     }
 
-    // Phase 2 — present the restore token. Under the Channel resolver (which
-    // never fulfils a queued prompt), an un-restored path would enqueue and
-    // hang; a valid token must skip the prompt.
+    // Present the restore token — under the Channel resolver (never
+    // fulfils a queued prompt), an un-restored path would enqueue and hang.
     let s2: ObjectPath<'_> = "/sc/p2".try_into().unwrap();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &s2, app, &empty)).await;
     let mut opts2: HashMap<&str, OwnedValue> = HashMap::new();
@@ -694,8 +644,7 @@ async fn screencast_restore_token_skips_reprompt() {
     .await
     .expect("restore token must skip the prompt (would hang otherwise)")
     .expect("SelectSources");
-    let (r2, _): (u32, HashMap<String, OwnedValue>) =
-        sel2.body().deserialize().unwrap();
+    let (r2, _): (u32, HashMap<String, OwnedValue>) = sel2.body().deserialize().unwrap();
     assert_eq!(r2, 0, "valid restore token authorizes without a prompt");
     assert_eq!(queue.queued_len(), 0, "no prompt should have been queued");
 
@@ -706,8 +655,7 @@ async fn screencast_restore_token_skips_reprompt() {
     .await
     .expect("restored Start must not prompt")
     .expect("Start");
-    let (rs2, results2): (u32, HashMap<String, OwnedValue>) =
-        start2.body().deserialize().unwrap();
+    let (rs2, results2): (u32, HashMap<String, OwnedValue>) = start2.body().deserialize().unwrap();
     assert_eq!(rs2, 0);
     let streams2 = streams_of(&results2);
     assert_eq!(
@@ -727,9 +675,9 @@ async fn screencast_open_pipewire_remote_returns_real_fd() {
         PromptQueueHandle::new(PromptResolver::Channel),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "t",
+        ))),
         RemoteInputInjectorHandle::null(),
         PrintSpoolerHandle::null(),
     )
@@ -755,21 +703,28 @@ async fn screencast_open_pipewire_remote_returns_real_fd() {
 #[tokio::test]
 async fn screencast_properties_advertise_capabilities() {
     let (store, _ws) = GrantStoreHandle::test_with_workspace(empty_workspace(205, "ws"));
-    let (_s, client, _ctx) =
-        bring_up_pair(store, PromptQueueHandle::new(PromptResolver::AutoAllow), CallerMap::new())
-            .await;
+    let (_s, client, _ctx) = bring_up_pair(
+        store,
+        PromptQueueHandle::new(PromptResolver::AutoAllow),
+        CallerMap::new(),
+    )
+    .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let types: u32 = proxy.get_property("AvailableSourceTypes").await.expect("types");
-    let modes: u32 = proxy.get_property("AvailableCursorModes").await.expect("modes");
+    let types: u32 = proxy
+        .get_property("AvailableSourceTypes")
+        .await
+        .expect("types");
+    let modes: u32 = proxy
+        .get_property("AvailableCursorModes")
+        .await
+        .expect("modes");
     let version: u32 = proxy.get_property("version").await.expect("version");
     assert_eq!(types, 1 | 2 | 4, "monitor|window|virtual");
     assert_eq!(modes, 1 | 2 | 4, "hidden|embedded|metadata");
     assert!(version >= 4, "restore_token support requires v4+");
 }
 
-// ---------------------------------------------------------------------------
-// RemoteDesktop: consent → Start → Notify* seat injection.
-// ---------------------------------------------------------------------------
+// RemoteDesktop: consent -> Start -> Notify* seat injection.
 
 #[tokio::test]
 async fn remote_desktop_notify_injects_after_consent() {
@@ -783,9 +738,9 @@ async fn remote_desktop_notify_injects_after_consent() {
         PromptQueueHandle::new(PromptResolver::AutoAllow),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "t",
+        ))),
         RemoteInputInjectorHandle::new(rec.clone()),
         PrintSpoolerHandle::null(),
     )
@@ -804,7 +759,6 @@ async fn remote_desktop_notify_injects_after_consent() {
     assert_eq!(started, 0);
     assert_eq!(u32_prop(&res, "devices"), 1 | 2, "granted devices returned");
 
-    // Fire pointer + keyboard events; the recorder captures the decoded actions.
     proxy
         .call_method("NotifyPointerButton", &(&session, &empty, 272i32, 1u32))
         .await
@@ -815,7 +769,11 @@ async fn remote_desktop_notify_injects_after_consent() {
         .expect("NotifyKeyboardKeycode");
 
     let actions = rec.actions();
-    assert_eq!(actions.len(), 2, "both Notify* injected after consent+Start");
+    assert_eq!(
+        actions.len(),
+        2,
+        "both Notify* injected after consent+Start"
+    );
     assert!(matches!(
         actions[0],
         shell::network::RemoteAction::PointerButton {
@@ -844,9 +802,9 @@ async fn remote_desktop_denial_blocks_injection() {
         PromptQueueHandle::new(PromptResolver::AutoDeny),
         map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "t",
+        ))),
         RemoteInputInjectorHandle::new(rec.clone()),
         PrintSpoolerHandle::null(),
     )
@@ -871,16 +829,10 @@ async fn remote_desktop_denial_blocks_injection() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Print
-// ---------------------------------------------------------------------------
-//
-// The property under test is the one the whole portal exists for: an app
-// hands over a *file descriptor* and a request, and the bytes reach the
-// spooler on the compositor's side of the sandbox — while the app itself
-// never sees a printer, a socket, or an IPP message.
+// Print — the property under test: an app hands over a *file descriptor*
+// and a request, and the bytes reach the spooler on the compositor's side
+// of the sandbox, while the app never sees a printer, socket, or IPP message.
 
-/// Bring up a portal pair whose spooler records instead of printing.
 async fn bring_up_print_pair(
     prompts: PromptQueueHandle,
     spooler: Arc<RecordingSpooler>,
@@ -901,8 +853,7 @@ async fn bring_up_print_pair(
     (server, client)
 }
 
-/// A real on-disk document, handed over as a descriptor exactly as an app
-/// would. `OwnedFd` here is a genuine fd crossing the connection, not a path.
+/// `OwnedFd` here is a genuine fd crossing the connection, not a path.
 fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedFd) {
     use std::io::{Seek, SeekFrom, Write};
     let mut f = tempfile::NamedTempFile::new().expect("temp document");
@@ -910,11 +861,13 @@ fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedF
     f.flush().expect("flush");
     f.as_file_mut().seek(SeekFrom::Start(0)).expect("rewind");
     let dup = f.as_file().try_clone().expect("dup fd");
-    (f, zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)))
+    (
+        f,
+        zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)),
+    )
 }
 
-/// PreparePrint then Print: the document reaches the spooler, and the token
-/// minted by the first call is what authorises the second.
+/// The token minted by `PreparePrint` is what authorises the Print call.
 #[tokio::test]
 async fn print_round_trips_the_document_to_the_spooler() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
@@ -929,7 +882,15 @@ async fn print_round_trips_the_document_to_the_spooler() {
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
         .call(
             "PreparePrint",
-            &(&handle, "org.example.Editor", "", "Quarterly report", &empty, &empty, &empty),
+            &(
+                &handle,
+                "org.example.Editor",
+                "",
+                "Quarterly report",
+                &empty,
+                &empty,
+                &empty,
+            ),
         )
         .await
         .expect("PreparePrint");
@@ -944,14 +905,25 @@ async fn print_round_trips_the_document_to_the_spooler() {
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
         .call(
             "Print",
-            &(&handle, "org.example.Editor", "", "Quarterly report", fd, &opts),
+            &(
+                &handle,
+                "org.example.Editor",
+                "",
+                "Quarterly report",
+                fd,
+                &opts,
+            ),
         )
         .await
         .expect("Print");
     assert_eq!(response, 0, "Print succeeded: {results:?}");
 
     let jobs = spooler.jobs();
-    assert_eq!(jobs.len(), 1, "exactly one job reached the spooler: {jobs:?}");
+    assert_eq!(
+        jobs.len(),
+        1,
+        "exactly one job reached the spooler: {jobs:?}"
+    );
     assert_eq!(
         jobs[0].document, b"%PDF-1.7\nthe quarterly report\n",
         "the spooler received the bytes behind the descriptor"
@@ -963,8 +935,6 @@ async fn print_round_trips_the_document_to_the_spooler() {
     drop(doc);
 }
 
-/// A refused prompt must stop the job dead. This is the assertion that makes
-/// the consent real rather than decorative: the spooler is never called.
 #[tokio::test]
 async fn a_denied_print_never_reaches_the_spooler() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
@@ -978,7 +948,10 @@ async fn a_denied_print_never_reaches_the_spooler() {
     let (doc, fd) = document_fd(b"%PDF-1.7\nsecret\n");
     let opts: HashMap<String, Value<'_>> = HashMap::new();
     let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call("Print", &(&handle, "org.example.Editor", "", "Secret", fd, &opts))
+        .call(
+            "Print",
+            &(&handle, "org.example.Editor", "", "Secret", fd, &opts),
+        )
         .await
         .expect("Print call completes");
     assert_eq!(response, 1, "a denied request reports user-cancelled");
@@ -990,8 +963,8 @@ async fn a_denied_print_never_reaches_the_spooler() {
     drop(doc);
 }
 
-/// The app cannot pick a destination the machine does not have. Printing to
-/// an attacker-chosen name is how a device URI becomes a command line.
+/// Printing to an attacker-chosen name is how a device URI becomes a
+/// command line.
 #[tokio::test]
 async fn an_app_cannot_name_a_destination_that_does_not_exist() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
@@ -1009,7 +982,10 @@ async fn an_app_cannot_name_a_destination_that_does_not_exist() {
         Value::from("../../etc/cups/printers.conf"),
     );
     let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call("Print", &(&handle, "org.example.Editor", "", "x", fd, &opts))
+        .call(
+            "Print",
+            &(&handle, "org.example.Editor", "", "x", fd, &opts),
+        )
         .await
         .expect("Print call completes");
     assert_eq!(response, 0, "the job still goes to a real printer");

@@ -1,17 +1,12 @@
 //! Ebook library + reading positions as a qOS global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the reader declares its
-//! searchable types by implementing [`SearchProvider`] over snapshots of the
-//! **library** (every book by title / author) and the **open book's
-//! annotations** (bookmarks / highlights / notes by their excerpt), so both are
-//! findable from the unified Ctrl+K palette. Activating a book opens it;
-//! activating an annotation jumps to its place in the current book.
+//! Implements [`SearchProvider`] over snapshots of the library (every book
+//! by title/author) and the open book's annotations (bookmarks/highlights/
+//! notes by excerpt), findable from the unified Ctrl+K palette. Activating
+//! a book opens it; activating an annotation jumps to its place.
 //!
-//! Annotations are scoped to the *currently open* book because that is the set
-//! the app holds in memory (per-book annotations are hydrated from the CRDT
-//! when a book opens). The library provider is complete; the annotation
-//! provider surfaces the reading positions in whatever book is open, which is
-//! exactly the "jump to my bookmark" case a reader wants Ctrl+K for.
+//! Annotations are scoped to the currently open book because that's the set
+//! the app holds in memory (hydrated from the CRDT when a book opens).
 
 use ui::icons::Icon;
 use ui::search::{SearchProvider, SearchResult};
@@ -59,7 +54,10 @@ pub struct BookSearchProvider {
 impl BookSearchProvider {
     /// Snapshot the current library and open-book annotations into a provider.
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
-        Self { books: books.to_vec(), annotations: annotations.to_vec() }
+        Self {
+            books: books.to_vec(),
+            annotations: annotations.to_vec(),
+        }
     }
 
     /// The `action_id` for a book row.
@@ -73,12 +71,16 @@ impl BookSearchProvider {
     }
 
     fn book_title(b: &Book) -> &str {
-        if b.title.trim().is_empty() { "Untitled" } else { b.title.as_str() }
+        if b.title.trim().is_empty() {
+            "Untitled"
+        } else {
+            b.title.as_str()
+        }
     }
 }
 
 impl SearchProvider for BookSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Books"
     }
 
@@ -87,13 +89,15 @@ impl SearchProvider for BookSearchProvider {
         let mut out = Vec::new();
 
         for b in &self.books {
-            let matches =
-                q.is_empty() || b.title.to_lowercase().contains(&q) || b.author.to_lowercase().contains(&q);
+            let matches = q.is_empty()
+                || b.title.to_lowercase().contains(&q)
+                || b.author.to_lowercase().contains(&q);
             if !matches {
                 continue;
             }
-            let mut r = SearchResult::new(BOOK_KIND, Self::book_title(b), Self::book_action_id(&b.id))
-                .with_icon(Icon::FileText);
+            let mut r =
+                SearchResult::new(BOOK_KIND, Self::book_title(b), Self::book_action_id(&b.id))
+                    .with_icon(Icon::FileText);
             if !b.author.trim().is_empty() {
                 r = r.with_subtitle(b.author.clone());
             }
@@ -144,21 +148,28 @@ mod tests {
         let some = books.first().expect("sample library is populated").clone();
         let word = some.title.split_whitespace().next().unwrap();
         let hits = provider.search(word);
-        assert!(hits.iter().any(|r| r.kind == BOOK_KIND), "a real title word surfaces a book row");
+        assert!(
+            hits.iter().any(|r| r.kind == BOOK_KIND),
+            "a real title word surfaces a book row"
+        );
     }
 
     #[test]
     fn provider_finds_an_annotation_by_excerpt() {
         let books = sample_books();
         let book_id = books.first().unwrap().id.clone();
-        let anno = Annotation::new(&book_id, AnnoKind::Bookmark, 2, 0).with_excerpt("the wine-dark sea");
+        let anno =
+            Annotation::new(&book_id, AnnoKind::Bookmark, 2, 0).with_excerpt("the wine-dark sea");
         let provider = BookSearchProvider::new(&books, std::slice::from_ref(&anno));
         let hits = provider.search("wine-dark");
         let hit = hits
             .iter()
             .find(|r| r.kind == ANNOTATION_KIND)
             .expect("the bookmark surfaces by its excerpt");
-        assert_eq!(Activation::parse(&hit.action_id), Some(Activation::Annotation(anno.id)));
+        assert_eq!(
+            Activation::parse(&hit.action_id),
+            Some(Activation::Annotation(anno.id))
+        );
     }
 
     #[test]
@@ -172,7 +183,10 @@ mod tests {
             .into_iter()
             .find(|r| r.action_id == BookSearchProvider::book_action_id(&b.id))
             .expect("the book is browsable through the registry");
-        assert_eq!(Activation::parse(&hit.action_id), Some(Activation::Book(b.id)));
+        assert_eq!(
+            Activation::parse(&hit.action_id),
+            Some(Activation::Book(b.id))
+        );
     }
 
     #[test]

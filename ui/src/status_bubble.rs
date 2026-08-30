@@ -1,19 +1,12 @@
 //! A transient floating **status bubble** — a small overlay pill that appears
-//! on a state change (a page turn, a zoom step) or while the pointer hovers its
-//! anchor, then quietly fades away, so a reader / editor surface need not spend
-//! a permanent strip of chrome on status it only occasionally needs.
+//! on a state change (a page turn, a zoom step) or while the pointer hovers
+//! its anchor, then quietly fades away, so a reader/editor surface need not
+//! spend a permanent strip of chrome on status it only occasionally needs.
 //!
-//! This is the reusable timing + presentation core, deliberately app-agnostic
-//! like [`crate::widget::TooltipHost`]: the app owns *what* the bubble says and
-//! *where* it floats, and pokes the controller when the state it reflects
-//! changes (or reports pointer hover over the bubble's zone). The controller
-//! owns *when* it is visible and its fade, all on an injected wall clock so it
-//! is unit-testable without an event loop.
-//!
-//! The intent is a fleet pattern: any app that currently pays for an always-on
-//! status strip can drop the strip, give the freed space back to its content,
-//! and surface the same information as a [`StatusBubble`] that shows on change
-//! or hover. The first adopter is the PDF reader's page indicator.
+//! App-agnostic like [`crate::widget::TooltipHost`]: the app owns *what* it
+//! says and *where* it floats; the controller owns *when* it is visible and
+//! its fade, on an injected wall clock so it is unit-testable without an
+//! event loop.
 
 use std::time::{Duration, Instant};
 
@@ -21,7 +14,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
-use crate::color_compat::ColorCompat;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 
@@ -32,26 +24,13 @@ pub const DEFAULT_LINGER: Duration = Duration::from_millis(1900);
 /// leaves quietly rather than blinking out.
 const FADE: Duration = Duration::from_millis(300);
 
-/// Transient-visibility controller for a floating status bubble.
-///
-/// Lifecycle:
-/// - [`poke`](Self::poke) — the reflected state changed; show and (re)start the
-///   linger countdown.
-/// - [`set_hover`](Self::set_hover) — the pointer entered/left the bubble's
-///   zone; while hovered the bubble is pinned open, and on leave it lingers
-///   briefly then fades.
-/// - [`tick`](Self::tick) — advance the wall clock; hide once the linger (plus
-///   fade) elapses.
-///
-/// Every method takes an explicit `now: Instant`, so a test drives the whole
-/// show → linger → fade → hide cycle with no real clock.
+/// Every method takes an explicit `now: Instant`, so a test drives the
+/// whole show → linger → fade → hide cycle with no real clock.
 #[derive(Clone, Debug)]
 pub struct StatusBubble {
     linger: Duration,
-    /// When the current linger countdown started, if one is running. `None`
-    /// while the pointer pins the bubble open.
+    /// `None` while the pointer pins the bubble open.
     shown_at: Option<Instant>,
-    /// Whether the pointer is currently over the bubble's zone.
     hovered: bool,
 }
 
@@ -62,30 +41,28 @@ impl Default for StatusBubble {
 }
 
 impl StatusBubble {
-    /// A bubble with the default [`DEFAULT_LINGER`], initially hidden.
     pub fn new() -> Self {
-        Self { linger: DEFAULT_LINGER, shown_at: None, hovered: false }
+        Self {
+            linger: DEFAULT_LINGER,
+            shown_at: None,
+            hovered: false,
+        }
     }
 
-    /// Override how long the bubble lingers after a poke / hover-leave.
     pub fn with_linger(mut self, linger: Duration) -> Self {
         self.linger = linger;
         self
     }
 
-    /// The reflected state changed (a page turn, a zoom step): reveal the
-    /// bubble and restart the linger countdown. Returns whether visibility
-    /// changed (so the caller can request a redraw).
+    /// Returns whether visibility changed (so the caller can request a redraw).
     pub fn poke(&mut self, now: Instant) -> bool {
         let was = self.is_visible(now);
         self.shown_at = Some(now);
         !was
     }
 
-    /// Report whether the pointer is over the bubble's zone. While `true` the
-    /// bubble is pinned fully open; on the transition to `false` it starts a
-    /// fresh linger countdown so it fades a moment after the pointer leaves.
-    /// Returns whether visibility changed.
+    /// While `true` the bubble is pinned fully open; on the transition to
+    /// `false` it starts a fresh linger countdown.
     pub fn set_hover(&mut self, over: bool, now: Instant) -> bool {
         let was = self.is_visible(now);
         if over {
@@ -98,13 +75,12 @@ impl StatusBubble {
         self.is_visible(now) != was
     }
 
-    /// Whether the bubble should be drawn at `now`.
     pub fn is_visible(&self, now: Instant) -> bool {
         self.alpha(now) > 0.0
     }
 
-    /// The bubble's opacity at `now` in `0.0..=1.0`: fully opaque while hovered
-    /// or fresh, ramping to zero across the final [`FADE`] of the linger.
+    /// Fully opaque while hovered or fresh, ramping to zero across the
+    /// final [`FADE`] of the linger.
     pub fn alpha(&self, now: Instant) -> f32 {
         if self.hovered {
             return 1.0;
@@ -114,7 +90,7 @@ impl StatusBubble {
         if e >= self.linger {
             return 0.0;
         }
-        let remain = self.linger - e;
+        let remain = self.linger.checked_sub(e).unwrap();
         if remain < FADE {
             (remain.as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
         } else {
@@ -122,30 +98,27 @@ impl StatusBubble {
         }
     }
 
-    /// Whether the controller wants the event loop to keep pumping frames — it
-    /// is counting down a linger (so the fade animates and the bubble hides on
-    /// its own). Hovered / hidden states need no frames.
+    /// Hovered/hidden states need no frames.
     pub fn needs_frame(&self, now: Instant) -> bool {
-        !self.hovered && self.shown_at.map(|t| now.saturating_duration_since(t) < self.linger).unwrap_or(false)
+        !self.hovered
+            && self
+                .shown_at
+                .is_some_and(|t| now.saturating_duration_since(t) < self.linger)
     }
 }
 
-/// The pill's outer `(width, height)` for `text` at `text_size`, with room for a
-/// leading and trailing control glyph slot of `control` px each (`0.0` for a
-/// plain label). Height is floored so a single line never looks pinched.
+/// `control` is a leading+trailing glyph slot in px each (`0.0` for a
+/// plain label).
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
-    let w = tw as f64 + 2.0 * pad_x + 2.0 * control;
-    let h = (text_size as f64 + 16.0).max(30.0);
+    let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
+    let h = (f64::from(text_size) + 16.0).max(30.0);
     (w, h)
 }
 
-/// Paint the bubble: a soft drop shadow, an opaque themed surface, a hairline
-/// border and the centred label. `rect` is the already-positioned pill; all
-/// colours come from the `Theme` so it tracks light / dark. The caller sets the
-/// opacity by wrapping this in a `scene.push_layer(... alpha ...)` using
-/// [`StatusBubble::alpha`].
+/// The caller sets opacity by wrapping this in a `scene.push_layer(...
+/// alpha ...)` using [`StatusBubble::alpha`].
 pub fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -157,24 +130,27 @@ pub fn draw_pill(
 ) {
     let radius = rect.height() / 2.0;
 
-    // Soft drop shadow (two stacked translucent copies, tinted from the
-    // elevation token so it tracks the theme), matching the tooltip chip.
-    let elev = &theme.tokens.elevation.e2;
-    let base = elev.color;
-    for (inflate, dy, scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {
-        let a = (base.a() as f32 * scale).round() as u8;
-        let col = Color::from_rgba8(base.r(), base.g(), base.b(), a);
-        let sr = Rect::new(rect.x0 - inflate, rect.y0 - inflate + dy, rect.x1 + inflate, rect.y1 + inflate + dy);
-        scene.fill(vello::peniko::Fill::NonZero, transform, col, None, &RoundedRect::from_rect(sr, radius + inflate));
-    }
+    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
     let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.overlay, None, &shape);
-    scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.overlay,
+        None,
+        &shape,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &shape,
+    );
 
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
-    let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
-    let ty = rect.y0 + (rect.height() - text_size as f64) / 2.0;
+    let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
+    let ty = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
     tr.draw_text_weighted(
         scene,
         text,
@@ -186,12 +162,10 @@ pub fn draw_pill(
     );
 }
 
-/// A small left/right chevron centred in `r`, pointing `left`. Handy for a
-/// bubble that doubles as a stepper (the reader's page nav).
 pub fn draw_chevron(scene: &mut Scene, transform: Affine, r: Rect, color: Color, left: bool) {
     use vello::kurbo::BezPath;
-    let cx = (r.x0 + r.x1) / 2.0;
-    let cy = (r.y0 + r.y1) / 2.0;
+    let cx = f64::midpoint(r.x0, r.x1);
+    let cy = f64::midpoint(r.y0, r.y1);
     let dx = 3.5;
     let dy = 5.0;
     let mut p = BezPath::new();
@@ -221,7 +195,10 @@ mod tests {
         assert!((b.alpha(t0) - 1.0).abs() < 1e-6, "fully opaque when fresh");
         // Mid-linger, before the fade tail: still fully opaque.
         assert!((b.alpha(t0 + Duration::from_millis(500)) - 1.0).abs() < 1e-6);
-        assert!(b.needs_frame(t0 + Duration::from_millis(500)), "counts down -> wants frames");
+        assert!(
+            b.needs_frame(t0 + Duration::from_millis(500)),
+            "counts down -> wants frames"
+        );
         // Into the fade tail: partial opacity.
         let a = b.alpha(t0 + Duration::from_millis(850));
         assert!(a > 0.0 && a < 1.0, "fades out across the tail: {a}");
@@ -236,11 +213,20 @@ mod tests {
         let t0 = Instant::now();
         b.set_hover(true, t0);
         // Pinned open regardless of time while the pointer stays over it.
-        assert!(b.is_visible(t0 + Duration::from_secs(60)), "hover pins the bubble open");
-        assert!(!b.needs_frame(t0 + Duration::from_secs(60)), "a pinned bubble needs no frames");
+        assert!(
+            b.is_visible(t0 + Duration::from_secs(60)),
+            "hover pins the bubble open"
+        );
+        assert!(
+            !b.needs_frame(t0 + Duration::from_secs(60)),
+            "a pinned bubble needs no frames"
+        );
         // Leaving starts a fresh linger.
         b.set_hover(false, t0 + Duration::from_secs(60));
-        assert!(b.is_visible(t0 + Duration::from_secs(60)), "still up right after leaving");
+        assert!(
+            b.is_visible(t0 + Duration::from_secs(60)),
+            "still up right after leaving"
+        );
         assert!(
             !b.is_visible(t0 + Duration::from_secs(60) + Duration::from_millis(1000)),
             "fades a linger after the pointer leaves"
@@ -256,7 +242,10 @@ mod tests {
         assert!(b.is_visible(t0 + Duration::from_millis(900)));
         // …then a new poke restarts the full linger.
         b.poke(t0 + Duration::from_millis(950));
-        assert!(b.is_visible(t0 + Duration::from_millis(1800)), "the second poke extended it");
+        assert!(
+            b.is_visible(t0 + Duration::from_millis(1800)),
+            "the second poke extended it"
+        );
         assert!(!b.is_visible(t0 + Duration::from_millis(1950)));
     }
 }

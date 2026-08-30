@@ -57,8 +57,7 @@ fn is_staged(path: &Path, file: &str) -> bool {
         .diff_tree_to_index(head_tree.as_ref(), None, None)
         .unwrap();
     diff.deltas().any(|d| {
-        d.new_file().path() == Some(Path::new(file))
-            || d.old_file().path() == Some(Path::new(file))
+        d.new_file().path() == Some(Path::new(file)) || d.old_file().path() == Some(Path::new(file))
     })
 }
 
@@ -73,7 +72,10 @@ fn stage_file_writes_index() {
 
     repo::stage_file(&path, "file.txt").expect("stage");
 
-    assert!(is_staged(&path, "file.txt"), "stage_file must write the index");
+    assert!(
+        is_staged(&path, "file.txt"),
+        "stage_file must write the index"
+    );
 }
 
 #[test]
@@ -85,10 +87,16 @@ fn unstage_file_resets_index_to_head() {
 
     repo::unstage_file(&path, "file.txt").expect("unstage");
 
-    assert!(!is_staged(&path, "file.txt"), "unstage_file must reset the index entry");
+    assert!(
+        !is_staged(&path, "file.txt"),
+        "unstage_file must reset the index entry"
+    );
     // The working tree edit must be preserved (unstage != discard).
     let wt = fs::read_to_string(path.join("file.txt")).unwrap();
-    assert!(wt.contains("CHANGED"), "working tree edit must survive unstage");
+    assert!(
+        wt.contains("CHANGED"),
+        "working tree edit must survive unstage"
+    );
 }
 
 #[test]
@@ -151,7 +159,11 @@ fn create_branch_and_checkout_moves_head() {
     let repo = open(&path);
     let head = repo.head().unwrap();
     assert!(head.is_branch());
-    assert_eq!(head.shorthand(), Some("feature"), "HEAD must move to the new branch");
+    assert_eq!(
+        head.shorthand(),
+        Some("feature"),
+        "HEAD must move to the new branch"
+    );
 }
 
 #[test]
@@ -166,24 +178,36 @@ fn checkout_existing_branch_switches_head() {
     assert_eq!(open(&path).head().unwrap().shorthand(), Some("feature"));
 
     repo::checkout_branch(&path, &original).expect("checkout back");
-    assert_eq!(open(&path).head().unwrap().shorthand(), Some(original.as_str()));
+    assert_eq!(
+        open(&path).head().unwrap().shorthand(),
+        Some(original.as_str())
+    );
 }
 
 #[test]
 fn delete_branch_removes_ref_and_refuses_head() {
     let (_d, path) = init_repo();
     repo::create_branch(&path, "doomed", None, false).unwrap();
-    assert!(open(&path).find_branch("doomed", git2::BranchType::Local).is_ok());
+    assert!(
+        open(&path)
+            .find_branch("doomed", git2::BranchType::Local)
+            .is_ok()
+    );
 
     repo::delete_branch(&path, "doomed").expect("delete");
     assert!(
-        open(&path).find_branch("doomed", git2::BranchType::Local).is_err(),
+        open(&path)
+            .find_branch("doomed", git2::BranchType::Local)
+            .is_err(),
         "branch ref must be gone"
     );
 
     // Deleting the checked-out branch must fail.
     let head = open(&path).head().unwrap().shorthand().unwrap().to_string();
-    assert!(repo::delete_branch(&path, &head).is_err(), "cannot delete HEAD branch");
+    assert!(
+        repo::delete_branch(&path, &head).is_err(),
+        "cannot delete HEAD branch"
+    );
 }
 
 #[test]
@@ -229,9 +253,14 @@ fn stage_hunk_stages_only_the_selected_hunk() {
     // second; the working tree (index..workdir) must still hold the second.
     let repo = open(&path);
     let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
-    let staged_diff = repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap();
+    let staged_diff = repo
+        .diff_tree_to_index(Some(&head_tree), None, None)
+        .unwrap();
     let staged_text = diff_to_string(&staged_diff);
-    assert!(staged_text.contains("line 2 CHANGED"), "hunk 0 must be staged");
+    assert!(
+        staged_text.contains("line 2 CHANGED"),
+        "hunk 0 must be staged"
+    );
     assert!(
         !staged_text.contains("line 38 CHANGED"),
         "hunk 1 must NOT be staged"
@@ -268,7 +297,11 @@ fn unstage_hunk_reverses_a_staged_hunk() {
 
     let repo = open(&path);
     let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
-    let staged_text = diff_to_string(&repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap());
+    let staged_text = diff_to_string(
+        &repo
+            .diff_tree_to_index(Some(&head_tree), None, None)
+            .unwrap(),
+    );
     assert!(
         !staged_text.contains("line 2 CHANGED"),
         "hunk 0 must have been unstaged"
@@ -288,7 +321,10 @@ fn stash_save_and_apply_roundtrip() {
     assert_eq!(short.len(), 7);
     // After stashing, the working tree is clean again.
     let clean = fs::read_to_string(path.join("file.txt")).unwrap();
-    assert!(!clean.contains("WIP EDIT"), "stash must clear the working edit");
+    assert!(
+        !clean.contains("WIP EDIT"),
+        "stash must clear the working edit"
+    );
     // The stash list has one entry.
     {
         let mut repo = open(&path);
@@ -381,10 +417,16 @@ fn fetch_and_pull_against_a_local_remote() {
 
     let local_repo = open(&local);
     let head = local_repo.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(head.summary(), Some("commit two"), "pull must fast-forward HEAD");
+    assert_eq!(
+        head.summary(),
+        Some("commit two"),
+        "pull must fast-forward HEAD"
+    );
     assert!(
         local.join("a.txt").exists()
-            && fs::read_to_string(local.join("a.txt")).unwrap().contains("two"),
+            && fs::read_to_string(local.join("a.txt"))
+                .unwrap()
+                .contains("two"),
         "working tree must reflect the pulled content"
     );
 }
@@ -411,7 +453,10 @@ fn app_stage_and_commit_through_production_actions() {
     // production action. Assert against the REAL repo afterwards.
     app.test_stage_all();
     assert!(is_staged(&path, "file.txt"), "stage_all staged the edit");
-    assert!(is_staged(&path, "added.rs"), "stage_all staged the new file");
+    assert!(
+        is_staged(&path, "added.rs"),
+        "stage_all staged the new file"
+    );
 
     app.test_commit("wire real git");
     assert_eq!(app.test_last_error(), None, "commit must not error");
@@ -425,7 +470,9 @@ fn app_stage_and_commit_through_production_actions() {
     let (s, u, n) = app.test_change_counts();
     assert_eq!((s, u, n), (0, 0, 0), "tree clean after commit");
     assert_eq!(
-        app.test_commit_summaries().first().map(|s| s.as_str()),
+        app.test_commit_summaries()
+            .first()
+            .map(std::string::String::as_str),
         Some("wire real git"),
         "history reload shows the new commit at the tip"
     );
@@ -439,11 +486,17 @@ fn app_toggle_stage_single_file_mutates_index() {
 
     // Stage the single unstaged file (index 0 in the unstaged list).
     app.test_toggle_stage(ChangeArea::Unstaged, 0);
-    assert!(is_staged(&path, "file.txt"), "toggling unstaged file stages it");
+    assert!(
+        is_staged(&path, "file.txt"),
+        "toggling unstaged file stages it"
+    );
 
     // Now unstage it back (index 0 in the staged list).
     app.test_toggle_stage(ChangeArea::Staged, 0);
-    assert!(!is_staged(&path, "file.txt"), "toggling staged file unstages it");
+    assert!(
+        !is_staged(&path, "file.txt"),
+        "toggling staged file unstages it"
+    );
 }
 
 #[test]
@@ -470,8 +523,15 @@ fn app_create_branch_through_production_action() {
     app.test_create_branch("topic/awesome");
     assert_eq!(app.test_last_error(), None);
     // Real repo: branch exists and HEAD switched to it (create+checkout).
-    assert!(open(&path).find_branch("topic/awesome", git2::BranchType::Local).is_ok());
-    assert_eq!(open(&path).head().unwrap().shorthand(), Some("topic/awesome"));
+    assert!(
+        open(&path)
+            .find_branch("topic/awesome", git2::BranchType::Local)
+            .is_ok()
+    );
+    assert_eq!(
+        open(&path).head().unwrap().shorthand(),
+        Some("topic/awesome")
+    );
     assert!(app.test_branch_names().iter().any(|n| n == "topic/awesome"));
 }
 
@@ -503,9 +563,19 @@ fn app_stage_hunk_through_production_action() {
 
     let repo = open(&path);
     let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
-    let staged_text = diff_to_string(&repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap());
-    assert!(staged_text.contains("line 2 CHANGED"), "first hunk staged via app action");
-    assert!(!staged_text.contains("line 38 CHANGED"), "second hunk left unstaged");
+    let staged_text = diff_to_string(
+        &repo
+            .diff_tree_to_index(Some(&head_tree), None, None)
+            .unwrap(),
+    );
+    assert!(
+        staged_text.contains("line 2 CHANGED"),
+        "first hunk staged via app action"
+    );
+    assert!(
+        !staged_text.contains("line 38 CHANGED"),
+        "second hunk left unstaged"
+    );
 }
 
 #[test]
@@ -513,7 +583,10 @@ fn not_a_repo_is_handled_gracefully() {
     let dir = tempfile::tempdir().unwrap();
     // A plain directory, no git.
     assert!(!repo::is_repo(dir.path()), "is_repo false for non-repo");
-    assert!(GitClientApp::open_at(dir.path()).is_none(), "open_at returns None");
+    assert!(
+        GitClientApp::open_at(dir.path()).is_none(),
+        "open_at returns None"
+    );
     assert!(repo::load(dir.path()).is_none(), "load returns None");
 }
 
@@ -526,7 +599,10 @@ fn stage_hunk_of_untracked_file_stages_whole_file() {
     assert!(!is_staged(&path, "new.rs"));
 
     repo::apply_hunk(&path, "new.rs", 0, false).expect("stage untracked hunk");
-    assert!(is_staged(&path, "new.rs"), "untracked hunk-stage stages the file");
+    assert!(
+        is_staged(&path, "new.rs"),
+        "untracked hunk-stage stages the file"
+    );
 }
 
 #[test]
@@ -538,7 +614,10 @@ fn discard_file_reverts_tracked_worktree_edit() {
     repo::discard_file(&path, "file.txt").expect("discard tracked edit");
 
     let after = fs::read_to_string(path.join("file.txt")).unwrap();
-    assert_eq!(after, original, "discard must restore the committed content");
+    assert_eq!(
+        after, original,
+        "discard must restore the committed content"
+    );
 }
 
 #[test]
@@ -549,7 +628,10 @@ fn discard_file_deletes_untracked_file() {
 
     repo::discard_file(&path, "scratch.tmp").expect("discard untracked");
 
-    assert!(!path.join("scratch.tmp").exists(), "untracked discard deletes the file");
+    assert!(
+        !path.join("scratch.tmp").exists(),
+        "untracked discard deletes the file"
+    );
 }
 
 #[test]
@@ -572,7 +654,10 @@ fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
     repo::discard_hunk(&path, "multi.txt", 0).expect("discard hunk 0");
 
     let after = fs::read_to_string(path.join("multi.txt")).unwrap();
-    assert!(after.contains("line 2\n"), "hunk 0 reverted to committed content");
+    assert!(
+        after.contains("line 2\n"),
+        "hunk 0 reverted to committed content"
+    );
     assert!(!after.contains("line 2 EDIT"), "hunk 0's edit is gone");
     assert!(after.contains("line 38 EDIT"), "hunk 1's edit must remain");
 }
@@ -608,10 +693,22 @@ fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
     let has = |d: &git_client::model::FileDiff, needle: &str| {
         d.lines.iter().any(|l| l.content.contains(needle))
     };
-    assert!(has(staged, "line 2 STAGED"), "staged diff shows the staged edit");
-    assert!(!has(staged, "line 38 UNSTAGED"), "staged diff excludes the unstaged edit");
-    assert!(has(worktree, "line 38 UNSTAGED"), "worktree diff shows the unstaged edit");
-    assert!(!has(worktree, "line 2 STAGED"), "worktree diff excludes the staged edit");
+    assert!(
+        has(staged, "line 2 STAGED"),
+        "staged diff shows the staged edit"
+    );
+    assert!(
+        !has(staged, "line 38 UNSTAGED"),
+        "staged diff excludes the unstaged edit"
+    );
+    assert!(
+        has(worktree, "line 38 UNSTAGED"),
+        "worktree diff shows the unstaged edit"
+    );
+    assert!(
+        !has(worktree, "line 2 STAGED"),
+        "worktree diff excludes the staged edit"
+    );
 }
 
 #[test]
@@ -640,7 +737,10 @@ fn app_empty_state_opens_a_real_repository() {
     assert!(app.test_awaiting_repo(), "no repo bound → empty state");
 
     app.test_open_path(&path.to_string_lossy());
-    assert!(!app.test_awaiting_repo(), "opening a valid path binds the repo");
+    assert!(
+        !app.test_awaiting_repo(),
+        "opening a valid path binds the repo"
+    );
     assert_eq!(app.test_last_error(), None);
     // HEAD came from the real repo we opened.
     let head = open(&path).head().unwrap().shorthand().unwrap().to_string();
@@ -652,7 +752,10 @@ fn app_empty_state_rejects_a_non_repository_path() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = GitClientApp::open_empty();
     app.test_open_path(&dir.path().to_string_lossy());
-    assert!(app.test_awaiting_repo(), "a non-repo path leaves the empty state up");
+    assert!(
+        app.test_awaiting_repo(),
+        "a non-repo path leaves the empty state up"
+    );
     assert!(app.test_last_error().is_some(), "and surfaces an error");
 }
 

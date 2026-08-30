@@ -24,11 +24,14 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Avatar, Button, ButtonFace, ButtonStyle, Link, TextInput, Widget};
+use ui::widget::{
+    Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Link, TextInput, Widget,
+};
 
 use crate::date;
 use crate::doc::ContactsDoc;
@@ -175,11 +178,18 @@ impl EditForm {
             inputs.push(field(Slot::AddrPostal(i), &a.postal));
             inputs.push(field(Slot::AddrCountry(i), &a.country));
         }
-        inputs.push(field(Slot::Birthday, &draft.birthday.map(|b| b.iso()).unwrap_or_default()));
+        inputs.push(field(
+            Slot::Birthday,
+            &draft.birthday.map(|b| b.iso()).unwrap_or_default(),
+        ));
         inputs.push(field(Slot::Website, &draft.website));
         inputs.push(field(Slot::Notes, &draft.notes));
         inputs.push(field(Slot::Groups, &draft.groups.join(", ")));
-        Self { draft, is_new, inputs }
+        Self {
+            draft,
+            is_new,
+            inputs,
+        }
     }
 
     /// Pull every input's live value back into the draft.
@@ -272,7 +282,7 @@ fn best_field_in_direction(
             FieldDir::Left | FieldDir::Right => ((c.x - fc.x).abs(), (c.y - fc.y).abs()),
         };
         let score = primary + perp * 2.0;
-        if best.map_or(true, |(bs, _)| score < bs) {
+        if best.is_none_or(|(bs, _)| score < bs) {
             best = Some((score, idx));
         }
     }
@@ -639,26 +649,25 @@ impl ContactsApp {
                 .list_rows
                 .iter()
                 .find(|(rid, _)| *rid == id)
-                .map(|(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y))
-                .unwrap_or_else(|| {
-                    Rect::new(
-                        self.list_rect.x0 + 60.0,
-                        self.list_rect.y0 + 200.0,
-                        self.list_rect.x0 + 60.0,
-                        self.list_rect.y0 + 200.0,
-                    )
-                });
+                .map_or_else(
+                    || {
+                        Rect::new(
+                            self.list_rect.x0 + 60.0,
+                            self.list_rect.y0 + 200.0,
+                            self.list_rect.x0 + 60.0,
+                            self.list_rect.y0 + 200.0,
+                        )
+                    },
+                    |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y),
+                );
             self.popup = Some(Popup::ContextMenu { target: id, anchor });
         }
     }
 
     /// Ids currently visible after search + group filter, in sort order.
     fn visible_ids(&self) -> Vec<ContactId> {
-        self.store.filtered_sorted(
-            self.search.value(),
-            self.group_filter.as_deref(),
-            self.sort,
-        )
+        self.store
+            .filtered_sorted(self.search.value(), self.group_filter.as_deref(), self.sort)
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
@@ -709,7 +718,11 @@ impl ContactsApp {
             self.perform_action(doc, crate::actions::upsert_contact_action(&c));
             self.selected = Some(id);
             self.persist();
-            self.show_toast(if form.is_new { "Contact created" } else { "Saved" });
+            self.show_toast(if form.is_new {
+                "Contact created"
+            } else {
+                "Saved"
+            });
         }
         self.mode = Mode::View;
         self.popup = None;
@@ -740,7 +753,8 @@ impl ContactsApp {
     /// caller for immediate UI feedback and reconciled from the document on the
     /// next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::ContactsAction) {
-        self.actions.dispatch(doc, crate::actions::CONTACTS_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, crate::actions::CONTACTS_ACTION_TYPE, &action);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -753,7 +767,9 @@ impl ContactsApp {
     /// The context Ctrl+K needs to build the contacts resource tree: a snapshot
     /// of the address book currently in the model.
     pub(crate) fn contacts_resource_ctx(&self) -> crate::actions::ContactsResourceCtx {
-        crate::actions::ContactsResourceCtx { contacts: self.store.contacts.clone() }
+        crate::actions::ContactsResourceCtx {
+            contacts: self.store.contacts.clone(),
+        }
     }
 
     /// Whether the open edit form holds changes not yet written to the
@@ -861,8 +877,7 @@ impl ContactsApp {
         let cur = self
             .selected
             .and_then(|s| ids.iter().position(|x| *x == s))
-            .map(|p| p as isize)
-            .unwrap_or(-1);
+            .map_or(-1, |p| p as isize);
         let next = (cur + delta).clamp(0, ids.len() as isize - 1) as usize;
         self.selected = Some(ids[next]);
         self.detail_scroll = 0.0;
@@ -923,7 +938,10 @@ impl ContactsApp {
         }
         if n > 0 {
             self.persist();
-            self.show_toast(format!("Imported {n} contact{}", if n == 1 { "" } else { "s" }));
+            self.show_toast(format!(
+                "Imported {n} contact{}",
+                if n == 1 { "" } else { "s" }
+            ));
             self.relayout = true;
         } else if errors > 0 {
             self.show_toast("Couldn't read the selected file(s)");
@@ -1027,8 +1045,10 @@ impl ContactsApp {
     /// the tests — it takes an explicit path and never consults the picker or
     /// an env var.
     fn write_export(&mut self, ids: &[ContactId], version: VCardVersion, path: &std::path::Path) {
-        let contacts: Vec<Contact> =
-            ids.iter().filter_map(|id| self.store.get(*id).cloned()).collect();
+        let contacts: Vec<Contact> = ids
+            .iter()
+            .filter_map(|id| self.store.get(*id).cloned())
+            .collect();
         if contacts.is_empty() {
             self.show_toast("Select at least one contact to export");
             return;
@@ -1086,8 +1106,7 @@ impl ContactsApp {
             let list_x0 = content.x0 - avail_w * slide;
             self.list_rect = Rect::new(list_x0, content.y0, list_x0 + avail_w, content.y1);
             let detail_x0 = content.x0 + avail_w * (1.0 - slide);
-            self.detail_rect =
-                Rect::new(detail_x0, content.y0, detail_x0 + avail_w, content.y1);
+            self.detail_rect = Rect::new(detail_x0, content.y0, detail_x0 + avail_w, content.y1);
             // Reserve a Back affordance pill at the top-left of the detail
             // pane (the master-detail return-to-list affordance).
             self.hit.back = Rect::new(
@@ -1099,7 +1118,9 @@ impl ContactsApp {
         } else {
             // Wide: the classic list (left) + detail (right) split with a
             // draggable divider between them.
-            let list_w = (avail_w * self.split_pos).clamp(260.0, avail_w - 360.0).max(220.0);
+            let list_w = (avail_w * self.split_pos)
+                .clamp(260.0, avail_w - 360.0)
+                .max(220.0);
             self.list_rect = Rect::new(content.x0, content.y0, content.x0 + list_w, content.y1);
             let div_x0 = self.list_rect.x1;
             self.detail_rect = Rect::new(div_x0 + DIVIDER_W, content.y0, content.x1, content.y1);
@@ -1132,7 +1153,12 @@ impl ContactsApp {
 
         // List body (scroll region).
         let body_top = self.hit.group.y1 + 12.0;
-        self.list_body = Rect::new(self.list_rect.x0, body_top, self.list_rect.x1, self.list_rect.y1);
+        self.list_body = Rect::new(
+            self.list_rect.x0,
+            body_top,
+            self.list_rect.x1,
+            self.list_rect.y1,
+        );
 
         // Clamp + compute row rects.
         let ids = self.visible_ids();
@@ -1170,8 +1196,18 @@ impl ContactsApp {
         let ax1 = self.detail_rect.x1 - 24.0;
         let by = self.detail_rect.y0 + 30.0 + self.detail_top_offset();
         self.hit.delete = Rect::new(ax1 - 84.0, by, ax1, by + 32.0);
-        self.hit.edit = Rect::new(self.hit.delete.x0 - 8.0 - 72.0, by, self.hit.delete.x0 - 8.0, by + 32.0);
-        self.hit.fav = Rect::new(self.hit.edit.x0 - 8.0 - 32.0, by, self.hit.edit.x0 - 8.0, by + 32.0);
+        self.hit.edit = Rect::new(
+            self.hit.delete.x0 - 8.0 - 72.0,
+            by,
+            self.hit.delete.x0 - 8.0,
+            by + 32.0,
+        );
+        self.hit.fav = Rect::new(
+            self.hit.edit.x0 - 8.0 - 32.0,
+            by,
+            self.hit.edit.x0 - 8.0,
+            by + 32.0,
+        );
     }
 
     /// Assign rects to every form input + dynamic control. Mirrors the
@@ -1199,7 +1235,12 @@ impl ContactsApp {
         let mut y = top - self.detail_scroll;
 
         self.hit.save = Rect::new(x1 - 96.0, by, x1, by + 32.0);
-        self.hit.cancel = Rect::new(self.hit.save.x0 - 8.0 - 88.0, by, self.hit.save.x0 - 8.0, by + 32.0);
+        self.hit.cancel = Rect::new(
+            self.hit.save.x0 - 8.0 - 88.0,
+            by,
+            self.hit.save.x0 - 8.0,
+            by + 32.0,
+        );
         self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + 32.0);
 
         let label_h = 18.0;
@@ -1231,7 +1272,10 @@ impl ContactsApp {
         for i in 0..n_phones {
             let chip = Rect::new(x0, y, x0 + 78.0, y + nh);
             let rm = Rect::new(x1 - 30.0, y, x1, y + nh);
-            plan.push((Slot::Phone(i), Rect::new(chip.x1 + 8.0, y, rm.x0 - 8.0, y + nh)));
+            plan.push((
+                Slot::Phone(i),
+                Rect::new(chip.x1 + 8.0, y, rm.x0 - 8.0, y + nh),
+            ));
             self.hit.type_chips.push((TypeTarget::Phone(i), chip));
             self.hit.remove_btns.push((TypeTarget::Phone(i), rm));
             y += nh + 8.0;
@@ -1244,7 +1288,10 @@ impl ContactsApp {
         for i in 0..n_emails {
             let chip = Rect::new(x0, y, x0 + 78.0, y + nh);
             let rm = Rect::new(x1 - 30.0, y, x1, y + nh);
-            plan.push((Slot::Email(i), Rect::new(chip.x1 + 8.0, y, rm.x0 - 8.0, y + nh)));
+            plan.push((
+                Slot::Email(i),
+                Rect::new(chip.x1 + 8.0, y, rm.x0 - 8.0, y + nh),
+            ));
             self.hit.type_chips.push((TypeTarget::Email(i), chip));
             self.hit.remove_btns.push((TypeTarget::Email(i), rm));
             y += nh + 8.0;
@@ -1257,15 +1304,24 @@ impl ContactsApp {
         for i in 0..n_addr {
             let chip = Rect::new(x0, y, x0 + 78.0, y + nh);
             let rm = Rect::new(x1 - 30.0, y, x1, y + nh);
-            plan.push((Slot::AddrStreet(i), Rect::new(chip.x1 + 8.0, y, rm.x0 - 8.0, y + nh)));
+            plan.push((
+                Slot::AddrStreet(i),
+                Rect::new(chip.x1 + 8.0, y, rm.x0 - 8.0, y + nh),
+            ));
             self.hit.type_chips.push((TypeTarget::Addr(i), chip));
             self.hit.remove_btns.push((TypeTarget::Addr(i), rm));
             y += nh + 8.0;
             plan.push((Slot::AddrCity(i), Rect::new(x0, y, x0 + half, y + nh)));
-            plan.push((Slot::AddrRegion(i), Rect::new(x0 + half + 10.0, y, x1, y + nh)));
+            plan.push((
+                Slot::AddrRegion(i),
+                Rect::new(x0 + half + 10.0, y, x1, y + nh),
+            ));
             y += nh + 8.0;
             plan.push((Slot::AddrPostal(i), Rect::new(x0, y, x0 + half, y + nh)));
-            plan.push((Slot::AddrCountry(i), Rect::new(x0 + half + 10.0, y, x1, y + nh)));
+            plan.push((
+                Slot::AddrCountry(i),
+                Rect::new(x0 + half + 10.0, y, x1, y + nh),
+            ));
             y += nh + 12.0;
         }
         self.hit.add_address = Rect::new(x0, y, x0 + 150.0, y + 28.0);
@@ -1310,7 +1366,10 @@ impl ContactsApp {
     fn popup_menu_geometry(&self, anchor: Rect, items: usize, width: f64) -> (Rect, Vec<Rect>) {
         let item_h = 32.0;
         let h = items as f64 * item_h + 8.0;
-        let x0 = anchor.x0.min(self.rect.x1 - width - 8.0).max(self.rect.x0 + 8.0);
+        let x0 = anchor
+            .x0
+            .min(self.rect.x1 - width - 8.0)
+            .max(self.rect.x0 + 8.0);
         let mut y0 = anchor.y1 + 4.0;
         if y0 + h > self.rect.y1 - 8.0 {
             y0 = (anchor.y0 - h - 4.0).max(self.rect.y0 + 8.0);
@@ -1332,14 +1391,27 @@ impl ContactsApp {
     ) -> (Rect, Rect, Rect, Vec<(u32, Rect)>) {
         let w = 252.0;
         let h = 250.0;
-        let x0 = anchor.x0.min(self.rect.x1 - w - 8.0).max(self.rect.x0 + 8.0);
+        let x0 = anchor
+            .x0
+            .min(self.rect.x1 - w - 8.0)
+            .max(self.rect.x0 + 8.0);
         let mut y0 = anchor.y1 + 4.0;
         if y0 + h > self.rect.y1 - 8.0 {
             y0 = (anchor.y0 - h - 4.0).max(self.rect.y0 + 8.0);
         }
         let panel = Rect::new(x0, y0, x0 + w, y0 + h);
-        let prev = Rect::new(panel.x0 + 8.0, panel.y0 + 8.0, panel.x0 + 36.0, panel.y0 + 36.0);
-        let next = Rect::new(panel.x1 - 36.0, panel.y0 + 8.0, panel.x1 - 8.0, panel.y0 + 36.0);
+        let prev = Rect::new(
+            panel.x0 + 8.0,
+            panel.y0 + 8.0,
+            panel.x0 + 36.0,
+            panel.y0 + 36.0,
+        );
+        let next = Rect::new(
+            panel.x1 - 36.0,
+            panel.y0 + 8.0,
+            panel.x1 - 8.0,
+            panel.y0 + 36.0,
+        );
         // Day grid: 7 cols, start under the weekday header.
         let grid_top = panel.y0 + 74.0;
         let cell = (w - 16.0) / 7.0;
@@ -1347,7 +1419,7 @@ impl ContactsApp {
         let dim = date::days_in_month(year, month);
         let mut cells = Vec::new();
         for d in 1..=dim {
-            let idx = (first_wd + (d - 1)) as f64;
+            let idx = f64::from(first_wd + (d - 1));
             let col = (idx % 7.0).floor();
             let row = (idx / 7.0).floor();
             let cx = panel.x0 + 8.0 + col * cell;
@@ -1400,8 +1472,19 @@ impl ContactsApp {
             // Single-pane push: clip both slabs to the content area below the
             // toolbar so the off-screen pane (sliding in/out) never bleeds
             // past the edges, and skip whichever pane is fully off-screen.
-            let content = Rect::new(self.rect.x0, self.rect.y0 + TOOLBAR_H, self.rect.x1, self.rect.y1);
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content);
+            let content = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + TOOLBAR_H,
+                self.rect.x1,
+                self.rect.y1,
+            );
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &content,
+            );
             let slide = self.push.slide();
             if slide < 0.999 {
                 self.draw_list_pane(scene, transform, tr, theme, presence);
@@ -1456,7 +1539,11 @@ impl ContactsApp {
                 "Search name, email, phone…",
                 14.0,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((self.hit.search.x0 + 12.0, self.hit.search.center().y - 9.0)),
+                transform
+                    * Affine::translate((
+                        self.hit.search.x0 + 12.0,
+                        self.hit.search.center().y - 9.0,
+                    )),
                 None,
             );
         }
@@ -1474,7 +1561,13 @@ impl ContactsApp {
     ) {
         let c = &theme.tokens.colors;
         // Detail panel background.
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.detail_rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.base,
+            None,
+            &self.detail_rect,
+        );
         if self.mode == Mode::Edit {
             self.draw_form(scene, transform, tr, theme, presence);
         } else {
@@ -1493,8 +1586,12 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let rect = self.hit.back;
         let hovered = rect.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.full as f64);
-        let bg = if hovered { c.surfaces.raised } else { c.surfaces.base };
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
+        let bg = if hovered {
+            c.surfaces.raised
+        } else {
+            c.surfaces.base
+        };
         scene.fill(Fill::NonZero, t, bg, None, &shape);
         scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
         // Left chevron.
@@ -1518,7 +1615,12 @@ impl ContactsApp {
 
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + TOOLBAR_H);
+        let bar = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + TOOLBAR_H,
+        );
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
         scene.stroke(
             &Stroke::new(1.0),
@@ -1538,7 +1640,10 @@ impl ContactsApp {
         // on a narrow window the buttons crowd in and it would otherwise bleed
         // under the Import button.
         let count_x = self.rect.x0 + PAD;
-        let count_w = tr.measure_weighted(&count, 14.0, None, TextWeight::Semibold).0 as f64;
+        let count_w = f64::from(
+            tr.measure_weighted(&count, 14.0, None, TextWeight::Semibold)
+                .0,
+        );
         if count_x + count_w < self.hit.import.x0 - 12.0 {
             tr.draw_text_weighted(
                 scene,
@@ -1552,9 +1657,39 @@ impl ContactsApp {
         }
 
         let hov = |r: Rect| r.contains(self.last_mouse);
-        toolbar_button(scene, t, tr, theme, self.hit.import, "Import", false, hov(self.hit.import), false);
-        toolbar_button(scene, t, tr, theme, self.hit.export, "Export", false, hov(self.hit.export), false);
-        toolbar_button(scene, t, tr, theme, self.hit.new, "+ New", true, hov(self.hit.new), false);
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.import,
+            "Import",
+            false,
+            hov(self.hit.import),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.export,
+            "Export",
+            false,
+            hov(self.hit.export),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.new,
+            "+ New",
+            true,
+            hov(self.hit.new),
+            false,
+        );
     }
 
     fn draw_list(
@@ -1579,7 +1714,15 @@ impl ContactsApp {
             Some(g) => format!("Group: {g}"),
             None => "Group: All".to_string(),
         };
-        chip(scene, t, tr, theme, self.hit.group, &group_label, self.group_filter.is_some());
+        chip(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.group,
+            &group_label,
+            self.group_filter.is_some(),
+        );
 
         // Rows (clipped to body).
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.list_body);
@@ -1587,10 +1730,12 @@ impl ContactsApp {
             if rr.y1 < self.list_body.y0 || rr.y0 > self.list_body.y1 {
                 continue;
             }
-            let Some(contact) = self.store.get(*id) else { continue };
+            let Some(contact) = self.store.get(*id) else {
+                continue;
+            };
             let selected = self.selected == Some(*id);
             if selected {
-                let bg = RoundedRect::from_rect(rr.inset(-0.0), theme.tokens.radii.md as f64);
+                let bg = RoundedRect::from_rect(rr.inset(-0.0), f64::from(theme.tokens.radii.md));
                 scene.fill(
                     Fill::NonZero,
                     t,
@@ -1608,7 +1753,12 @@ impl ContactsApp {
                 );
             }
             // Avatar.
-            let av = Rect::new(rr.x0 + 14.0, rr.y0 + 11.0, rr.x0 + 14.0 + 40.0, rr.y0 + 11.0 + 40.0);
+            let av = Rect::new(
+                rr.x0 + 14.0,
+                rr.y0 + 11.0,
+                rr.x0 + 14.0 + 40.0,
+                rr.y0 + 11.0 + 40.0,
+            );
             draw_avatar(scene, t, tr, theme, av, &contact.initials());
             let tx = av.x1 + 12.0;
             // Elide name + subtitle to a single line each so a narrow list
@@ -1643,7 +1793,14 @@ impl ContactsApp {
                 );
             }
             if contact.favorite {
-                draw_star(scene, t, Point::new(rr.x1 - 18.0, rr.y0 + 20.0), 6.0, theme.accent_primary, true);
+                draw_star(
+                    scene,
+                    t,
+                    Point::new(rr.x1 - 18.0, rr.y0 + 20.0),
+                    6.0,
+                    theme.accent_primary,
+                    true,
+                );
             }
             // Separator.
             scene.stroke(
@@ -1686,7 +1843,12 @@ impl ContactsApp {
 
     fn draw_divider(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
         let dx0 = self.list_rect.x1;
-        let r = Rect::new(dx0, self.detail_rect.y0, dx0 + DIVIDER_W, self.detail_rect.y1);
+        let r = Rect::new(
+            dx0,
+            self.detail_rect.y0,
+            dx0 + DIVIDER_W,
+            self.detail_rect.y1,
+        );
         let color = if self.divider_hover || self.divider_drag {
             theme.accent_primary
         } else {
@@ -1723,7 +1885,9 @@ impl ContactsApp {
             self.website_link = None;
             return;
         };
-        let Some(contact) = self.store.get(id).cloned() else { return };
+        let Some(contact) = self.store.get(id).cloned() else {
+            return;
+        };
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         let off = self.detail_top_offset();
@@ -1742,14 +1906,42 @@ impl ContactsApp {
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
 
         // Action buttons (favorite star, Edit, Delete) — top right.
-        draw_star(scene, t, self.hit.fav.center(), 11.0, theme.accent_primary, contact.favorite);
-        toolbar_button(scene, t, tr, theme, self.hit.edit, "Edit", true, self.hit.edit.contains(self.last_mouse), false);
-        toolbar_button(scene, t, tr, theme, self.hit.delete, "Delete", false, self.hit.delete.contains(self.last_mouse), false);
+        draw_star(
+            scene,
+            t,
+            self.hit.fav.center(),
+            11.0,
+            theme.accent_primary,
+            contact.favorite,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.edit,
+            "Edit",
+            true,
+            self.hit.edit.contains(self.last_mouse),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.delete,
+            "Delete",
+            false,
+            self.hit.delete.contains(self.last_mouse),
+            false,
+        );
 
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
         let name_y = y + 88.0;
-        let name = tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
+        let name =
+            tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
             &name,
@@ -1778,11 +1970,17 @@ impl ContactsApp {
             let mut bx = x0;
             let by = hy;
             for g in &contact.groups {
-                let tw = tr.measure(g, 11.0, None).0 as f64;
+                let tw = f64::from(tr.measure(g, 11.0, None).0);
                 let bw = tw + 18.0;
                 let br = Rect::new(bx, by, bx + bw, by + 20.0);
                 let shape = RoundedRect::from_rect(br, 10.0);
-                scene.fill(Fill::NonZero, t, theme.accent_primary.with_alpha_factor(0.16), None, &shape);
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    theme.accent_primary.with_alpha_factor(0.16),
+                    None,
+                    &shape,
+                );
                 tr.draw_text(
                     scene,
                     g,
@@ -1842,10 +2040,19 @@ impl ContactsApp {
             detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &bday.pretty());
             hits.push((Slot::Birthday, Rect::new(x0, y0 - 4.0, x1, y)));
         }
-        if !contact.website.is_empty() {
+        if contact.website.is_empty() {
+            self.website_link = None;
+        } else {
             detail_section(scene, t, tr, theme, x0, &mut y, "WEBSITE");
             // "url" field label on the left, matching the other detail rows.
-            tr.draw_text(scene, "url", 12.0, c.text_dim, t * Affine::translate((x0, y + 2.0)), Some(64.0));
+            tr.draw_text(
+                scene,
+                "url",
+                12.0,
+                c.text_dim,
+                t * Affine::translate((x0, y + 2.0)),
+                Some(64.0),
+            );
             // The website is a live hyperlink (ui `Link` widget), not plain
             // text: single-click opens it via the OS handler. Rebuilt only when
             // the URL changes so its hover/press state survives across frames.
@@ -1854,27 +2061,24 @@ impl ContactsApp {
             let needs_new = self
                 .website_link
                 .as_ref()
-                .map(|l| l.url() != contact.website)
-                .unwrap_or(true);
+                .is_none_or(|l| l.url() != contact.website);
             if needs_new {
                 self.website_link = Some(Link::new(&contact.website).with_font_size(14.0));
             }
             let (lw, lh) = tr.measure(&contact.website, 14.0, None);
-            let lw = (lw as f64).min(vw);
-            let lh = (lh as f64).max(20.0);
+            let lw = f64::from(lw).min(vw);
+            let lh = f64::from(lh).max(20.0);
             let lrect = Rect::new(vx, y, vx + lw, y + lh);
             if let Some(link) = self.website_link.as_mut() {
                 link.apply_layout_external(lrect);
                 link.draw(scene, t, tr, theme, presence);
             }
             y += lh + 8.0;
-        } else {
-            self.website_link = None;
         }
         if !contact.notes.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
             let y0 = y;
-            let h = tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1 as f64;
+            let h = f64::from(tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1);
             tr.draw_text(
                 scene,
                 &contact.notes,
@@ -1888,7 +2092,10 @@ impl ContactsApp {
         }
 
         // Header double-click: the name row edits the first/last name.
-        hits.push((Slot::First, Rect::new(x0, name_top - 6.0, x1, name_top + 30.0)));
+        hits.push((
+            Slot::First,
+            Rect::new(x0, name_top - 6.0, x1, name_top + 30.0),
+        ));
 
         self.detail_field_hits = hits;
         self.detail_content_h = (y + self.detail_scroll) - top + 24.0;
@@ -1920,9 +2127,8 @@ impl ContactsApp {
             // A brand-new record still reads as "New Contact" only while it has
             // no identifying text; once a name/org is typed the heading follows
             // it live, so the identity anchor forms as you fill the record in.
-            let blank = d.first.trim().is_empty()
-                && d.last.trim().is_empty()
-                && d.org.trim().is_empty();
+            let blank =
+                d.first.trim().is_empty() && d.last.trim().is_empty() && d.org.trim().is_empty();
             (f.is_new && blank, d.display_name(), d.initials())
         };
         let title_y = area.y0 + FORM_TITLE_TOP + off;
@@ -1932,7 +2138,11 @@ impl ContactsApp {
         draw_avatar(scene, t, tr, theme, av, &initials);
         // Heading: the forming name, or a clear "New Contact" while it is blank
         // so a fresh record never reads as the "No Name" placeholder.
-        let heading = if show_new { "New Contact".to_string() } else { draft_name };
+        let heading = if show_new {
+            "New Contact".to_string()
+        } else {
+            draft_name
+        };
         let head_avail = (self.hit.cancel.x0 - 12.0 - (av.x1 + 12.0)).max(40.0) as f32;
         let heading = tr.elide_to_width_weighted(&heading, 20.0, head_avail, TextWeight::Bold);
         tr.draw_text_weighted(
@@ -1944,12 +2154,12 @@ impl ContactsApp {
             None,
             TextWeight::Bold,
         );
-        let fav = self.form.as_ref().map(|f| f.draft.favorite).unwrap_or(false);
+        let fav = self.form.as_ref().is_some_and(|f| f.draft.favorite);
         // Favorite toggle pill.
         {
             let r = self.hit.fav_toggle;
             let hovered = r.contains(self.last_mouse);
-            let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
             let bg = if fav {
                 theme.accent_primary.with_alpha_factor(0.18)
             } else if hovered {
@@ -1959,18 +2169,49 @@ impl ContactsApp {
             };
             scene.fill(Fill::NonZero, t, bg, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-            draw_star(scene, t, Point::new(r.x0 + 16.0, r.center().y), 7.0, theme.accent_primary, fav);
+            draw_star(
+                scene,
+                t,
+                Point::new(r.x0 + 16.0, r.center().y),
+                7.0,
+                theme.accent_primary,
+                fav,
+            );
             tr.draw_text(
                 scene,
                 if fav { "Favorited" } else { "Favorite" },
                 12.0,
-                if fav { theme.accent_primary } else { c.text_dim },
+                if fav {
+                    theme.accent_primary
+                } else {
+                    c.text_dim
+                },
                 t * Affine::translate((r.x0 + 30.0, r.center().y - 7.0)),
                 None,
             );
         }
-        toolbar_button(scene, t, tr, theme, self.hit.save, "Save", true, self.hit.save.contains(self.last_mouse), false);
-        toolbar_button(scene, t, tr, theme, self.hit.cancel, "Cancel", false, self.hit.cancel.contains(self.last_mouse), false);
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.save,
+            "Save",
+            true,
+            self.hit.save.contains(self.last_mouse),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.cancel,
+            "Cancel",
+            false,
+            self.hit.cancel.contains(self.last_mouse),
+            false,
+        );
 
         // Scrollable body, clipped below the two-row header band (title row +
         // controls row). Derived from the same constants as `layout_form` so
@@ -1980,8 +2221,14 @@ impl ContactsApp {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
 
         // Section labels are drawn relative to the first input of each group.
-        let inputs_snapshot: Vec<(Slot, Rect)> =
-            self.form.as_ref().unwrap().inputs.iter().map(|f| (f.slot, f.ti_rect())).collect();
+        let inputs_snapshot: Vec<(Slot, Rect)> = self
+            .form
+            .as_ref()
+            .unwrap()
+            .inputs
+            .iter()
+            .map(|f| (f.slot, f.ti_rect()))
+            .collect();
         let draft = self.form.as_ref().unwrap().draft.clone();
         let label = |scene: &mut Scene, tr: &mut TextRenderer, text: &str, rect: Rect| {
             tr.draw_text_weighted(
@@ -1994,7 +2241,12 @@ impl ContactsApp {
                 TextWeight::Semibold,
             );
         };
-        let find = |slot: Slot| inputs_snapshot.iter().find(|(s, _)| *s == slot).map(|(_, r)| *r);
+        let find = |slot: Slot| {
+            inputs_snapshot
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .map(|(_, r)| *r)
+        };
         if let Some(r) = find(Slot::First) {
             label(scene, tr, "NAME", r);
         }
@@ -2012,9 +2264,24 @@ impl ContactsApp {
             let r = find(slot).unwrap_or(add_btn);
             Rect::new(x0, r.y0, r.x1, r.y1)
         };
-        label(scene, tr, "PHONE", section_anchor(Slot::Phone(0), self.hit.add_phone));
-        label(scene, tr, "EMAIL", section_anchor(Slot::Email(0), self.hit.add_email));
-        label(scene, tr, "ADDRESS", section_anchor(Slot::AddrStreet(0), self.hit.add_address));
+        label(
+            scene,
+            tr,
+            "PHONE",
+            section_anchor(Slot::Phone(0), self.hit.add_phone),
+        );
+        label(
+            scene,
+            tr,
+            "EMAIL",
+            section_anchor(Slot::Email(0), self.hit.add_email),
+        );
+        label(
+            scene,
+            tr,
+            "ADDRESS",
+            section_anchor(Slot::AddrStreet(0), self.hit.add_address),
+        );
         if let Some(r) = find(Slot::Birthday) {
             label(scene, tr, "BIRTHDAY", r);
         }
@@ -2033,12 +2300,12 @@ impl ContactsApp {
         // field background first (TextInput::draw), so the placeholder — drawn
         // *after* the input, clipped to the field — sits cleanly on top of that
         // fill and nothing from a neighbouring row can bleed through behind it.
-        for f in self.form.as_mut().unwrap().inputs.iter_mut() {
+        for f in &mut self.form.as_mut().unwrap().inputs {
             f.ti.draw(scene, t, tr, theme, presence);
             if f.ti.value().is_empty() && !f.ti.is_focused() {
                 let r = f.ti.get_rect();
                 if r.width() > 0.0 {
-                    let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+                    let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
                     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
                     tr.draw_text(
                         scene,
@@ -2059,7 +2326,7 @@ impl ContactsApp {
             chip(scene, t, tr, theme, *rect, lbl, false);
         }
         for (_target, rect) in &self.hit.remove_btns {
-            let shape = RoundedRect::from_rect(*rect, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.md));
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             // minus glyph
             let cy = rect.center().y;
@@ -2078,7 +2345,7 @@ impl ContactsApp {
         // Calendar button.
         {
             let r = self.hit.cal_btn;
-            let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
             scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             draw_calendar_glyph(scene, t, r, theme);
@@ -2119,12 +2386,16 @@ impl ContactsApp {
                     menu_item(scene, t, tr, theme, *r, &opts[i], hov, sel);
                 }
             }
-            Popup::Calendar { year, month, anchor } => {
+            Popup::Calendar {
+                year,
+                month,
+                anchor,
+            } => {
                 let (panel, prev, next, cells) = self.calendar_geometry(*anchor, *year, *month);
                 menu_panel(scene, t, theme, panel);
                 // Header: < Month Year >
                 let title = format!("{} {}", date::month_name(*month), year);
-                let tw = tr.measure(&title, 14.0, None).0 as f64;
+                let tw = f64::from(tr.measure(&title, 14.0, None).0);
                 tr.draw_text_weighted(
                     scene,
                     &title,
@@ -2156,9 +2427,10 @@ impl ContactsApp {
                     .unwrap_or_default();
                 for (d, r) in &cells {
                     let hov = r.contains(self.last_mouse);
-                    let is_sel = cur == format!("{:04}-{:02}-{:02}", year, month, d);
+                    let is_sel = cur == format!("{year:04}-{month:02}-{d:02}");
                     if hov || is_sel {
-                        let shape = Circle::new(r.center(), (r.width().min(r.height()) / 2.0) - 2.0);
+                        let shape =
+                            Circle::new(r.center(), (r.width().min(r.height()) / 2.0) - 2.0);
                         let col = if is_sel {
                             theme.accent_primary
                         } else {
@@ -2167,7 +2439,7 @@ impl ContactsApp {
                         scene.fill(Fill::NonZero, t, col, None, &shape);
                     }
                     let s = d.to_string();
-                    let dw = tr.measure(&s, 12.0, None).0 as f64;
+                    let dw = f64::from(tr.measure(&s, 12.0, None).0);
                     let col = if is_sel { Color::WHITE } else { c.text_primary };
                     tr.draw_text(
                         scene,
@@ -2184,7 +2456,7 @@ impl ContactsApp {
                 menu_panel(scene, t, theme, panel);
                 // The Favorite item's label reflects the target contact's
                 // current state ("Add to favorites" vs "Remove from favorites").
-                let is_fav = self.store.get(*target).map(|c| c.favorite).unwrap_or(false);
+                let is_fav = self.store.get(*target).is_some_and(|c| c.favorite);
                 for (i, r) in rows.iter().enumerate() {
                     let hov = r.contains(self.last_mouse);
                     let action = CONTEXT_ACTIONS[i];
@@ -2204,7 +2476,13 @@ impl ContactsApp {
     /// The export-selection dialog: a centered modal listing every contact
     /// with a per-row checkbox, Select all / Select none, and the two vCard
     /// version export actions. The user exports exactly the ticked set.
-    fn draw_export_dialog(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_export_dialog(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         let sel = self.export_sel.clone().unwrap_or_default();
         // Scrim.
@@ -2239,11 +2517,13 @@ impl ContactsApp {
             if row.y1 < g.list_body.y0 || row.y0 > g.list_body.y1 {
                 continue;
             }
-            let Some(contact) = self.store.get(*id) else { continue };
+            let Some(contact) = self.store.get(*id) else {
+                continue;
+            };
             let checked = sel.contains(id);
             let hov = row.contains(self.last_mouse);
             if hov {
-                let bg = RoundedRect::from_rect(*row, theme.tokens.radii.md as f64);
+                let bg = RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.md));
                 scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bg);
             }
             draw_checkbox(scene, t, theme, *cb, checked);
@@ -2260,15 +2540,51 @@ impl ContactsApp {
 
         // Footer buttons.
         let m = self.last_mouse;
-        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false, g.cancel.contains(m), false);
-        toolbar_button(scene, t, tr, theme, g.export_v3, "Export 3.0", false, g.export_v3.contains(m), false);
-        toolbar_button(scene, t, tr, theme, g.export_v4, "Export 4.0", true, g.export_v4.contains(m), false);
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            g.cancel,
+            "Cancel",
+            false,
+            g.cancel.contains(m),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            g.export_v3,
+            "Export 3.0",
+            false,
+            g.export_v3.contains(m),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            g.export_v4,
+            "Export 4.0",
+            true,
+            g.export_v4.contains(m),
+            false,
+        );
         let _ = g.content_h;
     }
 
     /// The "Save changes?" guard modal shown when the user tries to switch
     /// contacts while an edit form holds unsaved changes.
-    fn draw_unsaved_modal(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_unsaved_modal(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
         let g = self.unsaved_geometry();
@@ -2296,18 +2612,59 @@ impl ContactsApp {
             Some((g.panel.width() - 40.0) as f32),
         );
         let m = self.last_mouse;
-        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false, g.cancel.contains(m), false);
-        toolbar_button(scene, t, tr, theme, g.discard, "Discard", false, g.discard.contains(m), false);
-        toolbar_button(scene, t, tr, theme, g.save, "Save", true, g.save.contains(m), false);
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            g.cancel,
+            "Cancel",
+            false,
+            g.cancel.contains(m),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            g.discard,
+            "Discard",
+            false,
+            g.discard.contains(m),
+            false,
+        );
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            g.save,
+            "Save",
+            true,
+            g.save.contains(m),
+            false,
+        );
     }
 
-    fn draw_confirm(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, id: ContactId) {
+    fn draw_confirm(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        id: ContactId,
+    ) {
         let c = &theme.tokens.colors;
         // Scrim.
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
         let (panel, del, cancel) = self.confirm_geometry();
         menu_panel(scene, t, theme, panel);
-        let name = self.store.get(id).map(|c| c.display_name()).unwrap_or_default();
+        let name = self
+            .store
+            .get(id)
+            .map(super::model::Contact::display_name)
+            .unwrap_or_default();
         tr.draw_text_weighted(
             scene,
             "Delete contact?",
@@ -2326,7 +2683,17 @@ impl ContactsApp {
             Some((panel.width() - 40.0) as f32),
         );
         let m = self.last_mouse;
-        toolbar_button(scene, t, tr, theme, cancel, "Cancel", false, cancel.contains(m), false);
+        toolbar_button(
+            scene,
+            t,
+            tr,
+            theme,
+            cancel,
+            "Cancel",
+            false,
+            cancel.contains(m),
+            false,
+        );
         // Destructive confirm — the shared danger face, so it gives the same
         // hover feedback as every other button rather than reading as dead.
         Button::paint(
@@ -2336,7 +2703,7 @@ impl ContactsApp {
             theme,
             &ButtonFace::new(del, "Delete")
                 .style(ButtonStyle::Danger)
-                .radius(theme.tokens.radii.md as f64)
+                .radius(f64::from(theme.tokens.radii.md))
                 .text_size(14.0)
                 .weight(TextWeight::Semibold)
                 .hovered(del.contains(m)),
@@ -2383,14 +2750,20 @@ struct UnsavedGeom {
 impl ContactsApp {
     fn export_geometry(&self) -> ExportGeom {
         let w = 460.0_f64;
-        let h = (self.rect.height() * 0.8).clamp(320.0, 560.0).min(self.rect.height() - 40.0);
+        let h = (self.rect.height() * 0.8)
+            .clamp(320.0, 560.0)
+            .min(self.rect.height() - 40.0);
         let cx = self.rect.center().x;
         let cy = self.rect.center().y;
         let panel = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
         // Header band: title + Select all / none on the right.
         let head_y = panel.y0 + 18.0;
-        let select_none =
-            Rect::new(panel.x1 - 16.0 - 96.0, head_y, panel.x1 - 16.0, head_y + 28.0);
+        let select_none = Rect::new(
+            panel.x1 - 16.0 - 96.0,
+            head_y,
+            panel.x1 - 16.0,
+            head_y + 28.0,
+        );
         let select_all = Rect::new(
             select_none.x0 - 8.0 - 96.0,
             head_y,
@@ -2407,7 +2780,12 @@ impl ContactsApp {
         let mut ry = list_body.y0 - self.export_scroll;
         for id in &ids {
             let row = Rect::new(list_body.x0, ry, list_body.x1, ry + row_h);
-            let cb = Rect::new(row.x0 + 4.0, row.center().y - 10.0, row.x0 + 24.0, row.center().y + 10.0);
+            let cb = Rect::new(
+                row.x0 + 4.0,
+                row.center().y - 10.0,
+                row.x0 + 24.0,
+                row.center().y + 10.0,
+            );
             rows.push((*id, row, cb));
             ry += row_h;
         }
@@ -2415,7 +2793,12 @@ impl ContactsApp {
         // Footer buttons.
         let by = panel.y1 - 44.0;
         let export_v4 = Rect::new(panel.x1 - 16.0 - 120.0, by, panel.x1 - 16.0, by + 32.0);
-        let export_v3 = Rect::new(export_v4.x0 - 8.0 - 120.0, by, export_v4.x0 - 8.0, by + 32.0);
+        let export_v3 = Rect::new(
+            export_v4.x0 - 8.0 - 120.0,
+            by,
+            export_v4.x0 - 8.0,
+            by + 32.0,
+        );
         let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + 32.0);
         ExportGeom {
             panel,
@@ -2447,7 +2830,12 @@ impl ContactsApp {
         let save = Rect::new(panel.x1 - 16.0 - 96.0, by, panel.x1 - 16.0, by + 32.0);
         let discard = Rect::new(save.x0 - 8.0 - 96.0, by, save.x0 - 8.0, by + 32.0);
         let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + 32.0);
-        UnsavedGeom { panel, save, discard, cancel }
+        UnsavedGeom {
+            panel,
+            save,
+            discard,
+            cancel,
+        }
     }
 }
 
@@ -2505,7 +2893,7 @@ fn detail_field(
         Some(64.0),
     );
     let vw = (x1 - x0 - 78.0).max(40.0);
-    let h = tr.measure(value, 14.0, Some(vw as f32)).1 as f64;
+    let h = f64::from(tr.measure(value, 14.0, Some(vw as f32)).1);
     tr.draw_text(
         scene,
         value,
@@ -2517,7 +2905,7 @@ fn detail_field(
     *y += h.max(20.0) + 8.0;
 }
 
-fn type_label<'a>(draft: &'a Contact, target: TypeTarget) -> &'a str {
+fn type_label(draft: &Contact, target: TypeTarget) -> &str {
     let s = match target {
         TypeTarget::Phone(i) => draft.phones.get(i).map(|p| p.label.as_str()),
         TypeTarget::Email(i) => draft.emails.get(i).map(|e| e.label.as_str()),
@@ -2550,7 +2938,11 @@ fn toolbar_button(
     if rect.width() <= 0.0 {
         return;
     }
-    let style = if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral };
+    let style = if primary {
+        ButtonStyle::Primary
+    } else {
+        ButtonStyle::Neutral
+    };
     Button::paint(
         scene,
         t,
@@ -2558,7 +2950,7 @@ fn toolbar_button(
         theme,
         &ButtonFace::new(rect, label)
             .style(style)
-            .radius(theme.tokens.radii.md as f64)
+            .radius(f64::from(theme.tokens.radii.md))
             .text_size(13.0)
             .weight(TextWeight::Medium)
             .hovered(hovered)
@@ -2566,9 +2958,22 @@ fn toolbar_button(
     );
 }
 
-fn add_button(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str) {
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-    scene.stroke(&Stroke::new(1.0), t, theme.accent_primary.with_alpha_factor(0.6), None, &shape);
+fn add_button(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+) {
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        theme.accent_primary.with_alpha_factor(0.6),
+        None,
+        &shape,
+    );
     tr.draw_text_weighted(
         scene,
         label,
@@ -2580,16 +2985,32 @@ fn add_button(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme
     );
 }
 
-fn chip(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, active: bool) {
+fn chip(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    active: bool,
+) {
     if rect.width() <= 0.0 {
         return;
     }
     let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-    let bg = if active { theme.accent_primary.with_alpha_factor(0.16) } else { c.surfaces.raised };
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+    let bg = if active {
+        theme.accent_primary.with_alpha_factor(0.16)
+    } else {
+        c.surfaces.raised
+    };
     scene.fill(Fill::NonZero, t, bg, None, &shape);
     scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-    let col = if active { theme.accent_primary } else { c.text_primary };
+    let col = if active {
+        theme.accent_primary
+    } else {
+        c.text_primary
+    };
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
     tr.draw_text(
         scene,
@@ -2605,9 +3026,15 @@ fn chip(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect
 fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
     let c = &theme.tokens.colors;
     // Soft shadow.
-    let shadow = RoundedRect::from_rect(panel.inset(2.0), theme.tokens.radii.md as f64 + 1.0);
-    scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 90), None, &shadow);
-    let shape = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+    let shadow = RoundedRect::from_rect(panel.inset(2.0), f64::from(theme.tokens.radii.md) + 1.0);
+    scene.fill(
+        Fill::NonZero,
+        t,
+        Color::from_rgba8(0, 0, 0, 90),
+        None,
+        &shadow,
+    );
+    let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
     scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
     scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
 }
@@ -2625,11 +3052,17 @@ fn menu_item(
 ) {
     let c = &theme.tokens.colors;
     if hover {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
     } else if selected {
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-        scene.fill(Fill::NonZero, t, theme.accent_primary.with_alpha_factor(0.16), None, &shape);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.accent_primary.with_alpha_factor(0.16),
+            None,
+            &shape,
+        );
     }
     let col = if hover { Color::WHITE } else { c.text_primary };
     tr.draw_text(
@@ -2664,40 +3097,23 @@ fn menu_item_colored(
     );
 }
 
-/// Draw a checkbox in the export-selection list. Matches the look of the
-/// `ui` Checkbox widget (which can't be reused here — it requires a CRDT
-/// boolean path with no imperative checked-state API): accent fill + white
-/// tick when checked, otherwise a bordered empty box.
 fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checked: bool) {
-    let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-    if checked {
-        scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
-    } else {
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &shape);
-        scene.stroke(&Stroke::new(1.4), t, c.border_standard, None, &shape);
-    }
-    if checked {
-        // White check polyline, proportional to the box.
-        let x0 = rect.x0;
-        let y0 = rect.y0;
-        let w = rect.width();
-        let h = rect.height();
-        let mut p = BezPath::new();
-        p.move_to((x0 + w * 0.26, y0 + h * 0.52));
-        p.line_to((x0 + w * 0.44, y0 + h * 0.70));
-        p.line_to((x0 + w * 0.76, y0 + h * 0.30));
-        scene.stroke(
-            &Stroke::new(2.0).with_caps(vello::kurbo::Cap::Round),
-            t,
-            Color::WHITE,
-            None,
-            &p,
-        );
-    }
+    Checkbox::paint(
+        scene,
+        t,
+        theme,
+        &CheckboxFace::new(rect, checked).transparent_unchecked(),
+    );
 }
 
-fn draw_avatar(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, initials: &str) {
+fn draw_avatar(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    initials: &str,
+) {
     // Coloured initials disc sourced from the shared toolkit avatar so the
     // hue/shape/placement stay consistent with every other app's roster.
     let color = Avatar::color_for_initials(initials, theme);
@@ -2705,67 +3121,51 @@ fn draw_avatar(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Them
 }
 
 fn draw_star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, filled: bool) {
-    let mut path = BezPath::new();
-    for i in 0..10 {
-        let ang = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::PI / 5.0;
-        let rad = if i % 2 == 0 { r } else { r * 0.42 };
-        let p = Point::new(center.x + ang.cos() * rad, center.y + ang.sin() * rad);
-        if i == 0 {
-            path.move_to(p);
-        } else {
-            path.line_to(p);
-        }
-    }
-    path.close_path();
+    let rect = Rect::new(center.x - r, center.y - r, center.x + r, center.y + r);
     if filled {
-        scene.fill(Fill::NonZero, t, color, None, &path);
+        Icon::Star.draw_filled(scene, t, rect, color);
     } else {
-        scene.stroke(&Stroke::new(1.4), t, color, None, &path);
+        Icon::Star.draw(scene, t, rect, color);
     }
 }
 
 fn draw_calendar_glyph(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
-    let c = &theme.tokens.colors;
-    let inner = rect.inset(-0.0);
-    let g = Rect::new(inner.center().x - 9.0, inner.center().y - 8.0, inner.center().x + 9.0, inner.center().y + 9.0);
-    let shape = RoundedRect::from_rect(g, 2.0);
-    scene.stroke(&Stroke::new(1.4), t, c.text_dim, None, &shape);
-    scene.stroke(
-        &Stroke::new(1.4),
-        t,
-        c.text_dim,
-        None,
-        &Line::new((g.x0, g.y0 + 5.0), (g.x1, g.y0 + 5.0)),
-    );
+    let g = Rect::from_center_size(rect.center(), (18.0, 18.0));
+    Icon::Calendar.draw(scene, t, g, theme.tokens.colors.text_dim);
 }
 
 fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: bool) {
-    let c = &theme.tokens.colors;
-    let cx = rect.center().x;
-    let cy = rect.center().y;
-    let mut p = BezPath::new();
-    if left {
-        p.move_to((cx + 3.0, cy - 5.0));
-        p.line_to((cx - 3.0, cy));
-        p.line_to((cx + 3.0, cy + 5.0));
+    let icon = if left {
+        Icon::ChevronLeft
     } else {
-        p.move_to((cx - 3.0, cy - 5.0));
-        p.line_to((cx + 3.0, cy));
-        p.line_to((cx - 3.0, cy + 5.0));
-    }
-    scene.stroke(&Stroke::new(2.0), t, c.text_primary, None, &p);
+        Icon::ChevronRight
+    };
+    icon.draw(scene, t, rect, theme.tokens.colors.text_primary);
 }
 
-fn draw_toast(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect, msg: &str) {
+fn draw_toast(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    msg: &str,
+) {
     let c = &theme.tokens.colors;
-    let tw = tr.measure(msg, 13.0, None).0 as f64;
+    let tw = f64::from(tr.measure(msg, 13.0, None).0);
     let w = (tw + 36.0).min(area.width() - 40.0);
     let h = 38.0;
     let x0 = area.center().x - w / 2.0;
     let y0 = area.y1 - h - 20.0;
     let r = Rect::new(x0, y0, x0 + w, y0 + h);
-    let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
-    scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 110), None, &RoundedRect::from_rect(r.inset(2.0), 10.0));
+    let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        Color::from_rgba8(0, 0, 0, 110),
+        None,
+        &RoundedRect::from_rect(r.inset(2.0), 10.0),
+    );
     scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
     scene.stroke(&Stroke::new(1.0), t, theme.accent_primary, None, &shape);
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
@@ -2834,10 +3234,10 @@ impl Widget for ContactsApp {
         if heads != self.model_heads {
             self.store.contacts = ContactsDoc::list_contacts(state);
             self.model_heads = heads;
-            if let Some(sel) = self.selected {
-                if self.store.get(sel).is_none() {
-                    self.selected = self.visible_ids().first().copied();
-                }
+            if let Some(sel) = self.selected
+                && self.store.get(sel).is_none()
+            {
+                self.selected = self.visible_ids().first().copied();
             }
             self.relayout = true;
             self.dirty = true;
@@ -2866,17 +3266,17 @@ impl Widget for ContactsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.layout();
         self.layout_detail_actions();
@@ -2915,12 +3315,11 @@ impl Widget for ContactsApp {
                 let over = self
                     .website_link
                     .as_ref()
-                    .map(|l| l.get_rect().contains(self.last_mouse))
-                    .unwrap_or(false);
-                if let Some(l) = self.website_link.as_mut() {
-                    if l.set_hovered(over) {
-                        self.dirty = true;
-                    }
+                    .is_some_and(|l| l.get_rect().contains(self.last_mouse));
+                if let Some(l) = self.website_link.as_mut()
+                    && l.set_hovered(over)
+                {
+                    self.dirty = true;
                 }
             }
         }
@@ -2932,19 +3331,28 @@ impl Widget for ContactsApp {
         // `handle_key`'s escape branch — and every other key is swallowed so a
         // shortcut behind the scrim can't fire. Pointer interaction still routes
         // to the per-modal handlers below.
-        if self.export_sel.is_some() || self.pending_switch.is_some() || self.confirm_delete.is_some()
+        if (self.export_sel.is_some()
+            || self.pending_switch.is_some()
+            || self.confirm_delete.is_some())
+            && let WindowEvent::KeyboardInput { event: ke, .. } = event
         {
-            if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-                if ke.state == ElementState::Pressed
-                    && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
-                {
-                    self.handle_key(
-                        ke, state, path, handled, node_id, taffy, modifiers, scale_factor, event,
-                    );
-                }
-                *handled = true;
-                return;
+            if ke.state == ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
+            {
+                self.handle_key(
+                    ke,
+                    state,
+                    path,
+                    handled,
+                    node_id,
+                    taffy,
+                    modifiers,
+                    scale_factor,
+                    event,
+                );
             }
+            *handled = true;
+            return;
         }
         if self.export_sel.is_some() {
             self.handle_export(event, handled);
@@ -2969,8 +3377,7 @@ impl Widget for ContactsApp {
         match event {
             WindowEvent::CursorMoved { .. } => {
                 // The divider only exists in the wide side-by-side layout.
-                self.divider_hover =
-                    !self.narrow && self.divider_hit().contains(self.last_mouse);
+                self.divider_hover = !self.narrow && self.divider_hit().contains(self.last_mouse);
                 if self.divider_drag {
                     let content_w = (self.rect.width()).max(1.0);
                     let rel = (self.last_mouse.x - self.rect.x0) / content_w;
@@ -3018,7 +3425,7 @@ impl Widget for ContactsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
                     MouseScrollDelta::PixelDelta(p) => -p.y,
                 };
                 if self.list_rect.contains(self.last_mouse) {
@@ -3033,17 +3440,36 @@ impl Widget for ContactsApp {
                 return;
             }
             WindowEvent::KeyboardInput { event: ke, .. } => {
-                self.handle_key(ke, state, path, handled, node_id, taffy, modifiers, scale_factor, event);
+                self.handle_key(
+                    ke,
+                    state,
+                    path,
+                    handled,
+                    node_id,
+                    taffy,
+                    modifiers,
+                    scale_factor,
+                    event,
+                );
                 return;
             }
             _ => {}
         }
 
         // Forward pointer-move to focused inputs so hover/drag-select tracks.
-        self.forward_event_to_inputs(event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+        self.forward_event_to_inputs(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            node_id,
+            taffy,
+        );
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ContactsApp"
     }
 
@@ -3067,16 +3493,18 @@ impl Widget for ContactsApp {
     /// makes every contact findable there, alongside any actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::ContactSearchProvider::new(&self.store))]
+        vec![Box::new(
+            crate::search_provider::ContactSearchProvider::new(&self.store),
+        )]
     }
 
     /// Navigate to the contact a chosen palette row identifies (selection is
     /// app-local presentation, not a shared-doc mutation).
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id) {
-            if self.store.get(id).is_some() {
-                self.reveal_contact(id);
-            }
+        if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id)
+            && self.store.get(id).is_some()
+        {
+            self.reveal_contact(id);
         }
     }
 
@@ -3087,12 +3515,11 @@ impl Widget for ContactsApp {
     /// The pointing-hand cursor over the view-mode website hyperlink; every
     /// other region defers to the default arrow.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.mode == Mode::View {
-            if let Some(l) = &self.website_link {
-                if l.get_rect().contains(point) {
-                    return Some(winit::window::CursorIcon::Pointer);
-                }
-            }
+        if self.mode == Mode::View
+            && let Some(l) = &self.website_link
+            && l.get_rect().contains(point)
+        {
+            return Some(winit::window::CursorIcon::Pointer);
         }
         None
     }
@@ -3122,8 +3549,7 @@ impl Widget for ContactsApp {
             || self
                 .form
                 .as_ref()
-                .map(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
-                .unwrap_or(false)
+                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
     }
 
     fn on_commit(&mut self) {
@@ -3155,11 +3581,16 @@ impl Widget for ContactsApp {
 impl ContactsApp {
     fn divider_hit(&self) -> Rect {
         let dx0 = self.list_rect.x1;
-        Rect::new(dx0 - 3.0, self.detail_rect.y0, dx0 + DIVIDER_W + 3.0, self.detail_rect.y1)
+        Rect::new(
+            dx0 - 3.0,
+            self.detail_rect.y0,
+            dx0 + DIVIDER_W + 3.0,
+            self.detail_rect.y1,
+        )
     }
 
     fn any_text_focused(&self) -> bool {
-        self.search.is_focused() || self.form.as_ref().map(|f| f.any_focused()).unwrap_or(false)
+        self.search.is_focused() || self.form.as_ref().is_some_and(EditForm::any_focused)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3177,13 +3608,29 @@ impl ContactsApp {
         let mut sink: Option<NodeId> = None;
         // Search box.
         self.search.handle_event(
-            event, scale_factor, modifiers, state, path, handled, &mut sink, node_id, taffy,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            &mut sink,
+            node_id,
+            taffy,
         );
         if let Some(form) = &mut self.form {
             for f in &mut form.inputs {
                 let mut s2: Option<NodeId> = None;
                 f.ti.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, &mut s2, node_id, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    &mut s2,
+                    node_id,
+                    taffy,
                 );
             }
         }
@@ -3248,7 +3695,9 @@ impl ContactsApp {
             return;
         }
         if self.hit.group.contains(p) {
-            self.popup = Some(Popup::GroupFilter { anchor: self.hit.group });
+            self.popup = Some(Popup::GroupFilter {
+                anchor: self.hit.group,
+            });
             *handled = true;
             self.dirty = true;
             return;
@@ -3272,7 +3721,10 @@ impl ContactsApp {
             // A click on the website hyperlink opens it via the OS handler
             // (delegated to the ui `Link` widget — no hand-rolled open here).
             if self.selected.is_some()
-                && self.website_link.as_ref().map(|l| l.get_rect().contains(p)).unwrap_or(false)
+                && self
+                    .website_link
+                    .as_ref()
+                    .is_some_and(|l| l.get_rect().contains(p))
             {
                 if let Some(l) = self.website_link.as_mut() {
                     l.activate();
@@ -3293,8 +3745,11 @@ impl ContactsApp {
             if self.selected.is_some() {
                 if self.hit.fav.contains(p) {
                     if let Some(id) = self.selected {
-                        let new_fav = !self.store.get(id).map(|c| c.favorite).unwrap_or(false);
-                        self.perform_action(state, crate::actions::set_favorite_action(id.to_string(), new_fav));
+                        let new_fav = !self.store.get(id).is_some_and(|c| c.favorite);
+                        self.perform_action(
+                            state,
+                            crate::actions::set_favorite_action(id.to_string(), new_fav),
+                        );
                         if let Some(c) = self.store.get_mut(id) {
                             c.favorite = new_fav;
                         }
@@ -3354,14 +3809,17 @@ impl ContactsApp {
                     .and_then(|i| Birthday::parse(i.ti.value()))
                     .or(f.draft.birthday)
             });
-            let (year, month) = match seed {
-                Some(b) => (b.year().unwrap_or_else(|| date::today().0), b.month()),
-                None => {
-                    let (y, m, _) = date::today();
-                    (y, m)
-                }
+            let (year, month) = if let Some(b) = seed {
+                (b.year().unwrap_or_else(|| date::today().0), b.month())
+            } else {
+                let (y, m, _) = date::today();
+                (y, m)
             };
-            self.popup = Some(Popup::Calendar { year, month, anchor: self.hit.cal_btn });
+            self.popup = Some(Popup::Calendar {
+                year,
+                month,
+                anchor: self.hit.cal_btn,
+            });
             *handled = true;
             self.dirty = true;
             return;
@@ -3377,20 +3835,43 @@ impl ContactsApp {
             return;
         }
         if self.hit.add_address.contains(p) {
-            self.form_add(|d| d.addresses.push(Address { label: "home".into(), ..Default::default() }));
+            self.form_add(|d| {
+                d.addresses.push(Address {
+                    label: "home".into(),
+                    ..Default::default()
+                });
+            });
             *handled = true;
             return;
         }
         // Type chips.
-        if let Some((target, _)) = self.hit.type_chips.iter().find(|(_, r)| r.contains(p)).copied() {
-            let anchor = self.hit.type_chips.iter().find(|(_, r)| r.contains(p)).map(|(_, r)| *r).unwrap();
+        if let Some((target, _)) = self
+            .hit
+            .type_chips
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .copied()
+        {
+            let anchor = self
+                .hit
+                .type_chips
+                .iter()
+                .find(|(_, r)| r.contains(p))
+                .map(|(_, r)| *r)
+                .unwrap();
             self.popup = Some(Popup::TypeMenu { target, anchor });
             *handled = true;
             self.dirty = true;
             return;
         }
         // Remove buttons.
-        if let Some((target, _)) = self.hit.remove_btns.iter().find(|(_, r)| r.contains(p)).copied() {
+        if let Some((target, _)) = self
+            .hit
+            .remove_btns
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .copied()
+        {
             self.form_remove(target);
             *handled = true;
             return;
@@ -3416,13 +3897,10 @@ impl ContactsApp {
         const DOUBLE_CLICK_MS: u128 = 400;
         const DOUBLE_CLICK_RADIUS: f64 = 6.0;
         let now = Instant::now();
-        let is_double = self
-            .last_detail_click
-            .map(|(t0, p0)| {
-                now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
-                    && p.distance(p0) <= DOUBLE_CLICK_RADIUS
-            })
-            .unwrap_or(false);
+        let is_double = self.last_detail_click.is_some_and(|(t0, p0)| {
+            now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
+                && p.distance(p0) <= DOUBLE_CLICK_RADIUS
+        });
         // Record this click for the next press regardless.
         self.last_detail_click = Some((now, p));
         if !is_double {
@@ -3602,8 +4080,7 @@ impl ContactsApp {
         self.form
             .as_ref()
             .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
-            .map(|i| i.ti.cursor_pos() == 0 && i.ti.selection_range_public().is_none())
-            .unwrap_or(false)
+            .is_some_and(|i| i.ti.cursor_pos() == 0 && i.ti.selection_range_public().is_none())
     }
 
     /// Whether the focused edit-form field has its caret at the very end with
@@ -3613,8 +4090,9 @@ impl ContactsApp {
         self.form
             .as_ref()
             .and_then(|f| f.inputs.iter().find(|i| i.ti.is_focused()))
-            .map(|i| i.ti.cursor_pos() == i.ti.value().len() && i.ti.selection_range_public().is_none())
-            .unwrap_or(false)
+            .is_some_and(|i| {
+                i.ti.cursor_pos() == i.ti.value().len() && i.ti.selection_range_public().is_none()
+            })
     }
 
     /// Idiomatic Enter inside the edit form: advance to the next field, or —
@@ -3658,14 +4136,17 @@ impl ContactsApp {
         let mut h = false;
         let mut sink = None;
         if self.search.is_focused() {
-            self.search
-                .handle_event(&press, 1.0, modifiers, state, path, &mut h, &mut sink, node_id, taffy);
+            self.search.handle_event(
+                &press, 1.0, modifiers, state, path, &mut h, &mut sink, node_id, taffy,
+            );
         }
         if let Some(form) = &mut self.form {
             for f in &mut form.inputs {
                 if f.ti.is_focused() {
                     let mut s2 = None;
-                    f.ti.handle_event(&press, 1.0, modifiers, state, path, &mut h, &mut s2, node_id, taffy);
+                    f.ti.handle_event(
+                        &press, 1.0, modifiers, state, path, &mut h, &mut s2, node_id, taffy,
+                    );
                 }
             }
         }
@@ -3678,7 +4159,11 @@ impl ContactsApp {
         if let Some(form) = self.form.take() {
             let mut draft = form.draft;
             // First fold current input values back in.
-            let mut tmp = EditForm { draft: draft.clone(), is_new: form.is_new, inputs: form.inputs };
+            let mut tmp = EditForm {
+                draft: draft.clone(),
+                is_new: form.is_new,
+                inputs: form.inputs,
+            };
             tmp.collect();
             draft = tmp.draft;
             f(&mut draft);
@@ -3690,7 +4175,11 @@ impl ContactsApp {
 
     fn form_remove(&mut self, target: TypeTarget) {
         if let Some(form) = self.form.take() {
-            let mut tmp = EditForm { draft: form.draft.clone(), is_new: form.is_new, inputs: form.inputs };
+            let mut tmp = EditForm {
+                draft: form.draft.clone(),
+                is_new: form.is_new,
+                inputs: form.inputs,
+            };
             tmp.collect();
             let mut draft = tmp.draft;
             match target {
@@ -3714,7 +4203,11 @@ impl ContactsApp {
     fn handle_popup(&mut self, event: &WindowEvent, state: &mut AutoCommit, handled: &mut bool) {
         let press = matches!(
             event,
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
         );
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             self.dirty = true; // hover highlight
@@ -3760,10 +4253,10 @@ impl ContactsApp {
                     self.group_filter = if i == 0 { None } else { Some(opts[i].clone()) };
                     self.list_scroll = 0.0;
                     // Keep selection valid.
-                    if let Some(sel) = self.selected {
-                        if !self.visible_ids().contains(&sel) {
-                            self.selected = self.visible_ids().first().copied();
-                        }
+                    if let Some(sel) = self.selected
+                        && !self.visible_ids().contains(&sel)
+                    {
+                        self.selected = self.visible_ids().first().copied();
                     }
                 }
                 self.relayout = true;
@@ -3783,8 +4276,7 @@ impl ContactsApp {
                             // path (same action the view-mode star and Ctrl+K
                             // dispatch), so the list star and the menu label flip
                             // immediately and the change survives a reload.
-                            let new_fav =
-                                !self.store.get(target).map(|c| c.favorite).unwrap_or(false);
+                            let new_fav = !self.store.get(target).is_some_and(|c| c.favorite);
                             self.perform_action(
                                 state,
                                 crate::actions::set_favorite_action(target.to_string(), new_fav),
@@ -3810,26 +4302,44 @@ impl ContactsApp {
                     }
                 }
             }
-            Popup::Calendar { year, month, anchor } => {
+            Popup::Calendar {
+                year,
+                month,
+                anchor,
+            } => {
                 let (panel, prev, next, cells) = self.calendar_geometry(anchor, year, month);
                 if prev.contains(p) {
                     let (y, m) = date::prev_month(year, month);
-                    self.popup = Some(Popup::Calendar { year: y, month: m, anchor });
+                    self.popup = Some(Popup::Calendar {
+                        year: y,
+                        month: m,
+                        anchor,
+                    });
                 } else if next.contains(p) {
                     let (y, m) = date::next_month(year, month);
-                    self.popup = Some(Popup::Calendar { year: y, month: m, anchor });
+                    self.popup = Some(Popup::Calendar {
+                        year: y,
+                        month: m,
+                        anchor,
+                    });
                 } else if panel.contains(p) {
                     if let Some((d, _)) = cells.iter().find(|(_, r)| r.contains(p)) {
-                        let iso = format!("{:04}-{:02}-{:02}", year, month, d);
+                        let iso = format!("{year:04}-{month:02}-{d:02}");
                         if let Some(form) = &mut self.form {
                             form.draft.birthday = Birthday::parse(&iso);
-                            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Birthday) {
+                            if let Some(fi) =
+                                form.inputs.iter_mut().find(|f| f.slot == Slot::Birthday)
+                            {
                                 fi.ti.set_text(&iso);
                             }
                         }
                     } else {
                         // Click inside panel but not a day: keep open.
-                        self.popup = Some(Popup::Calendar { year, month, anchor });
+                        self.popup = Some(Popup::Calendar {
+                            year,
+                            month,
+                            anchor,
+                        });
                     }
                 }
                 // else: click outside dismisses (popup already taken).
@@ -3843,7 +4353,11 @@ impl ContactsApp {
         }
         let press = matches!(
             event,
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
         );
         if !press {
             return;
@@ -3852,10 +4366,10 @@ impl ContactsApp {
         self.dirty = true;
         let (_panel, del, cancel) = self.confirm_geometry();
         let p = self.last_mouse;
-        if del.contains(p) {
-            if let Some(id) = self.confirm_delete {
-                self.delete_selected(state, id);
-            }
+        if del.contains(p)
+            && let Some(id) = self.confirm_delete
+        {
+            self.delete_selected(state, id);
         }
         // Any press inside the modal (delete already handled above, cancel
         // or scrim) dismisses it.
@@ -3884,7 +4398,7 @@ impl ContactsApp {
         }
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
                 MouseScrollDelta::PixelDelta(p) => -p.y,
             };
             let g = self.export_geometry();
@@ -3896,7 +4410,11 @@ impl ContactsApp {
         }
         let press = matches!(
             event,
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
         );
         if !press {
             return;
@@ -3918,13 +4436,13 @@ impl ContactsApp {
         }
         // Row checkbox toggle (whole row is clickable).
         if g.list_body.contains(p) {
-            if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p)) {
-                if let Some(set) = &mut self.export_sel {
-                    if set.contains(id) {
-                        set.remove(id);
-                    } else {
-                        set.insert(*id);
-                    }
+            if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p))
+                && let Some(set) = &mut self.export_sel
+            {
+                if set.contains(id) {
+                    set.remove(id);
+                } else {
+                    set.insert(*id);
                 }
             }
             return;
@@ -3934,11 +4452,15 @@ impl ContactsApp {
             return;
         }
         if g.export_v3.contains(p) || g.export_v4.contains(p) {
-            let version = if g.export_v4.contains(p) { VCardVersion::V4 } else { VCardVersion::V3 };
+            let version = if g.export_v4.contains(p) {
+                VCardVersion::V4
+            } else {
+                VCardVersion::V3
+            };
             let ids: Vec<ContactId> = self
                 .visible_export_ids()
                 .into_iter()
-                .filter(|id| self.export_sel.as_ref().map(|s| s.contains(id)).unwrap_or(false))
+                .filter(|id| self.export_sel.as_ref().is_some_and(|s| s.contains(id)))
                 .collect();
             // Close the selection dialog and hand off to the host Save dialog;
             // the file is written when the portal returns a destination.
@@ -3960,7 +4482,11 @@ impl ContactsApp {
         }
         let press = matches!(
             event,
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
         );
         if !press {
             return;
@@ -3969,7 +4495,9 @@ impl ContactsApp {
         self.dirty = true;
         let p = self.last_mouse;
         let g = self.unsaved_geometry();
-        let Some(target) = self.pending_switch else { return };
+        let Some(target) = self.pending_switch else {
+            return;
+        };
         if g.save.contains(p) {
             self.save_edit(state);
             self.pending_switch = None;
@@ -3998,7 +4526,16 @@ impl ContactsApp {
     ) {
         if ke.state != ElementState::Pressed {
             // Route key-release to inputs too (harmless) then return.
-            self.forward_event_to_inputs(full_event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+            self.forward_event_to_inputs(
+                full_event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                node_id,
+                taffy,
+            );
             return;
         }
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
@@ -4048,14 +4585,14 @@ impl ContactsApp {
         }
 
         // Ctrl+S saves in edit mode.
-        if ctrl {
-            if let Key::Character(c) = &ke.logical_key {
-                if c.eq_ignore_ascii_case("s") && self.mode == Mode::Edit {
-                    self.save_edit(state);
-                    *handled = true;
-                    return;
-                }
-            }
+        if ctrl
+            && let Key::Character(c) = &ke.logical_key
+            && c.eq_ignore_ascii_case("s")
+            && self.mode == Mode::Edit
+        {
+            self.save_edit(state);
+            *handled = true;
+            return;
         }
 
         // Edit-form keyboard navigation. Tab / Shift+Tab move across the form
@@ -4116,7 +4653,16 @@ impl ContactsApp {
         // draft is folded into the store + CRDT solely by Save, so Cancel can
         // genuinely discard and the unsaved-changes guard can see real dirt.
         if self.any_text_focused() {
-            self.forward_event_to_inputs(full_event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+            self.forward_event_to_inputs(
+                full_event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                node_id,
+                taffy,
+            );
             self.dirty = true;
             return;
         }
@@ -4139,7 +4685,7 @@ impl ContactsApp {
                 self.move_selection(-1);
                 *handled = true;
             }
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if let Some(id) = self.selected {
                     self.confirm_delete = Some(id);
                     *handled = true;
@@ -4182,8 +4728,8 @@ impl ContactsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ReadDoc;
     use automerge::ROOT;
+    use automerge::ReadDoc;
     use taffy::{AvailableSpace, Dimension, Size, Style};
     use vello::kurbo::Point;
 
@@ -4212,7 +4758,11 @@ mod tests {
         Widget::activate_search_result(&mut app, &action_id, &mut doc, &ROOT);
         let id = crate::search_provider::ContactSearchProvider::parse_action_id(&action_id)
             .expect("the id parses back to a contact");
-        assert_eq!(app.selected, Some(id), "the palette row selected the contact");
+        assert_eq!(
+            app.selected,
+            Some(id),
+            "the palette row selected the contact"
+        );
     }
 
     /// Opening a contact from the global palette must *reveal* it: if the list
@@ -4249,7 +4799,10 @@ mod tests {
         Widget::activate_search_result(&mut app, &grace.action_id, &mut doc, &ROOT);
 
         assert_eq!(app.selected, Some(id), "activation selected Grace");
-        assert!(app.group_filter.is_none(), "opening from search dropped the hiding filter");
+        assert!(
+            app.group_filter.is_none(),
+            "opening from search dropped the hiding filter"
+        );
         assert!(
             app.visible_ids().contains(&id),
             "Grace is now visible in the list — opened, not just selected behind a filter"
@@ -4305,7 +4858,14 @@ mod tests {
         app.apply_layout(&taffy, child, Point::ORIGIN);
 
         let mut scene = Scene::new();
-        app.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        app.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &permission,
+        );
         // Encoding the scene is enough to exercise every draw path; the
         // GPU blit is covered by the `--shots` harness.
         let _ = &scene;
@@ -4335,7 +4895,11 @@ mod tests {
         // A narrow viewport drives the single-pane master-detail push.
         drive_frame(&mut app, 480, 860);
         assert!(app.narrow, "a narrow viewport resolves to single-pane push");
-        assert_eq!(app.push.pane(), Pane::List, "a fresh narrow frame opens to the list");
+        assert_eq!(
+            app.push.pane(),
+            Pane::List,
+            "a fresh narrow frame opens to the list"
+        );
     }
 
     #[test]
@@ -4351,14 +4915,20 @@ mod tests {
         assert_eq!(app.push.pane(), Pane::Detail);
         drive_frame(&mut app, 480, 860);
         // The Back affordance must be laid out (hittable) in the pushed pane.
-        assert!(app.hit.back.width() > 0.0, "pushed detail shows a Back affordance");
+        assert!(
+            app.hit.back.width() > 0.0,
+            "pushed detail shows a Back affordance"
+        );
     }
 
     #[test]
     fn wide_frame_stays_docked_side_by_side() {
         let mut app = ContactsApp::sample();
         drive_frame(&mut app, 1280, 800);
-        assert!(!app.narrow, "a desktop-width viewport keeps the docked split");
+        assert!(
+            !app.narrow,
+            "a desktop-width viewport keeps the docked split"
+        );
         // The list pane sits left of the detail pane (classic split).
         assert!(app.list_rect.x1 <= app.detail_rect.x0 + 0.001);
     }
@@ -4370,10 +4940,19 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         // Enter edit on the selected contact and add repeated fields.
-        let c = app.selected.and_then(|id| app.store.get(id)).cloned().unwrap();
+        let c = app
+            .selected
+            .and_then(|id| app.store.get(id))
+            .cloned()
+            .unwrap();
         app.begin_edit(c, false);
         app.form_add(|d| d.phones.push(Labeled::new("work", "")));
-        app.form_add(|d| d.addresses.push(Address { label: "work".into(), ..Default::default() }));
+        app.form_add(|d| {
+            d.addresses.push(Address {
+                label: "work".into(),
+                ..Default::default()
+            });
+        });
         drive_frame(&mut app, 1280, 800);
         assert_eq!(app.mode, Mode::Edit);
     }
@@ -4383,7 +4962,11 @@ mod tests {
         let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
-        let c = app.selected.and_then(|id| app.store.get(id)).cloned().unwrap();
+        let c = app
+            .selected
+            .and_then(|id| app.store.get(id))
+            .cloned()
+            .unwrap();
         app.begin_edit(c, false);
         // Calendar popup.
         app.popup = Some(Popup::Calendar {
@@ -4405,7 +4988,11 @@ mod tests {
         let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
-        let mut c = app.selected.and_then(|id| app.store.get(id)).cloned().unwrap();
+        let mut c = app
+            .selected
+            .and_then(|id| app.store.get(id))
+            .cloned()
+            .unwrap();
         let id = c.id;
         c.title = "Edited Title".into();
         app.begin_edit(c, false);
@@ -4491,7 +5078,9 @@ mod tests {
             let mut tr = TextRenderer::new();
             self.taffy = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let child = self.app.build_layout(&mut self.taffy, &theme, &mut node_map);
+            let child = self
+                .app
+                .build_layout(&mut self.taffy, &theme, &mut node_map);
             self.node = child;
             let root = self
                 .taffy
@@ -4624,7 +5213,10 @@ mod tests {
 
         /// Press a single `Named` key (no modifiers).
         fn press_named(&mut self, key: NamedKey) -> bool {
-            self.dispatch_key_mods(&key_input_event(Key::Named(key), None), ModifiersState::empty())
+            self.dispatch_key_mods(
+                &key_input_event(Key::Named(key), None),
+                ModifiersState::empty(),
+            )
         }
 
         /// Press a single character key (no modifiers) — a global shortcut like
@@ -4685,7 +5277,9 @@ mod tests {
 
         /// The stored (committed) contact for `id`, read back from the CRDT doc.
         fn doc_contact(&self, id: ContactId) -> Option<Contact> {
-            ContactsDoc::list_contacts(&self.doc).into_iter().find(|c| c.id == id)
+            ContactsDoc::list_contacts(&self.doc)
+                .into_iter()
+                .find(|c| c.id == id)
         }
 
         /// Focus the edit-form field for `slot` by clicking its laid-out rect
@@ -4704,8 +5298,7 @@ mod tests {
                         .form
                         .as_ref()
                         .and_then(|f| f.inputs.iter().find(|i| i.slot == slot))
-                        .map(|i| i.ti.is_focused())
-                        .unwrap_or(false)
+                        .is_some_and(|i| i.ti.is_focused())
                 }
                 _ => false,
             }
@@ -4720,13 +5313,24 @@ mod tests {
         // Press a list row → the detail pane is pushed in.
         let row = h.row_center(1);
         assert!(h.press_left(row));
-        assert_eq!(h.app.push.pane(), Pane::Detail, "selecting pushes the detail in");
+        assert_eq!(
+            h.app.push.pane(),
+            Pane::Detail,
+            "selecting pushes the detail in"
+        );
         h.relayout();
-        assert!(h.app.hit.back.width() > 0.0, "the Back affordance is laid out");
+        assert!(
+            h.app.hit.back.width() > 0.0,
+            "the Back affordance is laid out"
+        );
         // Press Back → return to the list.
         let back = h.app.hit.back.center();
         assert!(h.press_left(back));
-        assert_eq!(h.app.push.pane(), Pane::List, "Back returns to the full-width list");
+        assert_eq!(
+            h.app.push.pane(),
+            Pane::List,
+            "Back returns to the full-width list"
+        );
     }
 
     #[test]
@@ -4752,9 +5356,11 @@ mod tests {
             .inputs
             .iter()
             .find(|f| f.slot == Slot::Birthday)
-            .map(|f| f.ti.is_focused())
-            .unwrap_or(false);
-        assert!(birthday_focused, "the double-clicked field is focused for editing");
+            .is_some_and(|f| f.ti.is_focused());
+        assert!(
+            birthday_focused,
+            "the double-clicked field is focused for editing"
+        );
     }
 
     /// Build an edit-mode harness on a known contact so the field order under
@@ -4778,7 +5384,10 @@ mod tests {
         assert_eq!(h.app.mode, Mode::Edit);
         assert!(h.focused_slot().is_none(), "no field is focused until Tab");
         // Tab lands on the first field, then walks the natural order.
-        assert!(h.press_named(NamedKey::Tab), "Tab is handled in the edit form");
+        assert!(
+            h.press_named(NamedKey::Tab),
+            "Tab is handled in the edit form"
+        );
         assert_eq!(h.focused_slot(), Some(Slot::First));
         h.press_named(NamedKey::Tab);
         assert_eq!(h.focused_slot(), Some(Slot::Last));
@@ -4787,7 +5396,11 @@ mod tests {
         h.press_named(NamedKey::Tab);
         assert_eq!(h.focused_slot(), Some(Slot::Title));
         h.press_named(NamedKey::Tab);
-        assert_eq!(h.focused_slot(), Some(Slot::Phone(0)), "repeated phone rows are in the order");
+        assert_eq!(
+            h.focused_slot(),
+            Some(Slot::Phone(0)),
+            "repeated phone rows are in the order"
+        );
         h.press_named(NamedKey::Tab);
         assert_eq!(h.focused_slot(), Some(Slot::Email(0)));
     }
@@ -4804,17 +5417,28 @@ mod tests {
         assert_eq!(h.focused_slot(), Some(Slot::First));
         // Shift+Tab from the first field wraps to the last (Groups).
         h.press_shift_tab();
-        assert_eq!(h.focused_slot(), Some(Slot::Groups), "backward from the first wraps to the last");
+        assert_eq!(
+            h.focused_slot(),
+            Some(Slot::Groups),
+            "backward from the first wraps to the last"
+        );
         // Tab from the last field wraps forward to the first.
         h.press_named(NamedKey::Tab);
-        assert_eq!(h.focused_slot(), Some(Slot::First), "forward from the last wraps to the first");
+        assert_eq!(
+            h.focused_slot(),
+            Some(Slot::First),
+            "forward from the last wraps to the first"
+        );
     }
 
     #[test]
     fn enter_advances_to_the_next_field_then_submits_on_the_last() {
         let mut h = edit_harness();
         // Enter with nothing focused focuses the first field.
-        assert!(h.press_named(NamedKey::Enter), "Enter is handled in the edit form");
+        assert!(
+            h.press_named(NamedKey::Enter),
+            "Enter is handled in the edit form"
+        );
         assert_eq!(h.focused_slot(), Some(Slot::First));
         // Enter advances to the next field.
         h.press_named(NamedKey::Enter);
@@ -4826,10 +5450,18 @@ mod tests {
         h.press_shift_tab(); // First → (wrap) → Groups
         assert_eq!(h.focused_slot(), Some(Slot::Groups));
         h.press_named(NamedKey::Enter);
-        assert_eq!(h.app.mode, Mode::View, "Enter on the last field submits the form");
+        assert_eq!(
+            h.app.mode,
+            Mode::View,
+            "Enter on the last field submits the form"
+        );
         assert!(h.app.form.is_none(), "the edit form closed on submit");
         assert!(
-            h.app.store.contacts.iter().any(|c| c.first == "Ada" && c.last == "Byron"),
+            h.app
+                .store
+                .contacts
+                .iter()
+                .any(|c| c.first == "Ada" && c.last == "Byron"),
             "the edited contact was saved to the store",
         );
     }
@@ -4843,7 +5475,11 @@ mod tests {
         let end = h.app.form.as_ref().unwrap().inputs[0].ti.value().len();
         assert_eq!(end, "Ada".len());
         h.type_text("!");
-        assert_eq!(h.field_value(Slot::First), "Ada!", "typing appends at the caret");
+        assert_eq!(
+            h.field_value(Slot::First),
+            "Ada!",
+            "typing appends at the caret"
+        );
     }
 
     #[test]
@@ -4890,7 +5526,10 @@ mod tests {
         assert!(h.press_shift_tab());
         assert_eq!(h.focused_slot(), Some(Slot::Groups));
         h.relayout(); // apply the scroll the focus move requested
-        assert!(h.app.detail_scroll > 0.0, "focusing an off-screen field scrolled the form");
+        assert!(
+            h.app.detail_scroll > 0.0,
+            "focusing an off-screen field scrolled the form"
+        );
         assert!(
             rect_of(&h, Slot::Groups).y1 <= h.app.detail_rect.y1 + 0.5,
             "the focused last field is now within the visible pane",
@@ -4923,7 +5562,11 @@ mod tests {
             .map(|(_, r)| *r)
             .expect("birthday field present");
         h.press_left(rect.center());
-        assert_eq!(h.app.mode, Mode::View, "a single click must not enter edit mode");
+        assert_eq!(
+            h.app.mode,
+            Mode::View,
+            "a single click must not enter edit mode"
+        );
     }
 
     #[test]
@@ -4941,7 +5584,10 @@ mod tests {
             .as_ref()
             .expect("the website is rendered via a Link widget");
         assert_eq!(link.url(), website, "the link opens the contact's website");
-        assert!(link.get_rect().width() > 0.0, "the link is laid out with a hit rect");
+        assert!(
+            link.get_rect().width() > 0.0,
+            "the link is laid out with a hit rect"
+        );
     }
 
     #[test]
@@ -4960,21 +5606,30 @@ mod tests {
         let sink = recorded.clone();
         // Same URL as the contact, so the detail draw preserves this instance
         // (it only rebuilds the link when the URL changes) and lays it out.
-        h.app.website_link =
-            Some(Link::new(&url).with_font_size(14.0).on_open(move |u| {
-                *sink.borrow_mut() = Some(u.to_string());
-            }));
+        h.app.website_link = Some(Link::new(&url).with_font_size(14.0).on_open(move |u| {
+            *sink.borrow_mut() = Some(u.to_string());
+        }));
         h.relayout();
         let rect = h.app.website_link.as_ref().unwrap().get_rect();
-        assert!(rect.width() > 0.0, "the website link has a hit rect after layout");
+        assert!(
+            rect.width() > 0.0,
+            "the website link has a hit rect after layout"
+        );
 
-        assert!(h.press_left(rect.center()), "clicking the website link is handled");
+        assert!(
+            h.press_left(rect.center()),
+            "clicking the website link is handled"
+        );
         assert_eq!(
             recorded.borrow().as_deref(),
             Some(url.as_str()),
             "the click opened the contact's website via the Link widget",
         );
-        assert_eq!(h.app.mode, Mode::View, "opening a link does not enter edit mode");
+        assert_eq!(
+            h.app.mode,
+            Mode::View,
+            "opening a link does not enter edit mode"
+        );
     }
 
     #[test]
@@ -4985,20 +5640,32 @@ mod tests {
         assert!(h.press_right(row));
         match &h.app.popup {
             Some(Popup::ContextMenu { target, .. }) => assert_eq!(*target, id),
-            other => panic!("right-click should open the context menu, got {:?}", other.is_some()),
+            other => panic!(
+                "right-click should open the context menu, got {:?}",
+                other.is_some()
+            ),
         }
         // Click the "Delete" row in the menu → the delete-confirm modal opens.
-        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else { unreachable!() };
-        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
-        let delete_idx =
-            CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Delete).unwrap();
+        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else {
+            unreachable!()
+        };
+        let (_panel, rows) = h
+            .app
+            .popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let delete_idx = CONTEXT_ACTIONS
+            .iter()
+            .position(|a| *a == ContextAction::Delete)
+            .unwrap();
         h.press_left(rows[delete_idx].center());
         assert_eq!(
             h.app.confirm_delete,
             Some(id),
             "context-menu Delete routes through the confirmation modal"
         );
-        assert!(h.app.popup.is_none(), "the context menu closes when an item is chosen");
+        assert!(
+            h.app.popup.is_none(),
+            "the context menu closes when an item is chosen"
+        );
     }
 
     /// The context-menu Favorite item flips the contact's flag, persists it to
@@ -5021,11 +5688,17 @@ mod tests {
 
         // The menu item index is stable; resolve it and confirm its label
         // matches the *current* (pre-toggle) favorite state.
-        let fav_idx =
-            CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Favorite).unwrap();
+        let fav_idx = CONTEXT_ACTIONS
+            .iter()
+            .position(|a| *a == ContextAction::Favorite)
+            .unwrap();
         assert_eq!(
             CONTEXT_ACTIONS[fav_idx].label(before),
-            if before { "Remove from favorites" } else { "Add to favorites" },
+            if before {
+                "Remove from favorites"
+            } else {
+                "Add to favorites"
+            },
             "the Favorite item is labelled for the contact's current state",
         );
 
@@ -5034,27 +5707,52 @@ mod tests {
         let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else {
             panic!("right-click should open the context menu");
         };
-        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let (_panel, rows) = h
+            .app
+            .popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
         h.press_left(rows[fav_idx].center());
 
         // The flag flipped in the store AND in the CRDT, and the menu closed.
-        assert_eq!(h.app.store.get(id).unwrap().favorite, !before, "store flag flipped");
-        assert_eq!(fav_in_doc(&h.doc, id), !before, "CRDT favorite flag flipped");
-        assert!(h.app.popup.is_none(), "the menu closes after toggling favorite");
+        assert_eq!(
+            h.app.store.get(id).unwrap().favorite,
+            !before,
+            "store flag flipped"
+        );
+        assert_eq!(
+            fav_in_doc(&h.doc, id),
+            !before,
+            "CRDT favorite flag flipped"
+        );
+        assert!(
+            h.app.popup.is_none(),
+            "the menu closes after toggling favorite"
+        );
 
         // Reopening the menu now shows the inverted label.
         assert!(h.press_right(h.row_center(0)));
         assert_eq!(
             CONTEXT_ACTIONS[fav_idx].label(!before),
-            if !before { "Remove from favorites" } else { "Add to favorites" },
+            if before {
+                "Add to favorites"
+            } else {
+                "Remove from favorites"
+            },
             "the relabelled item reflects the toggled state",
         );
 
         // Toggling again restores the original state (round-trip).
-        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else { unreachable!() };
-        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else {
+            unreachable!()
+        };
+        let (_panel, rows) = h
+            .app
+            .popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
         h.press_left(rows[fav_idx].center());
-        assert_eq!(fav_in_doc(&h.doc, id), before, "second toggle restores the CRDT flag");
+        assert_eq!(
+            fav_in_doc(&h.doc, id),
+            before,
+            "second toggle restores the CRDT flag"
+        );
     }
 
     #[test]
@@ -5065,11 +5763,20 @@ mod tests {
         let before = ContactsDoc::list_contacts(&h.doc).len();
         let (_panel, del, _cancel) = h.app.confirm_geometry();
         h.press_left(del.center());
-        assert!(h.app.confirm_delete.is_none(), "the modal closes after confirming");
-        let after = ContactsDoc::list_contacts(&h.doc).len();
-        assert_eq!(after, before - 1, "Delete removes the contact from the CRDT doc");
         assert!(
-            !ContactsDoc::list_contacts(&h.doc).iter().any(|c| c.id == id),
+            h.app.confirm_delete.is_none(),
+            "the modal closes after confirming"
+        );
+        let after = ContactsDoc::list_contacts(&h.doc).len();
+        assert_eq!(
+            after,
+            before - 1,
+            "Delete removes the contact from the CRDT doc"
+        );
+        assert!(
+            !ContactsDoc::list_contacts(&h.doc)
+                .iter()
+                .any(|c| c.id == id),
             "the deleted contact is gone from the document"
         );
     }
@@ -5092,7 +5799,9 @@ mod tests {
             "the confirm-delete button and the palette build the identical EncodedAction",
         );
         assert!(
-            !ContactsDoc::list_contacts(&h.doc).iter().any(|c| c.id == id),
+            !ContactsDoc::list_contacts(&h.doc)
+                .iter()
+                .any(|c| c.id == id),
             "and it actually deleted the contact",
         );
     }
@@ -5106,16 +5815,22 @@ mod tests {
         let row = h.row_center(0);
         let id = h.row_id(0);
         let before = h.app.store.get(id).unwrap().favorite;
-        let expected =
-            crate::actions::encode(&crate::actions::set_favorite_action(id.to_string(), !before));
+        let expected = crate::actions::encode(&crate::actions::set_favorite_action(
+            id.to_string(),
+            !before,
+        ));
 
         assert!(h.press_right(row));
         let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else {
             panic!("right-click should open the context menu");
         };
-        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
-        let fav_idx =
-            CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Favorite).unwrap();
+        let (_panel, rows) = h
+            .app
+            .popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let fav_idx = CONTEXT_ACTIONS
+            .iter()
+            .position(|a| *a == ContextAction::Favorite)
+            .unwrap();
         h.press_left(rows[fav_idx].center());
         assert_eq!(
             h.app.last_dispatched(),
@@ -5139,9 +5854,15 @@ mod tests {
         let mut tx = qos_actions::LocalTransport::new();
         qos_actions::dispatch(&mut h.doc, &action, encoded, &mut tx).unwrap();
         // The store hasn't seen it yet — it still holds the contact.
-        assert!(h.app.store.get(id).is_some(), "store is stale before the reconciling sync");
+        assert!(
+            h.app.store.get(id).is_some(),
+            "store is stale before the reconciling sync"
+        );
         h.app.sync(&mut h.doc, &ROOT);
-        assert!(h.app.store.get(id).is_none(), "the reconciling sync dropped the deleted contact");
+        assert!(
+            h.app.store.get(id).is_none(),
+            "the reconciling sync dropped the deleted contact"
+        );
         assert_eq!(h.app.store.len(), before - 1);
     }
 
@@ -5152,10 +5873,10 @@ mod tests {
         let cur = h.app.selected.unwrap();
         let c = h.app.store.get(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
-        if let Some(form) = h.app.form.as_mut() {
-            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
-                fi.ti.set_text("Brand New Title");
-            }
+        if let Some(form) = h.app.form.as_mut()
+            && let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title)
+        {
+            fi.ti.set_text("Brand New Title");
         }
         h.relayout();
         assert!(h.app.form_is_dirty(), "the edited form is dirty");
@@ -5166,17 +5887,32 @@ mod tests {
         let other_id = h.row_id(other_idx);
         let other_row = h.row_center(other_idx);
         h.press_left(other_row);
-        assert_eq!(h.app.pending_switch, Some(other_id), "switch is deferred behind the modal");
-        assert_eq!(h.app.mode, Mode::Edit, "still editing while the modal is up");
+        assert_eq!(
+            h.app.pending_switch,
+            Some(other_id),
+            "switch is deferred behind the modal"
+        );
+        assert_eq!(
+            h.app.mode,
+            Mode::Edit,
+            "still editing while the modal is up"
+        );
         // Press Save → commits the edit AND switches to the target.
         let g = h.app.unsaved_geometry();
         h.press_left(g.save.center());
         assert!(h.app.pending_switch.is_none());
         assert_eq!(h.app.mode, Mode::View, "saved and left the form");
-        assert_eq!(h.app.selected, Some(other_id), "switched to the clicked contact");
+        assert_eq!(
+            h.app.selected,
+            Some(other_id),
+            "switched to the clicked contact"
+        );
         let stored = ContactsDoc::list_contacts(&h.doc);
         let edited = stored.iter().find(|x| x.id == cur).unwrap();
-        assert_eq!(edited.title, "Brand New Title", "the edit was saved to the doc");
+        assert_eq!(
+            edited.title, "Brand New Title",
+            "the edit was saved to the doc"
+        );
     }
 
     #[test]
@@ -5186,10 +5922,10 @@ mod tests {
         let original_title = h.app.store.get(cur).unwrap().title.clone();
         let c = h.app.store.get(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
-        if let Some(form) = h.app.form.as_mut() {
-            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
-                fi.ti.set_text("Throwaway Title");
-            }
+        if let Some(form) = h.app.form.as_mut()
+            && let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title)
+        {
+            fi.ti.set_text("Throwaway Title");
         }
         h.relayout();
         let other_idx = (0..h.app.list_rows.len())
@@ -5205,7 +5941,10 @@ mod tests {
         assert_eq!(h.app.selected, Some(other_id));
         let stored = ContactsDoc::list_contacts(&h.doc);
         let unchanged = stored.iter().find(|x| x.id == cur).unwrap();
-        assert_eq!(unchanged.title, original_title, "discard left the doc unchanged");
+        assert_eq!(
+            unchanged.title, original_title,
+            "discard left the doc unchanged"
+        );
     }
 
     #[test]
@@ -5222,7 +5961,10 @@ mod tests {
         let other_id = h.row_id(other_idx);
         let other_row = h.row_center(other_idx);
         h.press_left(other_row);
-        assert!(h.app.pending_switch.is_none(), "no modal when there are no unsaved changes");
+        assert!(
+            h.app.pending_switch.is_none(),
+            "no modal when there are no unsaved changes"
+        );
         assert_eq!(h.app.selected, Some(other_id), "switched directly");
         assert_eq!(h.app.mode, Mode::View);
     }
@@ -5245,23 +5987,48 @@ mod tests {
         h.relayout();
         // Focus the Title field via a real click, then type through the
         // production keystroke path (NOT `set_text`).
-        assert!(h.focus_field(Slot::Title), "the title field focuses on click");
+        assert!(
+            h.focus_field(Slot::Title),
+            "the title field focuses on click"
+        );
         h.type_text("XYZ");
         // The keystrokes landed in the field's local buffer …
         let live = h.field_value(Slot::Title);
-        assert!(live.contains("XYZ"), "the field shows the typed text: {live:?}");
+        assert!(
+            live.contains("XYZ"),
+            "the field shows the typed text: {live:?}"
+        );
         assert_ne!(live, original);
         // … but NOTHING was committed: editing is a true draft now.
-        assert_eq!(h.app.store.get(id).unwrap().title, original, "store untouched mid-edit");
-        assert_eq!(h.doc_contact(id).unwrap().title, original, "CRDT doc untouched mid-edit");
+        assert_eq!(
+            h.app.store.get(id).unwrap().title,
+            original,
+            "store untouched mid-edit"
+        );
+        assert_eq!(
+            h.doc_contact(id).unwrap().title,
+            original,
+            "CRDT doc untouched mid-edit"
+        );
         assert!(h.app.form_is_dirty(), "the live-typed form reports dirty");
         // Cancel genuinely discards the draft.
-        assert!(h.app.hit.cancel.width() > 0.0, "the Cancel button is laid out");
+        assert!(
+            h.app.hit.cancel.width() > 0.0,
+            "the Cancel button is laid out"
+        );
         h.press_left(h.app.hit.cancel.center());
         assert_eq!(h.app.mode, Mode::View, "Cancel leaves edit mode");
         assert!(h.app.form.is_none(), "Cancel drops the form");
-        assert_eq!(h.app.store.get(id).unwrap().title, original, "Cancel discarded the edit (store)");
-        assert_eq!(h.doc_contact(id).unwrap().title, original, "Cancel discarded the edit (doc)");
+        assert_eq!(
+            h.app.store.get(id).unwrap().title,
+            original,
+            "Cancel discarded the edit (store)"
+        );
+        assert_eq!(
+            h.doc_contact(id).unwrap().title,
+            original,
+            "Cancel discarded the edit (doc)"
+        );
     }
 
     #[test]
@@ -5277,7 +6044,11 @@ mod tests {
         assert!(h.focus_field(Slot::First));
         h.type_text("Ghost");
         // The half-typed new contact must not exist anywhere yet.
-        assert_eq!(h.app.store.len(), store_before, "a half-typed new contact isn't in the store");
+        assert_eq!(
+            h.app.store.len(),
+            store_before,
+            "a half-typed new contact isn't in the store"
+        );
         assert_eq!(
             ContactsDoc::list_contacts(&h.doc).len(),
             doc_before,
@@ -5286,9 +6057,17 @@ mod tests {
         // Cancel → still nothing, no "No Name"/"Ghost" phantom left behind.
         h.press_left(h.app.hit.cancel.center());
         assert_eq!(h.app.mode, Mode::View);
-        assert_eq!(h.app.store.len(), store_before, "Cancel on New leaves no phantom record");
+        assert_eq!(
+            h.app.store.len(),
+            store_before,
+            "Cancel on New leaves no phantom record"
+        );
         assert!(
-            !h.app.store.contacts.iter().any(|c| c.display_name() == "Ghost"),
+            !h.app
+                .store
+                .contacts
+                .iter()
+                .any(|c| c.display_name() == "Ghost"),
             "the abandoned draft never entered the book",
         );
     }
@@ -5301,8 +6080,14 @@ mod tests {
     fn edit_affordance_opens_form_on_selected_contact_and_cancel_returns() {
         let mut h = Harness::new(1280, 800);
         assert_eq!(h.app.mode, Mode::View, "the app opens in the read view");
-        let sel = h.app.selected.expect("a contact is selected in the read view");
-        assert!(h.app.hit.edit.width() > 0.0, "the read-view Edit button is laid out");
+        let sel = h
+            .app
+            .selected
+            .expect("a contact is selected in the read view");
+        assert!(
+            h.app.hit.edit.width() > 0.0,
+            "the read-view Edit button is laid out"
+        );
 
         // Clicking Edit enters the form on the shown contact (identity carried
         // across the transition — the header's avatar + name reflect this draft).
@@ -5310,13 +6095,19 @@ mod tests {
         assert_eq!(h.app.mode, Mode::Edit, "clicking Edit opens the edit form");
         {
             let form = h.app.form.as_ref().expect("an edit form is open");
-            assert_eq!(form.draft.id, sel, "the form edits the same contact the view showed");
+            assert_eq!(
+                form.draft.id, sel,
+                "the form edits the same contact the view showed"
+            );
             assert!(!form.is_new, "editing an existing record, not creating one");
         }
 
         // Leaving is just as direct: Cancel returns to the read view, no form.
         h.relayout();
-        assert!(h.app.hit.cancel.width() > 0.0, "the Cancel button is laid out in the form");
+        assert!(
+            h.app.hit.cancel.width() > 0.0,
+            "the Cancel button is laid out in the form"
+        );
         h.press_left(h.app.hit.cancel.center());
         assert_eq!(h.app.mode, Mode::View, "Cancel returns to the read view");
         assert!(h.app.form.is_none(), "no edit form lingers after Cancel");
@@ -5337,7 +6128,11 @@ mod tests {
         // Ctrl+S saves; the typed value now round-trips into store + doc.
         assert!(h.press_char_ctrl("s"), "Ctrl+S is handled in edit mode");
         assert_eq!(h.app.mode, Mode::View, "Ctrl+S leaves the form");
-        assert_eq!(h.app.store.get(id).unwrap().org, typed, "the typed org saved to the store");
+        assert_eq!(
+            h.app.store.get(id).unwrap().org,
+            typed,
+            "the typed org saved to the store"
+        );
         assert_eq!(h.doc_contact(id).unwrap().org, typed, "and to the CRDT doc");
     }
 
@@ -5353,11 +6148,20 @@ mod tests {
         h.relayout();
         assert!(h.focus_field(Slot::Title));
         h.type_text("Q");
-        assert!(h.app.form_is_dirty(), "keystroke-dirtied form is dirty via the production path");
-        let other_idx = (0..h.app.list_rows.len()).find(|i| h.app.list_rows[*i].0 != cur).unwrap();
+        assert!(
+            h.app.form_is_dirty(),
+            "keystroke-dirtied form is dirty via the production path"
+        );
+        let other_idx = (0..h.app.list_rows.len())
+            .find(|i| h.app.list_rows[*i].0 != cur)
+            .unwrap();
         let other_id = h.row_id(other_idx);
         h.press_left(h.row_center(other_idx));
-        assert_eq!(h.app.pending_switch, Some(other_id), "the guard defers the switch");
+        assert_eq!(
+            h.app.pending_switch,
+            Some(other_id),
+            "the guard defers the switch"
+        );
         assert_eq!(h.app.mode, Mode::Edit, "still editing behind the modal");
     }
 
@@ -5371,7 +6175,10 @@ mod tests {
         let mut h = edit_harness();
         assert_eq!(h.app.mode, Mode::Edit);
         assert!(h.app.form.as_ref().unwrap().is_new);
-        assert!(h.focused_slot().is_none(), "the form opens with no field focused");
+        assert!(
+            h.focused_slot().is_none(),
+            "the form opens with no field focused"
+        );
         let draft_id = h.app.form.as_ref().unwrap().draft.id;
 
         // 'n' must NOT start a new contact / swap the draft out from under us.
@@ -5385,7 +6192,10 @@ mod tests {
 
         // '/' must NOT steal focus to the list search while editing.
         h.press_char("/");
-        assert!(!h.app.search.is_focused(), "'/' does not steal focus mid-edit");
+        assert!(
+            !h.app.search.is_focused(),
+            "'/' does not steal focus mid-edit"
+        );
         assert_eq!(h.app.mode, Mode::Edit, "still editing");
 
         // Once a field IS focused, the very same key types into it normally.
@@ -5416,20 +6226,43 @@ mod tests {
         assert_eq!(h.app.store.get(visible[0]).unwrap().last, "Hopper");
         // The rendered rows reflect it after a layout pass.
         h.relayout();
-        assert_eq!(h.app.list_rows.len(), 1, "the list pane renders the single match");
+        assert_eq!(
+            h.app.list_rows.len(),
+            1,
+            "the list pane renders the single match"
+        );
     }
 
     #[test]
     fn sort_chip_click_toggles_name_org_and_reorders() {
         let mut h = Harness::new(1280, 800);
         assert_eq!(h.app.sort, SortKey::Name);
-        let first_by_name = h.app.store.get(h.app.visible_ids()[0]).unwrap().display_name();
-        assert_eq!(first_by_name, "Tim Berners-Lee", "name sort leads with Berners-Lee");
-        assert!(h.press_left(h.app.hit.sort.center()), "the sort chip is clickable");
+        let first_by_name = h
+            .app
+            .store
+            .get(h.app.visible_ids()[0])
+            .unwrap()
+            .display_name();
+        assert_eq!(
+            first_by_name, "Tim Berners-Lee",
+            "name sort leads with Berners-Lee"
+        );
+        assert!(
+            h.press_left(h.app.hit.sort.center()),
+            "the sort chip is clickable"
+        );
         assert_eq!(h.app.sort, SortKey::Org, "clicking toggles to Org sort");
-        let first_by_org = h.app.store.get(h.app.visible_ids()[0]).unwrap().display_name();
+        let first_by_org = h
+            .app
+            .store
+            .get(h.app.visible_ids()[0])
+            .unwrap()
+            .display_name();
         assert_ne!(first_by_org, first_by_name, "the list reordered");
-        assert_eq!(first_by_org, "Ada Lovelace", "org sort leads with Analytical Engines");
+        assert_eq!(
+            first_by_org, "Ada Lovelace",
+            "org sort leads with Analytical Engines"
+        );
         // Toggling again returns to Name sort.
         h.press_left(h.app.hit.sort.center());
         assert_eq!(h.app.sort, SortKey::Name);
@@ -5441,7 +6274,13 @@ mod tests {
         // The seeded selection (Ada) is not in "Friends".
         let sel_before = h.app.selected.unwrap();
         assert!(
-            !h.app.store.get(sel_before).unwrap().groups.iter().any(|g| g.eq_ignore_ascii_case("Friends")),
+            !h.app
+                .store
+                .get(sel_before)
+                .unwrap()
+                .groups
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case("Friends")),
         );
         // Open the group filter popup and choose "Friends".
         assert!(h.press_left(h.app.hit.group.center()));
@@ -5450,10 +6289,17 @@ mod tests {
         };
         let mut opts = vec!["All".to_string()];
         opts.extend(h.app.store.all_groups());
-        let idx = opts.iter().position(|o| o == "Friends").expect("Friends is a seeded group");
+        let idx = opts
+            .iter()
+            .position(|o| o == "Friends")
+            .expect("Friends is a seeded group");
         let (_panel, rows) = h.app.popup_menu_geometry(anchor, opts.len(), 180.0);
         h.press_left(rows[idx].center());
-        assert_eq!(h.app.group_filter.as_deref(), Some("Friends"), "the filter is applied");
+        assert_eq!(
+            h.app.group_filter.as_deref(),
+            Some("Friends"),
+            "the filter is applied"
+        );
         let visible = h.app.visible_ids();
         assert!(!visible.is_empty());
         assert!(
@@ -5468,19 +6314,36 @@ mod tests {
             "every visible contact is in Friends",
         );
         // Selection stayed valid: it now points at a still-visible contact.
-        assert!(visible.contains(&h.app.selected.unwrap()), "selection moved to a visible contact");
+        assert!(
+            visible.contains(&h.app.selected.unwrap()),
+            "selection moved to a visible contact"
+        );
     }
 
     #[test]
     fn arrow_keys_move_the_list_selection() {
         let mut h = Harness::new(1280, 800);
         let ids = h.app.visible_ids();
-        let pos = ids.iter().position(|x| *x == h.app.selected.unwrap()).unwrap();
-        assert!(pos + 1 < ids.len(), "the seeded selection isn't the last row");
+        let pos = ids
+            .iter()
+            .position(|x| *x == h.app.selected.unwrap())
+            .unwrap();
+        assert!(
+            pos + 1 < ids.len(),
+            "the seeded selection isn't the last row"
+        );
         assert!(h.press_named(NamedKey::ArrowDown));
-        assert_eq!(h.app.selected, Some(ids[pos + 1]), "ArrowDown selects the next contact");
+        assert_eq!(
+            h.app.selected,
+            Some(ids[pos + 1]),
+            "ArrowDown selects the next contact"
+        );
         assert!(h.press_named(NamedKey::ArrowUp));
-        assert_eq!(h.app.selected, Some(ids[pos]), "ArrowUp returns to the previous");
+        assert_eq!(
+            h.app.selected,
+            Some(ids[pos]),
+            "ArrowUp returns to the previous"
+        );
     }
 
     #[test]
@@ -5488,13 +6351,19 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         assert!(h.press_char("n"));
         assert_eq!(h.app.mode, Mode::Edit);
-        assert!(h.app.form.as_ref().unwrap().is_new, "'n' opens a NEW contact form");
+        assert!(
+            h.app.form.as_ref().unwrap().is_new,
+            "'n' opens a NEW contact form"
+        );
         // Escape out, then 'e' edits the existing selection.
         h.press_named(NamedKey::Escape);
         assert_eq!(h.app.mode, Mode::View);
         assert!(h.press_char("e"));
         assert_eq!(h.app.mode, Mode::Edit);
-        assert!(!h.app.form.as_ref().unwrap().is_new, "'e' edits the selected contact");
+        assert!(
+            !h.app.form.as_ref().unwrap().is_new,
+            "'e' edits the selected contact"
+        );
     }
 
     #[test]
@@ -5502,9 +6371,16 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         assert!(h.press_named(NamedKey::Delete));
-        assert_eq!(h.app.confirm_delete, Some(id), "Delete raises the confirm modal for the selection");
+        assert_eq!(
+            h.app.confirm_delete,
+            Some(id),
+            "Delete raises the confirm modal for the selection"
+        );
         h.press_named(NamedKey::Escape);
-        assert!(h.app.confirm_delete.is_none(), "Escape dismisses the confirm modal");
+        assert!(
+            h.app.confirm_delete.is_none(),
+            "Escape dismisses the confirm modal"
+        );
         assert!(h.app.store.get(id).is_some(), "nothing was deleted");
     }
 
@@ -5513,7 +6389,10 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         let before = h.app.split_pos;
         // Grab the divider (between list and detail).
-        let grab = Point::new(h.app.list_rect.x1 + DIVIDER_W / 2.0, h.app.detail_rect.center().y);
+        let grab = Point::new(
+            h.app.list_rect.x1 + DIVIDER_W / 2.0,
+            h.app.detail_rect.center().y,
+        );
         h.move_to(grab);
         assert!(h.app.divider_hover, "cursor over the divider arms the drag");
         h.dispatch(&WindowEvent::MouseInput {
@@ -5523,9 +6402,18 @@ mod tests {
         });
         assert!(h.app.divider_drag, "pressing on the divider starts a drag");
         // Drag to ~55% of the width.
-        h.move_to(Point::new(h.app.rect.x0 + h.app.rect.width() * 0.55, grab.y));
-        assert!(h.app.split_pos > before, "dragging right widens the list pane");
-        assert!((h.app.split_pos - 0.55).abs() < 0.02, "the split follows the cursor");
+        h.move_to(Point::new(
+            h.app.rect.x0 + h.app.rect.width() * 0.55,
+            grab.y,
+        ));
+        assert!(
+            h.app.split_pos > before,
+            "dragging right widens the list pane"
+        );
+        assert!(
+            (h.app.split_pos - 0.55).abs() < 0.02,
+            "the split follows the cursor"
+        );
         h.dispatch(&WindowEvent::MouseInput {
             device_id: device_id(),
             state: ElementState::Released,
@@ -5547,7 +6435,10 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         });
         h.relayout();
-        assert!(h.app.list_scroll > 0.0, "scrolling down moves the list; clamp keeps it in range");
+        assert!(
+            h.app.list_scroll > 0.0,
+            "scrolling down moves the list; clamp keeps it in range"
+        );
     }
 
     // =================================================================
@@ -5563,9 +6454,16 @@ mod tests {
         h.app.begin_edit(c, false);
         h.relayout();
         // Add-phone button appends a blank row.
-        assert!(h.app.hit.add_phone.width() > 0.0, "the add-phone button is laid out");
+        assert!(
+            h.app.hit.add_phone.width() > 0.0,
+            "the add-phone button is laid out"
+        );
         h.press_left(h.app.hit.add_phone.center());
-        assert_eq!(h.app.form.as_ref().unwrap().draft.phones.len(), base + 1, "add-phone grew the draft");
+        assert_eq!(
+            h.app.form.as_ref().unwrap().draft.phones.len(),
+            base + 1,
+            "add-phone grew the draft"
+        );
         h.relayout();
         // Remove-field button on the new phone drops it again.
         let rm = h
@@ -5577,7 +6475,11 @@ mod tests {
             .map(|(_, r)| *r)
             .expect("the new phone row has a remove button");
         h.press_left(rm.center());
-        assert_eq!(h.app.form.as_ref().unwrap().draft.phones.len(), base, "remove-field shrank the draft");
+        assert_eq!(
+            h.app.form.as_ref().unwrap().draft.phones.len(),
+            base,
+            "remove-field shrank the draft"
+        );
     }
 
     #[test]
@@ -5603,7 +6505,10 @@ mod tests {
             panic!("the type chip opens the type menu");
         };
         // Pick a label different from the current one.
-        let pick = TYPE_OPTIONS.iter().position(|l| *l != stored_label).unwrap();
+        let pick = TYPE_OPTIONS
+            .iter()
+            .position(|l| *l != stored_label)
+            .unwrap();
         let (_panel, rows) = h.app.popup_menu_geometry(anchor, TYPE_OPTIONS.len(), 140.0);
         h.press_left(rows[pick].center());
         assert_eq!(
@@ -5624,12 +6529,20 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         let c = h.app.store.get(id).cloned().unwrap();
-        let stored_bday = c.birthday.clone();
+        let stored_bday = c.birthday;
         h.app.begin_edit(c, false);
         h.relayout();
-        assert!(h.app.hit.cal_btn.width() > 0.0, "the calendar button is laid out");
+        assert!(
+            h.app.hit.cal_btn.width() > 0.0,
+            "the calendar button is laid out"
+        );
         h.press_left(h.app.hit.cal_btn.center());
-        let Some(Popup::Calendar { year, month, anchor }) = h.app.popup else {
+        let Some(Popup::Calendar {
+            year,
+            month,
+            anchor,
+        }) = h.app.popup
+        else {
             panic!("the calendar button opens the calendar");
         };
         let (panel, _prev, _next, cells) = h.app.calendar_geometry(anchor, year, month);
@@ -5640,15 +6553,23 @@ mod tests {
             .find(|(d, r)| *d != 10 && panel.contains(r.center()))
             .expect("a selectable in-panel day");
         h.press_left(rect.center());
-        let expect = format!("{:04}-{:02}-{:02}", year, month, day);
+        let expect = format!("{year:04}-{month:02}-{day:02}");
         assert_eq!(
             h.app.form.as_ref().unwrap().draft.birthday,
             Some(Birthday::Full { year, month, day }),
             "the picked day set the draft birthday as a structured date",
         );
-        assert_eq!(h.field_value(Slot::Birthday), expect, "and mirrored into the birthday field");
+        assert_eq!(
+            h.field_value(Slot::Birthday),
+            expect,
+            "and mirrored into the birthday field"
+        );
         // Draft-only: not committed to the store yet.
-        assert_eq!(h.app.store.get(id).unwrap().birthday, stored_bday, "birthday not committed until Save");
+        assert_eq!(
+            h.app.store.get(id).unwrap().birthday,
+            stored_bday,
+            "birthday not committed until Save"
+        );
     }
 
     #[test]
@@ -5656,10 +6577,21 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         let before = h.app.store.get(id).unwrap().favorite;
-        assert!(h.app.hit.fav.width() > 0.0, "the detail favorite star is laid out");
+        assert!(
+            h.app.hit.fav.width() > 0.0,
+            "the detail favorite star is laid out"
+        );
         h.press_left(h.app.hit.fav.center());
-        assert_eq!(h.app.store.get(id).unwrap().favorite, !before, "the star flips the store flag");
-        assert_eq!(h.doc_contact(id).unwrap().favorite, !before, "and persists to the doc");
+        assert_eq!(
+            h.app.store.get(id).unwrap().favorite,
+            !before,
+            "the star flips the store flag"
+        );
+        assert_eq!(
+            h.doc_contact(id).unwrap().favorite,
+            !before,
+            "and persists to the doc"
+        );
     }
 
     #[test]
@@ -5670,10 +6602,21 @@ mod tests {
         let before = c.favorite;
         h.app.begin_edit(c, false);
         h.relayout();
-        assert!(h.app.hit.fav_toggle.width() > 0.0, "the favorite pill is laid out in the form");
+        assert!(
+            h.app.hit.fav_toggle.width() > 0.0,
+            "the favorite pill is laid out in the form"
+        );
         h.press_left(h.app.hit.fav_toggle.center());
-        assert_eq!(h.app.form.as_ref().unwrap().draft.favorite, !before, "the pill flips the draft flag");
-        assert_eq!(h.app.store.get(id).unwrap().favorite, before, "draft-only: store unchanged until Save");
+        assert_eq!(
+            h.app.form.as_ref().unwrap().draft.favorite,
+            !before,
+            "the pill flips the draft flag"
+        );
+        assert_eq!(
+            h.app.store.get(id).unwrap().favorite,
+            before,
+            "draft-only: store unchanged until Save"
+        );
     }
 
     /// A unique scratch `.vcf` destination for an export test — the path the
@@ -5696,10 +6639,17 @@ mod tests {
         let mut h = Harness::new(1280, 800);
         // Open the export dialog via the toolbar Export button.
         h.press_left(h.app.hit.export.center());
-        assert!(h.app.export_sel.is_some(), "Export opens the selection dialog");
+        assert!(
+            h.app.export_sel.is_some(),
+            "Export opens the selection dialog"
+        );
         // Pre-ticked with all visible contacts.
         let total = h.app.visible_export_ids().len();
-        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), total, "all pre-selected");
+        assert_eq!(
+            h.app.export_sel.as_ref().unwrap().len(),
+            total,
+            "all pre-selected"
+        );
         // Select none, then tick exactly one row.
         let g = h.app.export_geometry();
         h.press_left(g.select_none.center());
@@ -5713,23 +6663,38 @@ mod tests {
         // dialog. It must NOT write anything before the user chooses a path.
         let g = h.app.export_geometry();
         h.press_left(g.export_v3.center());
-        assert!(h.app.export_sel.is_none(), "choosing a version closes the dialog");
+        assert!(
+            h.app.export_sel.is_none(),
+            "choosing a version closes the dialog"
+        );
         {
             let (ids, version) = h.app.pending_export.as_ref().expect("selection is parked");
             assert_eq!(ids, &vec![first_id], "the one ticked contact is parked");
             assert_eq!(*version, VCardVersion::V3, "the chosen version is parked");
         }
         assert!(h.app.portal_in_flight(), "the Save dialog is in flight");
-        assert!(!vcf.exists(), "nothing is written until a destination is chosen");
+        assert!(
+            !vcf.exists(),
+            "nothing is written until a destination is chosen"
+        );
 
         // Deliver the destination the Save portal would return, then drain it
         // through one real frame's sync — which writes the file.
-        h.app.export_rx = Some(portal::inject_export_for_test(ExportOutcome::Opened(vcf.clone())));
+        h.app.export_rx = Some(portal::inject_export_for_test(ExportOutcome::Opened(
+            vcf.clone(),
+        )));
         h.app.sync(&mut h.doc, &ROOT);
-        assert!(h.app.pending_export.is_none(), "the parked selection was consumed");
+        assert!(
+            h.app.pending_export.is_none(),
+            "the parked selection was consumed"
+        );
         assert!(!h.app.portal_in_flight(), "draining clears the request");
         let body = std::fs::read_to_string(&vcf).expect("export wrote a vcf to the chosen path");
-        assert_eq!(body.matches("BEGIN:VCARD").count(), 1, "exactly the ticked contact");
+        assert_eq!(
+            body.matches("BEGIN:VCARD").count(),
+            1,
+            "exactly the ticked contact"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5745,7 +6710,11 @@ mod tests {
         let total = ids.len();
         h.app.write_export(&ids, VCardVersion::V4, &vcf);
         let body = std::fs::read_to_string(&vcf).unwrap();
-        assert_eq!(body.matches("BEGIN:VCARD").count(), total, "every contact written");
+        assert_eq!(
+            body.matches("BEGIN:VCARD").count(),
+            total,
+            "every contact written"
+        );
         assert!(body.contains("VERSION:4.0"), "Export 4.0 emits v4 cards");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5767,12 +6736,27 @@ mod tests {
 
     #[test]
     fn focus_search_chord_predicate_matches_ctrl_k_and_ctrl_slash() {
-        assert!(is_focus_search_chord(true, &Key::Character(SmolStr::new("k"))));
-        assert!(is_focus_search_chord(true, &Key::Character(SmolStr::new("K"))));
-        assert!(is_focus_search_chord(true, &Key::Character(SmolStr::new("/"))));
+        assert!(is_focus_search_chord(
+            true,
+            &Key::Character(SmolStr::new("k"))
+        ));
+        assert!(is_focus_search_chord(
+            true,
+            &Key::Character(SmolStr::new("K"))
+        ));
+        assert!(is_focus_search_chord(
+            true,
+            &Key::Character(SmolStr::new("/"))
+        ));
         // Not the chord: same keys without ctrl, or other ctrl chords.
-        assert!(!is_focus_search_chord(false, &Key::Character(SmolStr::new("k"))));
-        assert!(!is_focus_search_chord(true, &Key::Character(SmolStr::new("s"))));
+        assert!(!is_focus_search_chord(
+            false,
+            &Key::Character(SmolStr::new("k"))
+        ));
+        assert!(!is_focus_search_chord(
+            true,
+            &Key::Character(SmolStr::new("s"))
+        ));
         assert!(!is_focus_search_chord(true, &Key::Named(NamedKey::Escape)));
     }
 
@@ -5789,7 +6773,10 @@ mod tests {
         h.press_named(NamedKey::Escape);
         assert!(!h.app.search.is_focused());
         assert!(h.press_char_ctrl("/"), "Ctrl+/ is handled too");
-        assert!(h.app.search.is_focused(), "Ctrl+/ also focuses the search field");
+        assert!(
+            h.app.search.is_focused(),
+            "Ctrl+/ also focuses the search field"
+        );
     }
 
     #[test]
@@ -5829,7 +6816,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         app.shots_new_contact();
-        assert!(!app.form_is_dirty(), "an untouched New Contact form is clean");
+        assert!(
+            !app.form_is_dirty(),
+            "an untouched New Contact form is clean"
+        );
         if let Some(form) = app.form.as_mut() {
             form.draft.first = "Jane".into();
             if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::First) {
@@ -5860,8 +6850,14 @@ mod tests {
         let mut app = ContactsApp::new();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
-        assert!(app.store.is_empty(), "a fresh disk-backed launch shows an empty book");
-        assert!(app.selected.is_none(), "nothing is selected when the book is empty");
+        assert!(
+            app.store.is_empty(),
+            "a fresh disk-backed launch shows an empty book"
+        );
+        assert!(
+            app.selected.is_none(),
+            "nothing is selected when the book is empty"
+        );
         // And a full frame over the empty state must not panic.
         drive_frame(&mut app, 1280, 800);
         drive_frame(&mut app, 560, 720);
@@ -5901,7 +6897,11 @@ mod tests {
         let mut doc2 = store2.load().unwrap().expect("the store has a document");
         let mut app2 = ContactsApp::new();
         app2.sync(&mut doc2, &ROOT);
-        assert_eq!(app2.store.len(), 1, "the saved contact loads on the next launch");
+        assert_eq!(
+            app2.store.len(),
+            1,
+            "the saved contact loads on the next launch"
+        );
         let loaded = &app2.store.contacts[0];
         assert_eq!(loaded.first, "Persisted");
         assert_eq!(loaded.phones[0].value, "+1 555 0100");
@@ -5956,7 +6956,9 @@ mod tests {
         // Restart, then merge the peer that diverged before the save.
         let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
         let mut restored = store2.load().unwrap().expect("the saved document");
-        restored.merge(&mut peer).expect("a stored book merges with a peer");
+        restored
+            .merge(&mut peer)
+            .expect("a stored book merges with a peer");
 
         let book = ContactsDoc::list_contacts(&restored);
         assert_eq!(
@@ -5967,7 +6969,10 @@ mod tests {
         );
         for (id, name) in [(shared_id, "Ada"), (my_id, "Alan"), (their_id, "Grace")] {
             let found = book.iter().filter(|c| c.id == id).count();
-            assert_eq!(found, 1, "{name} must be present exactly once, found {found}");
+            assert_eq!(
+                found, 1,
+                "{name} must be present exactly once, found {found}"
+            );
         }
         // The decisive check: both sides edited the *same* contacts object.
         // A rebuilt-from-scratch save would have made two, and the merge
@@ -5995,7 +7000,10 @@ mod tests {
         crate::storage::save(&legacy, &book).unwrap();
 
         let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
-        assert!(store.migrate_from(&legacy).unwrap(), "the legacy file is imported");
+        assert!(
+            store.migrate_from(&legacy).unwrap(),
+            "the legacy file is imported"
+        );
         let mut doc = store.load().unwrap().expect("document after migration");
 
         let mut app = ContactsApp::new();
@@ -6037,18 +7045,30 @@ mod tests {
 
         // Drive the parse+merge core directly with the paths the portal would
         // have handed back (the picker itself can't run headless).
-        let n = app.import_paths(&mut doc, &[vcf_a.clone(), vcf_b.clone()]);
+        let n = app.import_paths(&mut doc, &[vcf_a, vcf_b]);
         assert_eq!(n, 3, "all three cards across the two files were imported");
-        assert_eq!(app.store.len(), 3, "the parsed cards are in the working set");
-        let firsts: std::collections::HashSet<&str> =
-            app.store.contacts.iter().map(|c| c.first.as_str()).collect();
+        assert_eq!(
+            app.store.len(),
+            3,
+            "the parsed cards are in the working set"
+        );
+        let firsts: std::collections::HashSet<&str> = app
+            .store
+            .contacts
+            .iter()
+            .map(|c| c.first.as_str())
+            .collect();
         assert!(firsts.contains("Imported"));
         assert!(firsts.contains("Ada"));
         assert!(firsts.contains("Grace"));
 
         // The import reached the shared document, which is what the store
         // writes — so it survives a restart.
-        assert_eq!(ContactsDoc::list_contacts(&doc).len(), 3, "written to the doc");
+        assert_eq!(
+            ContactsDoc::list_contacts(&doc).len(),
+            3,
+            "written to the doc"
+        );
         let _ = path;
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -6077,10 +7097,18 @@ mod tests {
 
         // Install the outcome the portal worker would deliver, then run one
         // real frame's sync — which drains it.
-        app.import_rx = Some(portal::inject_import_for_test(ImportOutcome::Selected(vec![vcf])));
-        assert!(app.portal_in_flight(), "a request is in flight until drained");
+        app.import_rx = Some(portal::inject_import_for_test(ImportOutcome::Selected(
+            vec![vcf],
+        )));
+        assert!(
+            app.portal_in_flight(),
+            "a request is in flight until drained"
+        );
         app.sync(&mut doc, &ROOT);
-        assert!(!app.portal_in_flight(), "draining the outcome clears the request");
+        assert!(
+            !app.portal_in_flight(),
+            "draining the outcome clears the request"
+        );
         assert_eq!(app.store.len(), 1, "the drained selection was imported");
         assert_eq!(app.store.contacts[0].first, "Drained");
 
@@ -6105,7 +7133,10 @@ mod tests {
         app.sync(&mut doc, &ROOT);
 
         assert!(app.store.is_empty(), "import of nothing adds nothing");
-        assert!(ContactsDoc::list_contacts(&doc).is_empty(), "and writes nothing to the doc");
+        assert!(
+            ContactsDoc::list_contacts(&doc).is_empty(),
+            "and writes nothing to the doc"
+        );
         assert!(!path.exists(), "and never touches disk");
         let _ = &path;
         assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
@@ -6142,7 +7173,11 @@ mod tests {
         let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
         let doc2 = store2.load().unwrap().expect("document after restart");
         let reloaded = ContactsDoc::list_contacts(&doc2);
-        assert_eq!(reloaded.len(), before - 1, "the removal was written to the store");
+        assert_eq!(
+            reloaded.len(),
+            before - 1,
+            "the removal was written to the store"
+        );
         assert!(!reloaded.iter().any(|c| c.id == removed));
     }
 
@@ -6158,13 +7193,22 @@ mod tests {
         // Lay the SAME instance out wide, then narrow, then wide again.
         apply_at(&mut app, 1280, 800);
         assert!(!app.narrow, "wide viewport is the docked split");
-        assert!(app.list_rect.x1 <= app.detail_rect.x0 + 0.001, "list sits left of detail");
+        assert!(
+            app.list_rect.x1 <= app.detail_rect.x0 + 0.001,
+            "list sits left of detail"
+        );
 
         apply_at(&mut app, 560, 720);
-        assert!(app.narrow, "shrinking below the breakpoint reflows to single-pane push");
+        assert!(
+            app.narrow,
+            "shrinking below the breakpoint reflows to single-pane push"
+        );
 
         apply_at(&mut app, 1280, 800);
-        assert!(!app.narrow, "growing back above the breakpoint restores the docked split");
+        assert!(
+            !app.narrow,
+            "growing back above the breakpoint restores the docked split"
+        );
     }
 
     #[test]
@@ -6189,7 +7233,7 @@ mod tests {
                 .find(|(s, _)| *s == Slot::First)
                 .map(|(_, r)| *r)
                 .expect("the detail header exposes a name row hit rect");
-            let measured = tr.measure_weighted(&name, 26.0, None, TextWeight::Bold).0 as f64;
+            let measured = f64::from(tr.measure_weighted(&name, 26.0, None, TextWeight::Bold).0);
             assert!(
                 name_rect.width() >= measured,
                 "name {name:?} needs {measured:.0}px but its row is only {:.0}px — it would truncate",
@@ -6219,16 +7263,29 @@ mod tests {
 
         // A frame drawn before the lifetime elapses keeps the toast.
         drive_frame(&mut app, 1280, 800);
-        assert!(app.toast.is_some(), "a fresh toast survives an immediate frame");
+        assert!(
+            app.toast.is_some(),
+            "a fresh toast survives an immediate frame"
+        );
 
         // Back-date the toast past its lifetime and draw again → it clears,
         // and the loop is then free to idle.
         if let Some((_, shown)) = app.toast.as_mut() {
-            *shown = Instant::now() - TOAST_LIFETIME - Duration::from_millis(50);
+            *shown = Instant::now()
+                .checked_sub(TOAST_LIFETIME)
+                .unwrap()
+                .checked_sub(Duration::from_millis(50))
+                .unwrap();
         }
-        assert!(app.toast_expired(), "the back-dated toast is past its lifetime");
+        assert!(
+            app.toast_expired(),
+            "the back-dated toast is past its lifetime"
+        );
         drive_frame(&mut app, 1280, 800);
-        assert!(app.toast.is_none(), "the toast auto-dismisses once its lifetime elapses");
+        assert!(
+            app.toast.is_none(),
+            "the toast auto-dismisses once its lifetime elapses"
+        );
         assert!(
             !app.needs_animation_frame(),
             "with the toast gone the loop can settle back to idle",

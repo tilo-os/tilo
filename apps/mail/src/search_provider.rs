@@ -37,7 +37,9 @@ pub struct MailSearchProvider {
 impl MailSearchProvider {
     /// Snapshot the current mailbox into a provider.
     pub fn new(mailbox: &Mailbox) -> Self {
-        Self { mailbox: mailbox.clone() }
+        Self {
+            mailbox: mailbox.clone(),
+        }
     }
 
     /// The `action_id` for a message — what a chosen row hands back.
@@ -48,7 +50,9 @@ impl MailSearchProvider {
     /// Resolve an `action_id` produced by this provider back to a
     /// [`MessageId`]. Returns `None` for an id this provider did not emit.
     pub fn parse_action_id(action_id: &str) -> Option<MessageId> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<MessageId>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<MessageId>().ok())
     }
 }
 
@@ -66,8 +70,11 @@ impl SearchProvider for MailSearchProvider {
             .search(query, None)
             .into_iter()
             .map(|m| {
-                let title =
-                    if m.subject.trim().is_empty() { NO_SUBJECT.to_string() } else { m.subject.clone() };
+                let title = if m.subject.trim().is_empty() {
+                    NO_SUBJECT.to_string()
+                } else {
+                    m.subject.clone()
+                };
                 SearchResult::new(MAIL_KIND, title, Self::action_id(m.id))
                     .with_subtitle(m.from.display())
                     .with_icon(Icon::Mail)
@@ -90,18 +97,36 @@ mod tests {
         let mb = sample();
         let provider = MailSearchProvider::new(&mb);
         // Take a real subject word from the seeded corpus and prove it surfaces.
-        let some = mb.messages.values().next().expect("sample mailbox is populated").clone();
-        let word = some.subject.split_whitespace().next().unwrap_or(&some.subject);
+        let some = mb
+            .messages
+            .values()
+            .next()
+            .expect("sample mailbox is populated")
+            .clone();
+        let word = some
+            .subject
+            .split_whitespace()
+            .next()
+            .unwrap_or(&some.subject);
         let hits = provider.search(word);
-        assert!(!hits.is_empty(), "a real subject word surfaces at least its message");
+        assert!(
+            !hits.is_empty(),
+            "a real subject word surfaces at least its message"
+        );
         assert!(hits.iter().all(|r| r.kind == MAIL_KIND));
-        assert!(hits.iter().all(|r| r.subtitle.is_some()), "every row shows a sender");
+        assert!(
+            hits.iter().all(|r| r.subtitle.is_some()),
+            "every row shows a sender"
+        );
     }
 
     #[test]
     fn blank_query_returns_nothing() {
         let provider = MailSearchProvider::new(&sample());
-        assert!(provider.search("   ").is_empty(), "no whole-inbox dump into the palette");
+        assert!(
+            provider.search("   ").is_empty(),
+            "no whole-inbox dump into the palette"
+        );
     }
 
     #[test]
@@ -111,12 +136,19 @@ mod tests {
         registry.register(Box::new(MailSearchProvider::new(&mb)));
 
         let some = mb.messages.values().next().unwrap().clone();
-        let word = some.subject.split_whitespace().next().unwrap_or(&some.subject);
+        let word = some
+            .subject
+            .split_whitespace()
+            .next()
+            .unwrap_or(&some.subject);
         let results = registry.query(word);
         let hit = results.first().expect("a result for a real subject word");
         let id = MailSearchProvider::parse_action_id(&hit.action_id)
             .expect("action_id parses back to a MessageId");
-        assert!(mb.get(id).is_some(), "the id resolves to a real stored message");
+        assert!(
+            mb.get(id).is_some(),
+            "the id resolves to a real stored message"
+        );
     }
 
     #[test]
@@ -142,14 +174,26 @@ mod tests {
             // Query a subject word that exists in the sample corpus.
             let mb = crate::sample::sample_mailbox();
             let some = mb.messages.values().next().unwrap().clone();
-            let word = some.subject.split_whitespace().next().unwrap_or(&some.subject).to_string();
+            let word = some
+                .subject
+                .split_whitespace()
+                .next()
+                .unwrap_or(&some.subject)
+                .to_string();
             let hits = providers[0].search(&word);
-            let hit = hits.first().expect("a hit for a seeded subject word").clone();
+            let hit = hits
+                .first()
+                .expect("a hit for a seeded subject word")
+                .clone();
             let id = MailSearchProvider::parse_action_id(&hit.action_id).unwrap();
             (hit.action_id, id)
         };
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.selected_message(), Some(id), "activation opened the chosen message");
+        assert_eq!(
+            app.selected_message(),
+            Some(id),
+            "activation opened the chosen message"
+        );
     }
 }

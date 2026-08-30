@@ -27,7 +27,7 @@
 //!
 //! ## Licensing
 //!
-//! Grayjay's app code is FUTO Source-First (non-commercial) and the YouTube
+//! Grayjay's app code is FUTO Source-First (non-commercial) and the `YouTube`
 //! plugin is AGPL-3.0. This is our own Rust, reimplementing the *interoperable
 //! wire facts* (opcode ints, pattern strings, framing) — not a port of their
 //! source. See [`protocol`] for the per-fact citations.
@@ -43,9 +43,9 @@ pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
 use crate::model::{Settings, VideoId};
 
 /// One direction of sync state: what we would send to / receive from a paired
-/// Grayjay peer. These map onto the Grayjay "packages" (see [`plan::packages`])
-/// but are expressed in Tube's own model so the transport is the only thing
-/// that needs to speak Grayjay's wire format.
+/// Grayjay peer. These map onto Grayjay's own sync "packages" but are
+/// expressed in Tube's own model so the transport is the only thing that
+/// needs to speak Grayjay's wire format.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SyncState {
     /// Channel ids the user is subscribed to (`SyncSubscriptionsPackage`).
@@ -94,8 +94,8 @@ pub type SyncResult<T> = Result<T, SyncError>;
 /// sockets, or the Grayjay wire format.
 ///
 /// Designed so the *expensive* network work (pairing, handshake, framing) is
-/// fully contained behind this trait — exactly the bounded surface the brief
-/// asks to leave gated/stubbed.
+/// fully contained behind this trait, which is what lets it stay gated/stubbed
+/// in the default build.
 pub trait SyncTransport: Send {
     fn name(&self) -> &str;
 
@@ -125,7 +125,7 @@ pub trait SyncTransport: Send {
 pub struct StubTransport;
 
 impl SyncTransport for StubTransport {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "stub (Grayjay sync not implemented)"
     }
 

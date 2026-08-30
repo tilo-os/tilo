@@ -15,7 +15,7 @@ use ui::text_render::TextRenderer;
 /// Approximate line height for a given font size (matches the toolkit's
 /// 1.3 ratio closely enough for vertical centring of single lines).
 pub fn line_height(size: f32) -> f64 {
-    (size as f64) * 1.3
+    f64::from(size) * 1.3
 }
 
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -40,7 +40,13 @@ pub fn stroke_rrect(
 }
 
 pub fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color, width: f64) {
-    scene.stroke(&Stroke::new(width), t, color, None, &Line::new(Point::new(x0, y), Point::new(x1, y)));
+    scene.stroke(
+        &Stroke::new(width),
+        t,
+        color,
+        None,
+        &Line::new(Point::new(x0, y), Point::new(x1, y)),
+    );
 }
 
 pub fn dot(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
@@ -59,7 +65,14 @@ pub fn label(
     y: f64,
     max_w: f64,
 ) {
-    tr.draw_text(scene, text, size, color, t * Affine::translate((x, y)), Some(max_w as f32 + 1.0));
+    tr.draw_text(
+        scene,
+        text,
+        size,
+        color,
+        t * Affine::translate((x, y)),
+        Some(max_w as f32 + 1.0),
+    );
 }
 
 /// Draw `text` vertically centred within `[y0, y0+h]`, left edge at `x`.
@@ -93,9 +106,9 @@ pub fn label_right_v(
     h: f64,
 ) {
     let (w, _) = tr.measure(text, size, None);
-    let x = x_right - w as f64;
+    let x = x_right - f64::from(w);
     let y = y0 + (h - line_height(size)) / 2.0;
-    label(tr, scene, t, text, size, color, x, y, w as f64 + 2.0);
+    label(tr, scene, t, text, size, color, x, y, f64::from(w) + 2.0);
 }
 
 /// A filled pill with centred label. Returns the pill width used.
@@ -114,7 +127,7 @@ pub fn chip(
     radius: f64,
 ) -> f64 {
     let (w, _) = tr.measure(text, size, None);
-    let w = w as f64 + pad_x * 2.0;
+    let w = f64::from(w) + pad_x * 2.0;
     let rect = Rect::new(x, y_center - height / 2.0, x + w, y_center + height / 2.0);
     fill_rrect(scene, t, rect, radius, bg);
     let ty = y_center - line_height(size) / 2.0;
@@ -124,5 +137,5 @@ pub fn chip(
 
 /// Measure the on-screen width of `text` at `size`.
 pub fn text_width(tr: &mut TextRenderer, text: &str, size: f32) -> f64 {
-    tr.measure(text, size, None).0 as f64
+    f64::from(tr.measure(text, size, None).0)
 }

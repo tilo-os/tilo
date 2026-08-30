@@ -30,7 +30,10 @@ use crate::vt::VtGrid;
 #[derive(Clone, Debug)]
 pub enum SshAuth {
     Password(String),
-    Key { path: PathBuf, passphrase: Option<String> },
+    Key {
+        path: PathBuf,
+        passphrase: Option<String>,
+    },
 }
 
 /// Everything needed to open an SSH session.
@@ -63,9 +66,14 @@ pub fn resolve_auth(
                 .iter()
                 .find(|p| p.exists())
                 .cloned()
-                .ok_or_else(|| anyhow!("no SSH key: set REMOTE_SSH_KEY or add ~/.ssh/id_ed25519"))?,
+                .ok_or_else(|| {
+                    anyhow!("no SSH key: set REMOTE_SSH_KEY or add ~/.ssh/id_ed25519")
+                })?,
         };
-        Ok(SshAuth::Key { path, passphrase: get("REMOTE_SSH_KEY_PASSPHRASE") })
+        Ok(SshAuth::Key {
+            path,
+            passphrase: get("REMOTE_SSH_KEY_PASSPHRASE"),
+        })
     } else {
         let pw = get("REMOTE_SSH_PASSWORD")
             .ok_or_else(|| anyhow!("no SSH password: set REMOTE_SSH_PASSWORD"))?;
@@ -75,8 +83,13 @@ pub fn resolve_auth(
 
 /// Standard on-disk identity paths, most-preferred first.
 pub fn default_key_paths() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    ["id_ed25519", "id_ecdsa", "id_rsa"].iter().map(|n| home.join(".ssh").join(n)).collect()
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    ["id_ed25519", "id_ecdsa", "id_rsa"]
+        .iter()
+        .map(|n| home.join(".ssh").join(n))
+        .collect()
 }
 
 /// A live SSH session handle held by the UI.
@@ -104,7 +117,10 @@ impl SshSession {
         let worker = std::thread::Builder::new()
             .name("remote-ssh".into())
             .spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
                     Ok(rt) => rt,
                     Err(e) => {
                         *status_worker.lock().unwrap() =
@@ -125,7 +141,13 @@ impl SshSession {
             })
             .expect("spawn remote-ssh worker");
 
-        SshSession { grid, status, output_rx, input_tx, _worker: worker }
+        SshSession {
+            grid,
+            status,
+            output_rx,
+            input_tx,
+            _worker: worker,
+        }
     }
 
     pub fn status(&self) -> SessionStatus {
@@ -142,7 +164,7 @@ impl SshSession {
                     self.grid.feed(&bytes);
                     changed = true;
                 }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         changed
@@ -159,7 +181,7 @@ impl SshSession {
 }
 
 /// The russh client event handler. We accept the server's host key
-/// trust-on-first-use — there is no known_hosts verification yet, which is
+/// trust-on-first-use — there is no `known_hosts` verification yet, which is
 /// why live sessions stay gated behind `REMOTE_LIVE_SESSIONS`.
 struct Handler;
 
@@ -183,7 +205,7 @@ async fn run_session(
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(3600)),
+        inactivity_timeout: Some(Duration::from_hours(1)),
         ..Default::default()
     });
 
@@ -192,9 +214,10 @@ async fn run_session(
         .map_err(|e| anyhow!("connect: {e}"))?;
 
     let auth_ok = match &cfg.auth {
-        SshAuth::Password(pw) => {
-            session.authenticate_password(cfg.user.clone(), pw.clone()).await?.success()
-        }
+        SshAuth::Password(pw) => session
+            .authenticate_password(cfg.user.clone(), pw.clone())
+            .await?
+            .success(),
         SshAuth::Key { path, passphrase } => {
             let key = load_secret_key(path, passphrase.as_deref())
                 .map_err(|e| anyhow!("load key {}: {e}", path.display()))?;
@@ -214,7 +237,15 @@ async fn run_session(
 
     let channel = session.channel_open_session().await?;
     channel
-        .request_pty(false, "xterm-256color", cfg.cols as u32, cfg.rows as u32, 0, 0, &[])
+        .request_pty(
+            false,
+            "xterm-256color",
+            u32::from(cfg.cols),
+            u32::from(cfg.rows),
+            0,
+            0,
+            &[],
+        )
         .await?;
     channel.request_shell(true).await?;
 
@@ -230,7 +261,7 @@ async fn run_session(
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
                     if output_tx.send(data.to_vec()).is_err() { break; }
                 }
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
             },
             input = input_rx.recv() => match input {
@@ -244,7 +275,9 @@ async fn run_session(
         }
     }
 
-    let _ = session.disconnect(Disconnect::ByApplication, "", "en").await;
+    let _ = session
+        .disconnect(Disconnect::ByApplication, "", "en")
+        .await;
     let mut s = status.lock().unwrap();
     if *s == SessionStatus::Connected {
         *s = SessionStatus::Closed;
@@ -374,7 +407,10 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
     #[test]
     fn real_ssh_round_trip_over_loopback() {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
         // Stand up the server, bind an ephemeral port, and serve in the bg.
         let port = rt.block_on(async {
@@ -385,7 +421,9 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                 keys: vec![host_key],
                 ..Default::default()
             });
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
             let port = listener.local_addr().unwrap().port();
             tokio::spawn(async move {
                 let mut server = TestServer;
@@ -423,7 +461,11 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         for _ in 0..200 {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
-                l.cells.iter().map(|c| c.ch).collect::<String>().contains("qos-remote ready")
+                l.cells
+                    .iter()
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .contains("qos-remote ready")
             }) {
                 saw_banner = true;
                 break;
@@ -438,7 +480,11 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         for _ in 0..200 {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
-                l.cells.iter().map(|c| c.ch).collect::<String>().contains("echo:Z")
+                l.cells
+                    .iter()
+                    .map(|c| c.ch)
+                    .collect::<String>()
+                    .contains("echo:Z")
             }) {
                 saw_echo = true;
                 break;

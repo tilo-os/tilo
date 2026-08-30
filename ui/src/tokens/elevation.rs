@@ -1,16 +1,31 @@
 use vello::peniko::Color;
 
-#[derive(Clone, Debug)]
-pub struct Shadow { pub offset_y: f32, pub blur: f32, pub color: Color }
+/// One step of the elevation ramp — a complete description of a drop
+/// shadow, and the **only** description a surface is allowed to use.
+///
+/// - `offset_y` — how far the shadow sits below the surface, held at a
+///   quarter of `blur` all the way up the ramp; larger and the shadow
+///   reads as a dark bar under one edge rather than depth.
+/// - `blur` — a CSS-style blur radius; [`crate::surface::shadow`] halves
+///   it for the Gaussian's standard deviation, so falloff dies out about
+///   `1.25 * blur` past the surface's outline.
+/// - `color` — hue **and strength**. Alpha is honoured, not decorative:
+///   dropping it is how the quick-settings panel once rendered a
+///   43%-black token as a 100%-black smear.
+#[derive(Clone, Copy, Debug)]
+pub struct Shadow {
+    pub offset_y: f32,
+    pub blur: f32,
+    pub color: Color,
+}
 
 impl Shadow {
     /// The same shadow with its alpha scaled by `factor`.
-    fn with_alpha_scaled(&self, factor: f32) -> Self {
-        let a = (self.color.to_rgba8().a as f32 * factor).round().clamp(0.0, 255.0) as u8;
+    fn with_alpha_scaled(self, factor: f32) -> Self {
         Self {
             offset_y: self.offset_y,
             blur: self.blur,
-            color: Color::from_rgba8(0, 0, 0, a),
+            color: self.color.multiply_alpha(factor),
         }
     }
 }
@@ -26,13 +41,15 @@ impl Shadow {
 /// black, the range light-theme elevation actually lives in.
 pub const LIGHT_SHADOW_SCALE: f32 = 0.45;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Elevation {
     pub e0: Shadow,
     pub e1: Shadow,
     pub e2: Shadow,
     pub e3: Shadow,
     pub e4: Shadow,
+    pub glass_inner: Shadow,
+    pub glass_outer: Shadow,
     /// The factor this theme's shadows were scaled by, relative to the dark
     /// ladder. Exposed so a widget that composes its own shadow stack out of
     /// several rings — rather than taking a single tier through
@@ -46,11 +63,55 @@ impl Elevation {
     pub fn dark() -> Self {
         let c = |a: u8| Color::from_rgba8(0, 0, 0, a);
         Self {
-            e0: Shadow { offset_y: 0.0, blur: 0.0, color: c(0) },
-            e1: Shadow { offset_y: 1.0, blur: 2.0, color: c(40) },
-            e2: Shadow { offset_y: 2.0, blur: 6.0, color: c(60) },
-            e3: Shadow { offset_y: 4.0, blur: 12.0, color: c(80) },
-            e4: Shadow { offset_y: 8.0, blur: 24.0, color: c(110) },
+            // `blur` roughly doubles each rung with `offset_y = blur / 4` — a
+            // third-of-blur offset would shove the falloff almost entirely
+            // to the bottom, seven times denser there than beside.
+            //
+            // Alpha grows far more slowly than blur and stays low: a
+            // floating surface is separated first by its own ground
+            // (`panel_ground`) and edge (`panel_border`) — on the
+            // high-contrast palette a black shadow on a black desktop
+            // contributes nothing, the edge does the job. Elevation that
+            // must be *strong* to work is compensating for a surface that
+            // doesn't separate.
+            e0: Shadow {
+                offset_y: 0.0,
+                blur: 0.0,
+                color: c(0),
+            },
+            e1: Shadow {
+                offset_y: 1.0,
+                blur: 4.0,
+                color: c(24),
+            },
+            e2: Shadow {
+                offset_y: 2.0,
+                blur: 8.0,
+                color: c(32),
+            },
+            e3: Shadow {
+                offset_y: 3.0,
+                blur: 12.0,
+                color: c(40),
+            },
+            e4: Shadow {
+                offset_y: 4.0,
+                blur: 16.0,
+                color: c(48),
+            },
+            // The glass pair is a different vocabulary — an inner rim
+            // light and an outer bloom for the wheel disc, not a drop
+            // shadow — and only its hue is read. Left as declared.
+            glass_inner: Shadow {
+                offset_y: 0.0,
+                blur: 1.0,
+                color: Color::from_rgba8(255, 255, 255, 20),
+            },
+            glass_outer: Shadow {
+                offset_y: 12.0,
+                blur: 32.0,
+                color: c(120),
+            },
             shadow_scale: 1.0,
         }
     }
@@ -65,13 +126,20 @@ impl Elevation {
             e2: d.e2.with_alpha_scaled(LIGHT_SHADOW_SCALE),
             e3: d.e3.with_alpha_scaled(LIGHT_SHADOW_SCALE),
             e4: d.e4.with_alpha_scaled(LIGHT_SHADOW_SCALE),
+            // The glass pair is a different vocabulary — an inner rim
+            // light and an outer bloom, not a drop shadow — and only its
+            // hue is read, so it passes through unscaled.
+            glass_inner: d.glass_inner,
+            glass_outer: d.glass_outer,
             shadow_scale: LIGHT_SHADOW_SCALE,
         }
     }
 }
 
 impl Default for Elevation {
-    fn default() -> Self { Self::dark() }
+    fn default() -> Self {
+        Self::dark()
+    }
 }
 
 #[cfg(test)]
@@ -80,7 +148,9 @@ mod tests {
     use crate::a11y::contrast_ratio;
     use crate::theme::Theme;
 
-    fn alpha(s: &Shadow) -> u8 { s.color.to_rgba8().a }
+    fn alpha(s: &Shadow) -> u8 {
+        s.color.to_rgba8().a
+    }
 
     /// A drop shadow is black either way, so the ladder cannot be one shared
     /// set of alphas: what a dark ground swallows lands hard on a pale one.
@@ -108,7 +178,13 @@ mod tests {
     #[test]
     fn every_ladder_is_monotonic() {
         for (name, e) in [("dark", Elevation::dark()), ("light", Elevation::light())] {
-            let steps = [alpha(&e.e0), alpha(&e.e1), alpha(&e.e2), alpha(&e.e3), alpha(&e.e4)];
+            let steps = [
+                alpha(&e.e0),
+                alpha(&e.e1),
+                alpha(&e.e2),
+                alpha(&e.e3),
+                alpha(&e.e4),
+            ];
             for w in steps.windows(2) {
                 assert!(w[1] > w[0], "{name}: the ladder must climb, got {steps:?}");
             }
@@ -155,5 +231,44 @@ mod tests {
                  — at the unscaled alphas this was 2.12:1 and read as a solid band",
             );
         }
+    }
+
+    /// Pinned so a future retune has to move `offset_y` and `blur` together.
+    #[test]
+    fn offset_stays_a_quarter_of_blur() {
+        let e = Elevation::default();
+        for (name, s) in [("e1", &e.e1), ("e2", &e.e2), ("e3", &e.e3), ("e4", &e.e4)] {
+            assert_eq!(
+                s.offset_y * 4.0,
+                s.blur,
+                "{name}: offset_y must stay blur/4 so the falloff does not \
+                 collapse onto the bottom edge (offset {} blur {})",
+                s.offset_y,
+                s.blur
+            );
+        }
+    }
+
+    /// The ramp rises monotonically in blur and opacity, staying subtle at
+    /// the top — `e4`'s alpha above ~0.25 is the regression this guards
+    /// against: a painter discarding the alpha field entirely composites at 1.0.
+    #[test]
+    fn ramp_rises_and_stays_subtle() {
+        let e = Elevation::default();
+        let steps = [&e.e1, &e.e2, &e.e3, &e.e4];
+        for w in steps.windows(2) {
+            assert!(w[1].blur > w[0].blur, "blur must rise up the ramp");
+            assert!(
+                w[1].color.components[3] > w[0].color.components[3],
+                "opacity must rise up the ramp"
+            );
+        }
+        assert!(
+            e.e4.color.components[3] <= 0.25,
+            "e4 is a panel's elevation and must stay subtle; a heavier \
+             shadow is elevation compensating for a surface that does not \
+             separate on its own (got {})",
+            e.e4.color.components[3]
+        );
     }
 }

@@ -23,8 +23,9 @@ pub type AccountId = Uuid;
 
 /// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
 /// parameter of an `otpauth://` URI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Algorithm {
+    #[default]
     Sha1,
     Sha256,
     Sha512,
@@ -59,12 +60,6 @@ impl Algorithm {
             Algorithm::Sha256 => 1,
             Algorithm::Sha512 => 2,
         }
-    }
-}
-
-impl Default for Algorithm {
-    fn default() -> Self {
-        Algorithm::Sha1
     }
 }
 
@@ -114,10 +109,10 @@ impl Account {
     /// a single word takes its first two letters ("GitHub" → "GI") so the
     /// avatar stays distinctive rather than collapsing to one glyph.
     pub fn initials(&self) -> String {
-        let source = if !self.issuer.trim().is_empty() {
-            self.issuer.trim()
-        } else {
+        let source = if self.issuer.trim().is_empty() {
             self.label.trim()
+        } else {
+            self.issuer.trim()
         };
         let words: Vec<&str> = source.split_whitespace().collect();
         let out: String = match words.as_slice() {
@@ -136,19 +131,17 @@ impl Account {
     /// Human display title: "Issuer" or, when there is no issuer, the
     /// label. Never empty for a well-formed account.
     pub fn title(&self) -> &str {
-        if !self.issuer.trim().is_empty() {
-            &self.issuer
-        } else {
+        if self.issuer.trim().is_empty() {
             &self.label
+        } else {
+            &self.issuer
         }
     }
 
     /// True when the secret decodes to a non-empty key — a cheap
     /// validity gate the add form uses to enable Save.
     pub fn secret_is_valid(&self) -> bool {
-        crate::totp::decode_secret(&self.secret)
-            .map(|b| !b.is_empty())
-            .unwrap_or(false)
+        crate::totp::decode_secret(&self.secret).is_some_and(|b| !b.is_empty())
     }
 }
 
@@ -201,7 +194,11 @@ impl Vault {
     /// the list (one past the current maximum). Computed at *authoring* time and
     /// baked into the add action so replay stays deterministic.
     pub fn next_order(&self) -> u32 {
-        self.accounts.iter().map(|a| a.order).max().map(|m| m + 1).unwrap_or(0)
+        self.accounts
+            .iter()
+            .map(|a| a.order)
+            .max()
+            .map_or(0, |m| m + 1)
     }
 
     /// Remove an account and re-densify the remaining order values.
@@ -214,7 +211,9 @@ impl Vault {
     /// top. Returns true if anything moved.
     pub fn move_up(&mut self, id: AccountId) -> bool {
         let mut ord = self.ordered();
-        let Some(pos) = ord.iter().position(|a| a.id == id) else { return false };
+        let Some(pos) = ord.iter().position(|a| a.id == id) else {
+            return false;
+        };
         if pos == 0 {
             return false;
         }
@@ -226,7 +225,9 @@ impl Vault {
     /// Swap an account one slot later. No-op at the bottom.
     pub fn move_down(&mut self, id: AccountId) -> bool {
         let mut ord = self.ordered();
-        let Some(pos) = ord.iter().position(|a| a.id == id) else { return false };
+        let Some(pos) = ord.iter().position(|a| a.id == id) else {
+            return false;
+        };
         if pos + 1 >= ord.len() {
             return false;
         }
@@ -260,9 +261,7 @@ impl Vault {
         }
         ordered
             .into_iter()
-            .filter(|a| {
-                a.issuer.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q)
-            })
+            .filter(|a| a.issuer.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q))
             .collect()
     }
 }
@@ -338,10 +337,10 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
         Some((iss, acc)) => (iss.trim().to_string(), acc.trim().to_string()),
         None => (String::new(), label.trim().to_string()),
     };
-    let issuer = if !issuer_param.trim().is_empty() {
-        issuer_param.trim().to_string()
-    } else {
+    let issuer = if issuer_param.trim().is_empty() {
         label_issuer
+    } else {
+        issuer_param.trim().to_string()
     };
 
     Ok(Account {
@@ -365,7 +364,6 @@ pub fn normalise_secret(s: &str) -> String {
         .to_uppercase()
 }
 
-
 /// The per-account colour palette, sourced entirely from the active
 /// [`Theme`]'s tokens — no hard-coded literals — so it tracks the OS
 /// theme. Picks visually-distinct hues from the semantic + accent ramps
@@ -374,13 +372,13 @@ pub fn normalise_secret(s: &str) -> String {
 pub fn account_palette(theme: &Theme) -> Vec<Color> {
     let c = &theme.tokens.colors;
     vec![
-        c.accent[5],       // indigo-500
+        c.accent[5],        // indigo-500
         c.semantic.success, // emerald
         c.semantic.warning, // amber
         c.semantic.danger,  // red
         c.semantic.info,    // blue
-        c.accent[7],       // indigo-300 (lighter violet)
-        c.neutral[6],      // slate-400
+        c.accent[7],        // indigo-300 (lighter violet)
+        c.neutral[6],       // slate-400
     ]
 }
 
@@ -397,26 +395,68 @@ pub fn account_color(theme: &Theme, color_index: u8) -> Color {
 /// throwaway demo secrets, not real credentials.
 pub fn demo_accounts() -> Vec<Account> {
     let specs: [(&str, &str, &str, Algorithm, u8, u32, u8); 5] = [
-        ("GitHub", "ada@example.com", "JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30, 0),
-        ("Google", "ada.lovelace@gmail.com", "GEZDGNBVGY3TQOJQGEZDGNBV", Algorithm::Sha1, 6, 30, 4),
-        ("AWS", "iam/ada-ops", "NB2W45DFOIZA====", Algorithm::Sha256, 6, 30, 2),
-        ("Dropbox", "ada@work.io", "KRSXG5CTMVRXEZLU", Algorithm::Sha1, 8, 30, 1),
-        ("Discord", "ada#4242", "MFRGGZDFMZTWQ2LK", Algorithm::Sha512, 6, 30, 3),
+        (
+            "GitHub",
+            "ada@example.com",
+            "JBSWY3DPEHPK3PXP",
+            Algorithm::Sha1,
+            6,
+            30,
+            0,
+        ),
+        (
+            "Google",
+            "ada.lovelace@gmail.com",
+            "GEZDGNBVGY3TQOJQGEZDGNBV",
+            Algorithm::Sha1,
+            6,
+            30,
+            4,
+        ),
+        (
+            "AWS",
+            "iam/ada-ops",
+            "NB2W45DFOIZA====",
+            Algorithm::Sha256,
+            6,
+            30,
+            2,
+        ),
+        (
+            "Dropbox",
+            "ada@work.io",
+            "KRSXG5CTMVRXEZLU",
+            Algorithm::Sha1,
+            8,
+            30,
+            1,
+        ),
+        (
+            "Discord",
+            "ada#4242",
+            "MFRGGZDFMZTWQ2LK",
+            Algorithm::Sha512,
+            6,
+            30,
+            3,
+        ),
     ];
     specs
         .iter()
         .enumerate()
-        .map(|(i, (issuer, label, secret, alg, digits, period, color))| Account {
-            id: Uuid::new_v4(),
-            issuer: issuer.to_string(),
-            label: label.to_string(),
-            secret: normalise_secret(secret),
-            algorithm: *alg,
-            digits: *digits,
-            period: *period,
-            color: *color,
-            order: i as u32,
-        })
+        .map(
+            |(i, (issuer, label, secret, alg, digits, period, color))| Account {
+                id: Uuid::new_v4(),
+                issuer: issuer.to_string(),
+                label: label.to_string(),
+                secret: normalise_secret(secret),
+                algorithm: *alg,
+                digits: *digits,
+                period: *period,
+                color: *color,
+                order: i as u32,
+            },
+        )
         .collect()
 }
 
@@ -454,10 +494,17 @@ mod tests {
         // segment and the query values: `+` is a literal plus, not a space.
         // A space is spelled `%20`, as `parse_uri_issuer_from_label_prefix`
         // shows. Reading `+` as a space renamed `Google+` to `Google `.
-        let uri = "otpauth://totp/Google+:a%2B1%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion+";
+        let uri =
+            "otpauth://totp/Google+:a%2B1%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion+";
         let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
-        assert_eq!(acc.issuer, "Notion+", "an explicit issuer param keeps its plus");
-        assert_eq!(acc.label, "a+1@example.com", "%2B decodes, the bare + stays");
+        assert_eq!(
+            acc.issuer, "Notion+",
+            "an explicit issuer param keeps its plus"
+        );
+        assert_eq!(
+            acc.label, "a+1@example.com",
+            "%2B decodes, the bare + stays"
+        );
 
         // And with no issuer param, the label prefix supplies it — also intact.
         let uri = "otpauth://totp/Google+:ada?secret=JBSWY3DPEHPK3PXP";

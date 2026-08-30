@@ -1,7 +1,6 @@
-//! `Document`: an owned handle over an automerge `AutoCommit` holding the
-//! canonical rich-text model. Thin wrapper that delegates to [`crate::model`];
-//! the borrowed [`crate::model::DocMut`] view drives the same operations over a
-//! host's doc (e.g. `ui::State.doc`).
+//! `Document`: an owned handle over an automerge `AutoCommit` holding the canonical rich-text
+//! model. Thin wrapper delegating to [`crate::model`]; the borrowed [`crate::model::DocMut`] view
+//! drives the same operations over a host's doc (e.g. `ui::State.doc`).
 
 use crate::model::{Containers, DocMut, DocRef, IdGen};
 use automerge::{AutoCommit, ObjId, ROOT};
@@ -16,13 +15,10 @@ pub enum DocError {
     Invalid(String),
 }
 
-/// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry
-/// `Bool(true)`; valued marks like `fontSize`/`fontFamily`/`link`/`color` carry
-/// `Int`/`Str`.
-///
-/// `Ord` is derived so materialization can canonicalise the mark order *including
-/// the value* — two replicas that merged concurrent valued marks in different
-/// internal orders then sort to a byte-identical span list (convergence).
+/// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`;
+/// valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so
+/// materialization can canonicalise mark order *including the value*, so replicas that merged
+/// concurrent valued marks in different internal orders converge to a byte-identical span list.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum MarkValue {
     Bool(bool),
@@ -67,6 +63,30 @@ pub struct MarkSpan {
     pub value: MarkValue,
 }
 
+/// The authored runs `marks` records, as `(start, end, author)` merged where adjacent runs name
+/// the same author. One reader for the durable half of authorship, so renderer and test can't
+/// drift. Spans merge because a run typed in several sittings is one person's paragraph, not
+/// three — automerge splits a mark wherever a concurrent edit landed inside it.
+pub fn author_runs(marks: &[MarkSpan]) -> Vec<(usize, usize, String)> {
+    let mut runs: Vec<(usize, usize, String)> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_AUTHOR && m.end > m.start)
+        .filter_map(|m| m.value.as_str().map(|a| (m.start, m.end, a.to_string())))
+        .filter(|(_, _, a)| !a.is_empty())
+        .collect();
+    runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut merged: Vec<(usize, usize, String)> = Vec::with_capacity(runs.len());
+    for (start, end, author) in runs {
+        match merged.last_mut() {
+            Some(prev) if prev.2 == author && prev.1 >= start => {
+                prev.1 = prev.1.max(end);
+            }
+            _ => merged.push((start, end, author)),
+        }
+    }
+    merged
+}
+
 pub struct Document {
     pub(crate) doc: AutoCommit,
     #[allow(dead_code)]
@@ -81,14 +101,24 @@ impl Document {
         let c = crate::model::init(&mut doc, &ROOT);
         let ids = IdGen::new(doc.get_actor().to_hex_string());
         doc.commit();
-        Self { doc, root: ROOT, c, ids }
+        Self {
+            doc,
+            root: ROOT,
+            c,
+            ids,
+        }
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
         let ids = crate::model::seeded_id_gen(&doc, &c);
-        Ok(Self { doc, root: ROOT, c, ids })
+        Ok(Self {
+            doc,
+            root: ROOT,
+            c,
+            ids,
+        })
     }
 
     pub fn save(&mut self) -> Vec<u8> {
@@ -101,18 +131,22 @@ impl Document {
 
     /// Borrowed mutable view (for codecs / shared editing paths).
     pub fn as_mut(&mut self) -> DocMut<'_> {
-        DocMut { doc: &mut self.doc, c: &self.c, ids: &mut self.ids }
+        DocMut {
+            doc: &mut self.doc,
+            c: &self.c,
+            ids: &mut self.ids,
+        }
     }
 
     /// Borrowed read-only view (for codec export).
     pub fn as_ref(&self) -> DocRef<'_> {
-        DocRef { doc: &self.doc, c: &self.c }
+        DocRef {
+            doc: &self.doc,
+            c: &self.c,
+        }
     }
 
-    // ---- delegating convenience API ---------------------------------------
-
-    // The owned `Document` commits per op so its change history (the timeline)
-    // stays fine-grained. (Borrowed `DocMut` does not — see model.rs.)
+    // The owned `Document` commits per op so its change history (timeline) stays fine-grained (borrowed `DocMut` does not — see model.rs).
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
         let id = self.as_mut().insert_block(after, kind);
         self.doc.commit();
@@ -134,26 +168,42 @@ impl Document {
         self.doc.commit();
     }
 
-    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
+    pub fn add_mark(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<automerge::ScalarValue>,
+    ) {
         self.as_mut().add_mark(block_id, start, end, name, value);
         self.doc.commit();
     }
 
-    /// Store bytes in the content-addressed blob store; returns the blake3 hex
-    /// hash (used as an `image` block's `blob` attr).
+    /// Store bytes in the content-addressed blob store; returns the blake3 hex hash (used as an `image` block's `blob` attr).
     pub fn put_blob(&mut self, bytes: &[u8]) -> String {
         let hash = self.as_mut().put_blob(bytes);
         self.doc.commit();
         hash
     }
 
-    /// Fetch a content-addressed blob by its blake3 hex hash.
     pub fn blob(&self, hash: &str) -> Option<Vec<u8>> {
         crate::model::blob(&self.doc, &self.c, hash)
     }
 
-    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/
-    /// `modified`/`generator`). Round-trips through `.odt`/`.docx`.
+    /// Where the content behind a reference has got to: here, on its way, or not coming.
+    /// [`Self::blob`] answers "can I draw this now"; this answers "and if not, why not" — a renderer
+    /// needs both, or it draws the same grey box for a transfer in flight and one that failed.
+    pub fn blob_state(&self, hash: &str) -> crate::blobstore::BlobState {
+        // Through `blob` rather than the store directly, so a document still carrying content in the
+        // legacy inline form reports `Resolved` for it instead of claiming it is missing.
+        if crate::model::blob(&self.doc, &self.c, hash).is_some() {
+            return crate::blobstore::BlobState::Resolved;
+        }
+        crate::blobstore::state(hash)
+    }
+
+    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator`). Round-trips through `.odt`/`.docx`.
     pub fn set_doc_prop(&mut self, name: &str, value: &str) {
         self.as_mut().set_doc_prop(name, value);
         self.doc.commit();
@@ -164,35 +214,27 @@ impl Document {
         crate::model::doc_prop(&self.doc, &self.c, name)
     }
 
-    /// All document properties (`name → value`).
     pub fn doc_props(&self) -> std::collections::BTreeMap<String, String> {
         crate::model::doc_props(&self.doc, &self.c)
     }
 
-    /// Set the document-wide multi-column layout: `count` newspaper-style columns
-    /// for the body, with an optional `gap` (px) between them. `count <= 1` clears
-    /// the setting (single column). Round-trips through `.odt`/`.docx`.
+    /// Set the document-wide multi-column layout: `count` columns for the body, optional `gap` (px). `count <= 1` clears the setting.
     pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
         self.as_mut().set_columns(count, gap);
         self.doc.commit();
     }
 
-    /// The document-wide multi-column layout: `(column_count, optional_gap_px)`.
-    /// Defaults to `(1, None)` (single column) for documents with no column setting.
+    /// The document-wide multi-column layout: `(column_count, optional_gap_px)`, defaulting to `(1, None)`.
     pub fn columns(&self) -> (u32, Option<f64>) {
         crate::model::columns(&self.doc, &self.c)
     }
 
-    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`). An
-    /// empty `code` clears the setting. Round-trips through `.odt`/`.docx`. Supports
-    /// spell-check locale selection and accessibility/screen-reader language.
+    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`); an empty `code` clears it.
     pub fn set_language(&mut self, code: &str) {
         self.as_mut().set_language(code);
         self.doc.commit();
     }
 
-    /// The document default language as a BCP-47 tag, or `None` if the document
-    /// declares no default language.
     pub fn language(&self) -> Option<String> {
         crate::model::language(&self.doc, &self.c)
     }
@@ -201,10 +243,8 @@ impl Document {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
 
-    /// The byte length of every body block's fractional order key — a direct probe of
-    /// the truncating order-key scheme (see [`crate::model::block_order_key_lengths`]).
-    /// Used by the perf test to assert keys stay bounded (~constant) instead of growing
-    /// one byte per sequential append (which is O(n²)).
+    /// The byte length of every body block's fractional order key — a direct probe of the truncating
+    /// order-key scheme; the perf test asserts it stays bounded rather than growing O(n) per append.
     pub fn block_order_key_lengths(&self) -> Vec<usize> {
         crate::model::block_order_key_lengths(&self.doc, &self.c)
     }
@@ -225,67 +265,61 @@ impl Document {
         crate::model::materialize(&self.doc, &self.c)
     }
 
-    // ---- page header / footer regions -------------------------------------
-
-    /// The ordered block ids of the page header (empty if no header is set).
     pub fn header_blocks_in_order(&self) -> Vec<String> {
         crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Header)
     }
 
-    /// The ordered block ids of the page footer (empty if no footer is set).
     pub fn footer_blocks_in_order(&self) -> Vec<String> {
         crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Footer)
     }
 
-    /// Materialize the page header's blocks (empty if none).
     pub fn header(&self) -> Vec<crate::snapshot::BlockView> {
         crate::model::materialize_region(&self.doc, &self.c, crate::model::Region::Header)
     }
 
-    /// Materialize the page footer's blocks (empty if none).
     pub fn footer(&self) -> Vec<crate::snapshot::BlockView> {
         crate::model::materialize_region(&self.doc, &self.c, crate::model::Region::Footer)
     }
 
-    /// Insert a block into the page header (created lazily); returns its id.
     pub fn insert_header_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        let id = self.as_mut().insert_block_in(crate::model::Region::Header, after, kind);
+        let id = self
+            .as_mut()
+            .insert_block_in(crate::model::Region::Header, after, kind);
         self.doc.commit();
         id
     }
 
-    /// Insert a block into the page footer (created lazily); returns its id.
     pub fn insert_footer_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        let id = self.as_mut().insert_block_in(crate::model::Region::Footer, after, kind);
+        let id = self
+            .as_mut()
+            .insert_block_in(crate::model::Region::Footer, after, kind);
         self.doc.commit();
         id
     }
 
-    /// Splice text into a header block.
     pub fn splice_header_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_text_in(crate::model::Region::Header, block_id, char_idx, del, ins);
+        self.as_mut()
+            .splice_text_in(crate::model::Region::Header, block_id, char_idx, del, ins);
         self.doc.commit();
     }
 
-    /// Splice text into a footer block.
     pub fn splice_footer_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
+        self.as_mut()
+            .splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
         self.doc.commit();
     }
 
-    /// Insert a page-number field at `char_idx` in a header block.
     pub fn insert_header_page_number(&mut self, block_id: &str, char_idx: usize) {
-        self.as_mut().insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
+        self.as_mut()
+            .insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
         self.doc.commit();
     }
 
-    /// Insert a page-number field at `char_idx` in a footer block.
     pub fn insert_footer_page_number(&mut self, block_id: &str, char_idx: usize) {
-        self.as_mut().insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
+        self.as_mut()
+            .insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
         self.doc.commit();
     }
-
-    // ---- footnotes / endnotes ---------------------------------------------
 
     /// The note ids present in the document (sorted, canonical order).
     pub fn note_ids(&self) -> Vec<String> {
@@ -297,180 +331,203 @@ impl Document {
         crate::model::note_kind(&self.doc, &self.c, id)
     }
 
-    /// Materialize a note's content blocks (empty if the id is unknown).
     pub fn note_blocks(&self, id: &str) -> Vec<crate::snapshot::BlockView> {
         crate::model::materialize_note_blocks(&self.doc, &self.c, id)
     }
 
-    /// The ordered block ids of a note's content (empty if absent).
     pub fn note_blocks_in_order(&self, id: &str) -> Vec<String> {
         crate::model::note_blocks_in_order(&self.doc, &self.c, id)
     }
 
-    /// Materialize every note into a [`crate::snapshot::NoteView`].
     pub fn notes(&self) -> Vec<crate::snapshot::NoteView> {
         crate::model::materialize_notes(&self.doc, &self.c)
     }
 
-    /// Create a footnote, place its reference marker at `char_idx` in `block_id`,
-    /// and return the new note id (its content is filled via [`Self::insert_note_block`]
-    /// + [`Self::splice_note_text`]).
+    /// Create a footnote, place its reference marker at `char_idx` in `block_id`, and return the new
+    /// note id (content filled via [`Self::insert_note_block`] + [`Self::splice_note_text`]).
     pub fn insert_footnote(&mut self, block_id: &str, char_idx: usize) -> String {
         let id = self.as_mut().insert_footnote(block_id, char_idx);
         self.doc.commit();
         id
     }
 
-    /// Create an endnote, place its reference marker at `char_idx` in `block_id`,
-    /// and return the new note id.
     pub fn insert_endnote(&mut self, block_id: &str, char_idx: usize) -> String {
         let id = self.as_mut().insert_endnote(block_id, char_idx);
         self.doc.commit();
         id
     }
 
-    /// Insert a block into a note's content; returns its id (or `None` if the note
-    /// id is unknown).
-    pub fn insert_note_block(&mut self, note_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn insert_note_block(
+        &mut self,
+        note_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         let id = self.as_mut().insert_note_block(note_id, after, kind);
         self.doc.commit();
         id
     }
 
-    /// Splice text into a note's block.
-    pub fn splice_note_text(&mut self, note_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_note_text(note_id, block_id, char_idx, del, ins);
+    pub fn splice_note_text(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        char_idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
+        self.as_mut()
+            .splice_note_text(note_id, block_id, char_idx, del, ins);
         self.doc.commit();
     }
 
-    /// Add an inline mark over a note's block text.
-    pub fn add_note_mark(&mut self, note_id: &str, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
-        self.as_mut().add_note_mark(note_id, block_id, start, end, name, value);
+    pub fn add_note_mark(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+        value: impl Into<automerge::ScalarValue>,
+    ) {
+        self.as_mut()
+            .add_note_mark(note_id, block_id, start, end, name, value);
         self.doc.commit();
     }
-
-    // ---- comments / annotations -------------------------------------------
 
     /// The comment ids present in the document (sorted, canonical order).
     pub fn comment_ids(&self) -> Vec<String> {
         crate::model::comment_ids(&self.doc, &self.c)
     }
 
-    /// A comment's author display name, or `None` if the id is unknown.
     pub fn comment_author(&self, id: &str) -> Option<String> {
         crate::model::comment_author(&self.doc, &self.c, id)
     }
 
-    /// A comment's date / timestamp string, or `None` if the id is unknown.
     pub fn comment_date(&self, id: &str) -> Option<String> {
         crate::model::comment_date(&self.doc, &self.c, id)
     }
 
-    /// Materialize a comment's content blocks (empty if the id is unknown).
     pub fn comment_blocks(&self, id: &str) -> Vec<crate::snapshot::BlockView> {
         crate::model::materialize_comment_blocks(&self.doc, &self.c, id)
     }
 
-    /// The ordered block ids of a comment's content (empty if absent).
     pub fn comment_blocks_in_order(&self, id: &str) -> Vec<String> {
         crate::model::comment_blocks_in_order(&self.doc, &self.c, id)
     }
 
-    /// The anchored body range `(block_id, start, end)` of a comment, or `None` if its
-    /// anchoring `comment` mark is absent.
     pub fn comment_range(&self, id: &str) -> Option<(String, usize, usize)> {
         crate::model::comment_range(&self.doc, &self.c, id)
     }
 
-    /// Materialize every comment into a [`crate::snapshot::CommentView`].
     pub fn comments(&self) -> Vec<crate::snapshot::CommentView> {
         crate::model::materialize_comments(&self.doc, &self.c)
     }
 
-    /// Create a comment authored by `author` with body `text`, anchored to the body
-    /// range `[start, end)` of `block_id`; returns the new comment id.
-    pub fn add_comment(&mut self, block_id: &str, start: usize, end: usize, author: &str, text: &str) -> String {
-        let id = self.as_mut().add_comment(block_id, start, end, author, text);
+    pub fn add_comment(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+        text: &str,
+    ) -> String {
+        let id = self
+            .as_mut()
+            .add_comment(block_id, start, end, author, text);
         self.doc.commit();
         id
     }
 
     /// Create an empty comment (author + date) with no anchor; fill its content via
-    /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`] and anchor it via
-    /// [`Self::add_comment_mark`]. Returns the new comment id.
+    /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`] and anchor via [`Self::add_comment_mark`].
     pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
         let id = self.as_mut().insert_comment(author, date);
         self.doc.commit();
         id
     }
 
-    /// Anchor an existing comment to the body range `[start, end)` of `block_id`.
     pub fn add_comment_mark(&mut self, block_id: &str, start: usize, end: usize, comment_id: &str) {
-        self.as_mut().add_comment_mark(block_id, start, end, comment_id);
+        self.as_mut()
+            .add_comment_mark(block_id, start, end, comment_id);
         self.doc.commit();
     }
 
-    /// Insert a block into a comment's content; returns its id (or `None` if the
-    /// comment id is unknown).
-    pub fn insert_comment_block(&mut self, comment_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+    pub fn insert_comment_block(
+        &mut self,
+        comment_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
         let id = self.as_mut().insert_comment_block(comment_id, after, kind);
         self.doc.commit();
         id
     }
 
-    /// Splice text into a comment's block.
-    pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_comment_text(comment_id, block_id, char_idx, del, ins);
+    pub fn splice_comment_text(
+        &mut self,
+        comment_id: &str,
+        block_id: &str,
+        char_idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
+        self.as_mut()
+            .splice_comment_text(comment_id, block_id, char_idx, del, ins);
         self.doc.commit();
     }
-
-    // ---- tracked changes / revision marks ---------------------------------
 
     /// The tracked-change ids present in the document (sorted, canonical order).
     pub fn change_ids(&self) -> Vec<String> {
         crate::model::change_ids(&self.doc, &self.c)
     }
 
-    /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
     pub fn change_kind(&self, id: &str) -> Option<crate::snapshot::ChangeKind> {
         crate::model::change_kind(&self.doc, &self.c, id)
     }
 
-    /// A change's author display name, or `None` if the id is unknown.
     pub fn change_author(&self, id: &str) -> Option<String> {
         crate::model::change_author(&self.doc, &self.c, id)
     }
 
-    /// A change's date / timestamp string, or `None` if the id is unknown.
     pub fn change_date(&self, id: &str) -> Option<String> {
         crate::model::change_date(&self.doc, &self.c, id)
     }
 
-    /// The anchored body range `(block_id, start, end)` of a change, or `None` if its
-    /// anchoring `ins`/`del` mark is absent.
     pub fn change_range(&self, id: &str) -> Option<(String, usize, usize)> {
         crate::model::change_range(&self.doc, &self.c, id)
     }
 
-    /// Materialize every tracked change into a [`crate::snapshot::ChangeView`].
     pub fn changes(&self) -> Vec<crate::snapshot::ChangeView> {
         crate::model::materialize_changes(&self.doc, &self.c)
     }
 
-    /// Track a **insertion**: splice `text` into `block_id` at `char_idx`, flagging the
-    /// inserted range as a tracked insertion authored by `author` (dated `date`).
-    /// Returns the new change id.
-    pub fn track_insert(&mut self, block_id: &str, char_idx: usize, text: &str, author: &str, date: &str) -> String {
-        let id = self.as_mut().track_insert(block_id, char_idx, text, author, date);
+    pub fn track_insert(
+        &mut self,
+        block_id: &str,
+        char_idx: usize,
+        text: &str,
+        author: &str,
+        date: &str,
+    ) -> String {
+        let id = self
+            .as_mut()
+            .track_insert(block_id, char_idx, text, author, date);
         self.doc.commit();
         id
     }
 
-    /// Track a **deletion**: flag the existing body range `[start, end)` of `block_id` as
-    /// a tracked deletion (retained-but-struck) authored by `author` (dated `date`).
-    /// Returns the new change id.
-    pub fn track_delete(&mut self, block_id: &str, start: usize, end: usize, author: &str, date: &str) -> String {
-        let id = self.as_mut().track_delete(block_id, start, end, author, date);
+    pub fn track_delete(
+        &mut self,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+        date: &str,
+    ) -> String {
+        let id = self
+            .as_mut()
+            .track_delete(block_id, start, end, author, date);
         self.doc.commit();
         id
     }
@@ -487,26 +544,18 @@ impl Document {
         self.doc.commit();
     }
 
-    // ---- bookmarks / cross-references -------------------------------------
-
-    /// Every bookmark (named anchor) in the document, recovered from the body
-    /// `bookmark` marks.
     pub fn bookmarks(&self) -> Vec<crate::snapshot::BookmarkView> {
         crate::model::bookmarks(&self.doc, &self.c)
     }
 
-    /// Anchor a bookmark named `name` over the body range `[start, end)` of `block_id`.
-    /// A point bookmark (`start == end`) is widened to one character so the mark has a
-    /// non-empty range.
+    /// Anchor a bookmark named `name` over `[start, end)`; a point bookmark (`start == end`) widens to one character so the mark has a non-empty range.
     pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
         self.as_mut().add_bookmark(block_id, start, end, name);
         self.doc.commit();
     }
 
-    /// Anchor a cross-reference (internal link) over the body range `[start, end)` of
-    /// `block_id`, pointing at `target` (a bookmark name or a heading's derived id —
-    /// see [`crate::model::heading_ref_id`]). Stored as a `link` mark valued
-    /// `#<target>`.
+    /// Anchor a cross-reference over `[start, end)`, pointing at `target` (a bookmark name or a
+    /// heading's derived id); stored as a `link` mark valued `#<target>`.
     pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
         self.as_mut().add_cross_ref(block_id, start, end, target);
         self.doc.commit();
@@ -518,23 +567,26 @@ impl Document {
     }
 
     /// Reconstruct the document as of `version` (time-travel).
-    pub fn materialize_at(&mut self, version: usize) -> Result<crate::snapshot::DocSnapshot, DocError> {
+    pub fn materialize_at(
+        &mut self,
+        version: usize,
+    ) -> Result<crate::snapshot::DocSnapshot, DocError> {
         crate::history::materialize_at(&mut self.doc, version)
     }
 
-    /// Structural diff between two points on this document's own timeline
-    /// (`from` → `to`, indices into [`Self::versions`]). Because block ids are
-    /// stable across a document's history, the diff aligns by identity — a clean
-    /// added/removed/changed report (see [`crate::diff`]).
-    pub fn diff_versions(&mut self, from: usize, to: usize) -> Result<crate::diff::DocDiff, DocError> {
+    /// Structural diff between two points on this document's own timeline (`from` → `to`, indices
+    /// into [`Self::versions`]); block ids are stable across history, so the diff aligns by identity.
+    pub fn diff_versions(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> Result<crate::diff::DocDiff, DocError> {
         let a = self.materialize_at(from)?;
         let b = self.materialize_at(to)?;
         Ok(crate::diff::diff_snapshots(&a, &b))
     }
 
-    /// Structural diff of this document's current state against another snapshot
-    /// (e.g. a sibling replica, or a stored earlier version). `other` is the
-    /// baseline (old), `self` is the new side.
+    /// Structural diff of this document's current state against another snapshot; `other` is the baseline (old), `self` is the new side.
     pub fn diff_against(&self, other: &crate::snapshot::DocSnapshot) -> crate::diff::DocDiff {
         crate::diff::diff_snapshots(other, &self.materialize())
     }
@@ -546,15 +598,17 @@ impl Document {
         doc.set_actor(automerge::ActorId::random());
         let c = crate::model::open(&doc, &ROOT).expect("fork open");
         let ids = IdGen::new(doc.get_actor().to_hex_string());
-        Document { doc, root: ROOT, c, ids }
+        Document {
+            doc,
+            root: ROOT,
+            c,
+            ids,
+        }
     }
 
-    /// Merge another replica's changes into this one.
-    ///
-    /// Done via the low-level `Automerge` (no patch log) to sidestep an
-    /// automerge-0.8 `AutoCommit::merge` panic (`PatchLogMismatch`) that can fire
-    /// when concurrent **mark** ops are reconciled. The merged result is reloaded
-    /// as an `AutoCommit`; containers/ids are re-resolved (object ids are stable).
+    /// Merge another replica's changes into this one. Done via the low-level `Automerge` (no patch
+    /// log) to sidestep an automerge-0.8 `AutoCommit::merge` panic (`PatchLogMismatch`) that can fire
+    /// when concurrent **mark** ops are reconciled; the merged result is reloaded and containers/ids re-resolved.
     pub fn merge(&mut self, other: &mut Document) {
         let merged = {
             let mut a = automerge::Automerge::load(&self.doc.save()).expect("merge: load self");
@@ -589,7 +643,10 @@ mod tests {
         assert_eq!(vv.to_i64(), Some(SCHEMA_VERSION));
         for k in [KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS] {
             let got = d.doc.get(&ROOT, k).unwrap();
-            assert!(matches!(got, Some((Value::Object(ObjType::Map), _))), "missing map {k}");
+            assert!(
+                matches!(got, Some((Value::Object(ObjType::Map), _))),
+                "missing map {k}"
+            );
         }
     }
 
@@ -605,19 +662,20 @@ mod tests {
     #[test]
     fn columns_default_set_clear_and_persist() {
         let mut d = Document::new();
-        // Absent → single column, surfaced in the snapshot.
-        assert_eq!(d.columns(), (1, None), "default is a single column with no gap");
+        assert_eq!(
+            d.columns(),
+            (1, None),
+            "default is a single column with no gap"
+        );
         assert_eq!(d.materialize().columns, 1);
         assert_eq!(d.materialize().column_gap, None);
 
-        // Set + read back, and surface in the snapshot.
         d.set_columns(2, Some(18.0));
         assert_eq!(d.columns(), (2, Some(18.0)));
         let snap = d.materialize();
         assert_eq!(snap.columns, 2);
         assert_eq!(snap.column_gap, Some(18.0));
 
-        // Survives a CRDT save/load round-trip.
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         assert_eq!(d2.columns(), (2, Some(18.0)), "columns survive save/load");
@@ -646,19 +704,20 @@ mod tests {
     #[test]
     fn language_default_set_clear_and_persist() {
         let mut d = Document::new();
-        // Absent → no declared default language (backward-compatible open).
         assert_eq!(d.language(), None, "default has no declared language");
         assert_eq!(d.materialize().language, None);
 
-        // Set + read back, surfaced in the snapshot.
         d.set_language("de-DE");
         assert_eq!(d.language().as_deref(), Some("de-DE"));
         assert_eq!(d.materialize().language.as_deref(), Some("de-DE"));
 
-        // Survives a CRDT save/load round-trip.
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
-        assert_eq!(d2.language().as_deref(), Some("de-DE"), "language survives save/load");
+        assert_eq!(
+            d2.language().as_deref(),
+            Some("de-DE"),
+            "language survives save/load"
+        );
 
         // An empty code clears the setting.
         let mut d3 = Document::load(&bytes).unwrap();
@@ -669,8 +728,7 @@ mod tests {
 
     #[test]
     fn open_without_language_is_backward_compatible() {
-        // A document saved with no language must still open and read `None` (the
-        // `meta.language` register simply doesn't exist).
+        // A document saved with no language must still open and read `None` (the `meta.language` register simply doesn't exist).
         let mut d = Document::new();
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
@@ -683,7 +741,7 @@ mod tests {
         let a = d.insert_block(None, "paragraph");
         let b = d.insert_block(Some(&a), "paragraph");
         let c = d.insert_block(Some(&a), "paragraph"); // between a and b
-        assert_eq!(d.blocks_in_order(), vec![a.clone(), c.clone(), b.clone()]);
+        assert_eq!(d.blocks_in_order(), vec![a.clone(), c.clone(), b]);
         assert_eq!(d.block_kind(&c).as_deref(), Some("paragraph"));
     }
 
@@ -727,7 +785,8 @@ mod tests {
         d.add_mark(&p, 0, 5, "strong", true);
         let m = d.marks(&p);
         assert!(
-            m.iter().any(|s| s.name == "strong" && s.start == 0 && s.end == 5),
+            m.iter()
+                .any(|s| s.name == "strong" && s.start == 0 && s.end == 5),
             "expected strong[0,5], got {m:?}"
         );
     }
@@ -741,7 +800,8 @@ mod tests {
         d.splice_text(&p, 0, 0, "say "); // shift right by 4
         let m = d.marks(&p);
         assert!(
-            m.iter().any(|s| s.name == "em" && s.start == 10 && s.end == 15),
+            m.iter()
+                .any(|s| s.name == "em" && s.start == 10 && s.end == 15),
             "mark must track text shift, got {m:?}"
         );
     }
@@ -769,19 +829,26 @@ mod tests {
         let mut d = Document::new();
         let a = d.insert_block(None, "paragraph");
         d.splice_text(&a, 0, 0, "first");
-        // Re-create a generator over the same doc + actor (as the editor does
-        // when binding to a loaded document). A fresh IdGen at 0 would re-mint
-        // `a`'s id and overwrite it; the seeded one must not.
+        // Re-create a generator over the same doc + actor (as the editor does when binding to a loaded
+        // document): a fresh IdGen at 0 would re-mint `a`'s id and overwrite it; the seeded one must not.
         let c = d.c.clone();
         let mut ids = crate::model::seeded_id_gen(&d.doc, &c);
         {
-            let mut dm = DocMut { doc: &mut d.doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut d.doc,
+                c: &c,
+                ids: &mut ids,
+            };
             let b = dm.insert_block(Some(&a), "paragraph");
             assert_ne!(a, b, "minted id must differ from the existing block");
             dm.splice_text(&b, 0, 0, "second");
         }
         let snap = d.materialize();
-        assert_eq!(snap.blocks.len(), 2, "must not overwrite the existing block");
+        assert_eq!(
+            snap.blocks.len(),
+            2,
+            "must not overwrite the existing block"
+        );
         assert_eq!(snap.blocks[0].text, "first");
         assert_eq!(snap.blocks[1].text, "second");
     }
@@ -795,24 +862,26 @@ mod tests {
         let nb = d.insert_note_block(&nid, None, "paragraph").unwrap();
         d.splice_note_text(&nid, &nb, 0, 0, "footnote body");
 
-        // Accessors agree with the snapshot.
         assert_eq!(d.note_ids(), vec![nid.clone()]);
         assert_eq!(d.note_kind(&nid), Some(crate::model::NoteKind::Footnote));
         assert_eq!(d.note_blocks(&nid)[0].text, "footnote body");
         let snap = d.materialize();
         assert_eq!(snap.notes.len(), 1);
         assert_eq!(snap.notes[0].id, nid);
-        // The note-ref marker survives a save/load round-trip (seeded id gen).
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         assert_eq!(d2.note_blocks(&nid)[0].text, "footnote body");
-        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_NOTE_REF));
+        assert!(
+            d2.materialize().blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_NOTE_REF)
+        );
     }
 
     #[test]
     fn notes_converge_across_replicas() {
-        // Two replicas each add a note to the same document; after merge both
-        // converge with both notes present (CRDT-native).
+        // Two replicas each add a note to the same document; after merge both converge with both notes present (CRDT-native).
         let mut a = Document::new();
         let p = a.insert_block(None, "paragraph");
         a.splice_text(&p, 0, 0, "base");
@@ -825,8 +894,16 @@ mod tests {
         b.splice_note_text(&nb, &nbb, 0, 0, "from B");
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with notes");
-        assert_eq!(a.materialize().notes.len(), 2, "both notes present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with notes"
+        );
+        assert_eq!(
+            a.materialize().notes.len(),
+            2,
+            "both notes present after merge"
+        );
     }
 
     #[test]
@@ -836,7 +913,6 @@ mod tests {
         d.splice_text(&p, 0, 0, "review this paragraph");
         let cid = d.add_comment(&p, 7, 11, "Grace", "note: fix"); // over "this"
 
-        // Accessors agree with the snapshot.
         assert_eq!(d.comment_ids(), vec![cid.clone()]);
         assert_eq!(d.comment_author(&cid).as_deref(), Some("Grace"));
         assert_eq!(d.comment_blocks(&cid)[0].text, "note: fix");
@@ -845,17 +921,20 @@ mod tests {
         assert_eq!(snap.comments.len(), 1);
         assert_eq!(snap.comments[0].id, cid);
         assert_eq!(snap.comments[0].range, Some((p.clone(), 7, 11)));
-        // The comment mark + content survive a save/load round-trip (seeded id gen).
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         assert_eq!(d2.comment_blocks(&cid)[0].text, "note: fix");
-        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_COMMENT));
+        assert!(
+            d2.materialize().blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_COMMENT)
+        );
     }
 
     #[test]
     fn comments_converge_across_replicas() {
-        // Two replicas each add a comment to the same document; after merge both
-        // converge with both comments present (CRDT-native).
+        // Two replicas each add a comment to the same document; after merge both converge with both comments present (CRDT-native).
         let mut a = Document::new();
         let p = a.insert_block(None, "paragraph");
         a.splice_text(&p, 0, 0, "base text here");
@@ -864,8 +943,16 @@ mod tests {
         b.add_comment(&p, 5, 9, "B", "from B"); // over "text"
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with comments");
-        assert_eq!(a.materialize().comments.len(), 2, "both comments present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with comments"
+        );
+        assert_eq!(
+            a.materialize().comments.len(),
+            2,
+            "both comments present after merge"
+        );
     }
 
     #[test]
@@ -873,12 +960,9 @@ mod tests {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "the quick fox");
-        // Track an insertion of "brown " before "fox" (idx 10).
         let ins = d.track_insert(&p, 10, "brown ", "Grace", "2021-05-06");
-        // Track a deletion of "quick " (chars 4..10).
         let del = d.track_delete(&p, 4, 10, "Hopper", "2021-07-08");
 
-        // Accessors agree.
         let mut want = vec![ins.clone(), del.clone()];
         want.sort();
         assert_eq!(d.change_ids(), want);
@@ -886,21 +970,29 @@ mod tests {
         assert_eq!(d.change_kind(&del), Some(crate::snapshot::ChangeKind::Del));
         assert_eq!(d.change_author(&ins).as_deref(), Some("Grace"));
         assert_eq!(d.change_date(&del).as_deref(), Some("2021-07-08"));
-        assert!(d.materialize().changes.len() == 2);
+        assert_eq!(d.materialize().changes.len(), 2);
 
-        // Marks + records survive a save/load round-trip (seeded id gen).
         let bytes = d.save();
         let d2 = Document::load(&bytes).unwrap();
         let snap = d2.materialize();
         assert_eq!(snap.changes.len(), 2, "changes survive save/load");
-        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_INS));
-        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_DEL));
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_INS)
+        );
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == crate::schema::MARK_DEL)
+        );
     }
 
     #[test]
     fn tracked_changes_converge_across_replicas() {
-        // Two replicas each track a change on the same document; after merge both
-        // converge with both changes present (CRDT-native).
+        // Two replicas each track a change on the same document; after merge both converge with both changes present (CRDT-native).
         let mut a = Document::new();
         let p = a.insert_block(None, "paragraph");
         a.splice_text(&p, 0, 0, "shared base text");
@@ -909,8 +1001,16 @@ mod tests {
         b.track_insert(&p, 16, "!", "B", "");
         a.merge(&mut b);
         b.merge(&mut a);
-        assert_eq!(a.materialize(), b.materialize(), "replicas converge with tracked changes");
-        assert_eq!(a.materialize().changes.len(), 2, "both changes present after merge");
+        assert_eq!(
+            a.materialize(),
+            b.materialize(),
+            "replicas converge with tracked changes"
+        );
+        assert_eq!(
+            a.materialize().changes.len(),
+            2,
+            "both changes present after merge"
+        );
     }
 
     #[test]

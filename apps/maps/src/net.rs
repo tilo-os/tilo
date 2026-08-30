@@ -167,12 +167,17 @@ pub fn region_from_json(item: &Value) -> Option<RegionHit> {
             )
         });
     // A short locality subtitle: the display name minus the leading name.
-    let context = place
-        .address
-        .split_once(',')
-        .map(|(_, rest)| rest.trim().to_string())
-        .unwrap_or_else(|| place.address.clone());
-    Some(RegionHit { name: place.name, context, pos: place.pos, sw, ne })
+    let context = place.address.split_once(',').map_or_else(
+        || place.address.clone(),
+        |(_, rest)| rest.trim().to_string(),
+    );
+    Some(RegionHit {
+        name: place.name,
+        context,
+        pos: place.pos,
+        sw,
+        ne,
+    })
 }
 
 /// Build a `Place` from one Nominatim result object, or `None` if it has no
@@ -183,7 +188,10 @@ pub fn place_from_json(item: &Value) -> Option<Place> {
     let lon = item["lon"].as_str().and_then(|s| s.parse::<f64>().ok())?;
     let display = item["display_name"].as_str().unwrap_or("").to_string();
     let name = place_label(item, &display);
-    let class = item["class"].as_str().or_else(|| item["category"].as_str()).unwrap_or("");
+    let class = item["class"]
+        .as_str()
+        .or_else(|| item["category"].as_str())
+        .unwrap_or("");
     let kind = item["type"].as_str().unwrap_or("");
     let osm_type = item["osm_type"].as_str().unwrap_or("n");
     let osm_id = item["osm_id"].as_i64().unwrap_or(0);
@@ -249,7 +257,10 @@ nwr[\"highway\"=\"bus_stop\"]({bbox});\
 nwr[\"public_transport\"=\"station\"]({bbox});\
 );out center 250;"
     );
-    format!("https://overpass-api.de/api/interpreter?data={}", urlencode(&ql))
+    format!(
+        "https://overpass-api.de/api/interpreter?data={}",
+        urlencode(&ql)
+    )
 }
 
 /// Fetch categorised POIs for a viewport bbox from the Overpass API.
@@ -351,7 +362,10 @@ fn compose_address(tags: &Value) -> String {
 }
 
 fn tag_string(tags: &Value, key: &str) -> Option<String> {
-    tags[key].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
+    tags[key]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(std::string::ToString::to_string)
 }
 
 /// Route between two coordinates with the OSRM public demo server.
@@ -464,7 +478,7 @@ pub fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
         return Ok(name.to_string());
     }
     if let Some(display) = v["display_name"].as_str().filter(|s| !s.is_empty()) {
-        let short: Vec<&str> = display.split(',').take(2).map(|s| s.trim()).collect();
+        let short: Vec<&str> = display.split(',').take(2).map(str::trim).collect();
         return Ok(short.join(", "));
     }
     Err("no address for this location".to_string())
@@ -489,7 +503,11 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
 
 /// Plan a public-transport journey via the Transitous MOTIS v3 API, anchored to
 /// the caller's depart/arrive [`TransitQuery`].
-pub fn transit(from: LatLon, to: LatLon, when: &TransitQuery) -> Result<Vec<TransitJourney>, String> {
+pub fn transit(
+    from: LatLon,
+    to: LatLon,
+    when: &TransitQuery,
+) -> Result<Vec<TransitJourney>, String> {
     let url = transit_url(from, to, when);
     let v = fetch_json(&url)?;
     parse_transit(&v)
@@ -536,7 +554,9 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
                     dep,
                     arr,
                     duration_min,
-                    num_stops: leg["intermediateStops"].as_array().map(|a| a.len() as u32).unwrap_or(0),
+                    num_stops: leg["intermediateStops"]
+                        .as_array()
+                        .map_or(0, |a| a.len() as u32),
                     geometry: leg_geometry(leg),
                     // Authentic GTFS line colours from the feed.
                     color: hex("routeColor"),
@@ -590,7 +610,7 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
             if *i >= bytes.len() {
                 return None;
             }
-            let b = bytes[*i] as i64 - 63;
+            let b = i64::from(bytes[*i]) - 63;
             *i += 1;
             result |= (b & 0x1f) << shift;
             shift += 5;
@@ -599,7 +619,11 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
             }
         }
         // Zig-zag decode.
-        Some(if result & 1 != 0 { !(result >> 1) } else { result >> 1 })
+        Some(if result & 1 != 0 {
+            !(result >> 1)
+        } else {
+            result >> 1
+        })
     };
     while i < bytes.len() {
         let Some(dlat) = read(&mut i) else { break };
@@ -628,7 +652,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),
@@ -667,10 +691,22 @@ mod tests {
         });
         let hit = region_from_json(&item).expect("a region with a coord + box");
         assert_eq!(hit.name, "Munich");
-        assert!((hit.sw.lat - 48.0616).abs() < 1e-6, "south from boundingbox[0]");
-        assert!((hit.ne.lat - 48.2482).abs() < 1e-6, "north from boundingbox[1]");
-        assert!((hit.sw.lon - 11.3608).abs() < 1e-6, "west from boundingbox[2]");
-        assert!((hit.ne.lon - 11.7229).abs() < 1e-6, "east from boundingbox[3]");
+        assert!(
+            (hit.sw.lat - 48.0616).abs() < 1e-6,
+            "south from boundingbox[0]"
+        );
+        assert!(
+            (hit.ne.lat - 48.2482).abs() < 1e-6,
+            "north from boundingbox[1]"
+        );
+        assert!(
+            (hit.sw.lon - 11.3608).abs() < 1e-6,
+            "west from boundingbox[2]"
+        );
+        assert!(
+            (hit.ne.lon - 11.7229).abs() < 1e-6,
+            "east from boundingbox[3]"
+        );
         // The box is a real area, not a degenerate point.
         assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon);
     }
@@ -687,14 +723,26 @@ mod tests {
             "osm_type": "node", "osm_id": 1
         });
         let hit = region_from_json(&item).expect("a region from a coord");
-        assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon, "a non-degenerate box");
-        assert!((hit.ne.lat - hit.sw.lat) < 0.05, "the fallback box is small");
+        assert!(
+            hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon,
+            "a non-degenerate box"
+        );
+        assert!(
+            (hit.ne.lat - hit.sw.lat) < 0.05,
+            "the fallback box is small"
+        );
     }
 
     #[test]
     fn step_instruction_formats() {
-        assert_eq!(step_instruction(Maneuver::Left, "Main St"), "Turn left onto Main St");
-        assert_eq!(step_instruction(Maneuver::Arrive, ""), "Arrive at your destination");
+        assert_eq!(
+            step_instruction(Maneuver::Left, "Main St"),
+            "Turn left onto Main St"
+        );
+        assert_eq!(
+            step_instruction(Maneuver::Arrive, ""),
+            "Arrive at your destination"
+        );
     }
 
     #[test]
@@ -704,8 +752,14 @@ mod tests {
         let url = transit_url(from, to, &TransitQuery::default());
         assert!(url.contains("fromPlace=48.100000,11.550000"), "{url}");
         assert!(url.contains("toPlace=48.140000,11.580000"), "{url}");
-        assert!(!url.contains("&time="), "depart-now must not pin a time: {url}");
-        assert!(!url.contains("arriveBy"), "depart-now is not arrive-by: {url}");
+        assert!(
+            !url.contains("&time="),
+            "depart-now must not pin a time: {url}"
+        );
+        assert!(
+            !url.contains("arriveBy"),
+            "depart-now is not arrive-by: {url}"
+        );
     }
 
     #[test]
@@ -764,13 +818,28 @@ mod tests {
         assert_eq!(leg.mode, TransitMode::Subway);
         assert_eq!(leg.line, "U3");
         assert_eq!(leg.num_stops, 3);
-        assert_eq!(leg.geometry.len(), 3, "legGeometry must decode onto the leg");
+        assert_eq!(
+            leg.geometry.len(),
+            3,
+            "legGeometry must decode onto the leg"
+        );
         assert!((leg.geometry[0].lat - 38.5).abs() < 1e-5);
         // The authentic feed colour + real-time flag + agency must land on the leg.
-        assert_eq!(leg.color.as_deref(), Some("eb690b"), "GTFS routeColor parsed");
-        assert_eq!(leg.text_color.as_deref(), Some("FFFFFF"), "routeTextColor parsed, '#' stripped");
+        assert_eq!(
+            leg.color.as_deref(),
+            Some("eb690b"),
+            "GTFS routeColor parsed"
+        );
+        assert_eq!(
+            leg.text_color.as_deref(),
+            Some("FFFFFF"),
+            "routeTextColor parsed, '#' stripped"
+        );
         assert_eq!(leg.agency, "MVG");
-        assert!(leg.realtime, "realTime flag parsed for the freshness signal");
+        assert!(
+            leg.realtime,
+            "realTime flag parsed for the freshness signal"
+        );
     }
 
     #[test]
@@ -808,7 +877,10 @@ mod tests {
             "class": "place", "type": "house", "osm_type": "way", "osm_id": 2,
         });
         let p = place_from_json(&address).unwrap();
-        assert_eq!(p.name, "Theatinerstraße 18", "must be street + number, never a bare '18'");
+        assert_eq!(
+            p.name, "Theatinerstraße 18",
+            "must be street + number, never a bare '18'"
+        );
         assert_ne!(p.name, "18");
 
         // No name and no address details: skip a leading bare-number fragment.
@@ -826,10 +898,16 @@ mod tests {
         let url = overpass_url(48.10, 11.55, 48.15, 11.60);
         assert!(url.starts_with("https://overpass-api.de/api/interpreter?data="));
         // The bbox reaches the query (percent-encoded comma is %2C).
-        assert!(url.contains("48.10000%2C11.55000%2C48.15000%2C11.60000"), "{url}");
+        assert!(
+            url.contains("48.10000%2C11.55000%2C48.15000%2C11.60000"),
+            "{url}"
+        );
         // Key categories are present in the (encoded) query.
         assert!(url.contains("restaurant"));
-        assert!(url.contains("out%20center%20250"), "server-side cap present: {url}");
+        assert!(
+            url.contains("out%20center%20250"),
+            "server-side cap present: {url}"
+        );
     }
 
     #[test]
@@ -872,7 +950,10 @@ mod tests {
         let museum = &pois[1];
         assert_eq!(museum.id, "osm-way-2");
         assert_eq!(museum.category, Category::Museum);
-        assert!((museum.pos.lat - 48.140).abs() < 1e-9, "way center becomes the position");
+        assert!(
+            (museum.pos.lat - 48.140).abs() < 1e-9,
+            "way center becomes the position"
+        );
     }
 
     #[test]
@@ -885,7 +966,10 @@ mod tests {
         };
         let url = transit_url(from, to, &when);
         // The colons/plus of the timestamp must be percent-encoded into the URL.
-        assert!(url.contains("&time=2026-07-03T10%3A15%3A00%2B02%3A00"), "{url}");
+        assert!(
+            url.contains("&time=2026-07-03T10%3A15%3A00%2B02%3A00"),
+            "{url}"
+        );
         assert!(url.contains("&arriveBy=true"), "{url}");
     }
 }

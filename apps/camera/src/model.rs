@@ -19,7 +19,12 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub const ALL: [Screen; 4] = [Screen::Camera, Screen::Scanner, Screen::Gallery, Screen::Settings];
+    pub const ALL: [Screen; 4] = [
+        Screen::Camera,
+        Screen::Scanner,
+        Screen::Gallery,
+        Screen::Settings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -131,8 +136,12 @@ pub enum Resolution {
 }
 
 impl Resolution {
-    pub const ALL: [Resolution; 4] =
-        [Resolution::R12MP, Resolution::R4K, Resolution::R1080p, Resolution::R720p];
+    pub const ALL: [Resolution; 4] = [
+        Resolution::R12MP,
+        Resolution::R4K,
+        Resolution::R1080p,
+        Resolution::R720p,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Resolution::R12MP => "12 MP",
@@ -341,8 +350,12 @@ pub enum GalleryFilter {
 }
 
 impl GalleryFilter {
-    pub const ALL: [GalleryFilter; 4] =
-        [GalleryFilter::All, GalleryFilter::Photos, GalleryFilter::Videos, GalleryFilter::Favorites];
+    pub const ALL: [GalleryFilter; 4] = [
+        GalleryFilter::All,
+        GalleryFilter::Photos,
+        GalleryFilter::Videos,
+        GalleryFilter::Favorites,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             GalleryFilter::All => "All",
@@ -366,8 +379,18 @@ impl GalleryFilter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeKind {
     Url,
-    Wifi { ssid: String, auth: String, password: String, hidden: bool },
-    Contact { name: String, phone: String, email: String, org: String },
+    Wifi {
+        ssid: String,
+        auth: String,
+        password: String,
+        hidden: bool,
+    },
+    Contact {
+        name: String,
+        phone: String,
+        email: String,
+        org: String,
+    },
     Email,
     Phone,
     Geo,
@@ -451,10 +474,20 @@ pub fn classify(raw: &str) -> CodeKind {
         CodeKind::Url
     } else if lower.starts_with("wifi:") {
         let (ssid, auth, password, hidden) = parse_wifi(raw);
-        CodeKind::Wifi { ssid, auth, password, hidden }
+        CodeKind::Wifi {
+            ssid,
+            auth,
+            password,
+            hidden,
+        }
     } else if lower.starts_with("begin:vcard") || lower.starts_with("mecard:") {
         let (name, phone, email, org) = parse_contact(raw);
-        CodeKind::Contact { name, phone, email, org }
+        CodeKind::Contact {
+            name,
+            phone,
+            email,
+            org,
+        }
     } else if lower.starts_with("mailto:") {
         CodeKind::Email
     } else if lower.starts_with("tel:") {
@@ -468,7 +501,10 @@ pub fn classify(raw: &str) -> CodeKind {
 
 /// Parse a `WIFI:T:WPA;S:SSID;P:pass;H:false;;` payload.
 fn parse_wifi(raw: &str) -> (String, String, String, bool) {
-    let body = raw.strip_prefix("WIFI:").or_else(|| raw.strip_prefix("wifi:")).unwrap_or(raw);
+    let body = raw
+        .strip_prefix("WIFI:")
+        .or_else(|| raw.strip_prefix("wifi:"))
+        .unwrap_or(raw);
     let mut ssid = String::new();
     let mut auth = String::from("Open");
     let mut password = String::new();
@@ -477,7 +513,13 @@ fn parse_wifi(raw: &str) -> (String, String, String, bool) {
         if let Some((k, v)) = field.split_once(':') {
             match k.to_ascii_uppercase().as_str() {
                 "S" => ssid = v.to_string(),
-                "T" => auth = if v.is_empty() { "Open".into() } else { v.to_string() },
+                "T" => {
+                    auth = if v.is_empty() {
+                        "Open".into()
+                    } else {
+                        v.to_string()
+                    }
+                }
                 "P" => password = v.to_string(),
                 "H" => hidden = v.eq_ignore_ascii_case("true"),
                 _ => {}
@@ -506,16 +548,19 @@ fn parse_contact(raw: &str) -> (String, String, String, String) {
             email = v;
         } else if let Some(v) = field_after(line, "ORG") {
             org = v;
-        } else if let Some(v) = field_after(line, "N") {
-            if name.is_empty() {
-                name = v.replace(';', " ").trim().to_string();
-            }
+        } else if let Some(v) = field_after(line, "N")
+            && name.is_empty()
+        {
+            name = v.replace(';', " ").trim().to_string();
         }
     }
     // MECARD: `MECARD:N:Name;TEL:123;EMAIL:a@b;;`
     if name.is_empty() {
         for field in raw.split(';') {
-            if let Some(v) = field.strip_prefix("MECARD:N:").or_else(|| field.strip_prefix("N:")) {
+            if let Some(v) = field
+                .strip_prefix("MECARD:N:")
+                .or_else(|| field.strip_prefix("N:"))
+            {
                 name = v.to_string();
             }
         }
@@ -567,7 +612,12 @@ mod tests {
     fn classify_and_parse_wifi() {
         let k = classify("WIFI:T:WPA2;S:qOS Guest;P:hunter2;H:false;;");
         match k {
-            CodeKind::Wifi { ssid, auth, password, hidden } => {
+            CodeKind::Wifi {
+                ssid,
+                auth,
+                password,
+                hidden,
+            } => {
                 assert_eq!(ssid, "qOS Guest");
                 assert_eq!(auth, "WPA2");
                 assert_eq!(password, "hunter2");
@@ -581,7 +631,12 @@ mod tests {
     fn classify_and_parse_contact_vcard() {
         let v = "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nTEL:+1-555-0100\nEMAIL:ada@analytical.engine\nORG:Analytical Engines\nEND:VCARD";
         match classify(v) {
-            CodeKind::Contact { name, phone, email, org } => {
+            CodeKind::Contact {
+                name,
+                phone,
+                email,
+                org,
+            } => {
                 assert_eq!(name, "Ada Lovelace");
                 assert_eq!(phone, "+1-555-0100");
                 assert_eq!(email, "ada@analytical.engine");

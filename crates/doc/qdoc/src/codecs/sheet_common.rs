@@ -4,41 +4,47 @@
 //! [`SheetPackage::read`], so the same zip-bomb / entry-count / DTD-XXE guards the
 //! document codecs enforce apply verbatim to spreadsheets.
 
-use crate::codecs::safety::{read_zip_parts, ZipLimits};
+use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::{CodecError, Confidence};
 use crate::sheet::Workbook;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-/// A spreadsheet format provider — the workbook analogue of
-/// [`crate::format::FormatProvider`]. Parses untrusted spreadsheet bytes into the
-/// CRDT [`Workbook`] model and serializes it back. Import is bounded/hardened via
-/// [`SheetPackage::read`]; the contract is identical either side of a sandbox.
+/// A spreadsheet format provider — the workbook analogue of [`crate::format::FormatProvider`].
+/// Import is bounded/hardened via [`SheetPackage::read`]; the contract is identical either side of a sandbox.
 pub trait SheetProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;
+    /// # Errors
+    /// Returns [`CodecError`] if `bytes` are malformed, exceed the package's
+    /// resource bounds, or use a construct the codec refuses to import.
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError>;
+    /// # Errors
+    /// Returns [`CodecError`] if the workbook cannot be serialised into this
+    /// format, or if writing its container fails.
     fn export(&self, wb: &Workbook) -> Result<Vec<u8>, CodecError>;
 }
 
-/// A spreadsheet package's parts in original zip order. Read is bounded + XXE-
-/// hardened via [`read_zip_parts`]; the same struct backs both `.xlsx` (OPC) and
-/// `.ods` (ODF) since they are both attacker-controlled ZIPs of XML.
+/// A spreadsheet package's parts in original zip order, read bounded + XXE-hardened
+/// via [`read_zip_parts`]; backs both `.xlsx` (OPC) and `.ods` (ODF) alike.
 pub(crate) struct SheetPackage {
     pub parts: Vec<(String, Vec<u8>)>,
 }
 
 impl SheetPackage {
-    /// Read an untrusted spreadsheet package under the default [`ZipLimits`]
-    /// (bounded entry count + per-part/total decompressed size; DTD-bearing XML
-    /// parts rejected).
+    /// Reads an untrusted spreadsheet package under the default [`ZipLimits`].
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
-        Ok(Self { parts: read_zip_parts(bytes, &ZipLimits::default())? })
+        Ok(Self {
+            parts: read_zip_parts(bytes, &ZipLimits::default())?,
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+        self.parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
     }
 
     /// Names of every part (original order).
@@ -91,14 +97,12 @@ impl SheetPackage {
 
 /// Strip a namespace prefix (`table:table-cell` → `table-cell`).
 fn strip_prefix(raw: &[u8]) -> &[u8] {
-    match raw.iter().position(|b| *b == b':') {
-        Some(i) => &raw[i + 1..],
-        None => raw,
-    }
+    // `splitn(2)` yields the part after the first colon, or nothing at all when
+    // the name carries no prefix.
+    raw.splitn(2, |b| *b == b':').nth(1).unwrap_or(raw)
 }
 
-/// The local (prefix-stripped) name of a start/empty element. Namespace prefixes
-/// vary across producers, so the codecs match on the local part.
+/// The local (prefix-stripped) name of a start/empty element (namespace prefixes vary across producers).
 pub(crate) fn local_name<'a>(e: &'a quick_xml::events::BytesStart<'a>) -> &'a [u8] {
     strip_prefix(e.name().into_inner())
 }
@@ -111,13 +115,8 @@ pub(crate) fn end_local_name<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a 
 /// Read an attribute by its local name (prefix-insensitive), unescaping its value.
 pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
-        let raw = a.key.as_ref();
-        let lname = match raw.iter().position(|b| *b == b':') {
-            Some(i) => &raw[i + 1..],
-            None => raw,
-        };
-        if lname == local {
-            return a.unescape_value().ok().map(|v| v.into_owned());
+        if strip_prefix(a.key.as_ref()) == local {
+            return a.unescape_value().ok().map(std::borrow::Cow::into_owned);
         }
     }
     None

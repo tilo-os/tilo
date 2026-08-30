@@ -5,11 +5,8 @@ use shell::shell::state::{
 
 #[test]
 fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
-    // `bootstrap_demo` seeds a 3-workspace fixture (Home / Research /
-    // Design) so the overview overlay renders a populated 3-card grid on
-    // first run. Pin the shape here so accidental drift in the seed —
-    // adding a fourth demo workspace, dropping Research, doubling up
-    // strips — surfaces as a test failure rather than a silent UX shift.
+    // `bootstrap_demo` seeds a 3-workspace fixture for the overview's 3-card
+    // grid; pinned so seed drift surfaces as a failure, not a silent UX shift.
     let t = WorkspaceTree::bootstrap_demo();
     assert_eq!(t.workspaces.len(), 3);
     for ws in &t.workspaces {
@@ -41,15 +38,14 @@ fn window_width_clamp() {
     // into the legal share band rather than into a pixel band.
     assert_eq!(WindowWidth::Fraction(5).permille(), 150);
     assert_eq!(WindowWidth::Fraction(9999).permille(), 1000);
-    // And the resolved pixels track the display: the same clamped fraction
-    // is a different pixel count on each, which is the point.
+    // And the resolved pixels track the display, which is the point.
     assert_eq!(WindowWidth::Fraction(9999).resolve(1600.0), 1600.0);
     assert_eq!(WindowWidth::Fraction(9999).resolve(3840.0), 3840.0);
 }
 
-/// A workspace persisted by the pixel model still loads, and its widths
-/// come back as the share of the screen the user had — not as a pixel count
-/// that would mean something different on their next monitor.
+/// A workspace persisted by the pixel model still loads, its widths coming
+/// back as the share of the screen the user had — not a pixel count that
+/// would mean something different on their next monitor.
 #[test]
 fn legacy_pixel_widths_migrate_to_the_share_they_represented() {
     // The old model ran 300..1200 px with 1200 as the whole strip, so its
@@ -69,8 +65,7 @@ fn legacy_pixel_widths_migrate_to_the_share_they_represented() {
     assert_eq!(g.width.resolve(3840.0), 1920.0);
 }
 
-/// The current shape round-trips through the persisted JSON unchanged, so a
-/// manual resize survives a restart.
+/// The current shape round-trips through the persisted JSON unchanged.
 #[test]
 fn fraction_widths_round_trip_through_persisted_json() {
     let mut tree = WorkspaceTree::bootstrap_demo();
@@ -83,8 +78,8 @@ fn fraction_widths_round_trip_through_persisted_json() {
     );
 }
 
-// Reference the remaining imports so the test file compiles cleanly even before
-// the widget/layout code that exercises them lands in later tasks.
+// Reference the remaining imports so this compiles before the widget code
+// that exercises them lands.
 #[allow(dead_code)]
 fn _type_refs() {
     let _ = std::marker::PhantomData::<Workspace>;
@@ -117,12 +112,11 @@ fn load_missing_file_returns_default() {
     let missing = PathBuf::from("/tmp/definitely-missing-xyz.json");
     let _ = std::fs::remove_file(&missing);
     let (t, notice) = load_or_default(&missing);
-    // `load_or_default` falls back to `WorkspaceTree::bootstrap_default`
-    // when the persistence file is absent, so the workspace count must
-    // match the seed (currently 3: Home / Research / Design).
-    assert_eq!(t.workspaces.len(), 3);
-    // A first boot is not a refusal. Reporting one would put an alarming
-    // notification on every genuinely new machine.
+    // `load_or_default` falls back to `bootstrap_default` when the persistence
+    // file is absent — one empty workspace, not the named trio, so a first
+    // boot isn't a claim about someone who never used the machine.
+    assert_eq!(t.workspaces.len(), 1);
+    // A first boot is not a refusal; reporting one would alarm every new machine.
     assert!(
         notice.is_none(),
         "a missing state file is the first boot, not something to warn about"

@@ -6,8 +6,8 @@
 //! `SidebarRow` addressable by its category's display label via `test_id`,
 //! so the count is exact (the content pane contains no `SidebarRow`s).
 
-use settings::categories::Category;
 use settings::SettingsApp;
+use settings::categories::Category;
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
@@ -48,10 +48,10 @@ fn sidebar_has_one_entry_per_category() {
     // row per category, with the *complete* (untruncated) label.
     let mut labels: Vec<String> = Vec::new();
     walk(&app, &mut |w| {
-        if w.name() == "SidebarRow" {
-            if let Some(l) = w.test_id() {
-                labels.push(l.to_string());
-            }
+        if w.name() == "SidebarRow"
+            && let Some(l) = w.test_id()
+        {
+            labels.push(l.to_string());
         }
     });
 
@@ -62,9 +62,13 @@ fn sidebar_has_one_entry_per_category() {
     );
 
     for category in Category::ALL {
-        let found = labels.iter().filter(|l| l.as_str() == category.label()).count();
+        let found = labels
+            .iter()
+            .filter(|l| l.as_str() == category.label())
+            .count();
         assert_eq!(
-            found, 1,
+            found,
+            1,
             "expected one sidebar row carrying the full label {:?} for {:?}",
             category.label(),
             category

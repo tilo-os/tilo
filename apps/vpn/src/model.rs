@@ -99,7 +99,7 @@ pub struct Connection {
     /// Interface / assigned address handed out by the peer (e.g. `10.7.0.2/32`).
     pub address: String,
     pub dns: String,
-    /// WireGuard peer public key, or OpenVPN server CN.
+    /// `WireGuard` peer public key, or `OpenVPN` server CN.
     pub public_key: String,
     /// Routed networks (`AllowedIPs` / pushed routes).
     pub allowed_ips: String,
@@ -212,8 +212,8 @@ impl Vault {
 
 /// Build the demo fleet shown in `--shots` and on a fresh install.
 ///
-/// Per the brief: a 'Home' WireGuard that is **connected** with
-/// live-looking throughput, and a 'Work' OpenVPN that is
+/// Per the brief: a 'Home' `WireGuard` that is **connected** with
+/// live-looking throughput, and a 'Work' `OpenVPN` that is
 /// **disconnected**. A few extra entries make the list feel real.
 pub fn sample_vault() -> Vault {
     let mut home = Connection::new("Home", ConnKind::WireGuard);
@@ -277,7 +277,7 @@ pub fn sample_vault() -> Vault {
 /// Compact "time ago" for a seconds delta, e.g. `34s ago`, `4m ago`.
 pub fn human_ago(secs: u64) -> String {
     if secs < 60 {
-        format!("{}s ago", secs)
+        format!("{secs}s ago")
     } else if secs < 3600 {
         format!("{}m ago", secs / 60)
     } else if secs < 86_400 {
@@ -316,7 +316,10 @@ mod tests {
 
     #[test]
     fn kind_status_round_trip() {
-        assert_eq!(ConnKind::from_str(ConnKind::OpenVpn.as_str()), ConnKind::OpenVpn);
+        assert_eq!(
+            ConnKind::from_str(ConnKind::OpenVpn.as_str()),
+            ConnKind::OpenVpn
+        );
         assert_eq!(
             ConnStatus::from_str(ConnStatus::Connecting.as_str()),
             ConnStatus::Connecting

@@ -17,8 +17,8 @@
 //! `snapshot.automerge` is only written when a workspace is
 //! `pin = true` in the config; unpinned workspaces are pure fan-out
 //! + store-and-forward. Pending directories exist regardless of
-//! pin state — the point of a host is that a peer's phone can be
-//! offline for a week and still catch up.
+//!   pin state — the point of a host is that a peer's phone can be
+//!   offline for a week and still catch up.
 
 use std::fs;
 use std::io::{self, Write};
@@ -33,6 +33,65 @@ pub const SNAPSHOT_FILE: &str = "snapshot.automerge";
 
 /// Filename used for the append-only audit log.
 pub const LOG_FILE: &str = "log.jsonl";
+
+/// Durable device membership for offline store-and-forward.
+pub const MEMBERSHIP_FILE: &str = "membership.json";
+
+/// Retained bootstrap checkpoints and the incremental tails after them.
+pub const RETAINED_DIR: &str = "retained";
+
+/// Root-signed device revocations enforced during relay authentication.
+pub const REVOCATIONS_FILE: &str = "revocations.json";
+/// Last daemon counter snapshot, consumed by offline admin/status commands.
+pub const METRICS_FILE: &str = "metrics.json";
+
+/// Atomically persist a daemon metrics snapshot.
+pub fn save_metrics(
+    state_root: &Path,
+    snapshot: &crate::metrics::MetricsSnapshot,
+) -> Result<(), StoreError> {
+    fs::create_dir_all(state_root)?;
+    let bytes =
+        serde_json::to_vec_pretty(snapshot).map_err(|error| StoreError::Json(error.to_string()))?;
+    atomic_file::write(&state_root.join(METRICS_FILE), &bytes)?;
+    Ok(())
+}
+
+/// Read the last daemon metrics snapshot, if the daemon has written one.
+pub fn load_metrics(
+    state_root: &Path,
+) -> Result<Option<crate::metrics::MetricsSnapshot>, StoreError> {
+    let path = state_root.join(METRICS_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let snapshot = serde_json::from_slice(&fs::read(path)?)
+        .map_err(|error| StoreError::Json(error.to_string()))?;
+    Ok(Some(snapshot))
+}
+
+/// Load root-signed revocation entries from the relay state root.
+pub fn load_revocations(
+    state_root: &Path,
+) -> Result<Vec<qos_user_identity::RevocationEntry>, StoreError> {
+    let path = state_root.join(REVOCATIONS_FILE);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_slice(&fs::read(path)?).map_err(|error| StoreError::Json(error.to_string()))
+}
+
+/// Atomically replace the relay's root-signed revocation entries.
+pub fn save_revocations(
+    state_root: &Path,
+    entries: &[qos_user_identity::RevocationEntry],
+) -> Result<(), StoreError> {
+    fs::create_dir_all(state_root)?;
+    let bytes =
+        serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
+    atomic_file::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
+    Ok(())
+}
 
 /// Errors from store operations.
 #[derive(Debug, Error)]
@@ -68,6 +127,14 @@ pub struct WorkspaceStore {
     pinned: bool,
 }
 
+/// One durable queue entry loaded for delivery but not yet acknowledged.
+pub(crate) struct PendingEntry {
+    /// On-disk file removed only after the replay reaches the wire.
+    pub path: PathBuf,
+    /// Complete framed relay envelope.
+    pub bytes: Vec<u8>,
+}
+
 impl WorkspaceStore {
     /// Open (creating if necessary) the on-disk state for
     /// `workspace_id` under `state_root/workspaces/<id>/`.
@@ -75,11 +142,11 @@ impl WorkspaceStore {
     /// `pinned=false` skips creating `snapshot.automerge` — the
     /// caller does not intend to hold a persistent CRDT.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
-        let root = state_root
-            .join("workspaces")
-            .join(workspace_id.to_string());
+        let root = state_root.join("workspaces").join(workspace_id.to_string());
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
+        fs::create_dir_all(root.join(RETAINED_DIR).join("checkpoints"))?;
+        fs::create_dir_all(root.join(RETAINED_DIR).join("tails"))?;
         Ok(Self {
             root,
             workspace_id,
@@ -123,6 +190,39 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Load device public keys previously admitted to this workspace.
+    pub fn load_membership(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        let path = self.root.join(MEMBERSHIP_FILE);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let encoded: Vec<String> = serde_json::from_slice(&fs::read(path)?)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        encoded
+            .into_iter()
+            .map(|value| {
+                let bytes = hex::decode(&value).map_err(|error| {
+                    StoreError::Json(format!("invalid membership device key {value:?}: {error}"))
+                })?;
+                bytes.try_into().map_err(|bytes: Vec<u8>| {
+                    StoreError::Json(format!(
+                        "membership device key must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    /// Atomically replace the durable membership set.
+    pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
+        let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
+        let bytes = serde_json::to_vec_pretty(&encoded)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        Ok(())
+    }
+
     /// Append an audit log entry. Non-fatal if the log file fails —
     /// the audit trail is best-effort, forwarding must not depend
     /// on it.
@@ -133,7 +233,7 @@ impl WorkspaceStore {
             .append(true)
             .open(path)?;
         let line = serde_json::to_string(entry).map_err(|e| StoreError::Json(e.to_string()))?;
-        writeln!(file, "{}", line)?;
+        writeln!(file, "{line}")?;
         Ok(())
     }
 
@@ -149,7 +249,7 @@ impl WorkspaceStore {
     ) -> Result<PathBuf, StoreError> {
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
-        let filename = format!("{:016x}.delta", seq);
+        let filename = format!("{seq:016x}.delta");
         let path = pending_dir.join(filename);
         // A crash mid-write must not leave a truncated delta for the peer to
         // receive. The temp file is process-scoped, so two writers filling the
@@ -159,28 +259,41 @@ impl WorkspaceStore {
         Ok(path)
     }
 
-    /// Drain the pending queue for `device_pubkey` in delivery
-    /// order. Returns each delta's bytes; the file is removed after
-    /// its bytes are returned.
-    pub fn drain_pending(&self, device_pubkey: &[u8; 32]) -> Result<Vec<Vec<u8>>, StoreError> {
+    /// Load the pending queue in delivery order without acknowledging it.
+    /// The peer task removes entries only after their replay is written.
+    pub(crate) fn load_pending(
+        &self,
+        device_pubkey: &[u8; 32],
+    ) -> Result<Vec<PendingEntry>, StoreError> {
         let dir = self.pending_dir_for(device_pubkey);
         if !dir.exists() {
             return Ok(Vec::new());
         }
         let mut entries: Vec<_> = fs::read_dir(&dir)?
             .flatten()
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".delta")
-            })
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .collect();
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         let mut out = Vec::with_capacity(entries.len());
         for e in entries {
-            let bytes = fs::read(e.path())?;
-            fs::remove_file(e.path())?;
-            out.push(bytes);
+            let path = e.path();
+            out.push(PendingEntry {
+                bytes: fs::read(&path)?,
+                path,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Drain the pending queue immediately. Primarily useful for offline
+    /// maintenance and tests; live delivery uses [`Self::load_pending`] so a
+    /// failed replay remains recoverable.
+    pub fn drain_pending(&self, device_pubkey: &[u8; 32]) -> Result<Vec<Vec<u8>>, StoreError> {
+        let entries = self.load_pending(device_pubkey)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries {
+            fs::remove_file(&entry.path)?;
+            out.push(entry.bytes);
         }
         Ok(out)
     }
@@ -193,13 +306,75 @@ impl WorkspaceStore {
         }
         let n = fs::read_dir(&dir)?
             .flatten()
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".delta")
-            })
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .count();
         Ok(n as u32)
+    }
+
+    /// Replace the durable checkpoint for `channel` and discard the tail that
+    /// preceded it. `bytes` is a complete encoded relay envelope.
+    pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
+        let name = hex::encode(channel);
+        atomic_file::write(
+            &self.root.join(RETAINED_DIR).join("checkpoints").join(&name),
+            bytes,
+        )?;
+        let tail = self.root.join(RETAINED_DIR).join("tails").join(name);
+        if tail.exists() {
+            fs::remove_dir_all(&tail)?;
+        }
+        fs::create_dir_all(tail)?;
+        Ok(())
+    }
+
+    /// Append one encoded relay envelope to the retained tail for `channel`.
+    pub fn retain_delta(
+        &self,
+        channel: &[u8; 32],
+        seq: u64,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        let tail = self
+            .root
+            .join(RETAINED_DIR)
+            .join("tails")
+            .join(hex::encode(channel));
+        fs::create_dir_all(&tail)?;
+        atomic_file::write(&tail.join(format!("{seq:016x}.delta")), bytes)?;
+        Ok(())
+    }
+
+    /// Load every retained checkpoint followed by its post-checkpoint tail.
+    /// Documents are independent, so channel ordering is irrelevant; ordering
+    /// within a channel is stable.
+    pub fn load_retained(&self) -> Result<Vec<Vec<u8>>, StoreError> {
+        let retained = self.root.join(RETAINED_DIR);
+        let checkpoint_dir = retained.join("checkpoints");
+        let tails_dir = retained.join("tails");
+        let mut channels = std::collections::BTreeSet::new();
+        for dir in [&checkpoint_dir, &tails_dir] {
+            for entry in fs::read_dir(dir)?.flatten() {
+                channels.insert(entry.file_name());
+            }
+        }
+        let mut out = Vec::new();
+        for channel in channels {
+            let checkpoint = checkpoint_dir.join(&channel);
+            if checkpoint.is_file() {
+                out.push(fs::read(checkpoint)?);
+            }
+            let tail = tails_dir.join(&channel);
+            if tail.is_dir() {
+                let mut entries: Vec<_> = fs::read_dir(tail)?.flatten().collect();
+                entries.sort_by_key(std::fs::DirEntry::file_name);
+                for entry in entries {
+                    if entry.path().is_file() {
+                        out.push(fs::read(entry.path())?);
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn pending_dir_for(&self, device_pubkey: &[u8; 32]) -> PathBuf {
@@ -282,6 +457,22 @@ mod tests {
     }
 
     #[test]
+    fn loading_pending_does_not_acknowledge_before_wire_delivery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
+        let peer = [4u8; 32];
+        store.enqueue_pending(&peer, 100, b"one").unwrap();
+
+        let loaded = store.load_pending(&peer).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].bytes, b"one");
+        assert_eq!(store.count_pending(&peer).unwrap(), 1);
+
+        std::fs::remove_file(&loaded[0].path).unwrap();
+        assert_eq!(store.count_pending(&peer).unwrap(), 0);
+    }
+
+    #[test]
     fn pending_isolated_per_peer() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
@@ -291,6 +482,24 @@ mod tests {
         assert_eq!(out1, vec![b"a".to_vec()]);
         let out2 = store.drain_pending(&[2u8; 32]).unwrap();
         assert_eq!(out2, vec![b"b".to_vec()]);
+    }
+
+    #[test]
+    fn retained_checkpoint_replaces_its_old_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+        let channel = [9u8; 32];
+        store.retain_checkpoint(&channel, b"checkpoint-1").unwrap();
+        store.retain_delta(&channel, 10, b"delta-1").unwrap();
+        assert_eq!(
+            store.load_retained().unwrap(),
+            vec![b"checkpoint-1".to_vec(), b"delta-1".to_vec()]
+        );
+        store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
+        assert_eq!(
+            store.load_retained().unwrap(),
+            vec![b"checkpoint-2".to_vec()]
+        );
     }
 
     #[test]

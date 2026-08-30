@@ -1,71 +1,38 @@
-//! Headless offscreen render harness. Renders a Vello `Scene` into a
-//! GPU texture without a window/surface, copies the bytes back to the
-//! CPU, and (optionally) writes a PNG.
+//! Headless offscreen render harness: renders a Vello `Scene` into a GPU
+//! texture with no window, reads the bytes back, optionally writes a PNG.
 //!
-//! Same pipeline the e2e snapshot tests use. Public so callers outside
-//! the test target (binaries, examples, downstream crates) can take
-//! screenshots at any resolution, off any scene, with no display
-//! attached. What is drawn is a pure function of the scene; the last bit
-//! of the rasterisation is not — see the last section.
+//! `copy_texture_to_buffer` needs the buffer's row pitch aligned to
+//! `COPY_BYTES_PER_ROW_ALIGNMENT` (256 today), so a non-aligned width is
+//! padded and the padding stripped on readback.
 //!
-//! # Why wgpu row-pitch alignment matters
-//! `copy_texture_to_buffer` requires the buffer's row pitch to be a
-//! multiple of `COPY_BYTES_PER_ROW_ALIGNMENT` (256 on every Vulkan /
-//! Metal / D3D12 backend shipped today). For a non-aligned width we
-//! allocate the aligned size and strip padding while reading back so
-//! callers see a tight `width * 4` bytes-per-row buffer.
+//! Two renders of the *same* `Scene` are not guaranteed bit-identical:
+//! vello assigns path-segment order via `atomicAdd` (GPU scheduling), and
+//! float addition isn't associative, so coverage on a quantisation
+//! boundary can land ±1 in a channel. Measured here: ≤4/57 600 pixels,
+//! always ±1, ink-count unchanged — a race between concurrent renders in
+//! one process, not a single-frame artifact. Compare with
+//! [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality.
 //!
-//! # Two rasterisations of one scene are not guaranteed bit-identical
-//! Rendering the *same* [`Scene`] twice can return buffers that differ
-//! by one 8-bit step on a handful of antialiased edge pixels. This is a
-//! property of vello's GPU pipeline, not of this harness:
-//!
-//! * `path_count` assigns each path segment its slot inside a tile's
-//!   segment slice with an `atomicAdd`, so the order segments land in
-//!   for a given tile follows GPU workgroup scheduling;
-//! * `fine`'s analytic area antialiasing then accumulates
-//!   `area += a * dy` over that slice, and float addition is not
-//!   associative — a different order can move the coverage by one ulp;
-//! * a pixel whose coverage sits on a quantisation boundary lands one
-//!   step either side of it.
-//!
-//! Measured on this stack: identical `Scene`, ≤4 pixels out of 57 600
-//! affected, always ±1 in a single channel, and the count of pixels
-//! carrying ink never changes. It shows up when several threads in one
-//! process drive the shared device (a fully serial process rendered the
-//! same scene 600 times with no drift; three *separate* processes
-//! rendering concurrently likewise had none), which is why the
-//! screenshot suites mostly do not see it and the parallel test
-//! binaries do.
-//!
-//! Consequences: byte-comparing two renders is not a sound equality
-//! test. Compare with [`OffscreenRenderer::pixels_differing_beyond_aa`],
-//! or compare the `Scene` the draw pass produced, which *is* exact. A
-//! single frame is unaffected — the wobble is invisible (1/255 on an
-//! edge pixel) and never changes what is drawn.
+//! Never cache one in a `thread_local!`: dropping wgpu resources touches
+//! wgpu's own thread-local, and TLS destructors run in reverse
+//! registration order, so a cache registered before the first wgpu call is
+//! torn down after wgpu's — `SIGABRT`, killing the process. Use a
+//! process-wide `static` instead (never drops); this type is `Send` to
+//! allow that.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::gpu::RenderContext;
 use pollster::FutureExt;
 use vello::peniko::Color;
-use vello::util::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
-/// Process-wide shared `RenderContext` so we only ever construct ONE
-/// `wgpu::Instance` per process. Creating multiple Instances in
-/// parallel (the default `cargo test` pattern when many test cases
-/// build OffscreenRenderers concurrently) races inside vkCreateInstance
-/// on at least the radv + intel-iris Mesa drivers and SIGSEGVs. The
-/// shared context dodges that entirely: every OffscreenRenderer locks
-/// the same context briefly, reserves a DeviceHandle (which is cached
-/// internally by vello), and proceeds.
-///
-/// `OnceLock<Arc<Mutex<RenderContext>>>` because: `OnceLock` is the
-/// stdlib lazy-init primitive; `Arc` lets multiple OffscreenRenderers
-/// keep the context alive past process-stack frames; `Mutex` is needed
-/// because `RenderContext::device(...)` takes `&mut self` for the
-/// internal device-list mutation.
+/// Ensures only ONE `wgpu::Instance` per process — constructing several in
+/// parallel (the default `cargo test` pattern) races inside
+/// `vkCreateInstance` on at least radv + intel-iris and SIGSEGVs. `Arc` lets
+/// `OffscreenRenderers` keep the context alive past process-stack frames;
+/// `Mutex` because `RenderContext::device(...)` takes `&mut self`.
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
 fn shared_render_context() -> Arc<Mutex<RenderContext>> {
@@ -112,22 +79,16 @@ pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
 
 /// Why an [`OffscreenRenderer`] could not be built.
 ///
-/// Every variant is an *environment* failure: the machine has no usable
-/// GPU adapter, or the driver rejected vello's pipelines. Bad arguments
-/// (a zero width or height) stay an `assert!` in the constructors —
-/// that is a caller bug, not something the environment can hand you.
+/// Every variant is an *environment* failure. Bad arguments (a zero width
+/// or height) stay an `assert!` in the constructors — that's a caller bug.
 #[derive(Debug)]
 pub enum OffscreenError {
-    /// wgpu enumerated no adapter this process can use. On a headless
-    /// machine that usually means no software rasteriser is installed
-    /// (llvmpipe / lavapipe).
+    /// On a headless machine this usually means no software rasteriser is
+    /// installed (llvmpipe / lavapipe).
     NoAdapter,
-    /// The adapter exists but vello could not build its compute
-    /// pipelines against the resulting device.
     Renderer(vello::Error),
-    /// A thread panicked while holding the process-wide
-    /// `RenderContext`. Only reachable under `panic = "unwind"`; the
-    /// shipping release profile aborts instead of poisoning.
+    /// Only reachable under `panic = "unwind"`; the shipping release
+    /// profile aborts instead of poisoning.
     ContextPoisoned,
 }
 
@@ -156,8 +117,8 @@ impl std::error::Error for OffscreenError {
 pub struct OffscreenRenderer {
     pub width: u32,
     pub height: u32,
-    /// Shared with every other OffscreenRenderer in the process — see
-    /// the module-level docs above for why this exists.
+    /// Shared with every other `OffscreenRenderer` in the process — see
+    /// [`SHARED_RENDER_CONTEXT`].
     context: Arc<Mutex<RenderContext>>,
     dev_id: usize,
     texture: wgpu::Texture,
@@ -168,19 +129,11 @@ pub struct OffscreenRenderer {
 }
 
 impl OffscreenRenderer {
-    /// Spin up a new headless renderer at the given dimensions.
-    ///
-    /// Panics if no suitable adapter exists (e.g. llvmpipe isn't
-    /// installed in the test container). **Do not try to soften that
+    /// Panics if no suitable adapter exists. **Do not try to soften that
     /// with `std::panic::catch_unwind`** — the shipping release profile
-    /// sets `panic = "abort"` (workspace `Cargo.toml`), under which a
-    /// panic kills the process at the panic site and `catch_unwind`
-    /// never sees it. Callers that need a soft-fail path must use
-    /// [`try_new`](Self::try_new), which returns the failure instead of
-    /// panicking on it.
-    ///
-    /// `new` stays panicking because most callers are tests and example
-    /// binaries for which "no GPU, no test" is the right outcome.
+    /// sets `panic = "abort"`, under which a panic kills the process at the
+    /// panic site and `catch_unwind` never sees it. Callers that need a
+    /// soft-fail path must use [`try_new`](Self::try_new).
     pub fn new(width: u32, height: u32) -> Self {
         match Self::try_new(width, height) {
             Ok(renderer) => renderer,
@@ -188,18 +141,9 @@ impl OffscreenRenderer {
         }
     }
 
-    /// Fallible [`new`](Self::new): returns [`OffscreenError`] rather
-    /// than panicking when the machine has no usable wgpu adapter or
-    /// the driver rejects vello's pipelines.
-    ///
-    /// This is the constructor for any code path that has to survive a
-    /// GPU-less machine — the compositor's startup warmup, the headless
-    /// backend, the test-control snapshot writer. Those cannot rely on
-    /// `catch_unwind`: release builds are `panic = "abort"`.
-    ///
-    /// Still asserts on a zero width or height. A 0×0 render target is
-    /// a caller bug, and turning programmer errors into `Result`s only
-    /// moves them somewhere quieter.
+    /// For any code path that has to survive a GPU-less machine, since
+    /// `catch_unwind` can't (see [`new`](Self::new)). Still asserts on a
+    /// zero width or height — that's a caller bug, not an environment one.
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
@@ -230,13 +174,12 @@ impl OffscreenRenderer {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Padded buffer for the texture→buffer copy. Row pitch must be
-        // a multiple of 256 (wgpu::COPY_BYTES_PER_ROW_ALIGNMENT).
+        // See the row-pitch alignment note in the module docs.
         let bytes_per_pixel = 4u32;
         let unpadded = width * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = ((unpadded + align - 1) / align) * align;
-        let readback_size = (padded_bytes_per_row * height) as u64;
+        let padded_bytes_per_row = unpadded.div_ceil(align) * align;
+        let readback_size = u64::from(padded_bytes_per_row * height);
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-ui-offscreen-readback"),
             size: readback_size,
@@ -248,15 +191,15 @@ impl OffscreenRenderer {
             device,
             RendererOptions {
                 use_cpu: false,
-                antialiasing_support: AaSupport::all(),
+                // Only `Area` is ever asked for; `all()` would also build
+                // the msaa8/msaa16 pipelines nothing selects.
+                antialiasing_support: AaSupport::area_only(),
                 num_init_threads: None,
                 pipeline_cache: None,
             },
         )
         .map_err(OffscreenError::Renderer)?;
 
-        // Drop the lock before returning so subsequent OffscreenRenderer
-        // constructions don't have to wait on it.
         drop(ctx);
 
         Ok(Self {
@@ -272,19 +215,12 @@ impl OffscreenRenderer {
         })
     }
 
-    /// Render `scene` with the given background colour and return the
-    /// raw RGBA pixels, tight-packed at `4 * width` bytes per row.
-    ///
-    /// The underlying texture format is `Rgba8Unorm`, so the returned
-    /// bytes are in **R, G, B, A** order (not BGRA). Callers that hand
-    /// the buffer to an H.264 encoder (which also expects RGBA) can pass
-    /// it through unmodified.
+    /// Returns raw RGBA pixels, tight-packed at `4 * width` bytes per row
+    /// (the texture format is `Rgba8Unorm`, so **R, G, B, A** order, not
+    /// BGRA).
     pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
-        // Lock the shared context for the duration of this render.
-        // wgpu internally serializes command submission on a single
-        // device anyway, and the hot path (vello's render kernels) runs
-        // GPU-side — the lock guards the host-side Vec<DeviceHandle>
-        // indexing, not the rendering itself.
+        // The lock guards host-side DeviceHandle indexing, not rendering —
+        // vello's kernels run GPU-side.
         let ctx = self.context.lock().expect("shared RenderContext poisoned");
         let device = &ctx.devices[self.dev_id].device;
         let queue = &ctx.devices[self.dev_id].queue;
@@ -304,7 +240,6 @@ impl OffscreenRenderer {
             )
             .expect("render_to_texture");
 
-        // Stage the copy texture → readback buffer.
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
@@ -330,8 +265,8 @@ impl OffscreenRenderer {
         );
         queue.submit(std::iter::once(encoder.finish()));
 
-        // Map + read back. `map_async` is async but `poll(Wait)` drives
-        // it to completion without an executor for our purposes.
+        // `map_async` is async but `poll(Wait)` drives it to completion
+        // without an executor for our purposes.
         let slice = self.readback_buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -354,14 +289,7 @@ impl OffscreenRenderer {
         tight
     }
 
-    /// Explicit alias for [`render`](Self::render) with a transparent
-    /// background — the canonical entry-point for code paths that need
-    /// raw RGBA frames (e.g. the `shots` binary's recording mode feeding
-    /// the H.264 encoder).
-    ///
-    /// Kept as a thin wrapper rather than a rename so callers in the
-    /// e2e suite that depend on `render` (composing custom backgrounds)
-    /// continue to work unchanged.
+    /// [`render`](Self::render) with a transparent background.
     pub fn render_rgba(&mut self, scene: &Scene) -> Vec<u8> {
         self.render(scene, Color::TRANSPARENT)
     }
@@ -390,16 +318,9 @@ impl OffscreenRenderer {
         (rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3])
     }
 
-    /// Count the pixels where `a` and `b` differ by more than the
-    /// antialiasing wobble the GPU rasteriser is allowed (see the module
-    /// docs: `atomicAdd`-ordered coverage accumulation can move an edge
-    /// pixel one 8-bit step). Zero means the two buffers are the same
-    /// image; anything above zero is a real difference in what was
-    /// drawn, because a genuine visual change moves pixels by far more
-    /// than one step.
-    ///
-    /// Buffers of different lengths count as differing everywhere they
-    /// do not overlap, so a size mismatch can never read as a match.
+    /// Tolerates the ±1 antialiasing wobble described in the module docs;
+    /// anything above zero is a real difference. Buffers of different
+    /// lengths count as differing everywhere they don't overlap.
     pub fn pixels_differing_beyond_aa(a: &[u8], b: &[u8]) -> usize {
         let overlapping = a
             .chunks_exact(4)
@@ -415,11 +336,18 @@ impl OffscreenRenderer {
 mod tests {
     use super::OffscreenRenderer;
 
-    /// The frame comparison tolerates exactly the one-step antialiasing
-    /// wobble the rasteriser is allowed and nothing wider. Without this
-    /// guard the tolerance could be widened later — turning "these are
-    /// the same frame" into an assertion that passes on frames that are
-    /// visibly different — with no test noticing.
+    /// A `static Mutex<Option<OffscreenRenderer>>` (see the module docs)
+    /// only compiles while this holds, so a field that quietly gave up
+    /// `Send` should fail here, where the reason is written down.
+    #[test]
+    fn offscreen_renderer_stays_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<OffscreenRenderer>();
+    }
+
+    /// Without this guard the tolerance could be widened later — turning
+    /// "these are the same frame" into an assertion that passes on frames
+    /// that are visibly different — with no test noticing.
     #[test]
     fn frame_comparison_tolerates_one_step_and_no_more() {
         let base = [10u8, 20, 30, 255, 40, 50, 60, 255];

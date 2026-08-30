@@ -3,20 +3,18 @@
 //! An app's icon comes from its package. The launcher exports
 //! `QOS_APP_ICON` — the in-sandbox path of the image the manifest names
 //! in `[package].icon` — and the toolkit decodes it into a winit
-//! [`Icon`] at window creation. When that variable is unset or the file
-//! cannot be decoded (a dev run outside the launcher, or an app that
-//! ships no icon art yet) a generated qOS default stands in, so every
-//! window carries a real icon rather than none.
+//! [`Icon`] at window creation. When unset or undecodable (a dev run
+//! outside the launcher, or an app that ships no icon art yet) a
+//! generated qOS default stands in, so every window carries a real icon.
 //!
 //! Decoding uses the `image` crate already vendored for the async image
 //! cache, so raster formats (PNG / JPEG / WebP) work with no new
 //! dependency. Vector icons (SVG) are not decoded here — ship a PNG.
 //!
-//! On Wayland, most compositors ignore a client-set toplevel icon (the
-//! icon is sourced from the app_id + a `.desktop` file instead), so this
-//! is a no-op there today; it is correct on X11 and forward-compatible
-//! with the xdg-toplevel-icon protocol. Wiring it now means an app that
-//! adds an icon file later needs no further code change.
+//! On Wayland, most compositors ignore a client-set toplevel icon (sourced
+//! from the `app_id` + a `.desktop` file instead), so this is a no-op there
+//! today; it is correct on X11 and forward-compatible with the
+//! xdg-toplevel-icon protocol.
 
 use winit::window::Icon;
 
@@ -24,9 +22,9 @@ use winit::window::Icon;
 /// the app's icon image.
 pub const ICON_ENV: &str = "QOS_APP_ICON";
 
-/// Resolve the window icon: the app's own icon when [`ICON_ENV`] names a
-/// decodable raster image, otherwise the generated qOS default. Returns
-/// `None` only if even the default fails to build (it never should).
+/// The app's own icon when [`ICON_ENV`] names a decodable raster image,
+/// otherwise the generated qOS default. `None` only if even the default
+/// fails to build (it never should).
 pub fn resolve() -> Option<Icon> {
     from_env().or_else(default_icon)
 }
@@ -56,23 +54,21 @@ pub(crate) fn load_bytes(bytes: &[u8]) -> Option<Icon> {
     Icon::from_rgba(rgba.into_raw(), w, h).ok()
 }
 
-/// The generated qOS default icon — a rounded square in the qOS accent,
-/// used when an app ships no icon of its own.
+/// A rounded square in the qOS accent, used when an app ships no icon of its own.
 pub(crate) fn default_icon() -> Option<Icon> {
     const SIZE: u32 = 128;
     let rgba = render_default(SIZE);
     Icon::from_rgba(rgba, SIZE, SIZE).ok()
 }
 
-/// Paint the default icon: an anti-aliased rounded square filled with a
-/// vertical accent gradient over a transparent field. Pure CPU raster —
-/// no GPU, no asset — so it works headless and in every build.
+/// Anti-aliased rounded square filled with a vertical accent gradient.
+/// Pure CPU raster — no GPU, no asset — so it works headless too.
 fn render_default(size: u32) -> Vec<u8> {
     // qOS accent, top-to-bottom: indigo -> violet.
     let top = [0x4Cu8, 0x6Eu8, 0xF5u8];
     let bottom = [0x8Bu8, 0x5Cu8, 0xF6u8];
     let s = size as f32;
-    let radius = s * 0.24; // corner radius
+    let radius = s * 0.24;
     let half = s * 0.5;
     let mut out = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
@@ -101,7 +97,9 @@ fn render_default(size: u32) -> Vec<u8> {
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+    (f32::from(a) + (f32::from(b) - f32::from(a)) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
@@ -110,30 +108,31 @@ mod tests {
 
     #[test]
     fn default_icon_builds() {
-        // The generated default must always construct — it is the
-        // fallback every icon-less app relies on.
-        assert!(default_icon().is_some(), "generated qOS default icon must build");
+        assert!(
+            default_icon().is_some(),
+            "generated qOS default icon must build"
+        );
     }
 
     #[test]
     fn default_icon_has_opaque_centre_and_clear_corner() {
-        // Sanity that the rounded-square actually paints: the centre is
-        // opaque accent, the extreme corner is transparent.
         const SIZE: u32 = 128;
         let rgba = render_default(SIZE);
         let at = |x: u32, y: u32| {
             let i = ((y * SIZE + x) * 4) as usize;
             [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
         };
-        assert_eq!(at(SIZE / 2, SIZE / 2)[3], 255, "centre pixel must be opaque");
+        assert_eq!(
+            at(SIZE / 2, SIZE / 2)[3],
+            255,
+            "centre pixel must be opaque"
+        );
         assert_eq!(at(0, 0)[3], 0, "extreme corner must be transparent");
     }
 
     #[test]
     fn load_bytes_decodes_a_png() {
-        // Encode a tiny solid PNG in-memory, then prove the loader turns
-        // it into an icon — the same path a real `QOS_APP_ICON` file
-        // takes.
+        // Encode a tiny solid PNG in-memory — the same path a real `QOS_APP_ICON` takes.
         let mut buf = std::io::Cursor::new(Vec::new());
         let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
         image::DynamicImage::ImageRgba8(img)

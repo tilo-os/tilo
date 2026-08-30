@@ -10,8 +10,8 @@ use std::rc::Rc;
 use crate::command::CommandSink;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode};
 use crate::views::file_view::{DropTargets, FileView, ThumbCtx};
-use ui::widget::Widget;
 use ui::SelectionModel;
+use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
 /// Column keys in left-to-right display order (the inline type glyph lives in

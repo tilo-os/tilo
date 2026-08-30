@@ -74,7 +74,7 @@ unsafe extern "C" {
     ) -> u64;
     /// `GType` is `gsize`. Construction property list is NULL-terminated.
     pub fn g_object_new(object_type: usize, first_property_name: *const c_char, ...)
-        -> *mut c_void;
+    -> *mut c_void;
 }
 
 // ─────────────────────────────── libwpe ───────────────────────────────────
@@ -203,8 +203,7 @@ pub struct wpe_view_backend_exportable_fdo_egl_client {
 
 #[repr(C)]
 pub struct wpe_view_backend_exportable_fdo_client {
-    pub export_buffer_resource:
-        Option<extern "C" fn(data: *mut c_void, buffer: *mut wl_resource)>,
+    pub export_buffer_resource: Option<extern "C" fn(data: *mut c_void, buffer: *mut wl_resource)>,
     pub export_dmabuf_resource: Option<extern "C" fn(data: *mut c_void, dmabuf: *mut c_void)>,
     pub export_shm_buffer:
         Option<extern "C" fn(data: *mut c_void, buffer: *mut wpe_fdo_shm_exported_buffer)>,
@@ -246,12 +245,8 @@ unsafe extern "C" {
     pub fn wpe_fdo_egl_exported_image_get_egl_image(
         image: *mut wpe_fdo_egl_exported_image,
     ) -> EGLImageKHR;
-    pub fn wpe_fdo_egl_exported_image_get_width(
-        image: *mut wpe_fdo_egl_exported_image,
-    ) -> u32;
-    pub fn wpe_fdo_egl_exported_image_get_height(
-        image: *mut wpe_fdo_egl_exported_image,
-    ) -> u32;
+    pub fn wpe_fdo_egl_exported_image_get_width(image: *mut wpe_fdo_egl_exported_image) -> u32;
+    pub fn wpe_fdo_egl_exported_image_get_height(image: *mut wpe_fdo_egl_exported_image) -> u32;
     pub fn wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(
         exportable: *mut wpe_view_backend_exportable_fdo,
         image: *mut wpe_fdo_egl_exported_image,
@@ -409,10 +404,7 @@ unsafe extern "C" {
     /// version, which makes UA-sniffing sites (search engines, video
     /// sites) serve degraded/non-responsive layouts; a modern UA gets
     /// their normal responsive pages.
-    pub fn webkit_settings_set_user_agent(
-        settings: *mut WebKitSettings,
-        user_agent: *const c_char,
-    );
+    pub fn webkit_settings_set_user_agent(settings: *mut WebKitSettings, user_agent: *const c_char);
     pub fn webkit_web_view_get_user_content_manager(
         view: *mut WebKitWebView,
     ) -> *mut WebKitUserContentManager;

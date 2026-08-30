@@ -21,17 +21,17 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
 
 pub const THEME_KEY: &str = "appearance.theme";
 pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
@@ -53,13 +53,13 @@ pub const UI_SCALES: &[(&str, f64)] = &[
 
 /// Map a UI-scale factor to the closest offered label (defaults to "100%").
 fn ui_scale_label(scale: f64) -> &'static str {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to "100%" rather
+    // than panic the pane.
     UI_SCALES
         .iter()
-        .min_by(|(_, a), (_, b)| {
-            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
-        })
-        .map(|(label, _)| *label)
-        .unwrap_or("100%")
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
+        .map_or("100%", |(label, _)| *label)
 }
 
 /// Map a UI-scale label back to its factor, if recognised.
@@ -81,13 +81,13 @@ pub const TEXT_SIZES: &[(&str, f64)] = &[
 /// "Default"). Shared with the Accessibility pane, which offers the same
 /// text-size control over the same [`AppearancePrefs::text_scale`] field.
 pub fn text_size_label(scale: f64) -> &'static str {
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // could hold a non-finite scale, and this must degrade to "Default"
+    // rather than panic the pane.
     TEXT_SIZES
         .iter()
-        .min_by(|(_, a), (_, b)| {
-            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
-        })
-        .map(|(label, _)| *label)
-        .unwrap_or("Default")
+        .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
+        .map_or("Default", |(label, _)| *label)
 }
 
 /// Map a text-size label back to its scale factor, if recognised. Shared with
@@ -133,8 +133,10 @@ impl AppearancePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let theme_opts: Vec<String> =
-            AppearancePrefs::THEMES.iter().map(|t| t.to_string()).collect();
+        let theme_opts: Vec<String> = AppearancePrefs::THEMES
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let theme = Dropdown::new(theme_opts, THEME_KEY)
             .with_id("appearance.theme")
             .with_placeholder(&self.prefs.theme);
@@ -189,13 +191,16 @@ impl AppearancePane {
                 value_row("Active theme", &resolved.name),
                 value_row(
                     "UI scale",
-                    &format!("{:.0}%", resolved.ui_scale as f64 * 100.0),
+                    &format!("{:.0}%", f64::from(resolved.ui_scale) * 100.0),
                 ),
                 value_row(
                     "Text scale",
-                    &format!("{:.0}%", resolved.text_scale as f64 * 100.0),
+                    &format!("{:.0}%", f64::from(resolved.text_scale) * 100.0),
                 ),
-                value_row("Reduced motion", if resolved.reduce_motion { "On" } else { "Off" }),
+                value_row(
+                    "Reduced motion",
+                    if resolved.reduce_motion { "On" } else { "Off" },
+                ),
             ]),
         );
 
@@ -270,39 +275,38 @@ impl Widget for AppearancePane {
 
         let mut changed = false;
 
-        if let Some(name) = Self::read_str(state, root, THEME_KEY) {
-            if AppearancePrefs::THEMES.contains(&name.as_str()) && name != self.prefs.theme {
-                self.prefs.theme = name;
-                changed = true;
-            }
+        if let Some(name) = Self::read_str(state, root, THEME_KEY)
+            && AppearancePrefs::THEMES.contains(&name.as_str())
+            && name != self.prefs.theme
+        {
+            self.prefs.theme = name;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, TEXT_SIZE_KEY) {
-            if let Some(scale) = text_size_scale(&label) {
-                if (scale - self.prefs.text_scale).abs() > f64::EPSILON {
-                    self.prefs.text_scale = scale;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, TEXT_SIZE_KEY)
+            && let Some(scale) = text_size_scale(&label)
+            && (scale - self.prefs.text_scale).abs() > f64::EPSILON
+        {
+            self.prefs.text_scale = scale;
+            changed = true;
         }
-        if let Some(label) = Self::read_str(state, root, UI_SCALE_KEY) {
-            if let Some(factor) = ui_scale_factor(&label) {
-                if (factor - self.prefs.ui_scale).abs() > f64::EPSILON {
-                    self.prefs.ui_scale = factor;
-                    changed = true;
-                }
-            }
+        if let Some(label) = Self::read_str(state, root, UI_SCALE_KEY)
+            && let Some(factor) = ui_scale_factor(&label)
+            && (factor - self.prefs.ui_scale).abs() > f64::EPSILON
+        {
+            self.prefs.ui_scale = factor;
+            changed = true;
         }
-        if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY) {
-            if b != self.prefs.high_contrast {
-                self.prefs.high_contrast = b;
-                changed = true;
-            }
+        if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY)
+            && b != self.prefs.high_contrast
+        {
+            self.prefs.high_contrast = b;
+            changed = true;
         }
-        if let Some(b) = Self::read_bool(state, root, REDUCE_MOTION_KEY) {
-            if b != self.prefs.reduce_motion {
-                self.prefs.reduce_motion = b;
-                changed = true;
-            }
+        if let Some(b) = Self::read_bool(state, root, REDUCE_MOTION_KEY)
+            && b != self.prefs.reduce_motion
+        {
+            self.prefs.reduce_motion = b;
+            changed = true;
         }
 
         if changed {
@@ -333,24 +337,23 @@ impl Widget for AppearancePane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -379,15 +382,21 @@ impl Widget for AppearancePane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event, scale_factor, modifiers, state, path, handled, focus_target, cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -407,7 +416,7 @@ impl Widget for AppearancePane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AppearancePane"
     }
 
@@ -506,7 +515,10 @@ mod tests {
         });
         let intent = ui::widget::Widget::appearance_intent(&pane)
             .expect("the appearance pane always expresses an intent");
-        assert_eq!(intent.base_theme.name, "Nord", "base theme is handed back unscaled");
+        assert_eq!(
+            intent.base_theme.name, "Nord",
+            "base theme is handed back unscaled"
+        );
         assert_eq!(intent.ui_scale, 1.25);
         assert_eq!(intent.text_scale, 1.15);
         assert!(intent.reduce_motion);
@@ -536,8 +548,16 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, TEXT_SIZE_KEY, "Larger");
-        let _ = doc.put(&root, HIGH_CONTRAST_KEY, automerge::ScalarValue::Boolean(true));
-        let _ = doc.put(&root, REDUCE_MOTION_KEY, automerge::ScalarValue::Boolean(true));
+        let _ = doc.put(
+            &root,
+            HIGH_CONTRAST_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
+        let _ = doc.put(
+            &root,
+            REDUCE_MOTION_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
         pane.sync(&mut doc, &root);
         assert_eq!(pane.prefs().text_scale, 1.30);
         assert!(pane.prefs().high_contrast);

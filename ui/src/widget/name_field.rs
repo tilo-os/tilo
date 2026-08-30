@@ -21,12 +21,16 @@
 //!   an existing name that means "remove it", and only the host knows whether
 //!   there is one.
 
+use std::cell::RefCell;
+
+use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_render::TextRenderer;
+use crate::richtext::RichTextLayout;
+use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 
 /// What a key did to the field.
@@ -45,10 +49,54 @@ pub enum NameFieldOutcome {
 
 /// A one-line name field. Hosts own the placement and the lifetime; this owns
 /// the text and the keys.
-#[derive(Clone, Debug)]
 pub struct NameField {
     buffer: String,
     placeholder: String,
+    /// Display-only IME composition, appended at this end-only field's caret.
+    preedit: String,
+    preedit_cursor: Option<(usize, usize)>,
+    /// `draw` is intentionally `&self` because both history surfaces paint
+    /// through immutable row helpers. Interior mutability retains the shaped
+    /// paragraph and publishes exact candidate-window geometry.
+    visual: RefCell<NameFieldVisual>,
+}
+
+struct NameFieldVisual {
+    layout: Option<RichTextLayout>,
+    signature: u64,
+    caret: Option<Rect>,
+}
+
+impl Default for NameFieldVisual {
+    fn default() -> Self {
+        Self {
+            layout: None,
+            signature: u64::MAX,
+            caret: None,
+        }
+    }
+}
+
+impl Clone for NameField {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: self.buffer.clone(),
+            placeholder: self.placeholder.clone(),
+            preedit: self.preedit.clone(),
+            preedit_cursor: self.preedit_cursor,
+            visual: RefCell::new(NameFieldVisual::default()),
+        }
+    }
+}
+
+impl std::fmt::Debug for NameField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NameField")
+            .field("buffer", &self.buffer)
+            .field("placeholder", &self.placeholder)
+            .field("preedit", &self.preedit)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NameField {
@@ -58,6 +106,9 @@ impl NameField {
         Self {
             buffer: text.into(),
             placeholder: "Name this version\u{2026}".to_string(),
+            preedit: String::new(),
+            preedit_cursor: None,
+            visual: RefCell::new(NameFieldVisual::default()),
         }
     }
 
@@ -72,9 +123,16 @@ impl NameField {
         &self.buffer
     }
 
-    /// Overwrite the text.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.buffer = text.into();
+        self.preedit.clear();
+        self.preedit_cursor = None;
+    }
+
+    /// Exact shaped caret rectangle from the most recent draw, suitable for
+    /// positioning the platform IME candidate window.
+    pub fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.visual.borrow().caret
     }
 
     /// Feed a window event in. Chorded keys (Ctrl / Super) are left alone so the
@@ -84,6 +142,28 @@ impl NameField {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> NameFieldOutcome {
+        if let WindowEvent::Ime(ime) = event {
+            return match ime {
+                Ime::Preedit(text, cursor) => {
+                    self.preedit.clone_from(text);
+                    self.preedit_cursor = *cursor;
+                    NameFieldOutcome::Edited
+                }
+                Ime::Commit(text) => {
+                    self.preedit.clear();
+                    self.preedit_cursor = None;
+                    self.buffer
+                        .extend(text.chars().filter(|ch| !ch.is_control()));
+                    NameFieldOutcome::Edited
+                }
+                Ime::Disabled => {
+                    self.preedit.clear();
+                    self.preedit_cursor = None;
+                    NameFieldOutcome::Edited
+                }
+                Ime::Enabled => NameFieldOutcome::Edited,
+            };
+        }
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -103,7 +183,9 @@ impl NameField {
             Key::Named(NamedKey::Enter) => NameFieldOutcome::Commit(self.buffer.trim().to_string()),
             Key::Named(NamedKey::Escape) => NameFieldOutcome::Cancel,
             Key::Named(NamedKey::Backspace) => {
-                self.buffer.pop();
+                if let Some(grapheme) = self.buffer.graphemes(true).next_back() {
+                    self.buffer.truncate(self.buffer.len() - grapheme.len());
+                }
                 NameFieldOutcome::Edited
             }
             Key::Named(NamedKey::Space) => {
@@ -141,7 +223,7 @@ impl NameField {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -156,32 +238,91 @@ impl NameField {
             None,
             &shape,
         );
-        let (text, color) = if self.buffer.is_empty() {
-            (self.placeholder.as_str(), colors.text_dim)
+        let shows_placeholder = self.buffer.is_empty() && self.preedit.is_empty();
+        let (display, color) = if shows_placeholder {
+            (self.placeholder.clone(), colors.text_dim)
         } else {
-            (self.buffer.as_str(), colors.text_primary)
+            (
+                format!("{}{}", self.buffer, self.preedit),
+                colors.text_primary,
+            )
         };
-        let shown = fit_tail(tr, text, size, rect.width() - 14.0);
-        tr.draw_text(
-            scene,
-            &shown,
-            size,
-            color,
-            transform * Affine::translate((rect.x0 + 7.0, rect.center().y - size as f64 / 2.0)),
-            None,
+        let style = TextStyle::new(size).with_family(FontChoice::SansSerif);
+        let signature = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hash = DefaultHasher::new();
+            display.hash(&mut hash);
+            size.to_bits().hash(&mut hash);
+            self.buffer.len().hash(&mut hash);
+            self.preedit_cursor.hash(&mut hash);
+            hash.finish()
+        };
+        let mut visual = self.visual.borrow_mut();
+        if visual.layout.is_none() || visual.signature != signature {
+            let mut layout =
+                RichTextLayout::shape_plain(&mut tr.font_system, &display, &style, None);
+            if !self.preedit.is_empty() {
+                layout.add_underline(self.buffer.len()..display.len());
+            }
+            visual.layout = Some(layout);
+            visual.signature = signature;
+        }
+
+        let preedit_at = self
+            .preedit_cursor
+            .map(|(_, end)| end)
+            .unwrap_or(self.preedit.len())
+            .min(self.preedit.len());
+        let preedit_at = self.preedit.floor_char_boundary(preedit_at);
+        let caret_byte = if shows_placeholder {
+            0
+        } else {
+            self.buffer.len() + preedit_at
+        };
+        let layout = visual.layout.as_ref().unwrap();
+        let (caret_local_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
+        let viewport_width = (rect.width() - 14.0).max(1.0);
+        let scroll_x = if shows_placeholder {
+            0.0
+        } else {
+            (f64::from(caret_local_x) - viewport_width).max(0.0)
+        };
+        let origin = Point::new(
+            rect.x0 + 7.0 - scroll_x,
+            rect.center().y - f64::from(layout.height()) / 2.0,
         );
-        let (w, _) = tr.measure(&shown, size, None);
-        let caret_x = (rect.x0 + 8.0 + w as f64).min(rect.x1 - 4.0);
+        let caret = Rect::new(
+            origin.x + f64::from(caret_local_x),
+            origin.y + f64::from(caret_top),
+            origin.x + f64::from(caret_local_x) + 1.5,
+            origin.y + f64::from(caret_top + caret_height),
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &shape,
+        );
+        tr.draw_rich(
+            scene,
+            layout,
+            transform * Affine::translate((origin.x, origin.y)),
+            color,
+        );
+        visual.caret = Some(caret);
         scene.stroke(
             &Stroke::new(1.5),
             transform,
             colors.accent[4],
             None,
             &Line::new(
-                Point::new(caret_x, rect.y0 + 4.0),
-                Point::new(caret_x, rect.y1 - 4.0),
+                Point::new(caret.x0, caret.y0),
+                Point::new(caret.x0, caret.y1),
             ),
         );
+        scene.pop_layer();
     }
 }
 
@@ -199,11 +340,11 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     if budget <= 0.0 {
         return String::new();
     }
-    if tr.measure(s, size, None).0 as f64 <= budget {
+    if f64::from(tr.measure(s, size, None).0) <= budget {
         return s.to_string();
     }
     const ELLIPSIS: &str = "\u{2026}";
-    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
+    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
     if ell_w > budget {
         return String::new();
     }
@@ -213,7 +354,7 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
         let candidate: String = s.chars().take(mid).collect();
-        if tr.measure(&candidate, size, None).0 as f64 <= inner {
+        if f64::from(tr.measure(&candidate, size, None).0) <= inner {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -233,11 +374,11 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
     if budget <= 0.0 {
         return String::new();
     }
-    if tr.measure(s, size, None).0 as f64 <= budget {
+    if f64::from(tr.measure(s, size, None).0) <= budget {
         return s.to_string();
     }
     const ELLIPSIS: &str = "\u{2026}";
-    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
+    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
     if ell_w > budget {
         return String::new();
     }
@@ -246,7 +387,7 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
     let mut take = 0usize;
     while take < chars.len() {
         let candidate: String = chars[chars.len() - take - 1..].iter().collect();
-        if tr.measure(&candidate, size, None).0 as f64 > inner {
+        if f64::from(tr.measure(&candidate, size, None).0) > inner {
             break;
         }
         take += 1;
@@ -260,6 +401,19 @@ pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> Strin
 mod tests {
     use super::*;
     use winit::event::Modifiers;
+
+    fn draw_field(field: &NameField, rect: Rect) {
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        field.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            rect,
+            14.0,
+        );
+    }
 
     fn key(k: Key) -> WindowEvent {
         // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
@@ -343,12 +497,74 @@ mod tests {
         // (or anything else) leaking through while a name field is up would
         // silently re-filter the list under the user.
         let mut f = NameField::new("x");
-        let out = f.handle_event(
-            &key(Key::Named(NamedKey::ArrowLeft)),
-            &Modifiers::default(),
-        );
+        let out = f.handle_event(&key(Key::Named(NamedKey::ArrowLeft)), &Modifiers::default());
         assert_eq!(out, NameFieldOutcome::Edited, "consumed");
         assert_eq!(f.text(), "x", "and it changed nothing");
+    }
+
+    #[test]
+    fn backspace_removes_one_extended_grapheme() {
+        let family = "A👨\u{200d}👩\u{200d}👧\u{200d}👦";
+        let mut field = NameField::new(format!("{family}e\u{301}"));
+        let backspace = key(Key::Named(NamedKey::Backspace));
+        assert_eq!(
+            field.handle_event(&backspace, &Modifiers::default()),
+            NameFieldOutcome::Edited
+        );
+        assert_eq!(field.text(), family, "combining sequence is one deletion");
+        field.handle_event(&backspace, &Modifiers::default());
+        assert_eq!(field.text(), "A", "ZWJ family emoji is one deletion");
+    }
+
+    #[test]
+    fn ime_preedit_is_shaped_underlined_and_committed_atomically() {
+        let mut field = NameField::new("ab");
+        let preedit = "漢字";
+        assert_eq!(
+            field.handle_event(
+                &WindowEvent::Ime(Ime::Preedit(preedit.into(), Some(("漢".len(), "漢".len())),)),
+                &Modifiers::default(),
+            ),
+            NameFieldOutcome::Edited
+        );
+        assert_eq!(field.text(), "ab", "preedit stays out of the value");
+        let rect = Rect::new(10.0, 20.0, 210.0, 52.0);
+        draw_field(&field, rect);
+        let visual = field.visual.borrow();
+        assert_eq!(
+            visual.layout.as_ref().unwrap().underlines,
+            vec![(2, 2 + preedit.len())]
+        );
+        drop(visual);
+        let candidate = field
+            .ime_cursor_rect()
+            .expect("draw publishes caret geometry");
+        assert!(rect.contains(candidate.center()));
+
+        field.handle_event(
+            &WindowEvent::Ime(Ime::Commit(preedit.into())),
+            &Modifiers::default(),
+        );
+        assert_eq!(field.text(), "ab漢字");
+        assert!(field.preedit.is_empty());
+    }
+
+    #[test]
+    fn shaped_end_caret_stays_visible_for_long_ltr_and_rtl_names() {
+        let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
+        let ltr = NameField::new("a very long version name whose end must stay visible");
+        draw_field(&ltr, rect);
+        let ltr_caret = ltr.ime_cursor_rect().unwrap();
+        assert!(ltr_caret.x0 >= rect.x1 - 9.0 && ltr_caret.x1 < rect.x1);
+
+        let rtl = NameField::new("שלום זהו שם גרסה ארוך מאוד");
+        draw_field(&rtl, rect);
+        let rtl_caret = rtl.ime_cursor_rect().unwrap();
+        assert!(
+            rtl_caret.x0 < rect.center().x,
+            "logical end of an RTL name is its visual left edge: {rtl_caret:?}"
+        );
+        assert!(rect.contains(rtl_caret.center()));
     }
 
     #[test]

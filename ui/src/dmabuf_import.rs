@@ -36,13 +36,13 @@ use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd};
 use ash::vk;
 use vello::wgpu;
 // `Device` brings `destroy_texture` into scope for the cleanup path below.
-use vello::wgpu::hal::vulkan;
 use vello::wgpu::hal::Device as _;
+use vello::wgpu::hal::vulkan;
 
 use media::dmabuf::{
-    fourcc_str, Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID,
+    Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID,
     DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DRM_FORMAT_P010, DRM_FORMAT_XBGR8888,
-    DRM_FORMAT_XRGB8888, DRM_FORMAT_YUYV,
+    DRM_FORMAT_XRGB8888, DRM_FORMAT_YUYV, fourcc_str,
 };
 
 /// One plane of a buffer being imported, borrowed for the call.
@@ -80,10 +80,18 @@ pub enum ImportError {
     /// No mapping from this DRM fourcc to a Vulkan format.
     UnsupportedFormat { fourcc: u32 },
     /// The plane count does not match what the format requires.
-    PlaneCount { fourcc: u32, got: usize, expected: usize },
+    PlaneCount {
+        fourcc: u32,
+        got: usize,
+        expected: usize,
+    },
     /// The driver's linear row pitch disagrees with the producer's stride, and
     /// without the modifier extension there is no way to reconcile them.
-    StrideMismatch { plane: usize, producer: u32, driver: u64 },
+    StrideMismatch {
+        plane: usize,
+        producer: u32,
+        driver: u64,
+    },
     /// A Vulkan call failed.
     Vulkan(String),
 }
@@ -102,14 +110,26 @@ impl std::fmt::Display for ImportError {
                  needs VK_EXT_image_drm_format_modifier, which wgpu-hal does not enable"
             ),
             ImportError::UnsupportedFormat { fourcc } => {
-                write!(f, "no Vulkan mapping for DRM format {}", fourcc_str(*fourcc))
+                write!(
+                    f,
+                    "no Vulkan mapping for DRM format {}",
+                    fourcc_str(*fourcc)
+                )
             }
-            ImportError::PlaneCount { fourcc, got, expected } => write!(
+            ImportError::PlaneCount {
+                fourcc,
+                got,
+                expected,
+            } => write!(
                 f,
                 "{} needs {expected} plane(s), got {got}",
                 fourcc_str(*fourcc)
             ),
-            ImportError::StrideMismatch { plane, producer, driver } => write!(
+            ImportError::StrideMismatch {
+                plane,
+                producer,
+                driver,
+            } => write!(
                 f,
                 "plane {plane}: producer stride {producer} but the driver's linear \
                  row pitch is {driver}; the picture would shear"
@@ -254,10 +274,15 @@ fn is_linear(modifier: u64) -> bool {
 /// the GPU needs them.
 pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPlanes, ImportError> {
     if !is_linear(image.modifier) {
-        return Err(ImportError::UnsupportedModifier { modifier: image.modifier });
+        return Err(ImportError::UnsupportedModifier {
+            modifier: image.modifier,
+        });
     }
-    let (layout, specs) = plane_specs(image.fourcc, image.width, image.height)
-        .ok_or(ImportError::UnsupportedFormat { fourcc: image.fourcc })?;
+    let (layout, specs) = plane_specs(image.fourcc, image.width, image.height).ok_or(
+        ImportError::UnsupportedFormat {
+            fourcc: image.fourcc,
+        },
+    )?;
     if image.planes.len() != specs.len() {
         return Err(ImportError::PlaneCount {
             fourcc: image.fourcc,
@@ -287,7 +312,16 @@ pub fn import(device: &wgpu::Device, image: &DmabufRef<'_>) -> Result<ImportedPl
             // ever reaching wgpu. Their drop callbacks are not run by `Drop`
             // (a hal texture is a plain handle), so free them explicitly.
             let made = unsafe {
-                import_plane(dev, phys, instance, &ext_fd, hal_device, &image.planes[i], spec, i)
+                import_plane(
+                    dev,
+                    phys,
+                    instance,
+                    &ext_fd,
+                    hal_device,
+                    &image.planes[i],
+                    spec,
+                    i,
+                )
             };
             match made {
                 Ok(t) => built.push(t),
@@ -359,7 +393,11 @@ unsafe fn import_plane(
     let image_ci = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(spec.format)
-        .extent(vk::Extent3D { width: spec.width, height: spec.height, depth: 1 })
+        .extent(vk::Extent3D {
+            width: spec.width,
+            height: spec.height,
+            depth: 1,
+        })
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -489,13 +527,22 @@ unsafe fn import_plane(
         view_formats: vec![],
     };
     Ok(unsafe {
-        hal_device.texture_from_raw(vk_image, &hal_desc, Some(drop_cb), vulkan::TextureMemory::External)
+        hal_device.texture_from_raw(
+            vk_image,
+            &hal_desc,
+            Some(drop_cb),
+            vulkan::TextureMemory::External,
+        )
     })
 }
 
 /// First memory type allowed by `type_bits`. Imported dmabuf memory carries no
 /// host-visibility requirement, so any compatible type works.
-fn find_memory_type(instance: &ash::Instance, phys: vk::PhysicalDevice, type_bits: u32) -> Option<u32> {
+fn find_memory_type(
+    instance: &ash::Instance,
+    phys: vk::PhysicalDevice,
+    type_bits: u32,
+) -> Option<u32> {
     if type_bits == 0 {
         return None;
     }
@@ -513,7 +560,10 @@ mod tests {
         // as linear would read the tiling pattern as picture content.
         assert!(!is_linear(0x0200_0000_1040_1b04));
         assert!(is_linear(DRM_FORMAT_MOD_LINEAR));
-        assert!(is_linear(DRM_FORMAT_MOD_INVALID), "unstated is treated as linear");
+        assert!(
+            is_linear(DRM_FORMAT_MOD_INVALID),
+            "unstated is treated as linear"
+        );
     }
 
     #[test]
@@ -523,7 +573,11 @@ mod tests {
         assert_eq!(specs.len(), 2);
         assert_eq!((specs[0].width, specs[0].height), (1920, 1080));
         assert_eq!(specs[0].wgpu_format, wgpu::TextureFormat::R8Unorm);
-        assert_eq!((specs[1].width, specs[1].height), (960, 540), "chroma is half in both axes");
+        assert_eq!(
+            (specs[1].width, specs[1].height),
+            (960, 540),
+            "chroma is half in both axes"
+        );
         assert_eq!(
             specs[1].wgpu_format,
             wgpu::TextureFormat::Rg8Unorm,
@@ -587,10 +641,22 @@ mod tests {
         // "import failed" would leave nothing to act on.
         let cases = [
             ImportError::NotVulkan,
-            ImportError::UnsupportedModifier { modifier: 0x0200_0000_1040_1b04 },
-            ImportError::UnsupportedFormat { fourcc: DRM_FORMAT_NV12 },
-            ImportError::PlaneCount { fourcc: DRM_FORMAT_NV12, got: 1, expected: 2 },
-            ImportError::StrideMismatch { plane: 0, producer: 1920, driver: 2048 },
+            ImportError::UnsupportedModifier {
+                modifier: 0x0200_0000_1040_1b04,
+            },
+            ImportError::UnsupportedFormat {
+                fourcc: DRM_FORMAT_NV12,
+            },
+            ImportError::PlaneCount {
+                fourcc: DRM_FORMAT_NV12,
+                got: 1,
+                expected: 2,
+            },
+            ImportError::StrideMismatch {
+                plane: 0,
+                producer: 1920,
+                driver: 2048,
+            },
         ];
         for e in cases {
             let s = e.to_string();

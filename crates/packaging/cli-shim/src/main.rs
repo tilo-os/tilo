@@ -1,38 +1,26 @@
 //! qos-cli-shim — the PATH-facing wrapper installed once per CLI
 //! command a qOS package publishes.
 //!
-//! ### Behaviour
-//!
-//! 1. Read `argv[0]` (the name the shell used to invoke us). We
-//!    accept both a bare command name (`notes`) and a full path
-//!    (`/home/x/.local/share/qos-apps/bin/notes`).
-//! 2. Locate this executable's real filesystem path via
-//!    [`std::env::current_exe`].
-//! 3. Read the sidecar file `<exe-path>.qos-shim` — a TOML with
-//!    `package_id = "..."`, `command = "..."`, and optional
-//!    `launcher = "/path/to/qos-launcher"`.
-//! 4. `execv` the launcher with:
-//!    ```text
-//!    qos-launcher run-installed --package <pkg-id> --command <cmd> -- <argv[1..]>
-//!    ```
-//!
-//! The sidecar exists so we can install the same shim binary for
-//! many commands without recompiling per install (a common Unix
-//! trick). Reading it costs one open/read/close per invocation;
-//! for a `notes "hello"` type interaction the perceived latency
-//! is dominated by the launcher's bwrap fork anyway.
+//! Reads `argv[0]` (bare command or full path), locates its own
+//! executable path via [`std::env::current_exe`], reads the sidecar
+//! `<exe-path>.qos-shim` (TOML: `package_id`, `command`, optional
+//! `launcher`), and `execv`s the launcher:
+//! ```text
+//! qos-launcher run-installed --package <pkg-id> --command <cmd> -- <argv[1..]>
+//! ```
+//! The sidecar lets one shim binary serve every installed command
+//! without recompiling per install; its one open/read/close is
+//! dwarfed by the launcher's bwrap fork anyway.
 //!
 //! ### Security posture
 //!
-//! - Sidecar sits in the user's own data dir (`~/.local/share/qos-apps/bin/`)
-//!   and is only writable by `install`. A hostile actor with write
-//!   access there already owns the account.
-//! - We do NOT inherit `LD_PRELOAD` / `LD_LIBRARY_PATH` special-casing;
-//!   the launcher itself runs unsandboxed and then reconstructs a
-//!   clean env for the sandboxed entrypoint.
-//! - The sidecar `launcher` override exists purely for out-of-tree
-//!   testing (integration tests, dev-mode installs). Production
-//!   installs leave it unset so we resolve to the system launcher.
+//! - The sidecar sits in the user's own data dir and is only writable
+//!   by `install` — write access there already means owning the account.
+//! - `LD_PRELOAD`/`LD_LIBRARY_PATH` are NOT inherited specially; the
+//!   launcher runs unsandboxed and reconstructs a clean env for the
+//!   sandboxed entrypoint.
+//! - The sidecar's `launcher` override exists only for out-of-tree
+//!   testing; production installs leave it unset.
 
 use std::env;
 use std::ffi::CString;
@@ -41,12 +29,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// The suffix appended to the shim executable's path to find its
-/// sidecar. Kept as a `const` so `install` and the shim agree.
+/// sidecar; a `const` so `install` and the shim agree.
 pub const SIDECAR_SUFFIX: &str = ".qos-shim";
 
-/// System install path for the launcher. Overridable by the
-/// sidecar's `launcher = ...` field so integration tests can point
-/// at a target/debug/qos-launcher without root-installing anything.
+/// System install path for the launcher; overridable by the sidecar's
+/// `launcher = ...` field so tests can point at a target/debug/qos-launcher without root-installing.
 const DEFAULT_LAUNCHER_PATH: &str = "/usr/libexec/qos-launcher";
 
 /// Wire form of the sidecar TOML.
@@ -54,20 +41,17 @@ const DEFAULT_LAUNCHER_PATH: &str = "/usr/libexec/qos-launcher";
 struct Sidecar {
     /// Reverse-DNS package id (`dev.qos.notes-cli`).
     package_id: String,
-    /// Command name as declared in the manifest's `[cli].commands`.
-    /// Duplicated here even though `argv[0]` also carries it so a
-    /// user renaming the shim doesn't silently rebind to a
-    /// different command.
+    /// Command name as declared in the manifest's [cli].commands.
+    /// Duplicated here (argv[0] also carries it) so renaming the shim
+    /// doesn't silently rebind to a different command.
     command: String,
-    /// Optional override for the launcher binary path. When unset,
-    /// falls back to the [`DEFAULT_LAUNCHER_PATH`] constant.
+    /// Optional override for the launcher binary path; falls back to [`DEFAULT_LAUNCHER_PATH`] when unset.
     #[serde(default)]
     launcher: Option<PathBuf>,
 }
 
 fn main() -> ! {
-    // Diverges — either execvs the launcher (never returns) or exits
-    // via the error path with a status the caller can inspect.
+    // Diverges — either execvs the launcher (never returns) or exits via the error path with a status the caller can inspect.
     let exe = env::current_exe().unwrap_or_else(|e| {
         die(&format!("qos-cli-shim: cannot resolve current exe: {e}"));
     });
@@ -85,17 +69,14 @@ fn main() -> ! {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
     let mut passthrough: Vec<String> = env::args().skip(1).collect();
 
-    // Build the argv the launcher expects. Note the `--` separator:
-    // everything after it is opaque user args the launcher forwards
-    // verbatim to the sandboxed entrypoint. Without `--`, clap would
-    // try to interpret `--help` etc. as launcher flags.
+    // Build the argv the launcher expects. The `--` separator matters:
+    // everything after it is opaque user args forwarded verbatim —
+    // without it clap would try to interpret --help etc. as launcher flags.
     let mut argv: Vec<String> = Vec::with_capacity(6 + passthrough.len());
-    argv.push(
-        launcher
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "qos-launcher".to_string()),
-    );
+    argv.push(launcher.file_name().map_or_else(
+        || "qos-launcher".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    ));
     argv.push("run-installed".to_string());
     argv.push("--package".to_string());
     argv.push(sidecar.package_id);
@@ -107,14 +88,13 @@ fn main() -> ! {
     execv_launcher(&launcher, &argv);
 }
 
-/// Resolve the sidecar path from the shim's own executable path.
-/// Public so `install` and the tests can agree on the layout.
+/// Resolve the sidecar path from the shim's own executable path; public so `install` and tests agree on the layout.
 pub fn sidecar_path_for(exe: &Path) -> PathBuf {
     let mut p = exe.to_path_buf();
-    let name = p
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "qos-cli-shim".to_string());
+    let name = p.file_name().map_or_else(
+        || "qos-cli-shim".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
     p.set_file_name(format!("{name}{SIDECAR_SUFFIX}"));
     p
 }
@@ -191,6 +171,9 @@ command    = "notes"
 launcher   = "/tmp/target/debug/qos-launcher"
 "#;
         let s: Sidecar = toml::from_str(text).expect("decode");
-        assert_eq!(s.launcher.as_deref(), Some(Path::new("/tmp/target/debug/qos-launcher")));
+        assert_eq!(
+            s.launcher.as_deref(),
+            Some(Path::new("/tmp/target/debug/qos-launcher"))
+        );
     }
 }

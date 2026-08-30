@@ -1,66 +1,89 @@
-//! Network actor — Phase 2 Task 2.2.
+//! Iroh-gossip actor for workspace collaboration.
 //!
-//! Owns a [`Swarm<NiriosBehaviour>`](libp2p::Swarm) and runs it as a tokio
-//! task. The shell drives the actor over an `mpsc::Sender<NetCmd>`; per-
-//! workspace event subscribers receive `NetEvent`s back over their own
-//! `mpsc::Sender<NetEvent>` (registered via [`NetCmd::JoinWorkspace`]).
-//!
-//! The actor is transport-agnostic at the type level: it only speaks
-//! [`NeighbourMsg`] in/out. Workspace subscriptions are namespaced as
-//! gossipsub topics `nirios/ws/{ws}`. mDNS-discovered peers are auto-
-//! added to the gossipsub mesh.
+//! Direct paths, NAT traversal and stateless relay fallback are selected by
+//! iroh. qOS only names authenticated endpoint ids and workspace topics.
 
-use crate::network::behaviour::{NiriosBehaviour, NiriosBehaviourEvent};
-use crate::network::protocol::NeighbourMsg;
-use libp2p::futures::StreamExt;
-use libp2p::{Multiaddr, Swarm, gossipsub, mdns, swarm::SwarmEvent};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use bytes::Bytes;
+use futures_lite::StreamExt;
+use iroh::address_lookup::memory::MemoryLookup;
+use iroh::protocol::Router;
+use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh_gossip::api::{Event as GossipEvent, GossipSender};
+use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
+use iroh_gossip::proto::TopicId;
+use qos_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use qos_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-/// Interval between heartbeat publishes per joined workspace.
+use crate::network::protocol::NeighbourMsg;
+
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-/// Silence threshold after which a peer is considered gone.
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
-/// How often the actor scans `peers_seen` for stale peers.
 const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
+const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_mins(10);
+const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
-/// Numeric workspace identifier — mirrors the shell-side workspace ID.
 pub type WorkspaceId = u64;
+pub type PeerId = EndpointId;
 
-/// Re-export of libp2p's `PeerId` for callers that build commands.
-pub type PeerId = libp2p::PeerId;
+/// Device certificate chain used to authenticate to a qOS workspace host.
+#[derive(Clone)]
+pub struct HostIdentity {
+    pub device_cert: DeviceCert,
+    pub device_signing_key: ed25519_dalek::SigningKey,
+}
 
-/// Commands accepted by the [`Actor`] over its `mpsc::Sender<NetCmd>`.
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Subscribe to the workspace's gossipsub topic and register a
-    /// per-workspace event sink. Multiple `JoinWorkspace` calls for
-    /// the same `ws` replace the prior sink.
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
     },
-    /// Drop the workspace subscription and event sink.
-    LeaveWorkspace { ws: WorkspaceId },
-    /// Publish `msg` to the workspace's gossipsub topic. Failures
-    /// (no peers, oversized payload, etc.) are silently dropped — the
-    /// actor logs but does not propagate the error.
-    Publish { ws: WorkspaceId, msg: NeighbourMsg },
-    /// Dial a multiaddr. Used by the loopback test and by future
-    /// out-of-band bootstrap mechanisms; mDNS handles LAN discovery.
-    Connect { addr: Multiaddr },
+    LeaveWorkspace {
+        ws: WorkspaceId,
+    },
+    Publish {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+    },
+    /// Publish a shell-tree message that is known to contain the complete
+    /// room history. Only the deliberate `HostReady` baseline uses this;
+    /// ordinary `SyncResp` messages may be partial anti-entropy responses.
+    PublishCheckpoint {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+    },
+    Connect {
+        addr: EndpointAddr,
+    },
+    /// Connect to an always-on qOS host. Messages continue to use the
+    /// direct gossip path too; the host adds persistence and offline delivery.
+    ConnectHost {
+        addr: EndpointAddr,
+    },
 }
 
-/// Events emitted by the [`Actor`] back to per-workspace subscribers.
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    /// Peer was added to the workspace's gossipsub mesh.
-    PeerJoined { ws: WorkspaceId, peer: PeerId },
-    /// Peer left the workspace's gossipsub mesh.
-    PeerLeft { ws: WorkspaceId, peer: PeerId },
-    /// A `NeighbourMsg` arrived on the workspace topic from `peer`.
+    PeerJoined {
+        ws: WorkspaceId,
+        peer: PeerId,
+    },
+    PeerLeft {
+        ws: WorkspaceId,
+        peer: PeerId,
+    },
+    /// An authenticated durable host finished subscribing to this workspace.
+    /// Distinct from a direct peer arrival: the shell uses this edge to seed
+    /// transport-level checkpoints for future first-time/offline devices.
+    HostReady {
+        ws: WorkspaceId,
+        peer: PeerId,
+    },
     Msg {
         ws: WorkspaceId,
         peer: PeerId,
@@ -68,469 +91,860 @@ pub enum NetEvent {
     },
 }
 
-/// Tokio actor wrapping a `Swarm<NiriosBehaviour>`.
-pub struct Actor {
-    swarm: Swarm<NiriosBehaviour>,
-    cmd_rx: mpsc::Receiver<NetCmd>,
-    /// Per-workspace event subscribers, keyed by `WorkspaceId`.
-    subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
-    /// Last time we observed any gossipsub message from each peer; used
-    /// to evict peers that have gone silent for `PEER_TIMEOUT`.
-    peers_seen: HashMap<libp2p::PeerId, Instant>,
-    /// Every address the swarm has reported listening on, newest last.
-    /// Shared with the shell so [`crate::shell::network::ShellNetwork`]
-    /// can put a dialable address inside an invite token.
-    listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
+enum InternalEvent {
+    Topic {
+        ws: WorkspaceId,
+        event: GossipEvent,
+    },
+    Host {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        event: HostEvent,
+    },
+    HostConnected {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        result: Result<RelayCoeditSession, String>,
+    },
+    Closed {
+        ws: WorkspaceId,
+    },
 }
 
-/// Build the workspace's gossipsub topic identifier.
-fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
-    gossipsub::IdentTopic::new(format!("nirios/ws/{ws}"))
+enum HostEvent {
+    Ready,
+    Message {
+        author: EndpointId,
+        fingerprint: [u8; 32],
+        msg: NeighbourMsg,
+    },
+    Closed,
 }
 
-
-
-/// Returns peers in `peers` whose last-seen timestamp is older than
-/// `now - threshold`. Pure function so the eviction policy is unit-
-/// testable without spinning up a swarm.
-fn evict_stale(
-    peers: &HashMap<libp2p::PeerId, Instant>,
-    now: Instant,
-    threshold: Duration,
-) -> Vec<libp2p::PeerId> {
-    peers
-        .iter()
-        .filter(|(_, last)| now.duration_since(**last) > threshold)
-        .map(|(p, _)| *p)
-        .collect()
+struct TopicRuntime {
+    sender: GossipSender,
+    pump: tokio::task::JoinHandle<()>,
 }
 
-/// Reverse-lookup: find the `WorkspaceId` whose topic-hash matches
-/// the gossipsub message. Linear scan over `subscribers`; the count
-/// is small (one per active workspace) so this is fine.
-fn ws_for_topic(
-    subscribers: &HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
-    hash: &gossipsub::TopicHash,
-) -> Option<WorkspaceId> {
-    subscribers
-        .keys()
-        .copied()
-        .find(|ws| &ws_topic(*ws).hash() == hash)
+struct HostRuntime {
+    session: Arc<RelayCoeditSession>,
+    pump: tokio::task::JoinHandle<()>,
 }
+
+pub struct Actor;
 
 impl Actor {
-    /// Spawn the actor on the current tokio runtime. Returns the
-    /// command sender and the spawned task's `JoinHandle` so the
-    /// caller can await shutdown.
     pub fn spawn(
-        swarm: Swarm<NiriosBehaviour>,
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
-        Self::spawn_reporting_addrs(swarm, Arc::new(Mutex::new(Vec::new())))
+        Self::spawn_reporting_addrs(endpoint, lookup, None, Arc::new(Mutex::new(Vec::new())))
     }
 
-    /// [`Self::spawn`], plus a slot the actor writes every address the
-    /// swarm starts listening on into.
-    ///
-    /// An invite has to carry an address a peer can dial, and only the
-    /// swarm knows what it bound — the port is assigned by the kernel.
-    /// Without this the address is unknowable outside the actor task,
-    /// and an invite can only carry a guess.
     pub fn spawn_reporting_addrs(
-        swarm: Swarm<NiriosBehaviour>,
-        listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        if let Ok(mut out) = listen_addrs.lock() {
+            out.push(endpoint.addr());
+        }
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let mut actor = Self {
-            swarm,
-            cmd_rx,
-            subscribers: HashMap::new(),
-            peers_seen: HashMap::new(),
-            listen_addrs,
-        };
-        let handle = tokio::spawn(async move { actor.run().await });
-        (cmd_tx, handle)
+        let task = tokio::spawn(run(endpoint, lookup, host_identity, listen_addrs, cmd_rx));
+        (cmd_tx, task)
     }
+}
 
-    async fn run(&mut self) {
-        let mut hb_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
-        let mut ev_tick = tokio::time::interval(EVICTION_INTERVAL);
-        // Discard the immediate first tick on each interval so we don't
-        // spam a heartbeat / eviction sweep before any peers exist.
-        hb_tick.tick().await;
-        ev_tick.tick().await;
-        loop {
-            tokio::select! {
-                maybe_cmd = self.cmd_rx.recv() => {
-                    match maybe_cmd {
-                        Some(cmd) => self.handle_cmd(cmd).await,
-                        None => break, // all senders dropped — clean shutdown
+async fn run(
+    endpoint: Endpoint,
+    lookup: MemoryLookup,
+    host_identity: Option<HostIdentity>,
+    listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+    mut cmd_rx: mpsc::Receiver<NetCmd>,
+) {
+    let gossip = Gossip::builder()
+        .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
+        .spawn(endpoint.clone());
+    let router = Router::builder(endpoint.clone())
+        .accept(GOSSIP_ALPN, gossip.clone())
+        .spawn();
+    let (internal_tx, mut internal_rx) = mpsc::channel(256);
+    let mut topics: HashMap<WorkspaceId, TopicRuntime> = HashMap::new();
+    let mut subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>> = HashMap::new();
+    let mut peers: HashMap<EndpointId, EndpointAddr> = HashMap::new();
+    let mut hosts: HashMap<EndpointId, EndpointAddr> = HashMap::new();
+    let mut host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime> = HashMap::new();
+    let mut connecting_hosts = HashSet::new();
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
+    let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    eviction.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    host_checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut peers_seen: HashMap<(WorkspaceId, EndpointId), Instant> = HashMap::new();
+    let mut recent = HashSet::new();
+    let mut recent_order = VecDeque::new();
+    heartbeat.tick().await;
+    eviction.tick().await;
+    host_checkpoint.tick().await;
+
+    loop {
+        tokio::select! {
+            command = cmd_rx.recv() => match command {
+                Some(NetCmd::JoinWorkspace { ws, on_event }) => {
+                    subscribers.insert(ws, on_event);
+                    if let std::collections::hash_map::Entry::Vacant(e) = topics.entry(ws) {
+                        let bootstrap = peers.keys().copied().collect();
+                        match gossip.subscribe(topic_id(ws), bootstrap).await {
+                            Ok(topic) => {
+                                let (sender, mut receiver) = topic.split();
+                                let tx = internal_tx.clone();
+                                let pump = tokio::spawn(async move {
+                                    while let Some(result) = receiver.next().await {
+                                        match result {
+                                            Ok(event) => {
+                                                if tx.send(InternalEvent::Topic { ws, event }).await.is_err() {
+                                                    return;
+                                                }
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(ws, %error, "iroh gossip subscription failed");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let _ = tx.send(InternalEvent::Closed { ws }).await;
+                                });
+                                e.insert(TopicRuntime { sender, pump });
+                            }
+                            Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
+                        }
+                    }
+                    if let Some(identity) = host_identity.as_ref() {
+                        for addr in hosts.values().cloned() {
+                            schedule_host_topic(
+                                &endpoint,
+                                identity,
+                                ws,
+                                addr,
+                                &internal_tx,
+                                &host_sessions,
+                                &mut connecting_hosts,
+                            );
+                        }
                     }
                 }
-                event = self.swarm.select_next_some() => {
-                    self.handle_swarm_event(event).await;
+                Some(NetCmd::LeaveWorkspace { ws }) => {
+                    subscribers.remove(&ws);
+                    peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
+                    if let Some(topic) = topics.remove(&ws) {
+                        topic.pump.abort();
+                    }
+                    let leaving: Vec<_> = host_sessions
+                        .keys()
+                        .filter(|(session_ws, _)| *session_ws == ws)
+                        .copied()
+                        .collect();
+                    for key in leaving {
+                        if let Some(runtime) = host_sessions.remove(&key) {
+                            runtime.pump.abort();
+                        }
+                    }
                 }
-                _ = hb_tick.tick() => self.publish_heartbeat(),
-                _ = ev_tick.tick() => self.evict_stale_peers().await,
+                Some(NetCmd::Publish { ws, msg }) => {
+                    publish(&topics, &host_sessions, ws, msg, false).await;
+                }
+                Some(NetCmd::PublishCheckpoint { ws, msg }) => {
+                    publish(&topics, &host_sessions, ws, msg, true).await;
+                }
+                Some(NetCmd::Connect { addr }) => {
+                    let id = addr.id;
+                    lookup.add_endpoint_info(addr.clone());
+                    peers.insert(id, addr);
+                    for topic in topics.values() {
+                        if let Err(error) = topic.sender.join_peers(vec![id]).await {
+                            tracing::warn!(peer = %id, %error, "iroh gossip peer join failed");
+                        }
+                    }
+                }
+                Some(NetCmd::ConnectHost { addr }) => {
+                    let id = addr.id;
+                    lookup.add_endpoint_info(addr.clone());
+                    hosts.insert(id, addr.clone());
+                    let Some(identity) = host_identity.as_ref() else {
+                        tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
+                        continue;
+                    };
+                    for ws in topics.keys().copied() {
+                        schedule_host_topic(
+                            &endpoint,
+                            identity,
+                            ws,
+                            addr.clone(),
+                            &internal_tx,
+                            &host_sessions,
+                            &mut connecting_hosts,
+                        );
+                    }
+                }
+                None => break,
+            },
+            internal = internal_rx.recv() => match internal {
+                Some(InternalEvent::Topic { ws, event }) => {
+                    let Some(tx) = subscribers.get(&ws) else { continue };
+                    let event = match event {
+                        GossipEvent::NeighborUp(peer) => {
+                            peers_seen.insert((ws, peer), Instant::now());
+                            Some(NetEvent::PeerJoined { ws, peer })
+                        }
+                        GossipEvent::NeighborDown(peer) => {
+                            peers_seen.remove(&(ws, peer));
+                            Some(NetEvent::PeerLeft { ws, peer })
+                        }
+                        GossipEvent::Received(message) => {
+                            let peer = message.delivered_from;
+                            let rediscovered = peers_seen.insert((ws, peer), Instant::now()).is_none();
+                            let fingerprint = message_fingerprint(&message.content);
+                            if !mark_new_message(ws, fingerprint, &mut recent, &mut recent_order) {
+                                continue;
+                            }
+                            match postcard::from_bytes::<NeighbourMsg>(&message.content) {
+                                Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
+                                    Some(NetEvent::PeerJoined { ws, peer })
+                                }
+                                Ok(NeighbourMsg::Heartbeat { .. }) => None,
+                                Ok(msg) => Some(NetEvent::Msg { ws, peer, msg }),
+                                Err(error) => {
+                                    tracing::warn!(ws, %error, "invalid collaboration message");
+                                    None
+                                }
+                            }
+                        }
+                        GossipEvent::Lagged => {
+                            tracing::warn!(ws, "iroh gossip receiver lagged; anti-entropy will recover durable state");
+                            None
+                        }
+                    };
+                    if let Some(event) = event {
+                        let _ = tx.send(event).await;
+                    }
+                }
+                Some(InternalEvent::Closed { ws }) => { topics.remove(&ws); }
+                Some(InternalEvent::HostConnected { ws, peer, result }) => {
+                    connecting_hosts.remove(&(ws, peer));
+                    if !topics.contains_key(&ws) {
+                        continue;
+                    }
+                    match result {
+                        Ok(session) => {
+                            let session = Arc::new(session);
+                            let pump = spawn_host_pump(ws, peer, Arc::clone(&session), internal_tx.clone());
+                            host_sessions.insert((ws, peer), HostRuntime { session, pump });
+                        }
+                        Err(error) => {
+                            tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
+                        }
+                    }
+                }
+                Some(InternalEvent::Host { ws, peer, event }) => {
+                    let mapped = match event {
+                        HostEvent::Ready => Some(NetEvent::HostReady { ws, peer }),
+                        HostEvent::Message { author, fingerprint, msg } => {
+                            if !mark_new_message(ws, fingerprint, &mut recent, &mut recent_order) {
+                                continue;
+                            }
+                            Some(NetEvent::Msg { ws, peer: author, msg })
+                        }
+                        HostEvent::Closed => {
+                            if let Some(runtime) = host_sessions.remove(&(ws, peer)) {
+                                runtime.pump.abort();
+                            }
+                            Some(NetEvent::PeerLeft { ws, peer })
+                        }
+                    };
+                    if let (Some(event), Some(tx)) = (mapped, subscribers.get(&ws)) {
+                        let _ = tx.send(event).await;
+                    }
+                }
+                None => break,
+            },
+            _ = eviction.tick() => {
+                let now = Instant::now();
+                let stale: Vec<_> = peers_seen
+                    .iter()
+                    .filter_map(|(&(ws, peer), seen)| {
+                        (now.duration_since(*seen) > PEER_TIMEOUT).then_some((ws, peer))
+                    })
+                    .collect();
+                for (ws, peer) in stale {
+                    peers_seen.remove(&(ws, peer));
+                    if let Some(tx) = subscribers.get(&ws) {
+                        let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
+                    }
+                }
+            },
+            _ = heartbeat.tick() => {
+                if let Ok(mut out) = listen_addrs.lock() {
+                    out.clear();
+                    out.push(endpoint.addr());
+                }
+                if let Some(identity) = host_identity.as_ref() {
+                    for ws in topics.keys().copied() {
+                        for addr in hosts.values().cloned() {
+                            schedule_host_topic(
+                                &endpoint,
+                                identity,
+                                ws,
+                                addr,
+                                &internal_tx,
+                                &host_sessions,
+                                &mut connecting_hosts,
+                            );
+                        }
+                    }
+                }
+                let msg = NeighbourMsg::Heartbeat {
+                    peer: crate::network::behaviour::peer_liveness_handle(&endpoint.id()),
+                    ts: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as u64),
+                };
+                if let Ok(bytes) = postcard::to_allocvec(&msg) {
+                    for topic in topics.values() {
+                        let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+                    }
+                }
+            }
+            _ = host_checkpoint.tick() => {
+                for &(ws, peer) in host_sessions.keys() {
+                    if let Some(tx) = subscribers.get(&ws) {
+                        let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
+                    }
+                }
             }
         }
     }
 
-    /// Publish a `NeighbourMsg::Heartbeat` to every joined workspace's
-    /// gossipsub topic. Failures (no peers, oversized payload, etc.) are
-    /// silently dropped — heartbeat loss is itself the signal to evict.
-    fn publish_heartbeat(&mut self) {
-        let peer = crate::network::behaviour::peer_liveness_handle(self.swarm.local_peer_id());
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let msg = NeighbourMsg::Heartbeat { peer, ts };
-        let bytes = match serde_json::to_vec(&msg) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
-        for ws in workspaces {
-            let topic = ws_topic(ws);
-            let _ = self
-                .swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(topic, bytes.clone());
-        }
+    for (_, topic) in topics {
+        topic.pump.abort();
     }
+    for (_, host) in host_sessions {
+        host.pump.abort();
+    }
+    let _ = router.shutdown().await;
+}
 
-    /// Sweep `peers_seen` for entries older than `PEER_TIMEOUT`; for
-    /// every stale peer, emit `NetEvent::PeerLeft` to all workspace
-    /// subscribers and drop the entry.
-    async fn evict_stale_peers(&mut self) {
-        let stale = evict_stale(&self.peers_seen, Instant::now(), PEER_TIMEOUT);
-        if stale.is_empty() {
+async fn publish(
+    topics: &HashMap<WorkspaceId, TopicRuntime>,
+    host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    ws: WorkspaceId,
+    msg: NeighbourMsg,
+    shell_checkpoint: bool,
+) {
+    let Some(topic) = topics.get(&ws) else { return };
+    let bytes = match postcard::to_allocvec(&msg) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(ws, %error, "collaboration message encode failed");
             return;
         }
-        for peer in &stale {
-            self.peers_seen.remove(peer);
+    };
+    if let Err(error) = topic.sender.broadcast(Bytes::from(bytes.clone())).await {
+        tracing::warn!(ws, %error, "iroh gossip publish failed");
+    }
+    for ((session_ws, _), runtime) in host_sessions {
+        if *session_ws != ws {
+            continue;
         }
-        for peer in stale {
-            // Fan out PeerLeft on every workspace; the receiver decides
-            // what to do with peers it has not been tracking.
-            let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
-            for ws in workspaces {
-                if let Some(tx) = self.subscribers.get(&ws) {
-                    let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
-                }
+        let result = match retention(&msg, shell_checkpoint) {
+            Some((channel, Retention::Checkpoint)) => {
+                runtime.session.publish_checkpoint(channel, bytes.clone())
             }
+            Some((channel, Retention::Delta)) => runtime
+                .session
+                .publish_retained_delta(channel, bytes.clone()),
+            None => runtime.session.publish_presence(bytes.clone()),
+        };
+        if let Err(error) = result {
+            tracing::warn!(ws, %error, "workspace host publish failed");
         }
     }
+}
 
-    async fn handle_cmd(&mut self, cmd: NetCmd) {
-        match cmd {
-            NetCmd::JoinWorkspace { ws, on_event } => {
-                let topic = ws_topic(ws);
-                let _ = self.swarm.behaviour_mut().gossipsub.subscribe(&topic);
-                self.subscribers.insert(ws, on_event);
-            }
-            NetCmd::LeaveWorkspace { ws } => {
-                let topic = ws_topic(ws);
-                let _ = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
-                self.subscribers.remove(&ws);
-            }
-            NetCmd::Publish { ws, msg } => {
-                let topic = ws_topic(ws);
-                let bytes = match serde_json::to_vec(&msg) {
-                    Ok(b) => b,
-                    Err(_) => return,
-                };
-                let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, bytes);
-            }
-            NetCmd::Connect { addr } => {
-                let _ = self.swarm.dial(addr);
-            }
+/// Only replayable state is allowed into the host's durable queue. Everything
+/// else is live session traffic; persisting input, presence, media, permission
+/// prompts or request/response control frames would make them execute late.
+#[derive(Clone, Copy)]
+enum Retention {
+    Checkpoint,
+    Delta,
+}
+
+fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Retention)> {
+    let (route, kind) = match msg {
+        NeighbourMsg::SyncResp { .. } => (
+            b"shell-tree".as_slice(),
+            if shell_checkpoint {
+                Retention::Checkpoint
+            } else {
+                Retention::Delta
+            },
+        ),
+        NeighbourMsg::AppCrdtSnapshot {
+            app_id, record_id, ..
+        } => {
+            let route = format!("app\0{app_id}\0{record_id}");
+            return Some((
+                *blake3::hash(route.as_bytes()).as_bytes(),
+                Retention::Checkpoint,
+            ));
         }
+        NeighbourMsg::AppCrdtIncremental {
+            app_id, record_id, ..
+        }
+        | NeighbourMsg::AppCrdtIncrementalSigned {
+            app_id, record_id, ..
+        } => {
+            let route = format!("app\0{app_id}\0{record_id}");
+            return Some((*blake3::hash(route.as_bytes()).as_bytes(), Retention::Delta));
+        }
+        _ => return None,
+    };
+    Some((*blake3::hash(route).as_bytes(), kind))
+}
+
+fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
+
+fn mark_new_message(
+    ws: WorkspaceId,
+    fingerprint: [u8; 32],
+    recent: &mut HashSet<(WorkspaceId, [u8; 32])>,
+    order: &mut VecDeque<(WorkspaceId, [u8; 32])>,
+) -> bool {
+    const MAX_RECENT: usize = 1024;
+    let key = (ws, fingerprint);
+    if !recent.insert(key) {
+        return false;
     }
+    order.push_back(key);
+    if order.len() > MAX_RECENT
+        && let Some(oldest) = order.pop_front()
+    {
+        recent.remove(&oldest);
+    }
+    true
+}
 
-    async fn handle_swarm_event(&mut self, event: SwarmEvent<NiriosBehaviourEvent>) {
-        match event {
-            // The bound address is only knowable here — the port comes
-            // from the kernel — and an invite that cannot name one is an
-            // invite nobody can act on.
-            SwarmEvent::NewListenAddr { address, .. } => {
-                tracing::info!(addr = %address, "peer-sync: listening");
-                if let Ok(mut addrs) = self.listen_addrs.lock() {
-                    addrs.push(address);
-                }
-            }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                propagation_source,
-                message,
-                ..
-            })) => {
-                // Touch liveness for the propagation source — that is the
-                // peer we have a direct connection to, regardless of who
-                // originally signed the message.
-                self.peers_seen.insert(propagation_source, Instant::now());
+fn schedule_host_topic(
+    endpoint: &Endpoint,
+    identity: &HostIdentity,
+    ws: WorkspaceId,
+    addr: EndpointAddr,
+    internal_tx: &mpsc::Sender<InternalEvent>,
+    sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
+) {
+    let host = addr.id;
+    if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
+        return;
+    }
+    let endpoint = endpoint.clone();
+    let identity = identity.clone();
+    let tx = internal_tx.clone();
+    tokio::spawn(async move {
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            RelayClient::connect_to_pinned_host(
+                endpoint,
+                addr,
+                identity.device_cert,
+                identity.device_signing_key.clone(),
+                RevocationList::new(),
+            ),
+        )
+        .await
+        .map_err(|_| "workspace host connection timed out".to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|client| {
+            RelayCoeditSession::join(
+                client,
+                ws,
+                identity.device_signing_key.verifying_key().to_bytes(),
+            )
+            .map_err(|error| error.to_string())
+        });
+        let _ = tx
+            .send(InternalEvent::HostConnected {
+                ws,
+                peer: host,
+                result,
+            })
+            .await;
+    });
+}
 
-                let Some(ws) = ws_for_topic(&self.subscribers, &message.topic) else {
-                    return;
-                };
-                let Ok(decoded) = serde_json::from_slice::<NeighbourMsg>(&message.data) else {
-                    return;
-                };
-                // Heartbeats are transport-internal noise — they keep
-                // `peers_seen` warm but never surface to subscribers.
-                if matches!(decoded, NeighbourMsg::Heartbeat { .. }) {
-                    return;
+fn spawn_host_pump(
+    ws: WorkspaceId,
+    host: EndpointId,
+    session: Arc<RelayCoeditSession>,
+    tx: mpsc::Sender<InternalEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(inbound) = session.recv().await {
+            let event = match inbound {
+                HostInbound::Ready { .. } => HostEvent::Ready,
+                HostInbound::Delta { author, data }
+                | HostInbound::SignedDelta {
+                    author,
+                    op_bytes: data,
                 }
-                let peer = message.source.unwrap_or(propagation_source);
-                if let Some(tx) = self.subscribers.get(&ws) {
-                    let _ = tx
-                        .send(NetEvent::Msg {
-                            ws,
-                            peer,
-                            msg: decoded,
-                        })
-                        .await;
-                }
-            }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
-                gossipsub::Event::Subscribed { peer_id, topic },
-            )) => {
-                if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
-                    if let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerJoined { ws, peer: peer_id }).await;
-                    }
-                }
-            }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
-                gossipsub::Event::Unsubscribed { peer_id, topic },
-            )) => {
-                if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
-                    if let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerLeft { ws, peer: peer_id }).await;
-                    }
-                }
-            }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                let any_discovered = !list.is_empty();
-                for (peer_id, _addr) in list {
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .add_explicit_peer(&peer_id);
-                }
-                // Kick a roomless SyncReq out on every joined workspace
-                // so a returning peer starts a sync round without waiting
-                // for the next local edit.
-                //
-                // Roomless because the transport does not hold the tree
-                // and so cannot know which rooms anyone is in. It is not
-                // a request for everything: a replica answers a roomless
-                // request by naming its own rooms, never by exporting a
-                // document. See `WorkspaceTreeReplica::handle`.
-                if any_discovered {
-                    let msg = NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: String::new(),
+                | HostInbound::Presence {
+                    author,
+                    payload: data,
+                } => {
+                    let Ok(author) = EndpointId::from_bytes(&author) else {
+                        continue;
                     };
-                    let bytes = match serde_json::to_vec(&msg) {
-                        Ok(b) => b,
-                        Err(_) => return,
+                    let fingerprint = message_fingerprint(&data);
+                    let Ok(msg) = postcard::from_bytes(&data) else {
+                        continue;
                     };
-                    let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
-                    for ws in workspaces {
-                        let topic = ws_topic(ws);
-                        let _ = self
-                            .swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .publish(topic, bytes.clone());
+                    HostEvent::Message {
+                        author,
+                        fingerprint,
+                        msg,
                     }
                 }
+            };
+            if tx
+                .send(InternalEvent::Host {
+                    ws,
+                    peer: host,
+                    event,
+                })
+                .await
+                .is_err()
+            {
+                return;
             }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                for (peer_id, _addr) in list {
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .remove_explicit_peer(&peer_id);
-                }
-            }
-            _ => {}
         }
-    }
+        let _ = tx
+            .send(InternalEvent::Host {
+                ws,
+                peer: host,
+                event: HostEvent::Closed,
+            })
+            .await;
+    })
+}
+
+fn topic_id(ws: WorkspaceId) -> TopicId {
+    let mut hasher = blake3::Hasher::new_derive_key("qos-workspace-gossip-v1");
+    hasher.update(&ws.to_le_bytes());
+    TopicId::from_bytes(*hasher.finalize().as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::behaviour::NiriosBehaviour;
-    use libp2p::{noise, tcp, yamux};
-    use std::time::Duration;
+    use iroh::endpoint::presets;
+    use qos_relay::{Relay, RelayConfig, WorkspaceBinding, daemon::RelayIdentity};
+    use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
     #[test]
-    fn evict_stale_returns_peers_past_threshold() {
-        let now = Instant::now();
-        let fresh_peer = libp2p::PeerId::random();
-        let stale_peer = libp2p::PeerId::random();
-        let mut peers: HashMap<libp2p::PeerId, Instant> = HashMap::new();
-        peers.insert(fresh_peer, now - Duration::from_secs(5));
-        peers.insert(stale_peer, now - Duration::from_secs(20));
-        let stale = evict_stale(&peers, now, Duration::from_secs(15));
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0], stale_peer);
-    }
-
-    #[test]
-    fn evict_stale_returns_empty_when_all_fresh() {
-        let now = Instant::now();
-        let p1 = libp2p::PeerId::random();
-        let p2 = libp2p::PeerId::random();
-        let mut peers: HashMap<libp2p::PeerId, Instant> = HashMap::new();
-        peers.insert(p1, now - Duration::from_secs(1));
-        peers.insert(p2, now - Duration::from_secs(10));
-        let stale = evict_stale(&peers, now, Duration::from_secs(15));
-        assert!(stale.is_empty());
-    }
-
-    fn build_swarm() -> Swarm<NiriosBehaviour> {
-        libp2p::SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
-            .expect("tcp transport")
-            .with_behaviour(|key| NiriosBehaviour::new(key).expect("behaviour"))
-            .expect("with_behaviour")
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
-            .build()
-    }
-
-    /// Two actors in the same process, connected over TCP loopback, exchange
-    /// a `NeighbourMsg::SyncReq` via gossipsub. The 10 s `tokio::time::timeout`
-    /// budget for both PeerJoined and Msg keeps the test bounded; mesh
-    /// formation typically completes well under 1 s on loopback.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_actors_exchange_publish_via_loopback() {
-        const WS: WorkspaceId = 42;
-
-        // 1. Build two swarms.
-        let mut swarm_a = build_swarm();
-        let mut swarm_b = build_swarm();
-
-        // 2. Start each listening on an ephemeral loopback port and capture
-        //    the resulting concrete multiaddr.
-        swarm_a
-            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
-            .unwrap();
-        swarm_b
-            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
-            .unwrap();
-
-        async fn first_listen_addr(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
-            loop {
-                if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
-                    return address;
-                }
-            }
+    fn host_persists_state_but_never_late_session_actions() {
+        assert!(matches!(
+            retention(
+                &NeighbourMsg::SyncResp {
+                    changes: vec![vec![1]],
+                    room: "room".into(),
+                },
+                true,
+            ),
+            Some((_, Retention::Checkpoint))
+        ));
+        assert!(matches!(
+            retention(
+                &NeighbourMsg::SyncResp {
+                    changes: vec![vec![1]],
+                    room: "room".into(),
+                },
+                false,
+            ),
+            Some((_, Retention::Delta))
+        ));
+        assert!(matches!(
+            retention(
+                &NeighbourMsg::AppCrdtSnapshot {
+                    peer: 1,
+                    app_id: "app".into(),
+                    cluster_id: "room".into(),
+                    record_id: "doc".into(),
+                    data: vec![2],
+                },
+                false,
+            ),
+            Some((_, Retention::Checkpoint))
+        ));
+        for live in [
+            NeighbourMsg::RemoteInput {
+                peer: 1,
+                surface: 2,
+                event: vec![3],
+            },
+            NeighbourMsg::PermissionGrant {
+                peer: 1,
+                capability: "remote-input".into(),
+            },
+            NeighbourMsg::AppPresence {
+                peer: 1,
+                app_id: "app".into(),
+                cluster_id: "room".into(),
+                frame: vec![4],
+            },
+            NeighbourMsg::AppPresenceV2 {
+                peer: 1,
+                app_id: "app".into(),
+                cluster_id: "room".into(),
+                presence: collab_types::PeerPresence {
+                    key: vec![4],
+                    payload: collab_types::PeerPresencePayload::Arrived,
+                },
+            },
+        ] {
+            assert!(retention(&live, false).is_none());
         }
-        let addr_b = timeout(Duration::from_secs(5), first_listen_addr(&mut swarm_b))
+    }
+
+    async fn endpoint() -> (Endpoint, MemoryLookup) {
+        let lookup = MemoryLookup::new();
+        let endpoint = Endpoint::builder(presets::N0)
+            .address_lookup(lookup.clone())
+            .bind()
             .await
-            .expect("peer B listen addr");
-        // Drain peer A's NewListenAddr too so it does not stall the swarm
-        // before we hand it to the actor.
-        let _ = timeout(Duration::from_secs(5), first_listen_addr(&mut swarm_a))
+            .unwrap();
+        (endpoint, lookup)
+    }
+
+    async fn identified_endpoint(key: &ed25519_dalek::SigningKey) -> (Endpoint, MemoryLookup) {
+        let lookup = MemoryLookup::new();
+        let endpoint = Endpoint::builder(presets::N0)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .address_lookup(lookup.clone())
+            .bind()
             .await
-            .expect("peer A listen addr");
+            .unwrap();
+        (endpoint, lookup)
+    }
 
-        // 3. Spawn actors.
-        let (cmd_a, _h_a) = Actor::spawn(swarm_a);
-        let (cmd_b, _h_b) = Actor::spawn(swarm_b);
+    fn enrol(
+        root: &ed25519_dalek::SigningKey,
+        capabilities: DeviceCapabilities,
+        label: &str,
+    ) -> (ed25519_dalek::SigningKey, DeviceCert) {
+        use rand_core::OsRng;
+        let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        (key, cert)
+    }
 
-        let (ev_tx_a, mut ev_rx_a) = mpsc::channel::<NetEvent>(32);
-        let (ev_tx_b, mut ev_rx_b) = mpsc::channel::<NetEvent>(32);
-
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_actors_exchange_over_iroh() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let a_addr = a.addr();
+        let b_addr = b.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, _rx_b) = mpsc::channel(16);
         cmd_a
             .send(NetCmd::JoinWorkspace {
-                ws: WS,
-                on_event: ev_tx_a,
+                ws: 42,
+                on_event: event_a,
             })
             .await
             .unwrap();
         cmd_b
             .send(NetCmd::JoinWorkspace {
-                ws: WS,
-                on_event: ev_tx_b,
+                ws: 42,
+                on_event: event_b,
             })
             .await
             .unwrap();
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        cmd_b.send(NetCmd::Connect { addr: a_addr }).await.unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, NetEvent::PeerJoined { .. }) {
+                break;
+            }
+        }
+        cmd_b
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::SyncReq {
+                    since: vec![],
+                    room: String::new(),
+                },
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SyncReq { .. },
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+    }
 
-        // 4. Dial B from A.
-        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_actors_exchange_through_authenticated_workspace_host() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "host");
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let state = tempfile::tempdir().unwrap();
+        let config = RelayConfig {
+            state_root: state.path().to_path_buf(),
+            workspaces: vec![WorkspaceBinding { id: 42, pin: true }],
+            ..RelayConfig::default()
+        };
+        let relay = Relay::start(
+            config,
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host_key,
+                device_cert: host_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        relay
+            .set_workspace_membership(
+                42,
+                true,
+                vec![
+                    a_key.verifying_key().to_bytes(),
+                    b_key.verifying_key().to_bytes(),
+                ],
+                state.path().to_path_buf(),
+            )
+            .await
+            .unwrap();
 
-        // 5. Wait for the gossipsub mesh to form. Peer B emits PeerJoined
-        //    once A subscribes to the topic over the established connection.
-        let _peer_joined = timeout(Duration::from_secs(10), async {
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity_a = HostIdentity {
+            device_cert: a_cert,
+            device_signing_key: a_key,
+        };
+        let identity_b = HostIdentity {
+            device_cert: b_cert,
+            device_signing_key: b_key,
+        };
+        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+            a,
+            lookup_a,
+            Some(identity_a),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            b,
+            lookup_b,
+            Some(identity_b),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: event_a,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: event_b,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+            })
+            .await
+            .unwrap();
+        for rx in [&mut rx_a, &mut rx_b] {
             loop {
-                match ev_rx_b.recv().await {
-                    Some(NetEvent::PeerJoined { .. }) => return Ok::<(), ()>(()),
-                    Some(_) => continue,
-                    None => return Err(()),
+                let event = timeout(Duration::from_secs(15), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(event, NetEvent::HostReady { .. }) {
+                    break;
                 }
             }
-        })
-        .await
-        .expect("peer joined within 10 s")
-        .expect("event channel still open");
-
-        // Briefly let the mesh stabilise before publishing.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // 6. Publish a SyncReq from A.
-        let payload = NeighbourMsg::SyncReq {
-            since: vec![1, 2, 3],
-            room: "6b3f9a10-0000-4000-8000-00000000000a".to_string(),
-        };
+        }
         cmd_a
             .send(NetCmd::Publish {
-                ws: WS,
-                msg: payload.clone(),
+                ws: 42,
+                msg: NeighbourMsg::SyncReq {
+                    since: vec![],
+                    room: "hosted".into(),
+                },
             })
             .await
             .unwrap();
-
-        // 7. B should observe the message. Phase 6's reconnect-sync
-        // path also broadcasts an empty `SyncReq { since: vec![] }` on
-        // PeerJoined, so the loop keeps draining until it sees the
-        // payload this test actually published (`since: [1, 2, 3]`).
-        let received = timeout(Duration::from_secs(10), async {
-            loop {
-                match ev_rx_b.recv().await {
-                    Some(NetEvent::Msg { ws, msg, .. }) => {
-                        if msg == payload {
-                            return Some((ws, msg));
-                        }
-                        // Skip transport-layer SyncReqs from the
-                        // reconnect-sync path; keep waiting for the
-                        // test's payload.
-                        continue;
-                    }
-                    Some(_) => continue,
-                    None => return None,
+        loop {
+            let event = timeout(Duration::from_secs(15), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SyncReq { .. },
+                    ..
                 }
+            ) {
+                break;
             }
-        })
-        .await
-        .expect("message arrived within 10 s")
-        .expect("channel still open");
-
-        assert_eq!(received.0, WS);
-        assert_eq!(received.1, payload);
-
-        // Drain any final A-side events so the actor's task can shut down
-        // without warnings during runtime drop.
-        let _ = ev_rx_a.try_recv();
+        }
     }
 }

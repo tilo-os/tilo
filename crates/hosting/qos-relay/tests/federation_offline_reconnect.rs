@@ -6,12 +6,10 @@
 //! device peers use. When relay2 restarts and re-federates, its
 //! subscribe drains the queue in order.
 //!
-//! To simulate "restart" cleanly, relay2's state_root and device
+//! To simulate "restart" cleanly, relay2's `state_root` and device
 //! identity persist across the drop/re-`Relay::start` cycle. Its
 //! iroh secret is `load_or_create_iroh_secret` — same file → same
 //! iroh node id. Its device cert is built by the test.
-
-mod common;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,7 +21,7 @@ use qos_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, sign_device_cert,
 };
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 /// Build a fresh signing key + signed cert with `can_act_as_host`.
 /// Returns the cert AND the signing key so callers can re-use them
@@ -111,7 +109,10 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     r2_first.add_peer_relay_at(relay1.relay.node_addr(), "r1".into(), 0);
     // Wait for the handshake + hello exchange to complete.
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    drop(r2_first);
+    // Close, rather than drop: a dropped relay leaves relay1 believing
+    // r2 is still subscribed until the QUIC idle timeout, which is far
+    // longer than any outage this test can afford to sit through.
+    r2_first.shutdown().await;
     // Give relay1 a moment to observe the subscription drop.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -206,7 +207,11 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     for _ in 0..15 {
         let env = tokio::time::timeout(Duration::from_secs(4), c2.recv()).await;
         match env {
-            Ok(Some(Envelope::Delta { delta, workspace_id: 11, .. })) => got.push(delta),
+            Ok(Some(Envelope::Delta {
+                delta,
+                workspace_id: 11,
+                ..
+            })) => got.push(delta),
             Ok(Some(_)) => {} // Ready / other, ignore
             _ => break,
         }

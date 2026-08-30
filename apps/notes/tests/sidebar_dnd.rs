@@ -161,13 +161,34 @@ fn drag_reflows_live_commits_only_on_drop() {
     let r2 = app.sidebar_row_center_for_test(2).unwrap();
 
     // Press on row 0 (Welcome), then drag down below the last row.
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r0.x, r0.y));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Pressed, MouseButton::Left));
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r0.x, r2.y + 8.0));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r0.x, r0.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Pressed, MouseButton::Left),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r0.x, r2.y + 8.0),
+    );
 
     // Mid-drag: the list reflows live (a non-dragged row is shifted) but
     // the model is NOT mutated yet — commit only happens on drop.
-    assert!(app.sidebar_drag_active_for_test(), "drag promoted past the threshold");
+    assert!(
+        app.sidebar_drag_active_for_test(),
+        "drag promoted past the threshold"
+    );
     assert!(
         app.sidebar_row_shift_for_test(1) != 0.0,
         "the toolkit reflows the list live to open the drop gap"
@@ -179,8 +200,17 @@ fn drag_reflows_live_commits_only_on_drop() {
     );
 
     // Drop → the move commits.
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Released, MouseButton::Left));
-    assert!(!app.sidebar_drag_active_for_test(), "the drag session cleared on drop");
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Released, MouseButton::Left),
+    );
+    assert!(
+        !app.sidebar_drag_active_for_test(),
+        "the drag session cleared on drop"
+    );
     assert_eq!(
         root_order(&app),
         vec![one, two, welcome],
@@ -196,16 +226,44 @@ fn drag_cancel_with_escape_restores_order() {
 
     let r0 = app.sidebar_row_center_for_test(0).unwrap();
     let r2 = app.sidebar_row_center_for_test(2).unwrap();
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r0.x, r0.y));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Pressed, MouseButton::Left));
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r0.x, r2.y + 8.0));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r0.x, r0.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Pressed, MouseButton::Left),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r0.x, r2.y + 8.0),
+    );
     assert!(app.sidebar_drag_active_for_test());
 
     // Escape aborts — the order snaps back and no move commits.
-    let handled = dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::Escape));
+    let handled = dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::Escape),
+    );
     assert!(handled, "Escape consumes the in-flight drag");
     assert!(!app.sidebar_drag_active_for_test());
-    assert_eq!(root_order(&app), vec![welcome, one, two], "cancel restores the order");
+    assert_eq!(
+        root_order(&app),
+        vec![welcome, one, two],
+        "cancel restores the order"
+    );
 }
 
 #[test]
@@ -217,12 +275,36 @@ fn drag_onto_a_row_reparents_it_as_a_child() {
     // Drag row 1 (One) up onto the middle of row 0 (Welcome) → nest it.
     let r1 = app.sidebar_row_center_for_test(1).unwrap();
     let r0 = app.sidebar_row_center_for_test(0).unwrap();
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r1.x, r1.y));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Pressed, MouseButton::Left));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r1.x, r1.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Pressed, MouseButton::Left),
+    );
     // Land squarely on Welcome's centre band (the "into this page" zone).
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r0.x, r0.y));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r0.x, r0.y),
+    );
     assert!(app.sidebar_drag_active_for_test());
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Released, MouseButton::Left));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Released, MouseButton::Left),
+    );
 
     let pages = app.workspace_pages_for_test();
     let one_meta = pages.iter().find(|p| p.id == one).unwrap();
@@ -242,19 +324,55 @@ fn context_menu_delete_removes_the_page() {
 
     // Right-click row 1 (One) → the context menu opens.
     let r1 = app.sidebar_row_center_for_test(1).unwrap();
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r1.x, r1.y));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Pressed, MouseButton::Right));
-    assert!(app.sidebar_menu_open_for_test(), "right-click opens the context menu");
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r1.x, r1.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Pressed, MouseButton::Right),
+    );
+    assert!(
+        app.sidebar_menu_open_for_test(),
+        "right-click opens the context menu"
+    );
 
     // ArrowUp wraps to the last action row (Delete); Enter fires it.
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::ArrowUp));
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::Enter));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::ArrowUp),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::Enter),
+    );
 
     let pages = app.workspace_pages_for_test();
     assert_eq!(pages.len(), before - 1, "Delete removed exactly one page");
-    assert!(pages.iter().all(|p| p.id != one), "the targeted page is gone");
-    assert!(pages.iter().any(|p| p.id == welcome), "other pages untouched");
-    assert!(!app.sidebar_menu_open_for_test(), "the menu closed after selection");
+    assert!(
+        pages.iter().all(|p| p.id != one),
+        "the targeted page is gone"
+    );
+    assert!(
+        pages.iter().any(|p| p.id == welcome),
+        "other pages untouched"
+    );
+    assert!(
+        !app.sidebar_menu_open_for_test(),
+        "the menu closed after selection"
+    );
 }
 
 #[test]
@@ -262,7 +380,10 @@ fn context_menu_duplicate_deep_copies_the_page() {
     let (mut app, _welcome, one, _two) = three_page_app();
     // Rename One so the copy is identifiable, and give it a child so the
     // duplicate must deep-copy the subtree.
-    app.apply_event_for_test(OutEvent::Rename { id: one, new_title: "Report".into() });
+    app.apply_event_for_test(OutEvent::Rename {
+        id: one,
+        new_title: "Report".into(),
+    });
     app.apply_event_for_test(OutEvent::CreateChild { parent: Some(one) });
     app.sync_sidebar_for_test();
     let before = app.workspace_pages_for_test().len();
@@ -272,13 +393,37 @@ fn context_menu_duplicate_deep_copies_the_page() {
 
     // Right-click row 1 (Report) → menu; ArrowDown ×3 lands on Duplicate.
     let r1 = app.sidebar_row_center_for_test(1).unwrap();
-    dispatch(&mut app, &mut state, &taffy, child, &cursor_moved(r1.x, r1.y));
-    dispatch(&mut app, &mut state, &taffy, child, &mouse(ElementState::Pressed, MouseButton::Right));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &cursor_moved(r1.x, r1.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &mouse(ElementState::Pressed, MouseButton::Right),
+    );
     assert!(app.sidebar_menu_open_for_test());
     for _ in 0..3 {
-        dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::ArrowDown));
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &named_key(NamedKey::ArrowDown),
+        );
     }
-    dispatch(&mut app, &mut state, &taffy, child, &named_key(NamedKey::Enter));
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &named_key(NamedKey::Enter),
+    );
 
     let pages = app.workspace_pages_for_test();
     assert_eq!(

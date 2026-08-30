@@ -1,21 +1,14 @@
-//! Hardware HEVC Main10 encode integration tests.
+//! Hardware HEVC Main10 encode integration tests. Two backend paths, each
+//! self-skipping when the host can't drive it:
+//! - `#[cfg(feature = "vaapi")]` — hevc_vaapi at 1280x720; skips on
+//!   AMD/Intel iGPUs lacking a HEVC Main10 encode block.
+//! - `#[cfg(feature = "nvenc")]` — hevc_nvenc at 1280x720 and 1920x1080;
+//!   skips when `cuInit` fails (no CUDA, or a wedged UVM state).
 //!
-//! Two backend paths, each self-skips when the host can't drive it:
-//!
-//! - `#[cfg(feature = "vaapi")]` — hevc_vaapi at 1280x720. Skips on
-//!   AMD/Intel iGPUs that lack a HEVC Main10 encode block (older
-//!   silicon; some Mesa driver versions ship only H.264 encode).
-//! - `#[cfg(feature = "nvenc")]` — hevc_nvenc at 1280x720 and 1920x1080.
-//!   Skips when `cuInit` fails (containerised runners without CUDA, or
-//!   a wedged UVM state on the host).
-//!
-//! What we assert on a working host:
-//! - The backend constructs successfully with `EncoderInit::hdr10_hevc`.
-//! - `encode()` returns non-empty Annex-B bytes.
-//! - `Encoder::codec()` reports `Codec::HevcMain10` so downstream
-//!   session-start payloads carry the right wire label + bit depth.
-//! - HEVC NAL headers are structurally distinct from H.264 (the first
-//!   NAL unit after the start code is not an H.264 SPS = 0x67).
+//! Asserts on a working host: constructs via `EncoderInit::hdr10_hevc`,
+//! `encode()` returns non-empty Annex-B bytes, `Encoder::codec()` reports
+//! `Codec::HevcMain10`, and the first NAL after the start code isn't an
+//! H.264 SPS (0x67).
 
 #![cfg(any(feature = "vaapi", feature = "nvenc"))]
 
@@ -35,11 +28,10 @@ fn starts_with_annex_b(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x00, 0x00, 0x00, 0x01]) || bytes.starts_with(&[0x00, 0x00, 0x01])
 }
 
-/// Skip the start-code prefix and return the first byte after it. On
-/// HEVC that's the NAL header (`forbidden_zero_bit` + 6-bit `nal_type`
-/// + 6-bit `layer_id` + 3-bit `temporal_id`). On H.264 that's the NAL
-/// header (`forbidden_zero_bit` + 2-bit `nal_ref_idc` + 5-bit
-/// `nal_type`). The bit patterns don't collide for keyframe SPS/VPS.
+/// First byte after the start code — the NAL header (HEVC:
+/// forbidden_zero_bit + 6-bit nal_type + 6-bit layer_id + 3-bit
+/// temporal_id; H.264: forbidden_zero_bit + 2-bit nal_ref_idc + 5-bit
+/// nal_type). The bit patterns don't collide for keyframe SPS/VPS.
 fn first_nal_header_byte(bytes: &[u8]) -> Option<u8> {
     if bytes.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
         return bytes.get(4).copied();
@@ -98,11 +90,8 @@ mod vaapi_tests {
             "hevc_vaapi output must start with Annex-B start code, got {:02x?}",
             &accumulated[..accumulated.len().min(8)]
         );
-        // First NAL after the start code should NOT be an H.264 SPS
-        // (0x67 = forbidden_zero=0, nal_ref_idc=3, nal_type=7). HEVC's
-        // VPS_NUT = 32 → first byte with forbidden_zero=0, nal_type=32
-        // shifted left one is 0x40. Explicit inequality is enough to
-        // catch a codec-mismatch regression.
+        // HEVC's VPS_NUT=32 shifted left one gives 0x40, so an explicit
+        // inequality against H.264's SPS (0x67) catches a codec mismatch.
         let nal_byte = first_nal_header_byte(&accumulated).expect("annex-b start-code");
         assert_ne!(
             nal_byte, 0x67,
@@ -203,9 +192,8 @@ mod nvenc_tests {
         assert!(!accumulated.is_empty());
         assert!(starts_with_annex_b(&accumulated));
         let nal_byte = first_nal_header_byte(&accumulated).expect("annex-b start-code");
-        // HEVC VPS_NUT = 32 → 0x40; SPS_NUT = 33 → 0x42; AUD_NUT = 35 → 0x46.
-        // H.264 SPS byte is 0x67. Any non-0x67 first byte confirms
-        // routing to the HEVC encoder rather than H.264.
+        // HEVC VPS_NUT=32 -> 0x40, SPS_NUT=33 -> 0x42, AUD_NUT=35 -> 0x46; H.264
+        // SPS is 0x67, so any non-0x67 first byte confirms HEVC routing.
         assert_ne!(
             nal_byte, 0x67,
             "hevc_nvenc emitted an H.264 SPS as first NAL — codec routing broken"
@@ -261,10 +249,9 @@ mod nvenc_tests {
         );
     }
 
-    /// Spot-check: HEVC and H.264 NALs from the same NVENC device share
-    /// nothing at the byte level after the start code. Proves the codec
-    /// enum actually flips the encoder rather than silently sending
-    /// H.264 with a different frame format.
+    /// HEVC and H.264 NALs from the same NVENC device share nothing after the
+    /// start code — proves the codec enum flips the encoder rather than
+    /// silently sending H.264 with a different frame format.
     #[test]
     #[ignore = "requires --features nvenc + NVENC HEVC + NVENC H.264"]
     fn nvenc_hevc_bytes_differ_from_h264() {
@@ -290,8 +277,7 @@ mod nvenc_tests {
         assert_eq!(b_hevc.codec(), Codec::HevcMain10);
 
         let (mut h264, mut hevc) = (Vec::new(), Vec::new());
-        // Encode enough frames to flush the encoder's look-ahead so
-        // we're comparing actual bitstream bytes, not empty packets.
+        // Flush the encoder's look-ahead so this compares real bitstream bytes.
         for _ in 0..16 {
             let mut o = Vec::new();
             b_h264.encode(FrameInput::Rgba(&frame), &mut o).unwrap();
@@ -301,9 +287,6 @@ mod nvenc_tests {
             hevc.extend_from_slice(&o);
         }
         assert!(!h264.is_empty() && !hevc.is_empty());
-        // A red-frame H.264 stream and a red-frame HEVC stream at the
-        // same resolution / bitrate share only their leading start
-        // code. First NAL header byte must differ.
         let nb_h264 = first_nal_header_byte(&h264).expect("h264 has nal");
         let nb_hevc = first_nal_header_byte(&hevc).expect("hevc has nal");
         assert_ne!(

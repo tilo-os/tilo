@@ -1,7 +1,7 @@
 //! Detect the local CPU's highest supported architecture-specific
 //! feature level.
 //!
-//! Two-arch today (x86_64, aarch64); adding a new arch is a matching
+//! Two-arch today (`x86_64`, aarch64); adding a new arch is a matching
 //! extension to `pkg::manifest::Arch`, a new detector function here,
 //! plus a `pick_variant` case.
 //!
@@ -29,9 +29,13 @@ pub fn detect() -> IsaLevel {
 /// arch — the CPU it's running on can't differ.
 pub fn host_arch() -> Arch {
     #[cfg(target_arch = "x86_64")]
-    { Arch::X86_64 }
+    {
+        Arch::X86_64
+    }
     #[cfg(target_arch = "aarch64")]
-    { Arch::AArch64 }
+    {
+        Arch::AArch64
+    }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         panic!("qOS binary compiled for unsupported target arch");
@@ -75,11 +79,9 @@ fn detect_x86_64(flags: &str) -> X86_64Level {
     ]
     .iter()
     .all(|f| has(flags, f));
-    let v2_extras = [
-        "sse3", "ssse3", "sse4_1", "sse4_2", "popcnt", "cx16",
-    ]
-    .iter()
-    .all(|f| has(flags, f));
+    let v2_extras = ["sse3", "ssse3", "sse4_1", "sse4_2", "popcnt", "cx16"]
+        .iter()
+        .all(|f| has(flags, f));
 
     match (v4, v3_extras && v2_extras, v2_extras) {
         (true, true, true) => X86_64Level::V4,
@@ -102,10 +104,15 @@ fn detect_aarch64(flags: &str) -> AArch64Level {
     // dot-product as `asimddp`.
     let v8_2 = has(flags, "fphp") && has(flags, "asimddp");
 
-    if v9 && v8_4 && v8_2 { AArch64Level::Armv9A }
-    else if v8_4 && v8_2 { AArch64Level::Armv8_4A }
-    else if v8_2 { AArch64Level::Armv8_2A }
-    else { AArch64Level::Armv8A }
+    if v9 && v8_4 && v8_2 {
+        AArch64Level::Armv9A
+    } else if v8_4 && v8_2 {
+        AArch64Level::Armv8_4A
+    } else if v8_2 {
+        AArch64Level::Armv8_2A
+    } else {
+        AArch64Level::Armv8A
+    }
 }
 
 /// Given the host's detected level and the set of levels a package
@@ -161,7 +168,7 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallError::NoBuildForArch(arch) => {
-                write!(f, "no build available for host architecture {:?}", arch)
+                write!(f, "no build available for host architecture {arch:?}")
             }
             InstallError::HostTooOld { required, host } => write!(
                 f,
@@ -219,7 +226,10 @@ mod tests {
     #[test]
     fn arm_v8_baseline() {
         // Neither fp16 nor asimddp — plain v8-A.
-        assert_eq!(detect_aarch64("fp asimd aes sha1 sha2"), AArch64Level::Armv8A);
+        assert_eq!(
+            detect_aarch64("fp asimd aes sha1 sha2"),
+            AArch64Level::Armv8A
+        );
     }
 
     #[test]
@@ -282,7 +292,10 @@ mod tests {
             IsaLevel::X86_64(X86_64Level::V2),
             IsaLevel::X86_64(X86_64Level::V3),
         ];
-        assert_eq!(pick_variant(host, &available), Some(IsaLevel::X86_64(X86_64Level::V3)));
+        assert_eq!(
+            pick_variant(host, &available),
+            Some(IsaLevel::X86_64(X86_64Level::V3))
+        );
     }
 
     #[test]
@@ -292,7 +305,10 @@ mod tests {
             IsaLevel::X86_64(X86_64Level::V3),
             IsaLevel::X86_64(X86_64Level::V4),
         ];
-        assert_eq!(pick_variant(host, &available), Some(IsaLevel::X86_64(X86_64Level::V3)));
+        assert_eq!(
+            pick_variant(host, &available),
+            Some(IsaLevel::X86_64(X86_64Level::V3))
+        );
     }
 
     #[test]

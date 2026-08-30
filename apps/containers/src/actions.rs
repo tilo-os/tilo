@@ -67,9 +67,7 @@ mod tests {
     use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
     use taffy::{NodeId, TaffyTree};
     use ui::widget::Widget;
-    use winit::event::{
-        DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent,
-    };
+    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
 
     use crate::app::ContainersApp;
@@ -92,7 +90,11 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     fn named_event(named: NamedKey) -> WindowEvent {
@@ -103,7 +105,11 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     fn left_press() -> WindowEvent {
@@ -120,8 +126,15 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
-            ev, 1.0, &Modifiers::default(), doc, &ROOT, &mut handled, &mut focus,
-            NodeId::new(0), &taffy,
+            ev,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            NodeId::new(0),
+            &taffy,
         );
     }
 
@@ -155,16 +168,30 @@ mod tests {
 
         // The whole document is a single `view` map — nothing else.
         let root_keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(root_keys, vec!["view".to_string()], "document is only the view map: {root_keys:?}");
+        assert_eq!(
+            root_keys,
+            vec!["view".to_string()],
+            "document is only the view map: {root_keys:?}"
+        );
 
         // Every key inside `view` is a known view-state key; classify each.
         const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
         let view = view_obj(&doc);
         for key in doc.keys(&view) {
-            assert!(ALLOWED.contains(&key.as_str()), "unexpected structural key in document: {key}");
+            assert!(
+                ALLOWED.contains(&key.as_str()),
+                "unexpected structural key in document: {key}"
+            );
         }
         // No user-authored record collection exists to hang an action off.
-        for forbidden in ["favourites", "favorites", "pins", "run_configs", "groups", "sessions"] {
+        for forbidden in [
+            "favourites",
+            "favorites",
+            "pins",
+            "run_configs",
+            "groups",
+            "sessions",
+        ] {
             assert!(
                 doc.get(&view, forbidden).unwrap().is_none(),
                 "document must not carry a `{forbidden}` record collection",
@@ -174,7 +201,9 @@ mod tests {
         // Selection is a presentation scalar; the create draft is a native-Text map.
         match doc.get(&view, "selected").unwrap() {
             Some((Value::Scalar(s), _)) => {
-                assert!(matches!(s.as_ref(), automerge::ScalarValue::Str(v) if v.as_str() == expected))
+                assert!(
+                    matches!(s.as_ref(), automerge::ScalarValue::Str(v) if v.as_str() == expected)
+                );
             }
             other => panic!("view.selected must be a scalar string, got {other:?}"),
         }
@@ -205,7 +234,11 @@ mod tests {
         doc.commit();
         let base = doc.save();
         let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "precondition: replicas share a base");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "precondition: replicas share a base"
+        );
 
         // Real keystroke → create_modal_key → ViewDoc::set_create_field (a splice).
         send(&mut app, &mut doc, &char_event("w"));
@@ -217,7 +250,11 @@ mod tests {
         );
 
         peer.merge(&mut doc).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "byte-identical convergence after merge");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "byte-identical convergence after merge"
+        );
         assert_eq!(
             ViewDoc::create_field(&mut peer, CreateField::Name),
             "w",
@@ -246,8 +283,15 @@ mod tests {
         // Production lifecycle path (offline mirror of `podman stop`).
         app.apply_action(Lifecycle::Stop, &running.id);
 
-        let after = app.engine.find(&running.id).expect("container still present");
-        assert_eq!(after.status, ContainerStatus::Exited, "the engine reflects the stop");
+        let after = app
+            .engine
+            .find(&running.id)
+            .expect("container still present");
+        assert_eq!(
+            after.status,
+            ContainerStatus::Exited,
+            "the engine reflects the stop"
+        );
         assert_eq!(
             doc.get_heads(),
             heads_before,

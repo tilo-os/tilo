@@ -16,16 +16,14 @@
 //! `Relay`/`RelayCoeditSession` path — no mocks of the host or the
 //! bridge.
 
-mod common;
-
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, Value};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use qos_relay::{Inbound, RelayClient, RelayCoeditSession};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 /// A fresh document with a `Text` object at `ROOT["text"]` holding
 /// `seed` — mirroring what a toolkit editor binds to.
@@ -45,13 +43,11 @@ fn text_of(doc: &AutoCommit) -> String {
 }
 
 fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
 }
 
 /// Drain `session` until an `Inbound::Delta` arrives, applying each
@@ -250,7 +246,9 @@ async fn never_both_online_coedit_converges_through_host() {
             .expect("B closed");
         match inbound {
             Inbound::Delta { data, .. } => {
-                doc_b.load_incremental(&data).expect("B applies queued co-edit");
+                doc_b
+                    .load_incremental(&data)
+                    .expect("B applies queued co-edit");
                 got_delta = true;
             }
             Inbound::Ready { pending } => {
@@ -269,7 +267,11 @@ async fn never_both_online_coedit_converges_through_host() {
         doc_b.get_heads(),
         "B converges with A across a host restart, never having been online together"
     );
-    assert_eq!(pending_count(&pending_dir), 0, "queue drains after delivery");
+    assert_eq!(
+        pending_count(&pending_dir),
+        0,
+        "queue drains after delivery"
+    );
 
     drop(host2);
 }
