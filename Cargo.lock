@@ -7063,6 +7063,7 @@ dependencies = [
  "pkg",
  "qos-desktop-entry",
  "runtime-bundle",
+ "runtime-identity",
  "seccompiler",
  "serde",
  "serde_json",
@@ -9336,6 +9337,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zbus 4.4.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -11668,6 +11670,7 @@ dependencies = [
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "ed25519-dalek 2.2.0",
  "runtime-portal",
  "serde",
@@ -12472,6 +12475,7 @@ dependencies = [
  "media",
  "os-actions",
  "qos-actions",
+ "runtime-identity",
  "runtime-portal-xdg",
  "serde",
  "serde_json",
