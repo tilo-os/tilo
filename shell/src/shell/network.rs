@@ -16,11 +16,19 @@ use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
-use crate::shell::state::WorkspaceTreeHandle;
+use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
-/// Default workspace topic id. Every shell currently shares the same
-/// gossip topic rather than negotiating per-workspace routing.
+/// Compatibility/control topic used only when a message has no room identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
+
+/// Stable transport/host shard for a durable room. Local workspace handles are
+/// deliberately not used: they differ between devices.
+pub fn room_topic_id(room: RoomId) -> u64 {
+    if room.is_nil() {
+        return DEFAULT_WS_TOPIC;
+    }
+    qos_relay::room_workspace_id(&room.to_string()).expect("RoomId is a valid UUID")
+}
 
 /// Largest app-document snapshot this shell will put on the gossip
 /// topic, in bytes.
@@ -49,6 +57,36 @@ pub fn peer_key_path() -> std::path::PathBuf {
     }
 }
 
+fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
+    serde_json::from_str(value).ok().or_else(|| {
+        value
+            .parse::<iroh::EndpointId>()
+            .ok()
+            .map(iroh::EndpointAddr::new)
+    })
+}
+
+fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
+    let mut hosts = Vec::new();
+    if let Ok(value) = std::env::var("QOS_COLLAB_HOSTS") {
+        match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
+            Ok(parsed) => hosts.extend(parsed),
+            Err(error) => {
+                tracing::warn!(%error, "QOS_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses")
+            }
+        }
+    }
+    if let Ok(value) = std::env::var("QOS_COLLAB_HOST") {
+        match parse_host_addr(&value) {
+            Some(addr) => hosts.push(addr),
+            None => tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id"),
+        }
+    }
+    hosts.sort_by_key(|addr| addr.id.to_string());
+    hosts.dedup_by_key(|addr| addr.id);
+    hosts
+}
+
 /// How often a shell asks the rooms it is in for anything it is
 /// missing. Room replication has no push side, so this interval is the
 /// upper bound on how stale a guest's view of a room can be.
@@ -70,6 +108,9 @@ pub struct ShellNetwork {
     /// each [`Self::tick`]. `Mutex`-wrapped so `tick` can take `&self`
     /// while shared behind `Arc<ShellNetwork>`.
     pub event_rx: Mutex<mpsc::Receiver<NetEvent>>,
+    /// Topics already subscribed in the actor. Avoids sending a Join command on
+    /// every app delta while still allowing rooms accepted after startup.
+    joined_topics: Mutex<std::collections::HashSet<u64>>,
     /// Tokio runtime hosting the actor. `Option` so `drop` can `take`
     /// it and shut down without blocking the test thread.
     runtime: Option<tokio::runtime::Runtime>,
@@ -83,6 +124,8 @@ pub struct ShellNetwork {
     local_peer_id: iroh::EndpointId,
     /// Current direct/relay dialing addresses reported by iroh.
     listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
+    /// Always-on hosts included in newly issued invites.
+    host_addrs: Mutex<Vec<iroh::EndpointAddr>>,
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -114,7 +157,7 @@ pub struct ShellNetwork {
     /// Rooms with an outstanding request for somebody's whole document,
     /// keyed by cluster id. Entered when a peer announces arrival,
     /// removed when a snapshot is published for it.
-    snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
+    snapshot_requests: Arc<Mutex<std::collections::HashMap<String, SnapshotWindow>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
@@ -213,6 +256,14 @@ pub struct InboundPresence {
     pub ts: u64,
 }
 
+/// Short window opened by one peer arrival. Every distinct document in the
+/// room may publish one baseline; repeat snapshots from the same document are
+/// suppressed so ordinary commits cannot turn into whole-state broadcasts.
+struct SnapshotWindow {
+    opened: std::time::Instant,
+    released: std::collections::HashSet<(String, String)>,
+}
+
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared [`WorkspaceTree`] in a [`WorkspaceTreeReplica`], and
@@ -243,6 +294,32 @@ impl ShellNetwork {
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
+        let lan_discovery = std::env::var_os("QOS_COLLAB_LAN_DISCOVERY")
+            .is_some_and(|value| value != "0" && !value.is_empty());
+        let mdns = if lan_discovery {
+            match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+                .service_name("qos-collab-v1")
+                .build(endpoint.id())
+            {
+                Ok(mdns) => {
+                    if let Ok(address_lookup) = endpoint.address_lookup() {
+                        address_lookup.add(mdns.clone());
+                        Some(mdns)
+                    } else {
+                        tracing::warn!(
+                            "LAN discovery requested but endpoint has no address lookup registry"
+                        );
+                        None
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "LAN discovery requested but could not start");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         tracing::info!(
             local_peer_id = %local_peer_id,
             addr = ?endpoint.addr(),
@@ -256,20 +333,32 @@ impl ShellNetwork {
             host_identity,
             Arc::clone(&listen_addrs),
         );
+        if let Some(mdns) = mdns {
+            let discovery_tx = cmd_tx.clone();
+            runtime.spawn(async move {
+                use futures_lite::StreamExt;
+                let mut events = mdns.subscribe().await;
+                while let Some(event) = events.next().await {
+                    if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered {
+                        endpoint_info,
+                        ..
+                    } = event
+                    {
+                        let _ = discovery_tx
+                            .send(NetCmd::Connect {
+                                addr: endpoint_info.into_endpoint_addr(),
+                            })
+                            .await;
+                    }
+                }
+            });
+            tracing::info!(
+                "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _qos-collab-v1._udp.local"
+            );
+        }
 
-        if let Some(addr) = std::env::var_os("QOS_COLLAB_HOST")
-            .and_then(|value| value.into_string().ok())
-            .and_then(|value| {
-                serde_json::from_str::<iroh::EndpointAddr>(&value)
-                    .ok()
-                    .or_else(|| {
-                        value
-                            .parse::<iroh::EndpointId>()
-                            .ok()
-                            .map(iroh::EndpointAddr::new)
-                    })
-            })
-        {
+        let host_addrs = configured_host_addrs();
+        for addr in host_addrs.iter().cloned() {
             let _ = cmd_tx.try_send(NetCmd::ConnectHost { addr });
         }
 
@@ -286,11 +375,13 @@ impl ShellNetwork {
             replica,
             event_tx,
             event_rx: Mutex::new(event_rx),
+            joined_topics: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
             local_peer_hash,
             keypair,
             local_peer_id,
             listen_addrs,
+            host_addrs: Mutex::new(host_addrs),
             last_sync_kick: Mutex::new(None),
             pending_invitees: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -298,7 +389,7 @@ impl ShellNetwork {
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-            snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -333,11 +424,63 @@ impl ShellNetwork {
         replica.tree.read().room_peer_labels(room)
     }
 
-    /// Workspace topic the next publish should use. Hard-codes
-    /// [`DEFAULT_WS_TOPIC`] — the actor only joins the default
-    /// workspace at startup, so there is no other to pick.
+    /// Workspace topic for session traffic associated with the active room.
     pub fn active_ws_for_publish(&self) -> u64 {
-        DEFAULT_WS_TOPIC
+        let Ok(replica) = self.replica.lock() else {
+            return DEFAULT_WS_TOPIC;
+        };
+        replica
+            .tree
+            .read()
+            .active_workspace()
+            .map(|workspace| room_topic_id(workspace.room))
+            .unwrap_or(DEFAULT_WS_TOPIC)
+    }
+
+    fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
+        let room = match msg {
+            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
+                Some(room.as_str())
+            }
+            NeighbourMsg::AppCrdtIncremental { cluster_id, .. }
+            | NeighbourMsg::AppCrdtIncrementalSigned { cluster_id, .. }
+            | NeighbourMsg::AppPresence { cluster_id, .. }
+            | NeighbourMsg::AppCrdtSnapshot { cluster_id, .. } => Some(cluster_id.as_str()),
+            _ => None,
+        };
+        room.and_then(RoomId::parse)
+            .filter(|room| !room.is_nil())
+            .map(room_topic_id)
+    }
+
+    fn topic_for_message(&self, msg: &NeighbourMsg) -> u64 {
+        Self::explicit_topic_for_message(msg).unwrap_or_else(|| self.active_ws_for_publish())
+    }
+
+    fn join_topic(&self, ws: u64) -> bool {
+        let Ok(mut joined) = self.joined_topics.lock() else {
+            return false;
+        };
+        if !joined.insert(ws) {
+            return true;
+        }
+        if self
+            .cmd_tx
+            .try_send(NetCmd::JoinWorkspace {
+                ws,
+                on_event: self.event_tx.clone(),
+            })
+            .is_err()
+        {
+            joined.remove(&ws);
+            return false;
+        }
+        true
+    }
+
+    fn publish_message(&self, msg: NeighbourMsg) -> bool {
+        let ws = self.topic_for_message(&msg);
+        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
 
     /// Shared handle to the inbound-presence buffer. The shell's
@@ -362,10 +505,7 @@ impl ShellNetwork {
             point,
             ts,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Queue a received presence move; public so tests can inject one
@@ -417,10 +557,7 @@ impl ShellNetwork {
             record_id,
             data,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Is `cluster_id` a room this machine is in? An app's cluster is
@@ -504,10 +641,7 @@ impl ShellNetwork {
             record_id,
             envelope: Box::new(envelope),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Queue a received `AppCrdtIncrementalSigned` for the broker's drainer.
@@ -542,10 +676,7 @@ impl ShellNetwork {
             cluster_id,
             frame,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Shared handle to the inbound app-presence buffer, drained by the
@@ -585,7 +716,7 @@ impl ShellNetwork {
         record_id: String,
         data: Vec<u8>,
     ) {
-        if !self.take_snapshot_request(&cluster_id) {
+        if !self.take_snapshot_request(&cluster_id, &app_id, &record_id) {
             tracing::trace!(
                 app = %app_id,
                 room = %cluster_id,
@@ -611,10 +742,7 @@ impl ShellNetwork {
             record_id,
             data,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Record that somebody in `cluster_id` needs a whole document —
@@ -628,16 +756,31 @@ impl ShellNetwork {
             return;
         }
         if let Ok(mut pending) = self.snapshot_requests.lock() {
-            pending.insert(cluster_id.to_string());
+            pending.insert(
+                cluster_id.to_string(),
+                SnapshotWindow {
+                    opened: std::time::Instant::now(),
+                    released: std::collections::HashSet::new(),
+                },
+            );
         }
     }
 
     /// Take the outstanding snapshot request for `cluster_id`, if any.
-    fn take_snapshot_request(&self, cluster_id: &str) -> bool {
-        match self.snapshot_requests.lock() {
-            Ok(mut pending) => pending.remove(cluster_id),
-            Err(_) => false,
+    fn take_snapshot_request(&self, cluster_id: &str, app_id: &str, record_id: &str) -> bool {
+        let Ok(mut pending) = self.snapshot_requests.lock() else {
+            return false;
+        };
+        let Some(window) = pending.get_mut(cluster_id) else {
+            return false;
+        };
+        if window.opened.elapsed() > std::time::Duration::from_secs(5) {
+            pending.remove(cluster_id);
+            return false;
         }
+        window
+            .released
+            .insert((app_id.to_string(), record_id.to_string()))
     }
 
     /// Shared handle to the inbound app-snapshot buffer, drained by the
@@ -693,10 +836,7 @@ impl ShellNetwork {
             max,
             requester: self.local_peer_id_hash(),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
@@ -711,10 +851,7 @@ impl ShellNetwork {
             ops,
             responder: self.local_peer_id_hash(),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        let _ = self.publish_message(msg);
     }
 
     /// Queue a received `ScrollbackRequest` for the broker's drainer.
@@ -751,22 +888,26 @@ impl ShellNetwork {
         }
     }
 
-    /// Subscribe the actor to the default workspace topic, registering
-    /// `event_tx` as its event sink. Returns whether the command was
-    /// successfully queued.
+    /// Subscribe the actor to every durable room currently in the tree, plus
+    /// the compatibility/control topic. Rooms accepted later are joined by
+    /// [`Self::publish_message`].
     pub fn join_default_workspace(&self) -> bool {
-        self.cmd_tx
-            .try_send(NetCmd::JoinWorkspace {
-                ws: DEFAULT_WS_TOPIC,
-                on_event: self.event_tx.clone(),
-            })
-            .is_ok()
+        let mut topics = vec![DEFAULT_WS_TOPIC];
+        if let Ok(replica) = self.replica.lock() {
+            topics.extend(replica.tree.read().rooms().into_iter().map(room_topic_id));
+        }
+        topics.into_iter().all(|topic| self.join_topic(topic))
     }
 
     /// Attach an always-on home or hosted workspace server. The actor keeps
     /// its direct Iroh gossip path and additionally uses the authenticated
     /// host session for offline store-and-forward.
     pub fn connect_host(&self, addr: iroh::EndpointAddr) -> bool {
+        if let Ok(mut hosts) = self.host_addrs.lock()
+            && !hosts.iter().any(|known| known.id == addr.id)
+        {
+            hosts.push(addr.clone());
+        }
         self.cmd_tx.try_send(NetCmd::ConnectHost { addr }).is_ok()
     }
 
@@ -822,10 +963,16 @@ impl ShellNetwork {
                 .iter()
                 .find(|w| w.id == local)
                 .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
-            let token = crate::network::invite::make_invite_token(
+            let hosts = self
+                .host_addrs
+                .lock()
+                .map(|hosts| hosts.clone())
+                .unwrap_or_default();
+            let token = crate::network::invite::make_invite_token_with_hosts(
                 &self.keypair,
                 ws,
                 &addr,
+                &hosts,
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
@@ -842,6 +989,7 @@ impl ShellNetwork {
             let peer = self.local_peer_id.to_string();
             replica.tree.write().name_peer(room, &me, &peer, &me);
         }
+        self.join_topic(room_topic_id(room));
 
         // And park the invitee's name against the room, for
         // `name_invitee_on_arrival` to write when they turn up.
@@ -923,6 +1071,9 @@ impl ShellNetwork {
             let mut tree = replica.tree.write();
             accept_invite_into(&mut tree, local, token)?
         };
+        if !self.join_topic(room_topic_id(room)) {
+            return Err("peer-sync command queue is full; try accepting the invite again".into());
+        }
         // Dial the authenticated address carried by the invite.
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
@@ -930,15 +1081,15 @@ impl ShellNetwork {
             let _ = self.cmd_tx.try_send(NetCmd::Connect {
                 addr: parsed.owner_addr,
             });
+            for host in parsed.host_addrs {
+                let _ = self.connect_host(host);
+            }
         }
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
         for msg in outgoing {
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
+            let _ = self.publish_message(msg);
         }
         Ok(room)
     }
@@ -953,10 +1104,7 @@ impl ShellNetwork {
         let outgoing = replica.drain_outgoing();
         drop(replica);
         for msg in outgoing {
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
+            let _ = self.publish_message(msg);
         }
     }
 
@@ -994,6 +1142,60 @@ impl ShellNetwork {
             .lock()
             .expect("event_rx mutex must not be poisoned");
         while let Ok(event) = event_rx.try_recv() {
+            if let NetEvent::HostReady { ws, peer } = event {
+                let room = self.replica.lock().ok().and_then(|replica| {
+                    replica
+                        .tree
+                        .read()
+                        .rooms()
+                        .into_iter()
+                        .find(|room| room_topic_id(*room) == ws)
+                });
+                if let Some(room) = room {
+                    // Seed a complete shell-room checkpoint. Unlike SyncReq,
+                    // this does not need another device online to answer it.
+                    let changes = self
+                        .replica
+                        .lock()
+                        .ok()
+                        .and_then(|replica| {
+                            replica.tree.write().export_room_changes_since(room, &[])
+                        })
+                        .unwrap_or_default();
+                    if !changes.is_empty() {
+                        let _ = self.publish_message(NeighbourMsg::SyncResp {
+                            changes,
+                            room: room.to_string(),
+                        });
+                    }
+
+                    // Apps answer an Arrived presence event with their full
+                    // Automerge document. Synthesize that local event for the
+                    // durable host so its retained checkpoints include app
+                    // state that existed before the host connected.
+                    let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
+                    for payload in [
+                        ui::collaboration::PresencePayload::Arrived,
+                        ui::collaboration::PresencePayload::Left,
+                    ] {
+                        let frame = ui::collaboration::CollabRequest::Presence {
+                            key: ui::presence::PresenceKey::Workspace {
+                                id: room.to_string(),
+                            },
+                            payload,
+                        };
+                        if let Ok(frame) = serde_json::to_vec(&frame) {
+                            self.handle_app_presence_message(
+                                host_peer,
+                                String::new(),
+                                room.to_string(),
+                                frame,
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
             if let NetEvent::PeerJoined { .. } = event {
                 self.publish_sync_requests();
                 continue;
@@ -1007,7 +1209,17 @@ impl ShellNetwork {
                 }
                 continue;
             }
-            if let NetEvent::Msg { ws: _, peer, msg } = event {
+            if let NetEvent::Msg { ws, peer, msg } = event {
+                if let Some(expected) = Self::explicit_topic_for_message(&msg)
+                    && expected != ws
+                {
+                    tracing::warn!(
+                        ws,
+                        expected,
+                        "dropping collaboration message on the wrong room topic"
+                    );
+                    continue;
+                }
                 // Ephemeral overlay state, not CRDT state — skips the
                 // replica entirely.
                 if let NeighbourMsg::PresenceMoved {
@@ -1165,10 +1377,7 @@ impl ShellNetwork {
                 let outgoing = rep.drain_outgoing();
                 drop(rep);
                 for out_msg in outgoing {
-                    let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                        ws: DEFAULT_WS_TOPIC,
-                        msg: out_msg,
-                    });
+                    let _ = self.publish_message(out_msg);
                 }
             }
         }
@@ -1191,7 +1400,6 @@ fn host_identity_for_key(
         return None;
     }
     Some(HostIdentity {
-        user_public_key,
         device_cert,
         device_signing_key: ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
     })
@@ -1219,16 +1427,20 @@ pub(crate) fn shell_network_for_test(
     let (event_tx, event_rx) = mpsc::channel(64);
     let keypair = iroh::SecretKey::generate();
     let local_peer_id = keypair.public();
+    let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
+    joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
     let net = ShellNetwork {
         cmd_tx,
         replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
         event_tx,
         event_rx: Mutex::new(event_rx),
+        joined_topics: Mutex::new(joined_topics),
         runtime: None,
         local_peer_hash,
         keypair,
         local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
+        host_addrs: Mutex::new(Vec::new()),
         last_sync_kick: Mutex::new(None),
         pending_invitees: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -1236,7 +1448,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
-        snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        snapshot_requests: Arc::new(Mutex::new(std::collections::HashMap::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -1389,10 +1601,67 @@ mod tests {
         net.tick();
     }
 
+    #[test]
+    fn host_ready_seeds_shell_and_app_checkpoints() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let room_id = tree.read().rooms()[0];
+        let topic = room_topic_id(room_id);
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFE);
+        // Consume the normal first-tick anti-entropy request so the assertion
+        // below is specifically about the host baseline edge.
+        net.tick();
+        while cmd_rx.try_recv().is_ok() {}
+
+        net.event_tx
+            .try_send(NetEvent::HostReady {
+                ws: topic,
+                peer: iroh::SecretKey::from_bytes(&[23; 32]).public(),
+            })
+            .unwrap();
+        net.tick();
+
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(NetCmd::Publish {
+                ws,
+                msg: NeighbourMsg::SyncResp { ref room, .. },
+            }) if ws == topic && room == &room_id.to_string()
+        ));
+        let app_events = net.inbound_app_presence.lock().unwrap();
+        assert_eq!(
+            app_events.len(),
+            2,
+            "Arrived + Left prompt a bounded app snapshot refresh"
+        );
+        let payloads: Vec<_> = app_events
+            .iter()
+            .map(|event| {
+                serde_json::from_slice::<ui::collaboration::CollabRequest>(&event.frame).unwrap()
+            })
+            .collect();
+        assert!(matches!(
+            payloads[0],
+            ui::collaboration::CollabRequest::Presence {
+                payload: ui::collaboration::PresencePayload::Arrived,
+                ..
+            }
+        ));
+        assert!(matches!(
+            payloads[1],
+            ui::collaboration::CollabRequest::Presence {
+                payload: ui::collaboration::PresencePayload::Left,
+                ..
+            }
+        ));
+    }
+
     /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
     fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
         NetEvent::Msg {
-            ws: DEFAULT_WS_TOPIC,
+            ws: RoomId::parse(cluster_id)
+                .filter(|room| !room.is_nil())
+                .map(room_topic_id)
+                .unwrap_or(DEFAULT_WS_TOPIC),
             peer: iroh::SecretKey::generate().public(),
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
@@ -1484,8 +1753,15 @@ mod tests {
             "the guest's workspace now addresses the inviter's room",
         );
 
-        // Two commands, in order: dial the address the token named,
-        // then ask that room for a catch-up.
+        // Three commands, in order: join the stable room shard, dial the
+        // address the token named, then ask that room for a catch-up.
+        let subscribe = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must join its room topic");
+        match subscribe {
+            NetCmd::JoinWorkspace { ws, .. } => assert_eq!(ws, room_topic_id(host_room)),
+            other => panic!("expected NetCmd::JoinWorkspace, got {other:?}"),
+        }
         let dial = cmd_rx
             .try_recv()
             .expect("accepting an invite must dial the address it named");
@@ -1498,7 +1774,7 @@ mod tests {
             .expect("accepting an invite must ask the room for a catch-up");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, room_topic_id(host_room));
                 match msg {
                     NeighbourMsg::SyncReq { room, .. } => assert_eq!(
                         room,
@@ -1545,13 +1821,14 @@ mod tests {
     fn publish_presence_emits_a_publish_command() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
+        let expected_topic = net.active_ws_for_publish();
         net.publish_presence("local-cursor".into(), (100.0, 200.0));
         let cmd = cmd_rx
             .try_recv()
             .expect("publish_presence must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::PresenceMoved {
                         peer,
@@ -1577,6 +1854,7 @@ mod tests {
     fn publish_app_crdt_snapshot_wraps_the_whole_document() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let expected_topic = net.active_ws_for_publish();
 
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
@@ -1601,7 +1879,7 @@ mod tests {
             .expect("publish_app_crdt_snapshot must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::AppCrdtSnapshot {
                         peer,
@@ -1655,9 +1933,9 @@ mod tests {
     }
 
     #[test]
-    fn one_arrival_releases_one_document_and_no_more() {
-        // Arming is one-shot: a peer arrives, one document goes out, and
-        // the commits after it stay local until somebody else arrives.
+    fn one_arrival_releases_each_document_once() {
+        // One arrival may need baselines for several records/apps. Repeated
+        // snapshots for one record still stay local until another arrival.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         let room = "00000000-0000-0000-0000-000000000000";
@@ -1678,6 +1956,17 @@ mod tests {
         assert!(
             cmd_rx.try_recv().is_err(),
             "the commits after it must not each broadcast the document again",
+        );
+
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            room.into(),
+            "a-second-record".into(),
+            vec![0xBB],
+        );
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "the same arrival releases a baseline for each distinct document",
         );
 
         net.note_snapshot_request("00000000-0000-0000-0000-000000000001");
@@ -1791,6 +2080,7 @@ mod tests {
     fn publish_app_crdt_incremental_emits_a_publish_command() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let expected_topic = net.active_ws_for_publish();
         net.publish_app_crdt_incremental(
             "terminal".into(),
             "00000000-0000-0000-0000-000000000000".into(),
@@ -1802,7 +2092,7 @@ mod tests {
             .expect("publish_app_crdt_incremental must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::AppCrdtIncremental {
                         peer,
@@ -1863,6 +2153,7 @@ mod tests {
     fn publish_app_crdt_signed_emits_a_publish_command() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
+        let expected_topic = net.active_ws_for_publish();
         let envelope = make_envelope(7);
         net.publish_app_crdt_signed(
             "notes".to_string(),
@@ -1875,7 +2166,7 @@ mod tests {
             .expect("publish_app_crdt_signed must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::AppCrdtIncrementalSigned {
                         peer,
@@ -1920,10 +2211,11 @@ mod tests {
     }
 
     #[test]
-    fn active_ws_for_publish_returns_default_topic() {
+    fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
+        let expected = room_topic_id(tree.read().active_workspace().unwrap().room);
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
-        assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
+        assert_eq!(net.active_ws_for_publish(), expected);
     }
 
     #[test]
@@ -1931,6 +2223,7 @@ mod tests {
         use collab_types::ArtifactId;
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
+        let expected_topic = net.active_ws_for_publish();
         let artifact = ArtifactId::new();
         net.publish_scrollback_request(artifact, 100, 25);
         let cmd = cmd_rx
@@ -1938,7 +2231,7 @@ mod tests {
             .expect("publish_scrollback_request must enqueue a NetCmd");
         match cmd {
             NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                assert_eq!(ws, expected_topic);
                 match msg {
                     NeighbourMsg::ScrollbackRequest {
                         artifact: got_art,
