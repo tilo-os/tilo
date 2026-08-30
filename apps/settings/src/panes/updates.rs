@@ -52,6 +52,8 @@ pub const ROLLBACK_KEY: &str = "updates.rollback";
 /// Two clicks to roll back, because the first one is easy to make by accident
 /// and the second comes after the pane has said what a rollback does not undo.
 pub const ROLLBACK_CONFIRM_KEY: &str = "updates.rollback.confirm";
+pub const FIRMWARE_REFRESH_KEY: &str = "updates.firmware.refresh";
+pub const FIRMWARE_INSTALL_KEY: &str = "updates.firmware.install";
 
 /// The channels offered by the release-channel dropdown.
 pub const CHANNELS: &[&str] = &["Stable", "Testing", "Nightly"];
@@ -358,6 +360,9 @@ pub struct UpdatesPane {
     timer_enabled: Option<bool>,
     /// What this machine can go back to, if anything.
     rollback_target: Option<String>,
+    /// `None` means fwupd is unavailable; `Some([])` means it answered and
+    /// there are no applicable upgrades.
+    firmware_updates: Option<Vec<os_actions::FirmwareUpdate>>,
     /// Set once the person has asked to roll back and been shown what it does
     /// not undo; cleared when they leave the pane's structure alone long
     /// enough to rebuild.
@@ -392,6 +397,7 @@ impl UpdatesPane {
             prefs.auto = on;
         }
         let rollback_target = control.rollback_target();
+        let firmware_updates = os_actions::get_firmware_updates().ok();
         Self {
             status,
             prefs,
@@ -402,6 +408,7 @@ impl UpdatesPane {
             control,
             timer_enabled,
             rollback_target,
+            firmware_updates,
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
@@ -461,6 +468,7 @@ impl UpdatesPane {
             control,
             timer_enabled,
             rollback_target,
+            firmware_updates: None,
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
@@ -605,6 +613,52 @@ impl UpdatesPane {
             ]),
         );
 
+        let firmware_body: El = match &self.firmware_updates {
+            None => rows(vec![
+                value_row("Service", "fwupd is unavailable"),
+                caption("Firmware upgrades require the fwupd service and a supported device."),
+            ]),
+            Some(updates) if updates.is_empty() => rows(vec![
+                value_row("Status", "Device firmware is up to date"),
+                Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "settings.updates.firmware.refresh",
+                            "\u{f0450}  Check firmware",
+                            Some(FIRMWARE_REFRESH_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ),
+            ]),
+            Some(updates) => {
+                let mut items: Vec<El> = updates
+                    .iter()
+                    .map(|update| {
+                        let version = match (&update.current_version, &update.new_version) {
+                            (Some(from), Some(to)) => format!("{from} → {to}"),
+                            (_, Some(to)) => format!("Update to {to}"),
+                            _ => "Update available".to_string(),
+                        };
+                        value_row(&update.device, &version)
+                    })
+                    .collect();
+                items.push(caption(
+                    "Firmware is verified and installed by fwupd. Authorization may be required; some updates finish after a restart.",
+                ));
+                items.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "settings.updates.firmware.install",
+                            "Install firmware upgrades",
+                            Some(FIRMWARE_INSTALL_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
+                rows(items)
+            }
+        };
+        let firmware_card = card("Device firmware", firmware_body);
+
         // The rollback card. Present whether or not there is anything to go
         // back to, because "this machine has nothing to roll back to" is
         // information a person looking for the control needs, and an absent
@@ -665,7 +719,7 @@ impl UpdatesPane {
             rows(self.help_lines().iter().map(|l| caption(l)).collect()),
         );
 
-        let mut all = vec![status_card, detail, rollback_card, note];
+        let mut all = vec![status_card, firmware_card, detail, rollback_card, note];
         if let Some(msg) = &self.notice {
             // In front of everything, because it is about the thing the person
             // just tried to do. A failed switch that only warns into the
@@ -711,6 +765,16 @@ impl Widget for UpdatesPane {
                 ROLLBACK_CONFIRM_KEY,
                 automerge::ScalarValue::Boolean(false),
             );
+            let _ = state.put(
+                root,
+                FIRMWARE_REFRESH_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            let _ = state.put(
+                root,
+                FIRMWARE_INSTALL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
             self.last_prefs = self.prefs.clone();
             self.needs_seed = false;
         }
@@ -722,6 +786,48 @@ impl Widget for UpdatesPane {
             self.prefs.last_checked = (self.clock)();
             self.last_prefs.last_checked = self.prefs.last_checked.clone();
             self.persist();
+            self.structure_dirty = true;
+        }
+
+        if read_bool(state, root, FIRMWARE_REFRESH_KEY) {
+            let _ = state.put(
+                root,
+                FIRMWARE_REFRESH_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            self.firmware_updates = match os_actions::refresh_firmware_metadata()
+                .and_then(|()| os_actions::get_firmware_updates())
+            {
+                Ok(updates) => {
+                    self.notice = None;
+                    Some(updates)
+                }
+                Err(e) => {
+                    self.notice = Some(format!("Firmware metadata could not be refreshed: {e}"));
+                    None
+                }
+            };
+            self.structure_dirty = true;
+        }
+
+        if read_bool(state, root, FIRMWARE_INSTALL_KEY) {
+            let _ = state.put(
+                root,
+                FIRMWARE_INSTALL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            match os_actions::install_firmware_updates() {
+                Ok(()) => {
+                    self.firmware_updates = os_actions::get_firmware_updates().ok();
+                    self.notice = Some(
+                        "Firmware upgrades were handed to fwupd. Restart if the device requests it."
+                            .into(),
+                    );
+                }
+                Err(e) => {
+                    self.notice = Some(format!("Firmware upgrades could not be installed: {e}"));
+                }
+            }
             self.structure_dirty = true;
         }
 
