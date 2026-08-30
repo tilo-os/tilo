@@ -73,9 +73,6 @@ thiserror.workspace = true
 base32.workspace = true
 
 [dev-dependencies]
-# Deterministic RNG for reproducible signing-vector fixtures.
-rand_chacha.workspace = true
-rand_core.workspace = true
 hex.workspace = true
 # Isolated on-disk fixtures for the persistence-round-trip tests
 # so we do not touch /var/lib/qos on the developer's machine.
