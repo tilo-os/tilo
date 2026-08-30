@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn naming_a_peer_does_not_conjure_a_cursor() {
-        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let _room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
         assert!(!fold_inbound(
             Vec::new(),

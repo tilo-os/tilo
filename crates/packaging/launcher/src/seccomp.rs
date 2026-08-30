@@ -218,7 +218,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     for nr in BLANKET_DENIES {
-        rules.insert((*nr), Vec::new());
+        rules.insert(*nr, Vec::new());
     }
 
     // Write-xor-execute. A page that is writable and executable at the
@@ -243,7 +243,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     if !profile.allows_dynamic_code() {
         for nr in PROT_ARG_SYSCALLS {
             rules.insert(
-                (*nr),
+                *nr,
                 vec![SeccompRule::new(vec![SeccompCondition::new(
                     2,
                     SeccompCmpArgLen::Dword,

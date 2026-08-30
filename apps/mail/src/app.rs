@@ -3014,7 +3014,7 @@ mod tests {
 
     #[test]
     fn selecting_message_marks_read_and_persists() {
-        let (mut app, mut doc) = app();
+        let (app, mut doc) = app();
         let id = {
             let st = app.shared.borrow();
             st.mailbox

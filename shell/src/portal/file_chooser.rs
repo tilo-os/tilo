@@ -259,7 +259,7 @@ mod tests {
         ScreenCastStreamProvisionerHandle,
     };
     use crate::shell::state::Workspace;
-    use std::collections::HashMap;
+
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {

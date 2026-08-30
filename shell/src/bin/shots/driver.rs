@@ -17,7 +17,9 @@ use vello::Scene;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+#[cfg(test)]
+use winit::keyboard::NamedKey;
+use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
