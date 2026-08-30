@@ -23,11 +23,10 @@
 //   `power.blank`       — string, screen-blank timeout dropdown
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use os_actions::{Dispatcher, PowerProfile};
+use os_actions::{BatteryInfo, Dispatcher, PowerProfile};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -47,6 +46,7 @@ pub const SUSPEND_KEY: &str = "power.suspend";
 pub const LID_KEY: &str = "power.lid";
 pub const POWER_KEY_KEY: &str = "power.power_key";
 pub const CRITICAL_KEY: &str = "power.critical";
+pub const CHARGE_LIMIT_KEY: &str = "power.charge_limit";
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
@@ -132,97 +132,6 @@ fn blank_from_label(label: &str) -> Option<u32> {
         .map(|(_, m)| *m)
 }
 
-/// A snapshot of the machine's power supply, read from
-/// `/sys/class/power_supply`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatteryInfo {
-    /// Whether a battery is present at all.
-    pub present: bool,
-    /// Charge percentage, 0..=100.
-    pub capacity: u32,
-    /// Raw status string (`Charging`, `Discharging`, `Full`, `Not charging`).
-    pub status: String,
-    /// Charge cycle count, when the kernel exposes it.
-    pub cycle_count: Option<u32>,
-    /// Whether the AC adapter is plugged in.
-    pub on_ac: bool,
-}
-
-impl BatteryInfo {
-    /// Scan `/sys/class/power_supply` for the first battery and a mains
-    /// adapter. Best-effort — a machine with no battery yields
-    /// `present: false` so the pane degrades honestly.
-    pub fn from_system() -> Self {
-        Self::from_root(Path::new("/sys/class/power_supply"))
-    }
-
-    /// Read from an explicit power-supply root (tests inject a temp tree).
-    pub fn from_root(root: &Path) -> Self {
-        let mut battery_dir: Option<PathBuf> = None;
-        let mut on_ac = false;
-        if let Ok(entries) = std::fs::read_dir(root) {
-            for e in entries.flatten() {
-                let dir = e.path();
-                let ty = read_trim(&dir.join("type")).unwrap_or_default();
-                match ty.as_str() {
-                    "Battery" if battery_dir.is_none() => battery_dir = Some(dir),
-                    "Mains" if read_trim(&dir.join("online")).as_deref() == Some("1") => {
-                        on_ac = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        match battery_dir {
-            Some(dir) => Self::from_battery_dir(&dir, on_ac),
-            None => Self {
-                present: false,
-                capacity: 0,
-                status: "No battery".to_string(),
-                cycle_count: None,
-                on_ac: true, // no battery ⇒ mains-powered
-            },
-        }
-    }
-
-    /// Read a single battery directory's fields.
-    pub fn from_battery_dir(dir: &Path, on_ac: bool) -> Self {
-        let capacity = read_trim(&dir.join("capacity"))
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0)
-            .min(100);
-        let status = read_trim(&dir.join("status")).unwrap_or_else(|| "Unknown".to_string());
-        let cycle_count = read_trim(&dir.join("cycle_count")).and_then(|s| s.parse::<u32>().ok());
-        Self {
-            present: true,
-            capacity,
-            status,
-            cycle_count,
-            on_ac,
-        }
-    }
-
-    /// A friendly one-line summary of the charge state.
-    pub fn summary(&self) -> String {
-        if !self.present {
-            return "Running on AC power".to_string();
-        }
-        match self.status.as_str() {
-            "Full" => "Fully charged".to_string(),
-            "Charging" => format!("{}% · Charging", self.capacity),
-            "Not charging" => format!("{}% · Plugged in, not charging", self.capacity),
-            _ => format!("{}% · On battery", self.capacity),
-        }
-    }
-}
-
-fn read_trim(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Power pane widget.
 pub struct PowerPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
@@ -301,6 +210,30 @@ impl PowerPane {
             ];
             if let Some(cycles) = self.battery.cycle_count {
                 battery_rows.push(value_row("Charge cycles", &cycles.to_string()));
+            }
+            if let Some(health) = self.battery.health_percent() {
+                battery_rows.push(value_row("Battery health", &format!("{health}%")));
+            } else {
+                battery_rows.push(value_row("Battery health", "Not reported by this device"));
+            }
+            if let Some(limit) = self.battery.charge_limit {
+                battery_rows.push(choice_row(
+                    "Charge cap",
+                    Box::new(
+                        Dropdown::new(
+                            ["60%", "70%", "80%", "90%", "100%"]
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                            CHARGE_LIMIT_KEY,
+                        )
+                        .with_id("power.charge_limit")
+                        .with_placeholder(&format!("{limit}%")),
+                    ),
+                ));
+                battery_rows.push(caption(
+                    "A lower cap can reduce long-term battery wear. The privileged service writes only a threshold supported by this battery driver.",
+                ));
             }
             card("Battery", rows(battery_rows))
         } else {
@@ -435,6 +368,9 @@ impl Widget for PowerPane {
             let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
             let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
             let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
+            if let Some(limit) = self.battery.charge_limit {
+                let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{limit}%"));
+            }
             self.last_prefs = self.prefs;
             self.needs_seed = false;
         }
@@ -448,6 +384,18 @@ impl Widget for PowerPane {
             self.profile = p;
             if let Err(e) = self.dispatcher.set_power_profile(p) {
                 warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
+            }
+        }
+
+        if let Some(label) = read_str(state, root, CHARGE_LIMIT_KEY)
+            && let Some(limit) = label.strip_suffix('%').and_then(|s| s.parse::<u32>().ok())
+            && self.battery.charge_limit != Some(limit)
+        {
+            match os_actions::set_charge_limit(limit) {
+                Ok(()) => self.battery.charge_limit = Some(limit),
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "set_charge_limit", error = %e, "battery cap failed")
+                }
             }
         }
 
@@ -655,6 +603,9 @@ mod tests {
             status: "Discharging".into(),
             cycle_count: Some(148),
             on_ac: false,
+            full_capacity: Some(40_000_000),
+            design_capacity: Some(50_000_000),
+            charge_limit: Some(80),
         }
     }
 

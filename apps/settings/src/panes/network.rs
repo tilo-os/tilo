@@ -15,11 +15,10 @@
 //                             sync after dispatch
 
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use os_actions::{Dispatcher, WifiNetworkInfo, WiredInfo};
+use os_actions::{Dispatcher, ToolIntent, VpnRoute, WifiNetworkInfo, WiredInfo};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -32,7 +31,11 @@ use crate::dispatcher::dispatcher_or_real;
 use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
+pub const WIRED_ENABLED_KEY: &str = "network.wired_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
+pub const AIRPLANE_KEY: &str = "network.airplane_mode";
+pub const HOTSPOT_KEY: &str = "network.hotspot";
+pub const MOBILE_KEY: &str = "network.mobile_broadband";
 /// CRDT key holding the SSID whose inline password prompt is expanded
 /// (empty string = none). Kept in the document, not a pane field, so the
 /// expansion survives the host's structure rebuilds (which reconstruct the
@@ -111,24 +114,21 @@ pub struct VpnInfo {
 
 /// VPN-list provider — prod shells out to `nmcli`, tests supply a closure.
 type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
+type ToolOpener = Arc<dyn Fn(ToolIntent) -> Result<(), String> + Send + Sync>;
 
 /// Read the configured VPN connections from `NetworkManager`. Two `nmcli`
 /// calls: every connection (to find the VPN/WireGuard ones) and the active
 /// set (to mark which are up). Best-effort — an empty vec when `nmcli` is
 /// missing.
 fn read_vpn_connections() -> Vec<VpnInfo> {
-    let run = |args: &[&str]| -> Option<String> {
-        let out = Command::new("nmcli").args(args).output().ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
-    };
-    let all = match run(&["-t", "-f", "NAME,TYPE", "connection", "show"]) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let active = run(&["-t", "-f", "NAME", "connection", "show", "--active"]).unwrap_or_default();
-    parse_vpn_connections(&all, &active)
+    os_actions::list_vpn_connections()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| VpnInfo {
+            name: v.name,
+            active: v.active,
+        })
+        .collect()
 }
 
 /// Parse the two `nmcli -t` outputs into [`VpnInfo`]s. `all` lines are
@@ -171,10 +171,12 @@ pub struct NetworkPane {
     /// Cached wired-connection snapshot, sampled at construction and on
     /// refresh.
     wired: WiredInfo,
+    radios: os_actions::RadioState,
     /// Configured VPN connections (read-only status), sampled at
     /// construction and on refresh.
     vpns: Vec<VpnInfo>,
     vpn_lister: VpnLister,
+    tool_opener: ToolOpener,
     initial_wifi_enabled: bool,
     last_wifi_enabled: bool,
     needs_seed: bool,
@@ -205,6 +207,7 @@ impl NetworkPane {
         let networks = lister().unwrap_or_default();
         let initial_wifi = os_actions::get_wifi().unwrap_or(true);
         let wired = os_actions::get_wired().unwrap_or_default();
+        let radios = os_actions::get_radio_state().unwrap_or_default();
         let vpn_lister: VpnLister = Arc::new(read_vpn_connections);
         let vpns = vpn_lister();
         Self {
@@ -212,8 +215,10 @@ impl NetworkPane {
             lister,
             networks,
             wired,
+            radios,
             vpns,
             vpn_lister,
+            tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled: initial_wifi,
             last_wifi_enabled: initial_wifi,
             needs_seed: true,
@@ -240,8 +245,10 @@ impl NetworkPane {
             lister,
             networks,
             wired: WiredInfo::default(),
+            radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
+            tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
             needs_seed: true,
@@ -263,8 +270,10 @@ impl NetworkPane {
             lister,
             networks,
             wired: WiredInfo::default(),
+            radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
+            tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
             needs_seed: true,
@@ -292,34 +301,63 @@ impl NetworkPane {
         self
     }
 
+    #[cfg(test)]
+    fn with_tool_opener(mut self, opener: ToolOpener) -> Self {
+        self.tool_opener = opener;
+        self
+    }
+
     pub fn vpns(&self) -> &[VpnInfo] {
         &self.vpns
     }
 
-    /// Rows for the VPN card — a read-only status list of configured
-    /// profiles. Connecting/disconnecting needs a privileged `NetworkManager`
-    /// action seam that isn't in this app yet, so the card reports status
-    /// truthfully rather than offering a button that can't act.
+    fn vpn_key(name: &str) -> String {
+        format!("network.vpn.{name}")
+    }
+
+    fn vpn_studio_key(name: &str) -> String {
+        format!("network.vpn.studio.{name}")
+    }
+
+    const VPN_STUDIO_OVERVIEW_KEY: &'static str = "network.vpn.studio.open";
+
+    /// Rows for the VPN card use the same NetworkManager profiles and
+    /// action boundary as quick settings.
     fn vpn_rows(&self) -> Vec<El> {
         if self.vpns.is_empty() {
-            return vec![caption(
-                "No VPN profiles configured. Add a VPN connection to see its \
-                 status here.",
-            )];
+            return vec![
+                caption(
+                    "No VPN profiles yet. VPN Studio can import WireGuard and OpenVPN configurations.",
+                ),
+                Box::new(
+                    Row::new()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(Button::new(
+                            "settings.network.vpn.studio.open",
+                            "Open VPN Studio",
+                            Some(Self::VPN_STUDIO_OVERVIEW_KEY),
+                        ))),
+                ),
+            ];
         }
         let mut out: Vec<El> = Vec::new();
         for v in &self.vpns {
-            out.push(value_row(
-                &v.name,
-                if v.active {
-                    "Connected"
-                } else {
-                    "Disconnected"
-                },
+            let id = format!("settings.network.vpn.{}", v.name);
+            let key = Self::vpn_key(&v.name);
+            out.push(Box::new(
+                Row::new()
+                    .push(Box::new(Text::new(&v.name).with_size(13.0)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(Button::new(
+                        &format!("settings.network.vpn.studio.{}", v.name),
+                        "Advanced…",
+                        Some(&Self::vpn_studio_key(&v.name)),
+                    )))
+                    .push(Box::new(Toggle::new(&id, &key))),
             ));
         }
         out.push(caption(
-            "VPN profiles are managed with your network connections.",
+            "Connect here day to day. Use VPN Studio only for imports, DNS, routing, and kill-switch rules.",
         ));
         out
     }
@@ -384,13 +422,49 @@ impl NetworkPane {
 
         let wifi_card = card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows));
 
-        // --- Wired card (real nmcli snapshot).
-        let wired_card = card("Wired", rows(self.wired_rows()));
+        // --- Wired card (real nmcli snapshot). NetworkManager applies the
+        // switch to this interface only; Wi-Fi and VPN stay untouched.
+        let wired_card = if self.wired.device.is_some() {
+            card_with_action(
+                "Wired",
+                Box::new(
+                    Toggle::new("settings.network.wired", WIRED_ENABLED_KEY)
+                        .with_id("network.wired"),
+                ),
+                rows(self.wired_rows()),
+            )
+        } else {
+            card("Wired", rows(self.wired_rows()))
+        };
 
         // --- VPN card (real read-only status of configured profiles).
         let vpn_card = card("VPN", rows(self.vpn_rows()));
 
-        crate::widgets::cards(vec![wifi_card, wired_card, vpn_card])
+        let airplane = card_with_action(
+            "Airplane mode",
+            Box::new(Toggle::new("settings.network.airplane", AIRPLANE_KEY)),
+            rows(vec![caption(
+                "Disables Wi-Fi and mobile broadband together.",
+            )]),
+        );
+        let hotspot = card_with_action(
+            "Wi-Fi hotspot",
+            Box::new(Toggle::new("settings.network.hotspot", HOTSPOT_KEY)),
+            rows(vec![caption(
+                "NetworkManager creates and stores a protected ‘qOS Hotspot’ profile on first use.",
+            )]),
+        );
+        let mut cards = vec![wifi_card, wired_card, vpn_card, airplane, hotspot];
+        if self.radios.wwan_available {
+            cards.push(card_with_action(
+                "Mobile broadband",
+                Box::new(Toggle::new("settings.network.mobile", MOBILE_KEY)),
+                rows(vec![caption(
+                    "Available because a mobile broadband radio was detected.",
+                )]),
+            ));
+        }
+        crate::widgets::cards(cards)
     }
 
     /// One scanned-network row: signal + lock glyph + SSID on the left, a
@@ -517,6 +591,34 @@ impl Widget for NetworkPane {
                 // doesn't re-fire `set_wifi` on the first post-rebuild sync.
                 self.last_wifi_enabled = *b;
             }
+            if state.get(root, WIRED_ENABLED_KEY).ok().flatten().is_none() {
+                let _ = state.put(
+                    root,
+                    WIRED_ENABLED_KEY,
+                    automerge::ScalarValue::Boolean(self.wired.connected),
+                );
+            }
+            for (key, value) in [
+                (AIRPLANE_KEY, self.radios.airplane_mode),
+                (HOTSPOT_KEY, self.radios.hotspot_active),
+                (MOBILE_KEY, self.radios.wwan_enabled),
+            ] {
+                if state.get(root, key).ok().flatten().is_none() {
+                    let _ = state.put(root, key, value);
+                }
+            }
+            for vpn in &self.vpns {
+                if state
+                    .get(root, Self::vpn_key(&vpn.name))
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    let _ = state.put(root, Self::vpn_key(&vpn.name), vpn.active);
+                }
+                let _ = state.put(root, Self::vpn_studio_key(&vpn.name), false);
+            }
+            let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
             // Seed the expansion mirror from the field so a pre-expanded
             // pane (tests / `--shots`) keeps its prompt open through the
@@ -549,6 +651,108 @@ impl Widget for NetworkPane {
             }
         }
 
+        // Wired interface toggle. Missing hardware has no switch, and this
+        // never uses NetworkManager's global networking radio.
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIRED_ENABLED_KEY)
+            && let automerge::ScalarValue::Boolean(enabled) = s.as_ref()
+            && *enabled != self.wired.connected
+            && self.wired.device.is_some()
+        {
+            match self.dispatcher.set_wired(*enabled) {
+                Ok(()) => self.wired.connected = *enabled,
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "set_wired", error = %e, "network pane dispatch failed");
+                    let _ = state.put(
+                        root,
+                        WIRED_ENABLED_KEY,
+                        automerge::ScalarValue::Boolean(self.wired.connected),
+                    );
+                }
+            }
+        }
+
+        for (key, old, op) in [
+            (AIRPLANE_KEY, self.radios.airplane_mode, "airplane"),
+            (HOTSPOT_KEY, self.radios.hotspot_active, "hotspot"),
+            (MOBILE_KEY, self.radios.wwan_enabled, "mobile"),
+        ] {
+            let Some(enabled) = read_bool(state, root, key).then_some(true).or_else(|| {
+                state
+                    .get(root, key)
+                    .ok()
+                    .flatten()
+                    .and_then(|(v, _)| match v {
+                        Value::Scalar(s) => match s.as_ref() {
+                            automerge::ScalarValue::Boolean(b) => Some(*b),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+            }) else {
+                continue;
+            };
+            if enabled == old {
+                continue;
+            }
+            let result = match op {
+                "airplane" => self.dispatcher.set_airplane_mode(enabled),
+                "hotspot" => self.dispatcher.set_hotspot(enabled),
+                _ => self.dispatcher.set_mobile_broadband(enabled),
+            };
+            match result {
+                Ok(()) => match op {
+                    "airplane" => self.radios.airplane_mode = enabled,
+                    "hotspot" => self.radios.hotspot_active = enabled,
+                    _ => self.radios.wwan_enabled = enabled,
+                },
+                Err(e) => {
+                    warn!(target: "qos::settings", op, error = %e, "radio action failed");
+                    let _ = state.put(root, key, old);
+                }
+            }
+        }
+        for vpn in &mut self.vpns {
+            let key = Self::vpn_key(&vpn.name);
+            let enabled = read_bool(state, root, &key);
+            if enabled != vpn.active {
+                match self.dispatcher.set_vpn_connection(&vpn.name, enabled) {
+                    Ok(()) => vpn.active = enabled,
+                    Err(e) => {
+                        warn!(target: "qos::settings", op = "set_vpn_connection", profile = %vpn.name, error = %e, "VPN action failed");
+                        let _ = state.put(root, key, vpn.active);
+                    }
+                }
+            }
+        }
+
+        // Contextual handoff: Settings owns daily status/toggles; VPN Studio
+        // owns profile editing. Reset each command bit before requesting the
+        // shell so a failed launch cannot loop every frame.
+        let requested_profiles: Vec<String> = self
+            .vpns
+            .iter()
+            .filter(|vpn| read_bool(state, root, &Self::vpn_studio_key(&vpn.name)))
+            .map(|vpn| vpn.name.clone())
+            .collect();
+        for profile in requested_profiles {
+            let _ = state.put(root, Self::vpn_studio_key(&profile), false);
+            if let Err(e) = (self.tool_opener)(ToolIntent::Vpn {
+                route: VpnRoute::Profile,
+                profile: Some(profile.clone()),
+            }) {
+                warn!(target: "qos::settings", profile = %profile, error = %e, "could not open VPN Studio");
+            }
+        }
+        if read_bool(state, root, Self::VPN_STUDIO_OVERVIEW_KEY) {
+            let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
+            if let Err(e) = (self.tool_opener)(ToolIntent::Vpn {
+                route: VpnRoute::Overview,
+                profile: None,
+            }) {
+                warn!(target: "qos::settings", error = %e, "could not open VPN Studio");
+            }
+        }
+
         // Refresh button — when the button writes `true`, rescan and
         // clear the bit so subsequent frames don't loop.
         let refresh_pressed = matches!(
@@ -562,6 +766,17 @@ impl Widget for NetworkPane {
                 Err(e) => {
                     warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
                 }
+            }
+            if let Ok(wired) = os_actions::get_wired() {
+                self.wired = wired;
+                let _ = state.put(
+                    root,
+                    WIRED_ENABLED_KEY,
+                    automerge::ScalarValue::Boolean(self.wired.connected),
+                );
+            }
+            if let Ok(radios) = os_actions::get_radio_state() {
+                self.radios = radios;
             }
             self.vpns = (self.vpn_lister)();
         }
@@ -833,6 +1048,32 @@ mod tests {
     }
 
     #[test]
+    fn wired_toggle_only_dispatches_the_primary_lan_interface() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        )
+        .with_wired(WiredInfo {
+            connected: true,
+            device: Some("enp3s0".into()),
+            speed: Some("1000 Mb/s".into()),
+            ipv4: Some("192.0.2.10".into()),
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, WIRED_ENABLED_KEY, false);
+        pane.sync(&mut doc, &root);
+        assert_eq!(rec.calls(), vec!["set_wired(false)"]);
+        assert!(
+            pane.last_wifi_enabled,
+            "LAN must not change the Wi-Fi radio"
+        );
+    }
+
+    #[test]
     fn connect_button_invokes_connect_wifi_once() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = NetworkPane::with_dispatcher(
@@ -1041,7 +1282,42 @@ mod tests {
     #[test]
     fn vpn_rows_show_empty_state_when_none() {
         let pane = NetworkPane::new_demo(sample_networks());
-        // Just the "no profiles" caption.
-        assert_eq!(pane.vpn_rows().len(), 1);
+        // Empty-state explanation plus the single Studio handoff.
+        assert_eq!(pane.vpn_rows().len(), 2);
+    }
+
+    #[test]
+    fn advanced_vpn_action_opens_the_exact_profile_context() {
+        use std::sync::Mutex;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let mut pane = NetworkPane::new_demo(sample_networks())
+            .with_vpns(vec![VpnInfo {
+                name: "Work VPN".into(),
+                active: false,
+            }])
+            .with_tool_opener(Arc::new(move |intent| {
+                record.lock().unwrap().push(intent);
+                Ok(())
+            }));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, NetworkPane::vpn_studio_key("Work VPN"), true);
+        pane.sync(&mut doc, &root);
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[ToolIntent::Vpn {
+                route: VpnRoute::Profile,
+                profile: Some("Work VPN".into()),
+            }]
+        );
+        assert!(!read_bool(
+            &doc,
+            &root,
+            &NetworkPane::vpn_studio_key("Work VPN")
+        ));
     }
 }
