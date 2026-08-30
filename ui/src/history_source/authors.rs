@@ -360,6 +360,15 @@ mod tests {
         (bytes, derived)
     }
 
+    fn secure_test_identity(path: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .expect("secure identity permissions");
+        }
+    }
+
     /// Bound every source `local_identity_author` consults to the test's own
     /// temp dir, and put the environment back afterwards, panic or not.
     ///
@@ -437,6 +446,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("primary.json");
         std::fs::write(&path, &bytes).expect("write identity");
+        secure_test_identity(&path);
         let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
 
         let author = local_identity_author().expect("an identity on disk resolves to an author");
@@ -461,6 +471,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("primary.json");
         std::fs::write(&path, &bytes).expect("write identity");
+        secure_test_identity(&path);
         let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
 
         let author = local_identity_author().expect("a provisioned identity resolves to an author");
