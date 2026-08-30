@@ -60,6 +60,8 @@ pub enum Category {
     Appearance,
     Accessibility,
     Notifications,
+    DefaultApps,
+    Storage,
     ExternalAccounts,
     RegionFormats,
     Permissions,
@@ -83,6 +85,8 @@ impl Category {
         Category::Appearance,
         Category::Accessibility,
         Category::Notifications,
+        Category::DefaultApps,
+        Category::Storage,
         Category::Power,
         Category::TimeDate,
         Category::Users,
@@ -110,6 +114,8 @@ impl Category {
             Category::Appearance
             | Category::Accessibility
             | Category::Notifications
+            | Category::DefaultApps
+            | Category::Storage
             | Category::Power
             | Category::TimeDate
             | Category::Users
@@ -144,6 +150,8 @@ impl Category {
             Category::Appearance => "Appearance",
             Category::Accessibility => "Accessibility",
             Category::Notifications => "Notifications",
+            Category::DefaultApps => "Apps & Files",
+            Category::Storage => "Storage",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
             Category::Permissions => "Privacy & Security",
@@ -168,6 +176,8 @@ impl Category {
             Category::Appearance => "Theme, contrast, motion, and text size",
             Category::Accessibility => "Vision, pointer, typing, and hearing assists",
             Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
+            Category::DefaultApps => "Your preferred apps for links and file types",
+            Category::Storage => "Apps, data, cache, and synced files",
             Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
             Category::RegionFormats => "Currency, date, time, and measurement units",
             Category::Permissions => "Device security, privacy hardware, and workspace access",
@@ -192,6 +202,8 @@ impl Category {
             Category::Appearance => "\u{f03d8}", // md-palette
             Category::Accessibility => "\u{f02e6}", // md-human (universal access)
             Category::Notifications => "\u{f009a}", // md-bell
+            Category::DefaultApps => "\u{f09a6}", // application-cog
+            Category::Storage => "\u{f01bc}", // harddisk
             Category::ExternalAccounts => "\u{f015f}", // md-cloud
             Category::RegionFormats => "\u{f01e7}", // md-earth
             Category::Permissions => "\u{f088f}", // md-shield-account
@@ -324,6 +336,23 @@ impl Category {
                 "previews",
                 "badge",
             ],
+            Category::DefaultApps => &[
+                "default app",
+                "open with",
+                "file association",
+                "handler",
+                "browser",
+                "mail",
+                "pdf",
+            ],
+            Category::Storage => &[
+                "disk space",
+                "cache",
+                "cleanup",
+                "app data",
+                "synced files",
+                "backup",
+            ],
             Category::ExternalAccounts => &[
                 "email",
                 "mail",
@@ -434,6 +463,8 @@ impl Category {
             Category::Appearance => "appearance",
             Category::Accessibility => "accessibility",
             Category::Notifications => "notifications",
+            Category::DefaultApps => "default-apps",
+            Category::Storage => "storage",
             Category::ExternalAccounts => "external_accounts",
             Category::RegionFormats => "region_formats",
             Category::Permissions => "permissions",

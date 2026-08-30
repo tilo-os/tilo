@@ -3109,6 +3109,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop-policy"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "diatomic-waker"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12454,6 +12466,8 @@ dependencies = [
  "accounts",
  "automerge",
  "collab-types",
+ "desktop-policy",
+ "launcher",
  "mail",
  "media",
  "os-actions",
@@ -12463,6 +12477,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "taffy",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ui",
@@ -12580,6 +12595,7 @@ dependencies = [
  "cli",
  "collab-fixtures",
  "collab-types",
+ "desktop-policy",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "ffmpeg-next",
