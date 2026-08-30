@@ -412,7 +412,10 @@ fn dispatch_token(
             );
         }
         // Currently inside a skip-destination: drop the token's content.
-        Token::Symbol(_) | Token::Control(..) | Token::HexByte(_) | Token::Unicode(_)
+        Token::Symbol(_)
+        | Token::Control(..)
+        | Token::HexByte(_)
+        | Token::Unicode(_)
         | Token::Text(_) => {}
     }
 }
@@ -548,10 +551,6 @@ fn open_block(
 
 /// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
 #[allow(clippy::too_many_arguments)]
-#[allow(
-    clippy::expect_used,
-    reason = "cur is always Some here — either it already was, or open_block just set it unconditionally above"
-)]
 fn ensure_block(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -565,7 +564,9 @@ fn ensure_block(
         *need_new_block = false;
         *pending_bullet = false;
     }
-    cur.clone().expect("block was just opened")
+    // `cur` is always `Some` here — either it already was, or `open_block` just set it
+    // unconditionally above — so the empty-string fallback is never actually observed.
+    cur.clone().unwrap_or_default()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -667,10 +668,6 @@ fn push_text(
 
 /// Handle a control word: toggle char state, break paragraphs, or note a bullet.
 #[allow(clippy::too_many_arguments)]
-#[allow(
-    clippy::expect_used,
-    reason = "stack always holds at least one CharState: seeded with one in import_rtf and GroupClose only pops while len() > 1"
-)]
 fn handle_control(
     word: &str,
     param: Option<i32>,
@@ -688,7 +685,12 @@ fn handle_control(
 ) {
     // A param of 0 turns a boolean toggle OFF (`\b0`); absent or non-zero = ON.
     let on = param != Some(0);
-    let cs = stack.last_mut().expect("scope stack is never empty");
+    // `stack` always holds at least one `CharState`: seeded with one in `import_rtf`, and
+    // `GroupClose` only pops while `len() > 1` — but a control word on an empty stack is a
+    // no-op rather than a panic if that invariant is ever broken.
+    let Some(cs) = stack.last_mut() else {
+        return;
+    };
 
     match word {
         "par" => {
