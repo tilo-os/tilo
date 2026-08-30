@@ -63,11 +63,10 @@ pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
 /// Insert a clone of the item at `index` immediately after it. A no-op when
 /// `index` is out of range.
 pub fn duplicate_after<T: Clone>(v: &mut Vec<T>, index: usize) {
-    if index >= v.len() {
+    let Some(copy) = v.get(index).cloned() else {
         return;
-    }
-    let copy = v[index].clone();
-    v.insert(index + 1, copy);
+    };
+    v.insert(index.saturating_add(1), copy);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,6 +95,35 @@ const ADD_H: f64 = 38.0;
 const MENU_W: f64 = 184.0;
 const MENU_ROW_H: f64 = 30.0;
 const MENU_SEP_H: f64 = 8.0;
+
+/// Widens a row/action count to `f64` for layout math, through `u32` (exact
+/// in `f64`) with a saturating fallback rather than an `as` cast — a page
+/// rail never approaches `u32::MAX` rows.
+fn count_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
+/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
+/// operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(base: Affine, x: f64, y: f64) -> Affine {
+    base * Affine::translate((x, y))
+}
+
+/// Offsets a rect vertically. `Rect`'s `Add<Vec2>` is pure `f64` geometry
+/// with no overflow trap, so it cannot panic regardless of operand
+/// magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Rect + Vec2 is float geometry translation and cannot panic"
+)]
+fn shifted(rect: Rect, dy: f64) -> Rect {
+    rect + Vec2::new(0.0, dy)
+}
 
 pub struct PageSidebar {
     // ---- configuration ----
@@ -160,12 +188,14 @@ impl PageSidebar {
         }
     }
 
+    #[must_use]
     pub fn with_header(mut self, header: impl Into<String>) -> Self {
         self.header = header.into();
         self
     }
 
     /// Show a bottom "add" button carrying `label` (e.g. "Import…", "New slide").
+    #[must_use]
     pub fn with_add(mut self, label: impl Into<String>) -> Self {
         self.add_label = label.into();
         self.show_add = true;
@@ -173,6 +203,7 @@ impl PageSidebar {
     }
 
     /// Set false when the host already draws the panel chrome around the list.
+    #[must_use]
     pub fn with_panel(mut self, draw_panel: bool) -> Self {
         self.draw_panel = draw_panel;
         self
@@ -249,7 +280,7 @@ impl PageSidebar {
         let content_h = if count == 0 {
             0.0
         } else {
-            count as f64 * self.thumb_h + (count as f64 - 1.0) * GAP
+            count_f64(count) * self.thumb_h + (count_f64(count) - 1.0) * GAP
         };
         let view_h = (self.list_vp.height() - 2.0 * PAD).max(0.0);
         self.max_scroll = (content_h - view_h).max(0.0);
@@ -272,7 +303,7 @@ impl PageSidebar {
     /// The un-shifted screen rect of thumbnail `i` this frame.
     fn thumb_rect(&self, i: usize) -> Rect {
         let x0 = self.list_vp.x0 + PAD + NUM_GUTTER;
-        let top = self.list_top - self.scroll + i as f64 * (self.thumb_h + GAP);
+        let top = self.list_top - self.scroll + count_f64(i) * (self.thumb_h + GAP);
         Rect::new(x0, top, x0 + self.thumb_w, top + self.thumb_h)
     }
 
@@ -286,7 +317,7 @@ impl PageSidebar {
         if self.count == 0 {
             return;
         }
-        let top = i as f64 * (self.thumb_h + GAP);
+        let top = count_f64(i) * (self.thumb_h + GAP);
         let bottom = top + self.thumb_h;
         let view_h = (self.list_vp.height() - 2.0 * PAD).max(0.0);
         if top < self.scroll {
@@ -409,13 +440,13 @@ impl PageSidebar {
         if index > 0 {
             actions.push(MenuAction::MoveUp);
         }
-        if index + 1 < self.count {
+        if index.saturating_add(1) < self.count {
             actions.push(MenuAction::MoveDown);
         }
         actions.push(MenuAction::Delete);
 
         // Height: one separator sits before Delete.
-        let h = actions.len() as f64 * MENU_ROW_H + MENU_SEP_H + 12.0;
+        let h = count_f64(actions.len()) * MENU_ROW_H + MENU_SEP_H + 12.0;
         let x0 =
             at.x.min(self.rect.x1 - MENU_W - 4.0)
                 .max(self.rect.x0 + 4.0);
@@ -445,12 +476,12 @@ impl PageSidebar {
             MenuAction::Duplicate => self.pending.push(PageSidebarEvent::Duplicate(index)),
             MenuAction::MoveUp if index > 0 => self.pending.push(PageSidebarEvent::Reorder {
                 from: index,
-                to: index - 1,
+                to: index.saturating_sub(1),
             }),
-            MenuAction::MoveDown if index + 1 < self.count => {
+            MenuAction::MoveDown if index.saturating_add(1) < self.count => {
                 self.pending.push(PageSidebarEvent::Reorder {
                     from: index,
-                    to: index + 1,
+                    to: index.saturating_add(1),
                 });
             }
             MenuAction::Delete => self.pending.push(PageSidebarEvent::Delete(index)),
@@ -484,7 +515,7 @@ impl PageSidebar {
                 &self.header,
                 12.0,
                 c.text_dim,
-                base * Affine::translate((self.rect.x0 + PAD + 2.0, self.rect.y0 + 9.0)),
+                translated(base, self.rect.x0 + PAD + 2.0, self.rect.y0 + 9.0),
                 None,
                 TextWeight::Semibold,
             );
@@ -507,7 +538,7 @@ impl PageSidebar {
                 continue; // lifted out — the floating ghost is drawn below.
             }
             let shift = self.drag.item_shift(i, &metrics);
-            let rect = self.thumb_rect(i) + Vec2::new(0.0, shift);
+            let rect = shifted(self.thumb_rect(i), shift);
             // Skip rows fully outside the viewport (cheap virtualisation).
             if rect.y1 < self.list_vp.y0 - 4.0 || rect.y0 > self.list_vp.y1 + 4.0 {
                 continue;
@@ -530,7 +561,7 @@ impl PageSidebar {
                 base,
                 &self.list_vp,
             );
-            let shadow = RoundedRect::from_rect(ghost.inflate(2.0, 2.0) + Vec2::new(0.0, 4.0), 8.0);
+            let shadow = RoundedRect::from_rect(shifted(ghost.inflate(2.0, 2.0), 4.0), 8.0);
             scene.fill(
                 Fill::NonZero,
                 base,
@@ -549,35 +580,7 @@ impl PageSidebar {
             scene.pop_layer();
         }
 
-        if self.max_scroll > 0.0 {
-            let view_h = (self.list_vp.height() - 2.0 * PAD).max(1.0);
-            let content_h = view_h + self.max_scroll;
-            let track = Rect::new(
-                self.list_vp.x1 - SCROLLBAR_W - 2.0,
-                self.list_top,
-                self.list_vp.x1 - 2.0,
-                self.list_top + view_h,
-            );
-            let frac = (view_h / content_h).clamp(0.08, 1.0);
-            let thumb_h = (view_h * frac).max(24.0);
-            let travel = view_h - thumb_h;
-            let t = (self.scroll / self.max_scroll).clamp(0.0, 1.0);
-            let ty = track.y0 + travel * t;
-            scene.fill(
-                Fill::NonZero,
-                base,
-                c.text_primary.with_alpha_factor(0.07),
-                None,
-                &RoundedRect::from_rect(track, 3.0),
-            );
-            scene.fill(
-                Fill::NonZero,
-                base,
-                c.text_primary.with_alpha_factor(0.35),
-                None,
-                &RoundedRect::from_rect(Rect::new(track.x0, ty, track.x1, ty + thumb_h), 3.0),
-            );
-        }
+        self.draw_scrollbar(scene, base, theme);
 
         if self.show_add {
             self.draw_add_button(scene, base, tr, theme);
@@ -586,6 +589,42 @@ impl PageSidebar {
         if self.menu.is_some() {
             self.draw_menu(scene, base, tr, theme);
         }
+    }
+
+    /// The rail's own scrollbar (track + thumb), a no-op when the list fits
+    /// (`max_scroll <= 0.0`).
+    fn draw_scrollbar(&self, scene: &mut Scene, base: Affine, theme: &Theme) {
+        if self.max_scroll <= 0.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let view_h = (self.list_vp.height() - 2.0 * PAD).max(1.0);
+        let content_h = view_h + self.max_scroll;
+        let track = Rect::new(
+            self.list_vp.x1 - SCROLLBAR_W - 2.0,
+            self.list_top,
+            self.list_vp.x1 - 2.0,
+            self.list_top + view_h,
+        );
+        let frac = (view_h / content_h).clamp(0.08, 1.0);
+        let thumb_h = (view_h * frac).max(24.0);
+        let travel = view_h - thumb_h;
+        let t = (self.scroll / self.max_scroll).clamp(0.0, 1.0);
+        let ty = track.y0 + travel * t;
+        scene.fill(
+            Fill::NonZero,
+            base,
+            c.text_primary.with_alpha_factor(0.07),
+            None,
+            &RoundedRect::from_rect(track, 3.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            base,
+            c.text_primary.with_alpha_factor(0.35),
+            None,
+            &RoundedRect::from_rect(Rect::new(track.x0, ty, track.x1, ty + thumb_h), 3.0),
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -620,7 +659,7 @@ impl PageSidebar {
         );
 
         // Right-aligned in the left gutter, vertically centred.
-        let label = format!("{}", i + 1);
+        let label = format!("{}", i.saturating_add(1));
         let size = 11.0f32;
         let (lw, lh) = tr.measure(&label, size, None);
         let lx = self.list_vp.x0 + PAD + NUM_GUTTER - 6.0 - f64::from(lw);
@@ -635,7 +674,7 @@ impl PageSidebar {
             &label,
             size,
             col,
-            base * Affine::translate((lx.max(self.list_vp.x0 + 2.0), ly)),
+            translated(base, lx.max(self.list_vp.x0 + 2.0), ly),
             None,
             if is_current {
                 TextWeight::Semibold
@@ -677,7 +716,7 @@ impl PageSidebar {
             } else {
                 c.text_primary
             },
-            base * Affine::translate((tx.max(r.x0 + 8.0), ty)),
+            translated(base, tx.max(r.x0 + 8.0), ty),
             None,
             TextWeight::Semibold,
         );
@@ -694,7 +733,7 @@ impl PageSidebar {
             base,
             Color::BLACK.with_alpha_factor(0.30),
             None,
-            &RoundedRect::from_rect(menu.rect.inflate(1.5, 1.5) + Vec2::new(0.0, 3.0), 9.0),
+            &RoundedRect::from_rect(shifted(menu.rect.inflate(1.5, 1.5), 3.0), 9.0),
         );
         scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rr);
         scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
@@ -722,7 +761,7 @@ impl PageSidebar {
                 label,
                 size,
                 col,
-                base * Affine::translate((row.x0 + 12.0, ty)),
+                translated(base, row.x0 + 12.0, ty),
                 None,
             );
         }
