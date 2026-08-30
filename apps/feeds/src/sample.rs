@@ -34,6 +34,11 @@ const DAY: i64 = 24 * HOUR;
 
 /// Build the full sample store. Timestamps are anchored to "now" so the
 /// relative dates ("3h", "2d") read correctly whenever the app launches.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one block of fixture literals per bundled article; splitting it would only \
+              relocate the sample data, not shrink what a reader must trace for one entry"
+)]
 pub fn store() -> Store {
     let now = Utc::now().timestamp();
     let mut s = Store::new();
@@ -263,7 +268,7 @@ pub fn store() -> Store {
         "Writing a WASM runtime in 500 lines",
         "calvin",
         "https://lobste.rs/s/abc/wasm_runtime",
-        now - 1 * DAY,
+        now - DAY,
         false,
         false,
         "A minimal but real interpreter you can read in an afternoon.",
