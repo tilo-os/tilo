@@ -2236,6 +2236,11 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&serde_json::to_vec(&record).unwrap()).unwrap();
         drop(f);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
 
         // `new()` also reaches for `QOS_SVC_COLLAB_FD` and would race other
         // tests; use the identity-aware test constructor instead.

@@ -65,6 +65,16 @@ jobs:
           bash scripts/ci-run.sh "cargo nextest --workspace" --
           cargo nextest run --workspace --locked --profile ci
 
+      # The fast and complete workspace suites stay deterministic. This one
+      # intentionally queries third-party music services; retain its coverage
+      # nightly without making ordinary pushes depend on external uptime.
+      - name: Probe live music search and stream resolution
+        continue-on-error: true
+        run: >-
+          bash tools/ci-measure.sh "nightly live music integration" --
+          cargo nextest run -p music --locked --profile ci --run-ignored all
+          -E 'test(live_search_and_stream_resolve_through_the_app)'
+
       - name: Check every workspace target
         run: >-
           bash tools/ci-measure.sh "nightly all-target check" --
