@@ -116,9 +116,9 @@ fn stage_untracked_then_commit_creates_object_with_file() {
     // And HEAD's summary must be our message.
     let repo = open(&path);
     let head = repo.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(head.summary(), Some("add new.rs"));
-    assert_eq!(head.author().name(), Some("Test User"));
-    assert_eq!(head.author().email(), Some("test@example.com"));
+    assert_eq!(head.summary(), Ok(Some("add new.rs")));
+    assert_eq!(head.author().name(), Ok("Test User"));
+    assert_eq!(head.author().email(), Ok("test@example.com"));
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn create_branch_and_checkout_moves_head() {
     assert!(head.is_branch());
     assert_eq!(
         head.shorthand(),
-        Some("feature"),
+        Ok("feature"),
         "HEAD must move to the new branch"
     );
 }
@@ -175,12 +175,12 @@ fn checkout_existing_branch_switches_head() {
     assert_ne!(original, "feature");
 
     repo::checkout_branch(&path, "feature").expect("checkout");
-    assert_eq!(open(&path).head().unwrap().shorthand(), Some("feature"));
+    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
 
     repo::checkout_branch(&path, &original).expect("checkout back");
     assert_eq!(
         open(&path).head().unwrap().shorthand(),
-        Some(original.as_str())
+        Ok(original.as_str())
     );
 }
 
@@ -419,7 +419,7 @@ fn fetch_and_pull_against_a_local_remote() {
     let head = local_repo.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(
         head.summary(),
-        Some("commit two"),
+        Ok(Some("commit two")),
         "pull must fast-forward HEAD"
     );
     assert!(
@@ -464,7 +464,7 @@ fn app_stage_and_commit_through_production_actions() {
     // Verify a real commit landed at HEAD with both files in its tree.
     let repo = open(&path);
     let head = repo.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(head.summary(), Some("wire real git"));
+    assert_eq!(head.summary(), Ok(Some("wire real git")));
     assert!(repo::tree_has_path(&path, "HEAD", "added.rs").unwrap());
     // The model now reports a clean tree and shows the new commit first.
     let (s, u, n) = app.test_change_counts();
@@ -510,7 +510,7 @@ fn app_checkout_branch_through_production_action() {
     app.test_branch_action(BranchAction::Checkout("feature".into()));
     assert_eq!(app.test_last_error(), None);
     // The REAL repo HEAD moved.
-    assert_eq!(open(&path).head().unwrap().shorthand(), Some("feature"));
+    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
     // And the reloaded model agrees.
     assert_eq!(app.test_head(), "feature");
 }
@@ -528,10 +528,7 @@ fn app_create_branch_through_production_action() {
             .find_branch("topic/awesome", git2::BranchType::Local)
             .is_ok()
     );
-    assert_eq!(
-        open(&path).head().unwrap().shorthand(),
-        Some("topic/awesome")
-    );
+    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("topic/awesome"));
     assert!(app.test_branch_names().iter().any(|n| n == "topic/awesome"));
 }
 
