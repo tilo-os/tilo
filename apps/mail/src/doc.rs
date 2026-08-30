@@ -27,13 +27,20 @@ pub struct MailDoc;
 impl MailDoc {
     // ---- generic scalar helpers ----
 
+    /// # Panics
+    /// Never in practice: `parent` is either `ROOT` (permanent for the life of
+    /// the document) or a Map this module itself just resolved, so
+    /// `put_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is ROOT or a just-resolved Map, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write this key into the wrong object"
+    )]
     fn map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            // `parent` was just resolved (or is the document root), so this
-            // can't realistically fail — but degrade to the root object
-            // rather than panic if the automerge internals ever surprise us.
-            _ => doc.put_object(parent, key, ObjType::Map).unwrap_or(ROOT),
+            _ => doc
+                .put_object(parent, key, ObjType::Map)
+                .expect("put_object map never fails"),
         }
     }
 
@@ -364,16 +371,22 @@ impl MailDoc {
     // ---- per-message labels/tags (`flags/<id>/labels`) ----
 
     /// The `flags/<id>/labels` list for a message id, created if absent.
+    ///
+    /// # Panics
+    /// Never in practice: `entry` is a Map `flag_entry` just resolved-or-
+    /// created, so `put_object` on it only fails for an already-corrupted
+    /// document.
+    #[allow(
+        clippy::expect_used,
+        reason = "entry is a Map flag_entry just resolved-or-created, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write this message's labels into the wrong object"
+    )]
     fn labels_list(doc: &mut AutoCommit, id: &str) -> ObjId {
         let entry = Self::flag_entry(doc, id);
         match doc.get(&entry, "labels") {
             Ok(Some((Value::Object(ObjType::List), list))) => list,
-            // `entry` was just resolved, so this can't realistically fail —
-            // but degrade to the root object rather than panic if the
-            // automerge internals ever surprise us.
             _ => doc
                 .put_object(&entry, "labels", ObjType::List)
-                .unwrap_or(ROOT),
+                .expect("put_object list never fails"),
         }
     }
 
