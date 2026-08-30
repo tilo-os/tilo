@@ -19,7 +19,17 @@ MODULES=(
 # of naming itself: bwrap runs the launcher's confinement suites and
 # rust-analyzer is the real language server the code editor's suite drives;
 # sccache is baked into the image so workflows never download or compile it.
-BINARIES=(capnp bwrap rust-analyzer sccache)
+BINARIES=(capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0)
+FONTS=(
+  "Noto Sans Arabic"
+  "Noto Sans Hebrew"
+  "Noto Sans Devanagari"
+  "Noto Sans Bengali"
+  "Noto Sans Thai"
+  "Noto Sans CJK JP"
+  "Noto Color Emoji"
+)
+GSTREAMER_ELEMENTS=(h264parse openh264dec)
 
 missing=0
 command -v pkg-config >/dev/null 2>&1 || { echo "pkg-config not installed — nothing here can be checked" >&2; exit 2; }
@@ -46,9 +56,27 @@ for b in "${BINARIES[@]}"; do
   fi
 done
 
+for family in "${FONTS[@]}"; do
+  if fc-match -f '%{family}\n' "$family" 2>/dev/null | head -n 1 | grep -Fqi 'Noto'; then
+    printf '  ok      font %-15s\n' "$family"
+  else
+    printf '  MISSING font %-15s\n' "$family"
+    missing=$((missing + 1))
+  fi
+done
+
+for element in "${GSTREAMER_ELEMENTS[@]}"; do
+  if gst-inspect-1.0 "$element" >/dev/null 2>&1; then
+    printf '  ok      gstreamer %-10s\n' "$element"
+  else
+    printf '  MISSING gstreamer %-10s\n' "$element"
+    missing=$((missing + 1))
+  fi
+done
+
 echo
 if [ "$missing" -eq 0 ]; then
-  echo "all ${#MODULES[@]} libraries and ${#BINARIES[@]} binaries present"
+  echo "all ${#MODULES[@]} libraries, ${#BINARIES[@]} binaries, ${#FONTS[@]} fonts, and ${#GSTREAMER_ELEMENTS[@]} media elements present"
 else
   echo "$missing missing — see DEVELOPMENT.md for the package that provides each"
 fi
