@@ -455,6 +455,27 @@ impl WindowState {
         Ok(())
     }
 
+    /// Start a drag-and-drop carrying `offers` (mime type → bytes).
+    ///
+    /// The serial is the last pointer button serial, which is what the
+    /// compositor matches against the implicit grab — so this only does
+    /// anything while a button is actually held, which is exactly when a
+    /// drag gesture is under way. Returns whether the drag was started.
+    pub fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+        let mut serial = None;
+        self.apply_on_pointer(|_, data| serial = Some(data.latest_button_serial()));
+        let Some(serial) = serial else {
+            // No pointer on the seat: nothing is being held, so there is
+            // no gesture to promote.
+            return false;
+        };
+        crate::platform_impl::wayland::seat::data_device::start_drag(
+            self.window.wl_surface(),
+            serial,
+            offers,
+        )
+    }
+
     /// Tells whether the window should be closed.
     #[allow(clippy::too_many_arguments)]
     pub fn frame_click(

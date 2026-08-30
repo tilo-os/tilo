@@ -81,6 +81,24 @@ impl<T> EventLoopBuilderExtWayland for EventLoopBuilder<T> {
 pub trait WindowExtWayland {
     /// Returns `xdg_toplevel` of the window or [`None`] if the window is X11 window.
     fn xdg_toplevel(&self) -> Option<NonNull<c_void>>;
+
+    /// Start a drag-and-drop from this window, offering `offers` as
+    /// mime type → bytes.
+    ///
+    /// Call it while a pointer button is held — the compositor validates
+    /// the drag against that implicit grab, so a drag started without one
+    /// is ignored. The receiving application asks for whichever offered
+    /// mime type it understands and is handed those bytes.
+    ///
+    /// Bytes rather than a file path, because the receiver may be a
+    /// sandboxed app in its own mount namespace where a path from this
+    /// process does not resolve. Offer a `text/uri-list` too if the
+    /// receiver may want a name, but never offer only that.
+    ///
+    /// Returns whether the drag was started: `false` on X11, when no
+    /// pointer is on the seat, when the compositor has no
+    /// `wl_data_device_manager`, or when `offers` is empty.
+    fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool;
 }
 
 impl WindowExtWayland for Window {
@@ -92,6 +110,17 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::X(_) => None,
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => window.xdg_toplevel(),
+        }
+    }
+
+    #[inline]
+    fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+        #[allow(clippy::single_match)]
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.start_drag(offers),
         }
     }
 }
