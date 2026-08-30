@@ -54,7 +54,17 @@ pub fn max_group_px(strip_usable_px: f64) -> f64 {
 pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
     let usable = strip_usable_px.max(1.0);
     let raw = (px.max(0.0) / usable * 1000.0).round();
-    (raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE))) as u16
+    let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
+    // Safe: `clamped` is bounded to [WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE]
+    // (150..=1000) above, well within u16 range and never negative.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [150.0, 1000.0] above, which fits losslessly in u16"
+    )]
+    {
+        clamped as u16
+    }
 }
 
 /// 420ms: mirrors the reference concept's spring timing
@@ -67,6 +77,39 @@ const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
 /// Matches the tab-pill `CLOSE_FADE_MS` in `tabs.rs` so the group's
 /// shrink chains onto the final pill fade.
 const GROUP_CLOSE_FADE_MS: u64 = 180;
+
+/// [`SPAWN_ANIM_MS`] in seconds, as an `f64` divisor for the eased-progress
+/// calculation.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "SPAWN_ANIM_MS is a small compile-time millisecond constant (420), far below f64's precision limit"
+)]
+fn spawn_anim_secs() -> f64 {
+    SPAWN_ANIM_MS as f64 / 1000.0
+}
+
+/// Test-only helper: an [`Instant`] `ms` milliseconds in the past, for
+/// backdating a timestamp instead of sleeping. Falls back to `Instant::now`
+/// on the practically-unreachable case that the subtraction would underflow
+/// the clock's epoch.
+#[cfg(test)]
+fn instant_ago_ms(ms: u64) -> Instant {
+    Instant::now()
+        .checked_sub(Duration::from_millis(ms))
+        .unwrap_or_else(Instant::now)
+}
+
+/// Narrows a screen-space coordinate, length or eased animation factor
+/// (`f64`, from taffy layout or CRDT storage) to the `f32` vello/taffy
+/// consume. Real output geometry never approaches `f32`'s range (or an
+/// eased factor its precision), so this never truncates in practice.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen coordinates/lengths and eased [0,1] factors are always far below f32's range"
+)]
+fn px_f32(v: f64) -> f32 {
+    v as f32
+}
 
 /// Mirrors the concept's `clientY <= 80` check (`WindowFrame.tsx:108-123`):
 /// above this y the floating title/restore/close cluster paints, below it
@@ -121,6 +164,15 @@ impl WindowWidth {
     }
 }
 
+// Each bool below is an independent UI flag (resize-hover, maximized,
+// search-open, focus, ...), not a bitset encoding related states, and the
+// struct is a `pub` field surface read throughout `shell` — folding them
+// into a bitflags/enum would be an API-breaking redesign, not a mechanical
+// lint fix.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent UI flags on a widely-shared pub struct; not a state bitset"
+)]
 pub struct WindowGroup {
     pub id: u64,
     bar: TabBar,
@@ -222,6 +274,7 @@ impl WindowGroup {
         self.width
     }
 
+    #[must_use]
     pub fn with_maximized(mut self, maximized: bool) -> Self {
         self.maximized = maximized;
         self
@@ -252,8 +305,9 @@ impl WindowGroup {
         if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
             return 1.0;
         }
-        let raw = (elapsed.as_secs_f64() / (SPAWN_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
-        (1.0 - (1.0 - raw).powi(3)) as f32
+        let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - raw).powi(3);
+        px_f32(eased)
     }
 
     pub fn start_closing(&mut self) {
@@ -270,7 +324,7 @@ impl WindowGroup {
 
     pub fn close_complete(&self) -> bool {
         self.closing_at
-            .is_some_and(|t| t.elapsed().as_millis() as u64 >= GROUP_CLOSE_FADE_MS)
+            .is_some_and(|t| t.elapsed() >= Duration::from_millis(GROUP_CLOSE_FADE_MS))
     }
 
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
@@ -418,8 +472,7 @@ impl WindowGroup {
     pub fn detach_tab(&mut self, tab_id: u64) -> Option<(TabDescriptor, TileHost)> {
         let host_idx = self.hosts.iter().position(|(i, _)| *i == tab_id)?;
         let (_, host) = self.hosts.remove(host_idx);
-        let desc_idx = self.bar.tabs().iter().position(|t| t.id == tab_id)?;
-        let desc = self.bar.tabs()[desc_idx].clone();
+        let desc = self.bar.tabs().iter().find(|t| t.id == tab_id)?.clone();
         self.bar.remove_tab(tab_id);
         // Drop lingering close-fade state for the moved id, or a stale
         // entry keeps `needs_animation_frame` pumping until it ages out.
@@ -534,9 +587,16 @@ impl WindowGroup {
         let Some(idx) = self.bar.tabs().iter().position(|t| t.id == cur) else {
             return false;
         };
-        let step = dir.signum();
-        let new_idx = ((idx as i32 + step).rem_euclid(n as i32)) as usize;
-        let new_id = self.bar.tabs()[new_idx].id;
+        let new_idx = if dir.signum() > 0 {
+            // Wrap forward: past the last tab goes to the first.
+            idx.checked_add(1).filter(|&i| i < n).unwrap_or(0)
+        } else {
+            // Wrap backward: before the first tab goes to the last.
+            idx.checked_sub(1).unwrap_or(n.saturating_sub(1))
+        };
+        let Some(new_id) = self.bar.tabs().get(new_idx).map(|t| t.id) else {
+            return false;
+        };
         self.bar.set_active(new_id);
         true
     }
@@ -633,10 +693,8 @@ impl WindowGroup {
     #[cfg(test)]
     pub fn force_expire_closing(&mut self, id: u64) {
         if self.closing_hosts.contains_key(&id) {
-            self.closing_hosts.insert(
-                id,
-                Instant::now() - Duration::from_millis(CLOSE_FADE_MS as u64 + 50),
-            );
+            self.closing_hosts
+                .insert(id, instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(50)));
         }
     }
 
@@ -679,6 +737,537 @@ impl WindowGroup {
             theme.tokens.colors.text_primary
         }
     }
+
+    /// The event kinds a group's own resize handle, maximized-chrome
+    /// close/restore chips, and pin shortcut own outright — decided before
+    /// the tab bar or active tile ever see the event. Returns whether the
+    /// event was fully consumed (the caller should mark `handled` and stop
+    /// dispatching further).
+    fn handle_direct_input(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        m: &winit::event::Modifiers,
+        handle_rect: Rect,
+    ) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = pt;
+                self.hover_resize = handle_rect.contains(pt);
+                self.restore_hover = self.maximized && self.restore_rect.contains(pt);
+                self.close_hover = self.maximized && self.close_rect.contains(pt);
+                if self.resize_origin.is_some() {
+                    self.update_resize(px_f32(pt.x));
+                    return true;
+                }
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.maximized && self.close_rect.contains(self.last_cursor) => {
+                // Route through the same deferred fade flow as the
+                // per-tab × click (`bar.start_closing` → `closing_hosts`
+                // → sweep) so the group shrinks coherently instead of
+                // popping away. Exit maximize immediately so the floating
+                // chrome stops painting over a tile it no longer owns.
+                let active_id = self.bar.active_id();
+                self.bar.start_closing(active_id);
+                self.closing_hosts
+                    .entry(active_id)
+                    .or_insert_with(Instant::now);
+                self.maximized = false;
+                self.pending_maximize_change = Some(false);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.maximized && self.restore_rect.contains(self.last_cursor) => {
+                // Handled here (not via bar.pending_max) so the click
+                // never races with a tab selection under the pill's geometry.
+                self.maximized = false;
+                self.pending_maximize_change = Some(false);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.hover_resize => {
+                // Anchor on the actual press point, not the group's right
+                // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
+                // edge would jump the window on grab.
+                self.begin_resize(px_f32(self.last_cursor.x));
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.resize_origin.is_some() => {
+                self.end_resize();
+                true
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } if m.state().control_key()
+                && m.state().shift_key()
+                && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
+            {
+                // Routed here (not the bar's own handler) because keyboard
+                // events arrive at the focused widget and the bar isn't
+                // focusable.
+                let active = self.bar.active_id();
+                self.bar.toggle_pin(active);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Drops hosts whose close fade has fully elapsed (removal is deferred
+    /// so the fade plays out with the tile still in place), then starts
+    /// closing the whole group once nothing is left in it.
+    fn sweep_expired_closing_hosts(&mut self) {
+        // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
+        // millisecond u64, avoiding an f32->u64 cast at every use site.
+        let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
+        let expired: Vec<u64> = self
+            .closing_hosts
+            .iter()
+            .filter(|(_, started)| started.elapsed() >= close_window)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.closing_hosts.remove(&id);
+            if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
+                self.hosts.remove(idx);
+            }
+            self.bar.finalize_close(id);
+        }
+
+        // `bar.tabs().is_empty()` rather than just `hosts.is_empty()` —
+        // the bar is the user-visible "empty" signal.
+        if !self.is_closing()
+            && self.bar.tabs().is_empty()
+            && self.hosts.is_empty()
+            && self.closing_hosts.is_empty()
+        {
+            self.start_closing();
+        }
+    }
+
+    /// Drains the tab bar's one-shot signals (close/maximize/search/
+    /// new-tab/reorder) queued by `TabBar::handle_event` and applies each
+    /// to group state. Returns whether any signal fired, so the caller can
+    /// mark the event handled and skip forwarding it to the active tile.
+    fn drain_bar_signals(&mut self) -> bool {
+        let mut handled = false;
+
+        // Host stays in `self.hosts` for `CLOSE_FADE_MS`; the sweep above drops it.
+        if let Some(close_id) = self.bar.take_close() {
+            self.closing_hosts
+                .entry(close_id)
+                .or_insert_with(Instant::now);
+            handled = true;
+        }
+
+        // Without `style_dirty` the cached taffy node keeps the
+        // pre-toggle width and the click looks like a no-op.
+        if let Some(_id) = self.bar.take_max() {
+            self.maximized = !self.maximized;
+            self.style_dirty = true;
+            self.pending_maximize_change = Some(self.maximized);
+            handled = true;
+        }
+
+        if let Some(id) = self.bar.take_search() {
+            self.search_active = !self.search_active;
+            self.pending_search_open = Some(id);
+            handled = true;
+        }
+
+        // The group knows its own id; the shell knows what a new tab
+        // should contain, so republish with the id and let it decide.
+        if self.bar.take_new_tab().is_some() {
+            self.pending_new_tab = Some(self.id);
+            handled = true;
+        }
+
+        // `bar.tabs` and `hosts` are a strictly-aligned 1:1 mapping; a
+        // refactor that permutes only one would desync pill `i` from
+        // content `i` — the debug_assert documents that invariant.
+        if let Some((from, to)) = self.bar.take_reorder() {
+            debug_assert_eq!(
+                self.bar.tabs().len(),
+                self.hosts.len(),
+                "WindowGroup parallel-vec invariant violated: bar.tabs.len() \
+                 ({}) != hosts.len() ({}). The bar's pill list and the host \
+                 content list must stay 1:1 — every mutation of one must be \
+                 mirrored on the other.",
+                self.bar.tabs().len(),
+                self.hosts.len(),
+            );
+            self.bar.reorder(from, to);
+            let item = self.hosts.remove(from);
+            self.hosts.insert(to, item);
+            self.pending_tab_reorder = Some((from, to));
+            handled = true;
+        }
+
+        handled
+    }
+
+    /// The alpha/x/y/scale the group's spawn-in or close-out fade applies
+    /// this frame, matching whichever animation (if any) is in flight.
+    /// `fade_y` is currently always 0, kept in the tuple in case a future
+    /// close curve wants a settle.
+    fn fade_transform_params(&self) -> (f32, f64, f64, f64) {
+        if let Some(started) = self.closing_at {
+            // No offset: the per-host curve already carries the y-drift.
+            // Ratio of two `Duration`s taken via `as_secs_f64` rather than
+            // an integer->float `as` cast on the millisecond counts.
+            let raw = px_f32(
+                (started.elapsed().as_secs_f64()
+                    / Duration::from_millis(GROUP_CLOSE_FADE_MS).as_secs_f64())
+                .clamp(0.0, 1.0),
+            );
+            let eased = 1.0 - (1.0 - raw).powi(3);
+            let alpha = (1.0 - eased).max(0.0);
+            let scale = f64::from(1.0 - 0.05 * eased);
+            (alpha, 0.0, 0.0, scale)
+        } else if let Some(started) = self.spawned_at {
+            let elapsed = started.elapsed();
+            if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
+                (1.0, 0.0, 0.0, 1.0)
+            } else {
+                let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
+                let eased = 1.0 - (1.0 - raw).powi(3);
+                let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
+                let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
+                (px_f32(eased), x_off, 0.0, scale)
+            }
+        } else {
+            (1.0, 0.0, 0.0, 1.0)
+        }
+    }
+
+    /// Paints each still-fading closed tab (opacity 1→0, scale 1→0.95,
+    /// y 0→-20 over `CLOSE_FADE_MS`). The id list is snapshotted first to
+    /// borrow `self.hosts` mutably without fighting the borrow checker
+    /// against `self.closing_hosts`.
+    fn draw_closing_hosts(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
+        // millisecond u64, avoiding an f32->u64 cast at every use site.
+        let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
+        let closing_ids: Vec<(u64, Instant)> = self
+            .closing_hosts
+            .iter()
+            .filter(|(_, t)| t.elapsed() < close_window)
+            .map(|(id, t)| (*id, *t))
+            .collect();
+        for (id, started) in closing_ids {
+            let elapsed = started.elapsed().as_secs_f64();
+            let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - raw).powi(3);
+            let alpha = px_f32(1.0 - eased);
+            let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
+            let y_offset = -20.0 * eased;
+            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
+                let rect = h.get_rect();
+                // Matches the tile-spawn clip so shadows aren't chopped.
+                let clip = Rect::new(
+                    rect.x0 - 160.0,
+                    rect.y0 - 160.0,
+                    rect.x1 + 160.0,
+                    rect.y1 + 160.0,
+                );
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    alpha.max(0.0),
+                    transform,
+                    &clip,
+                );
+                let centre = rect.center();
+                // Affine composition is floating-point matrix multiply —
+                // it cannot overflow or panic the way integer arithmetic
+                // can.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+                )]
+                let close_transform = transform
+                    * Affine::translate((0.0, y_offset))
+                    * Affine::translate((centre.x, centre.y))
+                    * Affine::scale(scale)
+                    * Affine::translate((-centre.x, -centre.y));
+                h.draw(scene, close_transform, tr, theme, presence);
+                scene.pop_layer();
+            }
+        }
+    }
+
+    /// The two-bar resize grip on the group's trailing edge. The hit zone
+    /// (`RESIZE_HANDLE_PX = 6`) is wider than the painted grip so the
+    /// cursor catches it early.
+    fn draw_resize_grip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let grip_col = if self.hover_resize || self.resize_origin.is_some() {
+            theme.tokens.colors.border_focus
+        } else {
+            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
+        };
+        let total_h = self.rect.height();
+        let grip_h = (total_h * 0.25).clamp(24.0, 80.0);
+        let grip_cx = self.rect.x1 - 3.0;
+        let grip_cy = self.rect.center().y;
+        let bar = |dx: f64| {
+            vello::kurbo::RoundedRect::from_rect(
+                Rect::new(
+                    grip_cx + dx - 1.0,
+                    grip_cy - grip_h / 2.0,
+                    grip_cx + dx + 1.0,
+                    grip_cy + grip_h / 2.0,
+                ),
+                1.0,
+            )
+        };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            grip_col,
+            None,
+            &bar(-2.0),
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            grip_col,
+            None,
+            &bar(2.0),
+        );
+    }
+
+    /// The floating `[app title]  …  [Restore][×]` pill drawn over a
+    /// maximized group's content, matching the concept layout. Also
+    /// updates `restore_rect`/`close_rect` for hit-testing, which keeps
+    /// running regardless of the cursor band — only the paint is gated by
+    /// [`Self::should_show_maximized_chrome`].
+    fn draw_maximized_chrome(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
+            return;
+        }
+        // `[app title]  …  [Restore][×]`, matching the concept layout.
+        let pad = 6.0_f64;
+        let pill_h = 22.0_f64;
+        let y0 = self.rect.y0 + pad;
+        self.draw_maximized_title_chip(scene, transform, tr, theme, pad, pill_h, y0);
+        self.draw_maximized_buttons(scene, transform, tr, theme, pad, pill_h, y0);
+    }
+
+    /// The `[app title]` chip at the left of the maximized-chrome pill row.
+    fn draw_maximized_title_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pad: f64,
+        pill_h: f64,
+        y0: f64,
+    ) {
+        let active_title = self
+            .bar
+            .tabs()
+            .iter()
+            .find(|t| t.id == self.bar.active_id())
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let title_size = theme.tokens.typography.scale.xs;
+        let (tw, th) = tr.measure(&active_title, title_size, None);
+        let title_pill_w = (f64::from(tw) + 24.0).max(80.0);
+        let title_pill = Rect::new(
+            self.rect.x0 + pad,
+            y0,
+            self.rect.x0 + pad + title_pill_w,
+            y0 + pill_h,
+        );
+        crate::surface::shadow(
+            scene,
+            transform,
+            title_pill,
+            title_pill.height() / 2.0,
+            &theme.tokens.elevation.e2,
+        );
+        let (chip_fill, chip_border) = crate::surface::chip_colors(theme, false);
+        crate::surface::pill(scene, transform, title_pill, chip_fill, chip_border, None);
+        // Affine composition is floating-point matrix multiply — it
+        // cannot overflow or panic the way integer arithmetic can.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+        )]
+        let title_text_transform = transform
+            * vello::kurbo::Affine::translate((
+                title_pill.center().x - f64::from(tw) / 2.0,
+                title_pill.center().y - f64::from(th) / 2.0,
+            ));
+        tr.draw_text(
+            scene,
+            &active_title,
+            title_size,
+            theme.tokens.colors.text_primary,
+            title_text_transform,
+            None,
+        );
+    }
+
+    /// The `[Restore][×]` button pair at the right of the maximized-chrome
+    /// pill row. Also updates `restore_rect`/`close_rect` for hit-testing,
+    /// which keeps running regardless of the cursor band — only the paint
+    /// is gated by the caller.
+    fn draw_maximized_buttons(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pad: f64,
+        pill_h: f64,
+        y0: f64,
+    ) {
+        let title_size = theme.tokens.typography.scale.xs;
+        let close_w = 22.0_f64;
+        let close_x0 = self.rect.x1 - close_w - pad;
+        self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
+        let restore_w = 76.0_f64;
+        let restore_x0 = close_x0 - restore_w - 4.0;
+        self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
+
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.restore_rect,
+            self.restore_rect.height() / 2.0,
+            &theme.tokens.elevation.e2,
+        );
+        let (restore_fill, restore_border) = crate::surface::chip_colors(theme, self.restore_hover);
+        crate::surface::pill(
+            scene,
+            transform,
+            self.restore_rect,
+            restore_fill,
+            restore_border,
+            None,
+        );
+        // Text label kept (for screen readers/i18n) and offset past
+        // a 14px icon slot for the lucide `Minimize2` glyph.
+        let icon_slot = Rect::new(
+            self.restore_rect.x0 + 8.0,
+            self.restore_rect.y0 + 4.0,
+            self.restore_rect.x0 + 22.0,
+            self.restore_rect.y1 - 4.0,
+        );
+        icons::draw_icon(
+            scene,
+            transform,
+            icon_slot,
+            icons::Icon::Minimize2,
+            theme.tokens.colors.text_primary,
+            1.5,
+        );
+        let label = "Restore";
+        let (_lw, lh) = tr.measure(label, title_size, None);
+        let lx = self.restore_rect.x0 + 28.0;
+        let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
+        // Affine composition is floating-point matrix multiply — it
+        // cannot overflow or panic the way integer arithmetic can.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+        )]
+        let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
+        tr.draw_text(
+            scene,
+            label,
+            title_size,
+            theme.tokens.colors.text_primary,
+            label_transform,
+            None,
+        );
+
+        self.draw_maximized_close_button(scene, transform, theme);
+    }
+
+    /// The `[×]` close button at the far right of the maximized-chrome
+    /// pill row, painted into `self.close_rect` (already computed by
+    /// [`Self::draw_maximized_buttons`]).
+    fn draw_maximized_close_button(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        // Concept: `hover:bg-red-500/80` (danger token at 80% alpha).
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.close_rect,
+            self.close_rect.height() / 2.0,
+            &theme.tokens.elevation.e2,
+        );
+        let close_fill = if self.close_hover {
+            theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
+        } else {
+            crate::surface::chip_colors(theme, false).0
+        };
+        let close_border = if self.close_hover {
+            None
+        } else {
+            crate::surface::chip_colors(theme, false).1
+        };
+        crate::surface::pill(
+            scene,
+            transform,
+            self.close_rect,
+            close_fill,
+            close_border,
+            None,
+        );
+        // On hover the glyph promotes to full white (`hover:text-white`).
+        let glyph_color = if self.close_hover {
+            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
+        } else {
+            theme.tokens.colors.text_primary
+        };
+        icons::draw_icon(
+            scene,
+            transform,
+            self.close_rect,
+            icons::Icon::X,
+            glyph_color,
+            1.5,
+        );
+    }
 }
 
 impl Widget for WindowGroup {
@@ -716,7 +1305,7 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size {
-                width: Dimension::length(self.resolved_width_px() as f32),
+                width: Dimension::length(px_f32(self.resolved_width_px())),
                 height: Dimension::percent(1.0),
             },
             flex_grow: 0.0,
@@ -750,10 +1339,16 @@ impl Widget for WindowGroup {
         );
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        self.bar.apply_layout(taffy, children[0], new_origin);
+        let Some(&bar_child) = children.first() else {
+            return;
+        };
+        self.bar.apply_layout(taffy, bar_child, new_origin);
         let active_id = self.bar.active_id();
-        if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
-            h.apply_layout(taffy, children[1], new_origin);
+        if let (Some((_, h)), Some(&tile_child)) = (
+            self.hosts.iter_mut().find(|(i, _)| *i == active_id),
+            children.get(1),
+        ) {
+            h.apply_layout(taffy, tile_child, new_origin);
         }
     }
     fn draw(
@@ -782,30 +1377,7 @@ impl Widget for WindowGroup {
         // cubic-out; close mirrors it (α 1→0, scale 1→0.95). The whole
         // paint composes under one alpha+translate+scale layer so hit
         // tests stay aligned with what's on screen mid-fade.
-        let (fade_alpha, fade_x, fade_y, fade_scale): (f32, f64, f64, f64) = if let Some(started) =
-            self.closing_at
-        {
-            // No offset: the per-host curve already carries the y-drift.
-            let raw =
-                (started.elapsed().as_millis() as f32 / GROUP_CLOSE_FADE_MS as f32).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - raw).powi(3);
-            let alpha = (1.0 - eased).max(0.0);
-            let scale = f64::from(1.0 - 0.05 * eased);
-            (alpha, 0.0, 0.0, scale)
-        } else if let Some(started) = self.spawned_at {
-            let elapsed = started.elapsed();
-            if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
-                (1.0, 0.0, 0.0, 1.0)
-            } else {
-                let raw = (elapsed.as_secs_f64() / (SPAWN_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
-                let eased = 1.0 - (1.0 - raw).powi(3);
-                let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
-                let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
-                (eased as f32, x_off, 0.0, scale)
-            }
-        } else {
-            (1.0, 0.0, 0.0, 1.0)
-        };
+        let (fade_alpha, fade_x, fade_y, fade_scale) = self.fade_transform_params();
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
             // 16px clip margin so outer strokes (glow rings, focus
@@ -826,7 +1398,20 @@ impl Widget for WindowGroup {
         }
         // `fade_y` is currently always 0, kept in the tuple in case a
         // future close curve wants a settle.
-        let transform = if fade_x != 0.0 || fade_y != 0.0 || fade_scale != 1.0 {
+        // Affine composition is floating-point matrix multiply — it
+        // cannot overflow or panic the way integer arithmetic can.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+        )]
+        // Tolerance rather than exact float equality: this only gates a
+        // no-op-transform fast path, so a value merely close to identity
+        // is close enough to skip composing it.
+        const FADE_EPS: f64 = 1e-9;
+        let transform = if fade_x.abs() > FADE_EPS
+            || fade_y.abs() > FADE_EPS
+            || (fade_scale - 1.0).abs() > FADE_EPS
+        {
             let cx = self.rect.center().x;
             let cy = self.rect.center().y;
             transform
@@ -860,227 +1445,13 @@ impl Widget for WindowGroup {
             h.set_focused(focused);
             h.draw(scene, transform, tr, theme, presence);
         }
-        // Opacity 1→0, scale 1→0.95, y 0→-20 over `CLOSE_FADE_MS`. Id
-        // list is snapshotted to borrow `self.hosts` mutably without
-        // fighting the borrow checker against `self.closing_hosts`.
-        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
-        let closing_ids: Vec<(u64, Instant)> = self
-            .closing_hosts
-            .iter()
-            .filter(|(_, t)| t.elapsed() < close_window)
-            .map(|(id, t)| (*id, *t))
-            .collect();
-        for (id, started) in closing_ids {
-            let elapsed = started.elapsed().as_secs_f64();
-            let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - raw).powi(3);
-            let alpha = (1.0 - eased) as f32;
-            let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
-            let y_offset = -20.0 * eased;
-            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
-                let rect = h.get_rect();
-                // Matches the tile-spawn clip so shadows aren't chopped.
-                let clip = Rect::new(
-                    rect.x0 - 160.0,
-                    rect.y0 - 160.0,
-                    rect.x1 + 160.0,
-                    rect.y1 + 160.0,
-                );
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    alpha.max(0.0),
-                    transform,
-                    &clip,
-                );
-                let centre = rect.center();
-                let close_transform = transform
-                    * Affine::translate((0.0, y_offset))
-                    * Affine::translate((centre.x, centre.y))
-                    * Affine::scale(scale)
-                    * Affine::translate((-centre.x, -centre.y));
-                h.draw(scene, close_transform, tr, theme, presence);
-                scene.pop_layer();
-            }
-        }
-        // The hit zone (`RESIZE_HANDLE_PX = 6`) is wider than the
-        // painted grip so the cursor catches it early.
-        let grip_col = if self.hover_resize || self.resize_origin.is_some() {
-            theme.tokens.colors.border_focus
-        } else {
-            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
-        };
-        let group_h = self.rect.height();
-        let grip_h = (group_h * 0.25).clamp(24.0, 80.0);
-        let grip_cx = self.rect.x1 - 3.0;
-        let grip_cy = self.rect.center().y;
-        let bar = |dx: f64| {
-            vello::kurbo::RoundedRect::from_rect(
-                Rect::new(
-                    grip_cx + dx - 1.0,
-                    grip_cy - grip_h / 2.0,
-                    grip_cx + dx + 1.0,
-                    grip_cy + grip_h / 2.0,
-                ),
-                1.0,
-            )
-        };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            grip_col,
-            None,
-            &bar(-2.0),
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            grip_col,
-            None,
-            &bar(2.0),
-        );
+        self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        self.draw_resize_grip(scene, transform, theme);
 
         // No outline rings around `self.rect` for drag/search/maximize:
         // per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*.
         if self.maximized {
-            // Hit-testing (restore_rect/close_rect) keeps running below
-            // regardless of the cursor band — only the paint is gated.
-            if self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
-                // `[app title]  …  [Restore][×]`, matching the concept layout.
-                let pad = 6.0_f64;
-                let pill_h = 22.0_f64;
-                let y0 = self.rect.y0 + pad;
-
-                let active_title = self
-                    .bar
-                    .tabs()
-                    .iter()
-                    .find(|t| t.id == self.bar.active_id())
-                    .map(|t| t.title.clone())
-                    .unwrap_or_default();
-                let title_size = theme.tokens.typography.scale.xs;
-                let (tw, th) = tr.measure(&active_title, title_size, None);
-                let title_pill_w = (f64::from(tw) + 24.0).max(80.0);
-                let title_pill = Rect::new(
-                    self.rect.x0 + pad,
-                    y0,
-                    self.rect.x0 + pad + title_pill_w,
-                    y0 + pill_h,
-                );
-                crate::surface::shadow(
-                    scene,
-                    transform,
-                    title_pill,
-                    title_pill.height() / 2.0,
-                    &theme.tokens.elevation.e2,
-                );
-                let (title_fill, title_border) = crate::surface::chip_colors(theme, false);
-                crate::surface::pill(scene, transform, title_pill, title_fill, title_border, None);
-                let title_tx = title_pill.center().x - f64::from(tw) / 2.0;
-                let title_ty = title_pill.center().y - f64::from(th) / 2.0;
-                tr.draw_text(
-                    scene,
-                    &active_title,
-                    title_size,
-                    theme.tokens.colors.text_primary,
-                    transform * vello::kurbo::Affine::translate((title_tx, title_ty)),
-                    None,
-                );
-
-                let close_w = 22.0_f64;
-                let close_x0 = self.rect.x1 - close_w - pad;
-                self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
-                let restore_w = 76.0_f64;
-                let restore_x0 = close_x0 - restore_w - 4.0;
-                self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
-
-                crate::surface::shadow(
-                    scene,
-                    transform,
-                    self.restore_rect,
-                    self.restore_rect.height() / 2.0,
-                    &theme.tokens.elevation.e2,
-                );
-                let (restore_fill, restore_border) =
-                    crate::surface::chip_colors(theme, self.restore_hover);
-                crate::surface::pill(
-                    scene,
-                    transform,
-                    self.restore_rect,
-                    restore_fill,
-                    restore_border,
-                    None,
-                );
-                // Text label kept (for screen readers/i18n) and offset past
-                // a 14px icon slot for the lucide `Minimize2` glyph.
-                let icon_slot = Rect::new(
-                    self.restore_rect.x0 + 8.0,
-                    self.restore_rect.y0 + 4.0,
-                    self.restore_rect.x0 + 22.0,
-                    self.restore_rect.y1 - 4.0,
-                );
-                icons::draw_icon(
-                    scene,
-                    transform,
-                    icon_slot,
-                    icons::Icon::Minimize2,
-                    theme.tokens.colors.text_primary,
-                    1.5,
-                );
-                let label = "Restore";
-                let (_lw, lh) = tr.measure(label, title_size, None);
-                let lx = self.restore_rect.x0 + 28.0;
-                let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
-                tr.draw_text(
-                    scene,
-                    label,
-                    title_size,
-                    theme.tokens.colors.text_primary,
-                    transform * vello::kurbo::Affine::translate((lx, ly)),
-                    None,
-                );
-
-                // Concept: `hover:bg-red-500/80` (danger token at 80% alpha).
-                crate::surface::shadow(
-                    scene,
-                    transform,
-                    self.close_rect,
-                    self.close_rect.height() / 2.0,
-                    &theme.tokens.elevation.e2,
-                );
-                let close_fill = if self.close_hover {
-                    theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
-                } else {
-                    crate::surface::chip_colors(theme, false).0
-                };
-                let close_border = if self.close_hover {
-                    None
-                } else {
-                    crate::surface::chip_colors(theme, false).1
-                };
-                crate::surface::pill(
-                    scene,
-                    transform,
-                    self.close_rect,
-                    close_fill,
-                    close_border,
-                    None,
-                );
-                // On hover the glyph promotes to full white (`hover:text-white`).
-                let glyph_color = if self.close_hover {
-                    vello::peniko::Color::from_rgba8(255, 255, 255, 255)
-                } else {
-                    theme.tokens.colors.text_primary
-                };
-                icons::draw_icon(
-                    scene,
-                    transform,
-                    self.close_rect,
-                    icons::Icon::X,
-                    glyph_color,
-                    1.5,
-                );
-            }
+            self.draw_maximized_chrome(scene, transform, tr, theme);
         } else {
             self.restore_rect = Rect::ZERO;
             self.close_rect = Rect::ZERO;
@@ -1104,188 +1475,34 @@ impl Widget for WindowGroup {
         taffy: &TaffyTree<()>,
     ) {
         let children = taffy.children(node_id).unwrap_or_default();
+        let bar_child = children.first().copied();
+        let tile_child = children.get(1).copied();
         let handle_rect = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
             self.rect.y0,
             self.rect.x1,
             self.rect.y1,
         );
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = pt;
-                self.hover_resize = handle_rect.contains(pt);
-                self.restore_hover = self.maximized && self.restore_rect.contains(pt);
-                self.close_hover = self.maximized && self.close_rect.contains(pt);
-                if self.resize_origin.is_some() {
-                    self.update_resize(pt.x as f32);
-                    *handled = true;
-                    return;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.maximized && self.close_rect.contains(self.last_cursor) => {
-                // Route through the same deferred fade flow as the
-                // per-tab × click (`bar.start_closing` → `closing_hosts`
-                // → sweep) so the group shrinks coherently instead of
-                // popping away. Exit maximize immediately so the floating
-                // chrome stops painting over a tile it no longer owns.
-                let active_id = self.bar.active_id();
-                self.bar.start_closing(active_id);
-                self.closing_hosts
-                    .entry(active_id)
-                    .or_insert_with(Instant::now);
-                self.maximized = false;
-                self.pending_maximize_change = Some(false);
-                *handled = true;
-                return;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.maximized && self.restore_rect.contains(self.last_cursor) => {
-                // Handled here (not via bar.pending_max) so the click
-                // never races with a tab selection under the pill's geometry.
-                self.maximized = false;
-                self.pending_maximize_change = Some(false);
-                *handled = true;
-                return;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.hover_resize => {
-                // Anchor on the actual press point, not the group's right
-                // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
-                // edge would jump the window on grab.
-                self.begin_resize(self.last_cursor.x as f32);
-                *handled = true;
-                return;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.resize_origin.is_some() => {
-                self.end_resize();
-                *handled = true;
-                return;
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        repeat: false,
-                        ..
-                    },
-                ..
-            } if m.state().control_key()
-                && m.state().shift_key()
-                && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
-            {
-                // Routed here (not the bar's own handler) because keyboard
-                // events arrive at the focused widget and the bar isn't
-                // focusable.
-                let active = self.bar.active_id();
-                self.bar.toggle_pin(active);
-                *handled = true;
-                return;
-            }
-            _ => {}
-        }
-        self.bar.handle_event(
-            event,
-            scale_factor,
-            m,
-            s,
-            p,
-            handled,
-            focus_target,
-            children[0],
-            taffy,
-        );
-
-        // Sweep hosts whose close fade has fully elapsed; removal is
-        // deferred so the fade plays out with the tile still in place.
-        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
-        let expired: Vec<u64> = self
-            .closing_hosts
-            .iter()
-            .filter(|(_, started)| started.elapsed() >= close_window)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in expired {
-            self.closing_hosts.remove(&id);
-            if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
-                self.hosts.remove(idx);
-            }
-            self.bar.finalize_close(id);
-        }
-
-        // `bar.tabs().is_empty()` rather than just `hosts.is_empty()` —
-        // the bar is the user-visible "empty" signal.
-        if !self.is_closing()
-            && self.bar.tabs().is_empty()
-            && self.hosts.is_empty()
-            && self.closing_hosts.is_empty()
-        {
-            self.start_closing();
-        }
-
-        // Host stays in `self.hosts` for `CLOSE_FADE_MS`; the sweep above drops it.
-        if let Some(close_id) = self.bar.take_close() {
-            self.closing_hosts
-                .entry(close_id)
-                .or_insert_with(Instant::now);
+        if self.handle_direct_input(event, scale_factor, m, handle_rect) {
             *handled = true;
+            return;
         }
-
-        // Without `style_dirty` the cached taffy node keeps the
-        // pre-toggle width and the click looks like a no-op.
-        if let Some(_id) = self.bar.take_max() {
-            self.maximized = !self.maximized;
-            self.style_dirty = true;
-            self.pending_maximize_change = Some(self.maximized);
-            *handled = true;
-        }
-
-        if let Some(id) = self.bar.take_search() {
-            self.search_active = !self.search_active;
-            self.pending_search_open = Some(id);
-            *handled = true;
-        }
-
-        // The group knows its own id; the shell knows what a new tab
-        // should contain, so republish with the id and let it decide.
-        if self.bar.take_new_tab().is_some() {
-            self.pending_new_tab = Some(self.id);
-            *handled = true;
-        }
-
-        // `bar.tabs` and `hosts` are a strictly-aligned 1:1 mapping; a
-        // refactor that permutes only one would desync pill `i` from
-        // content `i` — the debug_assert documents that invariant.
-        if let Some((from, to)) = self.bar.take_reorder() {
-            debug_assert_eq!(
-                self.bar.tabs().len(),
-                self.hosts.len(),
-                "WindowGroup parallel-vec invariant violated: bar.tabs.len() \
-                 ({}) != hosts.len() ({}). The bar's pill list and the host \
-                 content list must stay 1:1 — every mutation of one must be \
-                 mirrored on the other.",
-                self.bar.tabs().len(),
-                self.hosts.len(),
+        if let Some(bar_child) = bar_child {
+            self.bar.handle_event(
+                event,
+                scale_factor,
+                m,
+                s,
+                p,
+                handled,
+                focus_target,
+                bar_child,
+                taffy,
             );
-            self.bar.reorder(from, to);
-            let item = self.hosts.remove(from);
-            self.hosts.insert(to, item);
-            self.pending_tab_reorder = Some((from, to));
+        }
+
+        self.sweep_expired_closing_hosts();
+        if self.drain_bar_signals() {
             *handled = true;
         }
 
@@ -1293,7 +1510,10 @@ impl Widget for WindowGroup {
             return;
         }
         let active_id = self.bar.active_id();
-        if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
+        if let (Some((_, h)), Some(tile_child)) = (
+            self.hosts.iter_mut().find(|(i, _)| *i == active_id),
+            tile_child,
+        ) {
             h.handle_event(
                 event,
                 scale_factor,
@@ -1302,7 +1522,7 @@ impl Widget for WindowGroup {
                 p,
                 handled,
                 focus_target,
-                children[1],
+                tile_child,
                 taffy,
             );
         }
@@ -1370,7 +1590,9 @@ impl Widget for WindowGroup {
         let spawn_in_flight = self
             .spawned_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
-        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
+        // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
+        // millisecond u64, avoiding an f32->u64 cast at every use site.
+        let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
         let close_in_flight = self
             .closing_hosts
             .values()
@@ -1458,7 +1680,7 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Starting"
         }
         fn get_rect(&self) -> Rect {
@@ -1476,7 +1698,7 @@ mod tests {
         fn app_kind(&self) -> AppKind {
             AppKind::Files
         }
-        fn app_title(&self) -> &str {
+        fn app_title(&self) -> &'static str {
             "Starting"
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
@@ -1670,14 +1892,14 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Latching"
         }
         fn get_rect(&self) -> Rect {
             Rect::ZERO
         }
         fn presented(&self) -> bool {
-            self.asked.set(self.asked.get() + 1);
+            self.asked.set(self.asked.get().saturating_add(1));
             if self.drawn {
                 self.latched.set(true);
             }
@@ -1692,7 +1914,7 @@ mod tests {
         fn app_kind(&self) -> AppKind {
             AppKind::Files
         }
-        fn app_title(&self) -> &str {
+        fn app_title(&self) -> &'static str {
             "Latching"
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
@@ -1793,6 +2015,33 @@ mod tests {
         use taffy::prelude::TaffyMaxContent;
         use winit::event::{ElementState, MouseButton};
 
+        // Common `handle_event` shape shared by every dispatch below
+        // (fixed scale factor, default modifiers); returns whether the
+        // event was claimed.
+        fn dispatch(
+            g: &mut WindowGroup,
+            event: &WindowEvent,
+            state: &mut AutoCommit,
+            root_id: &ObjId,
+            focus_target: &mut Option<NodeId>,
+            group_node: NodeId,
+            taffy: &TaffyTree<()>,
+        ) -> bool {
+            let mut handled = false;
+            g.handle_event(
+                event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                state,
+                root_id,
+                &mut handled,
+                focus_target,
+                group_node,
+                taffy,
+            );
+            handled
+        }
+
         let mut g = make_group();
         assert!(!g.maximized, "fresh group must start non-maximized");
 
@@ -1812,18 +2061,15 @@ mod tests {
         let pill = g.bar.tab_rects()[0];
         let mut state = automerge::AutoCommit::new();
         let root_id = automerge::ROOT;
-        let mut handled = false;
         let mut focus_target = None;
-        g.handle_event(
+        dispatch(
+            &mut g,
             &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
             },
-            1.0,
-            &winit::event::Modifiers::default(),
             &mut state,
             &root_id,
-            &mut handled,
             &mut focus_target,
             group_node,
             &taffy,
@@ -1849,25 +2095,20 @@ mod tests {
 
         // Seed last_cursor on the icon — the bar's press arm uses the
         // cached cursor for its fresh hit-test.
-        g.handle_event(
+        dispatch(
+            &mut g,
             &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
             &mut state,
             &root_id,
-            &mut handled,
             &mut focus_target,
             group_node,
             &taffy,
         );
-        let mut handled = false;
-        g.handle_event(
+        let handled = dispatch(
+            &mut g,
             &press,
-            1.0,
-            &winit::event::Modifiers::default(),
             &mut state,
             &root_id,
-            &mut handled,
             &mut focus_target,
             group_node,
             &taffy,
@@ -1879,26 +2120,20 @@ mod tests {
             "maximize click on a tab pill must drive WindowGroup::maximized true",
         );
 
-        let mut handled = false;
-        g.handle_event(
+        dispatch(
+            &mut g,
             &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
             &mut state,
             &root_id,
-            &mut handled,
             &mut focus_target,
             group_node,
             &taffy,
         );
-        let mut handled = false;
-        g.handle_event(
+        dispatch(
+            &mut g,
             &press,
-            1.0,
-            &winit::event::Modifiers::default(),
             &mut state,
             &root_id,
-            &mut handled,
             &mut focus_target,
             group_node,
             &taffy,
@@ -1911,6 +2146,8 @@ mod tests {
 
     #[test]
     fn maximize_toggle_marks_structure_dirty_for_layout_rebuild() {
+        use taffy::prelude::TaffyMaxContent;
+
         let mut g = make_group();
         assert!(!g.take_structure_dirty(), "fresh group is not dirty");
 
@@ -1926,7 +2163,6 @@ mod tests {
             std::collections::HashMap::new();
         let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let root = taffy.parent_node(Style::default(), &[group_node]);
-        use taffy::prelude::TaffyMaxContent;
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2080,9 +2316,6 @@ mod tests {
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
 
-        let theme = Theme::dark();
-        let mut g = make_group();
-
         // Helper: (re)build the taffy tree from the group's current state and
         // run a full layout pass, returning the group's laid-out width.
         fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
@@ -2096,6 +2329,9 @@ mod tests {
             g.apply_layout(&taffy, node, Point::ZERO);
             g.get_rect().width()
         }
+
+        let theme = Theme::dark();
+        let mut g = make_group();
 
         // 1200 px strip: tiers land on whole hundreds (Narrow 400 /
         // Normal 800 / Wide 1200).
@@ -2143,8 +2379,6 @@ mod tests {
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
 
-        let theme = Theme::dark();
-
         // Lay a group out and report (group_height, tile_height).
         fn measure(g: &mut WindowGroup, theme: &Theme) -> (f64, f64) {
             let mut taffy = TaffyTree::<()>::new();
@@ -2165,10 +2399,11 @@ mod tests {
                 .unwrap();
             g.apply_layout(&taffy, node, Point::ZERO);
             let tile = taffy.children(node).unwrap()[1];
-            let tile_h = taffy.layout(tile).copied().unwrap_or_default().size.height as f64;
+            let tile_h = f64::from(taffy.layout(tile).copied().unwrap_or_default().size.height);
             (g.get_rect().height(), tile_h)
         }
 
+        let theme = Theme::dark();
         let mut g = make_group();
         let (group_h, tile_h) = measure(&mut g, &theme);
         assert!(
@@ -2243,7 +2478,7 @@ mod tests {
         );
     }
 
-    /// Drives the real event path (CursorMoved → Pressed → CursorMoved)
+    /// Drives the real event path (`CursorMoved` → `Pressed` → `CursorMoved`)
     /// since calling `begin_resize` directly would hide the bug, which is
     /// in its caller.
     #[test]
@@ -2379,7 +2614,7 @@ mod tests {
 
         // In-flight resize drag holds the cursor even off the band —
         // pointer capture keeps the gesture alive.
-        g.begin_resize(rect.x1 as f32);
+        g.begin_resize(px_f32(rect.x1));
         assert_eq!(
             Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
             Some(winit::window::CursorIcon::EwResize),
@@ -2514,7 +2749,7 @@ mod tests {
     #[test]
     fn spawn_fade_window_clears_after_duration() {
         let mut g = make_group();
-        g.spawned_at = Some(Instant::now() - Duration::from_millis(SPAWN_ANIM_MS + 16));
+        g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
         assert!(
             !g.needs_animation_frame(),
             "after the spawn window elapses, the fade no longer demands frames",
@@ -2542,7 +2777,7 @@ mod tests {
         // Roughly midway: cubic-out at raw=0.5 yields 1 - 0.5^3 = 0.875,
         // so we expect well past 0.5. Backdate the timestamp instead of
         // sleeping so the test doesn't waste real time.
-        g.spawned_at = Some(Instant::now() - Duration::from_millis(SPAWN_ANIM_MS / 2));
+        g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS / 2));
         let t_mid = g.spawn_anim_t();
         assert!(
             t_mid > 0.5 && t_mid < 1.0,
@@ -2550,7 +2785,7 @@ mod tests {
         );
 
         // Past the duration: pins to 1.0.
-        g.spawned_at = Some(Instant::now() - Duration::from_millis(SPAWN_ANIM_MS + 16));
+        g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
         assert_eq!(
             g.spawn_anim_t(),
             1.0,
@@ -2685,7 +2920,7 @@ mod tests {
             g.needs_animation_frame(),
             "in-flight close fade must pump redraws",
         );
-        assert!(g.has_host(2), "host stays in `hosts` for the fade duration",);
+        assert!(g.has_host(2), "host stays in `hosts` for the fade duration");
         let host_count_during = g.host_count();
 
         g.force_expire_closing(2);
@@ -2812,9 +3047,7 @@ mod tests {
     #[test]
     fn group_close_complete_true_after_fade_duration() {
         let mut g = make_group();
-        g.set_closing_at_for_tests(
-            Instant::now() - Duration::from_millis(GROUP_CLOSE_FADE_MS + 20),
-        );
+        g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
         assert!(
             g.close_complete(),
             "close_complete must flip true after the fade window elapses",
@@ -2879,9 +3112,7 @@ mod tests {
             g.needs_animation_frame(),
             "group-level close fade must pump frames until close_complete",
         );
-        g.set_closing_at_for_tests(
-            Instant::now() - Duration::from_millis(GROUP_CLOSE_FADE_MS + 20),
-        );
+        g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
         assert!(
             !g.needs_animation_frame(),
             "after the fade window elapses, frames are no longer required",
@@ -3009,10 +3240,8 @@ mod tests {
             g.needs_animation_frame(),
             "a fresh closing host must pump the run loop",
         );
-        g.closing_hosts.insert(
-            1,
-            Instant::now() - Duration::from_millis(CLOSE_FADE_MS as u64 + 20),
-        );
+        g.closing_hosts
+            .insert(1, instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
         assert!(
             !g.needs_animation_frame(),
             "after the fade window elapses the group goes idle again",
@@ -3203,13 +3432,6 @@ mod tests {
         use winit::event::{KeyEvent, Modifiers};
         use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 
-        let mut g = make_group();
-        let active = g.bar.active_id();
-        assert!(
-            !g.bar.is_pinned(active),
-            "fresh group: active tab is unpinned"
-        );
-
         // winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent`
         // can't be built through a struct literal — zero-init instead.
         fn key_press(logical_key: Key) -> WindowEvent {
@@ -3227,6 +3449,13 @@ mod tests {
                 is_synthetic: false,
             }
         }
+
+        let mut g = make_group();
+        let active = g.bar.active_id();
+        assert!(
+            !g.bar.is_pinned(active),
+            "fresh group: active tab is unpinned"
+        );
 
         let mods = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
         let event = key_press(Key::Character(SmolStr::new_inline("p")));
