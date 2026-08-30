@@ -63,6 +63,29 @@ pub const ACCENT_PALETTE: [[u8; 3]; 8] = [
     [244, 114, 182], // pink
 ];
 
+/// Narrows a small layout count/index (tile counts and positions, always
+/// within the fixed 8-entry [`ACCENT_PALETTE`]) to `f64`. Bounded far
+/// below `f64`'s precision limit, so this never loses precision in
+/// practice.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "tile counts/indices are bounded to ACCENT_PALETTE's fixed small length"
+)]
+fn small_f64(v: usize) -> f64 {
+    v as f64
+}
+
+/// Composes `base` with a translation for text/element placement. Affine
+/// composition is floating-point matrix multiply — it cannot overflow or
+/// panic the way integer arithmetic can.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 pub struct CreateIdentityScreen {
     rect: Rect,
     /// Single-line editor backing the display-name field. Use
@@ -117,7 +140,10 @@ impl CreateIdentityScreen {
     }
 
     pub fn selected_accent_color(&self) -> [u8; 3] {
-        ACCENT_PALETTE[self.selected_accent]
+        ACCENT_PALETTE
+            .get(self.selected_accent)
+            .copied()
+            .unwrap_or(ACCENT_PALETTE[0])
     }
 
     pub fn set_accent_index(&mut self, idx: usize) {
@@ -140,6 +166,14 @@ impl CreateIdentityScreen {
 
     /// On success the new `IdentityRecord` is cached and returned. On
     /// error `submit_error` is set so the UI can surface it inline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if the display name is
+    /// empty (whitespace-only counts as empty), or propagates whatever
+    /// [`ThresholdIdentity::bootstrap_single_device`],
+    /// [`IdentityRecord::from_threshold_identity`] or `store.save` fail
+    /// with.
     pub fn submit_to_store(
         &mut self,
         store: &dyn IdentityStore,
@@ -154,7 +188,7 @@ impl CreateIdentityScreen {
         let record = IdentityRecord::from_threshold_identity(
             &id,
             self.editor.text.trim(),
-            ACCENT_PALETTE[self.selected_accent],
+            self.selected_accent_color(),
             SystemTime::now(),
         )?;
         store.save(&record)?;
@@ -173,7 +207,7 @@ impl CreateIdentityScreen {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
@@ -242,7 +276,7 @@ impl CreateIdentityScreen {
                 }
                 if self
                     .editor
-                    .apply_key(logical_key, _modifiers, text.as_deref())
+                    .apply_key(logical_key, modifiers, text.as_deref())
                 {
                     *handled = true;
                 }
@@ -296,12 +330,13 @@ impl Widget for CreateIdentityScreen {
         self.tile_rects.clear();
         let tile_size = 32.0;
         let gap = 8.0;
+        let tile_count = ACCENT_PALETTE.len();
         let tiles_total_width =
-            ACCENT_PALETTE.len() as f64 * tile_size + (ACCENT_PALETTE.len() - 1) as f64 * gap;
+            small_f64(tile_count) * tile_size + small_f64(tile_count.saturating_sub(1)) * gap;
         let tile_y = card.y0 + 232.0;
         let tile_x0 = card.x0 + (card_w - tiles_total_width) / 2.0;
-        for i in 0..ACCENT_PALETTE.len() {
-            let x = tile_x0 + i as f64 * (tile_size + gap);
+        for i in 0..tile_count {
+            let x = tile_x0 + small_f64(i) * (tile_size + gap);
             self.tile_rects
                 .push(Rect::new(x, tile_y, x + tile_size, tile_y + tile_size));
         }
@@ -346,12 +381,28 @@ impl Widget for CreateIdentityScreen {
             None,
             &RoundedRect::from_rect(card, radius),
         );
+        self.draw_header(scene, transform, text_renderer, theme, card, card_pad);
+        self.draw_name_field(scene, transform, text_renderer, theme, card, card_pad);
+        self.draw_accent_tiles(scene, transform, text_renderer, theme, card, card_pad);
+        self.draw_submit_button(scene, transform, text_renderer, theme, card, card_pad);
+    }
+
+    /// Title + explanation lines at the top of the card.
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        card_pad: f64,
+    ) {
         text_renderer.draw_text(
             scene,
             "Create your qOS identity",
             22.0,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + card_pad, card.y0 + card_pad)),
+            translated(transform, card.x0 + card_pad, card.y0 + card_pad),
             None,
         );
         text_renderer.draw_text(
@@ -359,15 +410,27 @@ impl Widget for CreateIdentityScreen {
             "Your identity signs every action you take and lets you join shared channels.",
             14.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + card_pad, card.y0 + card_pad + 36.0)),
+            translated(transform, card.x0 + card_pad, card.y0 + card_pad + 36.0),
             None,
         );
+    }
+
+    /// The display-name label, input box, selection highlight and caret.
+    fn draw_name_field(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        card_pad: f64,
+    ) {
         text_renderer.draw_text(
             scene,
             "Display name",
             13.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + card_pad, card.y0 + 116.0)),
+            translated(transform, card.x0 + card_pad, card.y0 + 116.0),
             None,
         );
         scene.fill(
@@ -398,8 +461,14 @@ impl Widget for CreateIdentityScreen {
         let text_origin_x = self.input_rect.x0 + 12.0;
         let text_origin_y = self.input_rect.y0 + 12.0;
         if let Some((lo, hi)) = self.editor.selection_range() {
-            let (pre_w, _) = text_renderer.measure(&name[..lo], 15.0, None);
-            let (mid_w, _) = text_renderer.measure(&name[lo..hi], 15.0, None);
+            // `.get` rather than byte-slicing directly: `lo`/`hi` are a
+            // caret-driven selection and should always land on char
+            // boundaries, but a misaligned value degrades to "no
+            // highlight" instead of panicking the whole compositor.
+            let pre = name.get(..lo).unwrap_or("");
+            let mid = name.get(lo..hi).unwrap_or("");
+            let (pre_w, _) = text_renderer.measure(pre, 15.0, None);
+            let (mid_w, _) = text_renderer.measure(mid, 15.0, None);
             let sel_color = theme.accent_primary.with_alpha_factor(0.30);
             scene.fill(
                 Fill::NonZero,
@@ -419,12 +488,13 @@ impl Widget for CreateIdentityScreen {
             &displayed,
             15.0,
             text_color,
-            transform * Affine::translate((text_origin_x, text_origin_y)),
+            translated(transform, text_origin_x, text_origin_y),
             None,
         );
         // Drawn over the selection so the user always sees where they'd type.
         let cursor_byte = self.editor.cursor.min(name.len());
-        let prefix = &name[..cursor_byte];
+        // Same rationale as the selection slice above.
+        let prefix = name.get(..cursor_byte).unwrap_or("");
         let (prefix_w, _) = text_renderer.measure(prefix, 15.0, None);
         let caret_x = text_origin_x + f64::from(prefix_w);
         let caret_top = text_origin_y - 2.0;
@@ -437,16 +507,34 @@ impl Widget for CreateIdentityScreen {
             None,
             &caret_rect,
         );
+    }
+
+    /// The accent-colour label and the row of selectable tiles.
+    fn draw_accent_tiles(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        card_pad: f64,
+    ) {
         text_renderer.draw_text(
             scene,
             "Accent colour",
             13.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + card_pad, card.y0 + 208.0)),
+            translated(transform, card.x0 + card_pad, card.y0 + 208.0),
             None,
         );
         for (i, r) in self.tile_rects.iter().enumerate() {
-            let [r_, g_, b_] = ACCENT_PALETTE[i];
+            // `tile_rects` is always built 1:1 with `ACCENT_PALETTE` in
+            // `apply_layout`, so this is structurally in range — checked
+            // rather than indexed so that invariant can't silently regress
+            // into a panic.
+            let Some(&[r_, g_, b_]) = ACCENT_PALETTE.get(i) else {
+                continue;
+            };
             let fill = Color::from_rgb8(r_, g_, b_);
             scene.fill(
                 Fill::NonZero,
@@ -465,6 +553,19 @@ impl Widget for CreateIdentityScreen {
                 );
             }
         }
+    }
+
+    /// The submit button and, once a submit attempt has failed, the
+    /// inline error line beneath it.
+    fn draw_submit_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        card_pad: f64,
+    ) {
         let btn_bg = if self.is_submit_enabled() {
             if self.submit_hovered {
                 theme.bg_active
@@ -494,11 +595,11 @@ impl Widget for CreateIdentityScreen {
             label,
             14.0,
             btn_text_color,
-            transform
-                * Affine::translate((
-                    label_x,
-                    self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
-                )),
+            translated(
+                transform,
+                label_x,
+                self.submit_rect.y0 + (self.submit_rect.height() - 14.0) / 2.0,
+            ),
             None,
         );
         if let Some(err) = &self.submit_error {
@@ -507,7 +608,7 @@ impl Widget for CreateIdentityScreen {
                 err,
                 12.0,
                 Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + card_pad, card.y1 - card_pad - 28.0)),
+                translated(transform, card.x0 + card_pad, card.y1 - card_pad - 28.0),
                 None,
             );
         }
