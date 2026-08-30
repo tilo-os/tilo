@@ -31,6 +31,13 @@ for m in "${MODULES[@]}"; do
     printf '  MISSING %-20s\n' "$m"; missing=$((missing + 1))
   fi
 done
+
+# ci-measure.sh deliberately uses GNU time's stable machine-readable format;
+# the shell keyword cannot report peak RSS and is not a compatible fallback.
+if [ ! -x /usr/bin/time ]; then
+  echo "missing required build tool: /usr/bin/time" >&2
+  exit 1
+fi
 for b in "${BINARIES[@]}"; do
   if p=$(command -v "$b" 2>/dev/null); then
     printf '  ok      %-20s %s\n' "$b" "$p"

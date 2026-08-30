@@ -2,6 +2,8 @@
 name = "ush"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Application runtime that hosts a shell: read-only host base, user-owned overlay layers, brokered permissions."
 
 [lib]

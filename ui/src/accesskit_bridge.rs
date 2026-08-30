@@ -19,7 +19,8 @@ use std::collections::HashMap;
 
 use accesskit::{
     Action as AkAction, Node as AkNode, NodeId as AkNodeId, Rect as AkRect, Role as AkRole,
-    TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled, Tree, TreeUpdate,
+    TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled, TreeInfo,
+    TreeUpdate,
 };
 use taffy::NodeId as TaffyNodeId;
 use unicode_segmentation::UnicodeSegmentation;
@@ -220,7 +221,7 @@ pub fn build_tree_update(
 
     TreeUpdate {
         nodes,
-        tree: Some(Tree::new(ROOT_ID)),
+        tree: Some(TreeInfo::new(ROOT_ID)),
         tree_id: accesskit::TreeId::ROOT,
         focus,
     }

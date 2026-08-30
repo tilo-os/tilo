@@ -2,6 +2,7 @@
 name = "tts"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
 license = "MIT OR Apache-2.0"
 description = "qOS text-to-speech engine for the built-in screen reader: speech-dispatcher (SSIP) primary backend, espeak-ng subprocess fallback, null recording mock, and an interrupt-aware speech queue."
 

@@ -25,8 +25,10 @@
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 
+use crate::collab::colorimetry::Colorimetry;
+#[cfg(feature = "hdr-decode")]
 use crate::collab::colorimetry::{
-    ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
+    ColorPrimaries, ColorRange, MatrixCoefficients, TransferCharacteristics,
 };
 
 /// One decoded picture handed back to `PeerView`.

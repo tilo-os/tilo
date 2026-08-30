@@ -2,6 +2,8 @@
 name = "ui"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 autoexamples = false
@@ -231,12 +233,12 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # Accessibility: AccessKit is the cross-platform a11y schema; the winit
 # adapter bridges our exported tree into the event loop and, via its default
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
-# (Orca, braille) read every `ui` app. `accesskit_winit` 0.33.1 targets
+# (Orca, braille) read every `ui` app. `accesskit_winit` 0.34 targets
 # winit 0.30.x — the same pin as the `winit` dep above. See
 # `ui/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `ui/src/app.rs`.
-accesskit = "0.24.1"
-accesskit_winit = "0.33.1"
+accesskit = "0.25.0"
+accesskit_winit = "0.34.0"
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline qOS TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
