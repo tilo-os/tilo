@@ -960,6 +960,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         QsLevel::Bluetooth => "bluetooth",
         QsLevel::WifiDetails(_) => "wifi-details",
         QsLevel::BluetoothDetails(_) => "bluetooth-details",
+        QsLevel::Vpn => "vpn",
     };
     let ws_tab = match st.ws_settings_tab {
         WsTab::General => "general",
