@@ -357,7 +357,7 @@ impl FeedsDoc {
                 if s.is_empty() {
                     default.font
                 } else {
-                    ReadFont::from_str(&s)
+                    ReadFont::from_key(&s)
                 }
             },
             theme: {
@@ -365,7 +365,7 @@ impl FeedsDoc {
                 if s.is_empty() {
                     default.theme
                 } else {
-                    ReadTheme::from_str(&s)
+                    ReadTheme::from_key(&s)
                 }
             },
         }
