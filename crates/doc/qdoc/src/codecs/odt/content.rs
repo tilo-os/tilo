@@ -16,6 +16,10 @@ use std::collections::BTreeMap;
 
 /// Parse an ODF length (`svg:width`/`svg:height`, e.g. `"3cm"`, `"96px"`, `"1in"`) to an
 /// integer pixel count; `px` round-trips exactly, other units convert at 96dpi.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "an ODF length converted to px; realistic document dimensions are far below i64::MAX"
+)]
 pub(super) fn parse_len_px(v: &str) -> Option<i64> {
     let v = v.trim();
     let split = v
@@ -24,12 +28,12 @@ pub(super) fn parse_len_px(v: &str) -> Option<i64> {
     let (num, unit) = v.split_at(split);
     let n: f64 = num.trim().parse().ok()?;
     let px = match unit.trim() {
-        "px" | "" => n,
         "cm" => n * 96.0 / 2.54,
         "mm" => n * 96.0 / 25.4,
         "in" => n * 96.0,
         "pt" => n * 96.0 / 72.0,
         "pc" => n * 16.0,
+        // "px" | "" and anything unrecognized: already in px.
         _ => n,
     };
     Some(px.round() as i64)
@@ -81,12 +85,12 @@ fn outline_level(e: &BytesStart) -> Option<i64> {
     attr_val(e, b"text:outline-level").and_then(|v| v.parse::<i64>().ok())
 }
 
-fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str) {
+fn append(doc: &mut DocMut, cur: Option<&str>, cur_len: &mut usize, txt: &str) {
     if let Some(b) = cur
         && !txt.is_empty()
     {
         doc.splice_text(b, *cur_len, 0, txt);
-        *cur_len += txt.chars().count();
+        *cur_len = cur_len.saturating_add(txt.chars().count());
     }
 }
 
@@ -142,6 +146,256 @@ fn open_para(
     }
 }
 
+/// An open `text:a` hyperlink on [`parse_body`]'s link stack: its `href` (if any), the text
+/// marks its own style carries, and the char index where it opened.
+type LinkStackEntry = (Option<String>, Vec<(String, MarkValue)>, usize);
+
+/// Advance the in-progress verbatim-capture state machine for one XML event: an unmodeled
+/// element's raw source, re-emitted as a `fidelity` block once its closing tag is reached.
+/// No-op unless `capture` is already `Some` (the caller only calls this while it is).
+fn advance_capture(
+    ev: &Event,
+    s: &str,
+    end_pos: usize,
+    capture: &mut Option<(usize, i32)>,
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+) {
+    let Some((start, depth)) = capture.as_mut() else {
+        return;
+    };
+    match ev {
+        Event::Start(_) => *depth = depth.saturating_add(1),
+        Event::End(_) => {
+            *depth = depth.saturating_sub(1);
+            if *depth == 0 {
+                let raw = s.get(*start..end_pos).unwrap_or_default().to_string();
+                let id = start_block(doc, prev, cur, cur_len, "fidelity");
+                doc.set_attr(&id, "xml", raw.as_str());
+                *cur = None;
+                *capture = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Advance the in-progress `draw:frame` state machine for one XML event: collects the image
+/// href + alt text, then on close emits either an `image` block (if the Pictures part has the
+/// bytes) or a verbatim fidelity atom. No-op unless `frame` is already `Some`.
+fn advance_frame(
+    ev: &Event,
+    s: &str,
+    end_pos: usize,
+    frame: &mut Option<FrameState>,
+    container: &OdtContainer,
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+) -> Result<(), CodecError> {
+    let Some(fr) = frame.as_mut() else {
+        return Ok(());
+    };
+    match ev {
+        Event::Start(e) => {
+            fr.depth = fr.depth.saturating_add(1);
+            match e.name().as_ref() {
+                b"draw:image" => {
+                    if fr.href.is_none() {
+                        fr.href = attr_val(e, b"xlink:href");
+                    }
+                }
+                b"svg:title" => fr.collecting = Some(true),
+                b"svg:desc" => fr.collecting = Some(false),
+                _ => {}
+            }
+        }
+        Event::Empty(e) => {
+            if e.name().as_ref() == b"draw:image" && fr.href.is_none() {
+                fr.href = attr_val(e, b"xlink:href");
+            }
+        }
+        Event::Text(t) => {
+            if let Some(is_title) = fr.collecting {
+                let txt = t
+                    .xml10_content()
+                    .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                if is_title {
+                    fr.title.push_str(&txt);
+                } else {
+                    fr.desc.push_str(&txt);
+                }
+            }
+        }
+        Event::End(e) => {
+            fr.depth = fr.depth.saturating_sub(1);
+            match e.name().as_ref() {
+                b"svg:title" | b"svg:desc" => fr.collecting = None,
+                _ => {}
+            }
+            if fr.depth == 0 {
+                let bytes = fr
+                    .href
+                    .as_deref()
+                    .and_then(|h| container.get(h).map(<[u8]>::to_vec));
+                if let Some(bytes) = bytes {
+                    let hash = doc.put_blob(&bytes);
+                    let id = start_block(doc, prev, cur, cur_len, "image");
+                    doc.set_attr(&id, "blob", hash.as_str());
+                    let alt = if fr.title.is_empty() {
+                        &fr.desc
+                    } else {
+                        &fr.title
+                    };
+                    if !alt.is_empty() {
+                        doc.set_attr(&id, "alt", alt.as_str());
+                    }
+                    if let Some(w) = fr.width.as_deref().and_then(parse_len_px) {
+                        doc.set_attr(&id, "width", w);
+                    }
+                    if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
+                        doc.set_attr(&id, "height", h);
+                    }
+                    // Positioning: anchor (inline/paragraph/page) + wrap.
+                    if let Some(a) = fr.anchor.as_deref() {
+                        doc.set_attr(&id, "anchor", a);
+                    }
+                    if let Some(w) = fr.wrap.as_deref() {
+                        doc.set_attr(&id, "wrap", w);
+                    }
+                    // An image-only paragraph (the common LibreOffice/pandoc "figure" layout) leaves an empty wrapper paragraph — drop it so the image isn't preceded by a blank line.
+                    if let Some(pid) = fr.enclosing_para.as_deref()
+                        && !fr.para_had_text
+                    {
+                        doc.remove_block(pid);
+                    }
+                } else {
+                    // Picture missing from the container → preserve verbatim.
+                    let raw = s.get(fr.raw_start..end_pos).unwrap_or_default().to_string();
+                    let id = start_block(doc, prev, cur, cur_len, "fidelity");
+                    doc.set_attr(&id, "xml", raw.as_str());
+                }
+                *cur = None;
+                *frame = None;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Advance the in-progress inline `text:note` state machine for one XML event: collects its raw
+/// XML until it closes, then parses it into a note + records a reference marker at the
+/// captured position. No-op unless `note` is already `Some`.
+fn advance_note(
+    ev: &Event,
+    s: &str,
+    end_pos: usize,
+    note: &mut Option<(usize, i32, Option<String>, usize)>,
+    doc: &mut DocMut,
+    note_refs: &mut Vec<(String, usize, String)>,
+) {
+    let Some((start, depth, block, idx)) = note.as_mut() else {
+        return;
+    };
+    match ev {
+        Event::Start(_) => *depth = depth.saturating_add(1),
+        Event::End(_) => {
+            *depth = depth.saturating_sub(1);
+            if *depth == 0 {
+                let raw = s.get(*start..end_pos).unwrap_or_default().to_string();
+                if let Some(b) = block.clone() {
+                    let nid = super::notes::import_note(&raw, doc);
+                    note_refs.push((b, *idx, nid));
+                }
+                *note = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Advance the in-progress inline `office:annotation` (comment) state machine for one XML
+/// event: collects its raw XML until it closes, then parses it, stashing a ranged comment
+/// until its `annotation-end` or anchoring a point comment immediately. No-op unless
+/// `annotation` is already `Some`.
+fn advance_annotation(
+    ev: &Event,
+    s: &str,
+    end_pos: usize,
+    annotation: &mut Option<(usize, i32, Option<String>, usize)>,
+    doc: &mut DocMut,
+    open_comments: &mut BTreeMap<String, (String, String, usize)>,
+    comment_ranges: &mut Vec<(String, usize, usize, String)>,
+) {
+    let Some((start, depth, block, idx)) = annotation.as_mut() else {
+        return;
+    };
+    match ev {
+        Event::Start(_) => *depth = depth.saturating_add(1),
+        Event::End(_) => {
+            *depth = depth.saturating_sub(1);
+            if *depth == 0 {
+                let raw = s.get(*start..end_pos).unwrap_or_default().to_string();
+                if let Some(b) = block.clone() {
+                    let (name, cid) = super::comments::import_annotation(&raw, doc);
+                    match name {
+                        // A ranged comment: stash it until its annotation-end.
+                        Some(n) => {
+                            open_comments.insert(n, (cid, b, *idx));
+                        }
+                        // A point comment (no office:name): anchor a 1-char range at the insertion point if there's a character there, else a zero-width range that import drops.
+                        None => comment_ranges.push((b, *idx, *idx, cid)),
+                    }
+                }
+                *annotation = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Advance the in-progress `text:tracked-changes` state machine for one XML event: captures its
+/// raw XML until it closes, then parses the changed-region declarations into an
+/// `xml:id → (change id, kind)` map the body's change-start/-end/change markers reference.
+/// No-op unless `tracked` is already `Some`.
+fn advance_tracked(
+    ev: &Event,
+    s: &str,
+    end_pos: usize,
+    tracked: &mut Option<(usize, i32)>,
+    doc: &mut DocMut,
+    change_decls: &mut BTreeMap<String, (String, ChangeKind)>,
+) {
+    let Some((start, depth)) = tracked.as_mut() else {
+        return;
+    };
+    match ev {
+        Event::Start(_) => *depth = depth.saturating_add(1),
+        Event::End(_) => {
+            *depth = depth.saturating_sub(1);
+            if *depth == 0 {
+                let raw = s.get(*start..end_pos).unwrap_or_default().to_string();
+                for decl in super::changes::import_tracked_changes(&raw) {
+                    let cid = doc.insert_change(decl.kind, &decl.author, &decl.date);
+                    change_decls.insert(decl.xml_id, (cid, decl.kind));
+                }
+                *tracked = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// # Errors
+/// Returns [`CodecError`] if `content_xml` isn't valid UTF-8 or well-formed XML.
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single-pass SAX dispatch over ~15 office:text element types (paragraph/heading/list/table/span/link nesting, note/comment/bookmark/change range tracking); the five self-contained in-progress captures (fidelity/frame/note/annotation/tracked-changes) are already split into advance_* above — the rest shares ~20 pieces of parser state across every arm, so further extraction would need either a 20+ argument helper per event kind or a lifetime-entangled parser-state struct, neither safe to introduce without compiling"
+)]
 pub(crate) fn parse_body(
     content_xml: &[u8],
     reg: &StyleRegistry,
@@ -159,7 +413,7 @@ pub(crate) fn parse_body(
 
     // Span marks + paragraph-style marks, applied after all text is in (so text appended after a span doesn't expand its mark).
     let mut span_stack: Vec<(Vec<(String, MarkValue)>, usize)> = Vec::new();
-    let mut link_stack: Vec<(Option<String>, Vec<(String, MarkValue)>, usize)> = Vec::new();
+    let mut link_stack: Vec<LinkStackEntry> = Vec::new();
     let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
     let mut list_stack: Vec<bool> = Vec::new();
@@ -211,186 +465,66 @@ pub(crate) fn parse_body(
     }
 
     loop {
-        let pos_before = reader.buffer_position() as usize;
+        let pos_before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
         let ev = reader
             .read_event()
             .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
+        let pos_after = || usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
 
-        if let Some((start, depth)) = capture.as_mut() {
-            match &ev {
-                Event::Start(_) => *depth += 1,
-                Event::End(_) => {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
-                        doc.set_attr(&id, "xml", raw.as_str());
-                        cur = None;
-                        capture = None;
-                    }
-                }
-                _ => {}
-            }
+        if capture.is_some() {
+            advance_capture(
+                &ev,
+                s,
+                pos_after(),
+                &mut capture,
+                doc,
+                &mut prev,
+                &mut cur,
+                &mut cur_len,
+            );
             continue;
         }
 
         // Inside a draw:frame: collect the image href + alt, then on close emit either an `image` block (if the Pictures part exists) or a verbatim fidelity atom.
-        if let Some(fr) = frame.as_mut() {
-            match &ev {
-                Event::Start(e) => {
-                    fr.depth += 1;
-                    match e.name().as_ref() {
-                        b"draw:image" => {
-                            if fr.href.is_none() {
-                                fr.href = attr_val(e, b"xlink:href");
-                            }
-                        }
-                        b"svg:title" => fr.collecting = Some(true),
-                        b"svg:desc" => fr.collecting = Some(false),
-                        _ => {}
-                    }
-                }
-                Event::Empty(e) => {
-                    if e.name().as_ref() == b"draw:image" && fr.href.is_none() {
-                        fr.href = attr_val(e, b"xlink:href");
-                    }
-                }
-                Event::Text(t) => {
-                    if let Some(is_title) = fr.collecting {
-                        let txt = t
-                            .xml10_content()
-                            .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-                        if is_title {
-                            fr.title.push_str(&txt);
-                        } else {
-                            fr.desc.push_str(&txt);
-                        }
-                    }
-                }
-                Event::End(e) => {
-                    fr.depth -= 1;
-                    match e.name().as_ref() {
-                        b"svg:title" | b"svg:desc" => fr.collecting = None,
-                        _ => {}
-                    }
-                    if fr.depth == 0 {
-                        let end = reader.buffer_position() as usize;
-                        let bytes = fr
-                            .href
-                            .as_deref()
-                            .and_then(|h| container.get(h).map(<[u8]>::to_vec));
-                        if let Some(bytes) = bytes {
-                            let hash = doc.put_blob(&bytes);
-                            let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "image");
-                            doc.set_attr(&id, "blob", hash.as_str());
-                            let alt = if fr.title.is_empty() {
-                                &fr.desc
-                            } else {
-                                &fr.title
-                            };
-                            if !alt.is_empty() {
-                                doc.set_attr(&id, "alt", alt.as_str());
-                            }
-                            if let Some(w) = fr.width.as_deref().and_then(parse_len_px) {
-                                doc.set_attr(&id, "width", w);
-                            }
-                            if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
-                                doc.set_attr(&id, "height", h);
-                            }
-                            // Positioning: anchor (inline/paragraph/page) + wrap.
-                            if let Some(a) = fr.anchor.as_deref() {
-                                doc.set_attr(&id, "anchor", a);
-                            }
-                            if let Some(w) = fr.wrap.as_deref() {
-                                doc.set_attr(&id, "wrap", w);
-                            }
-                            // An image-only paragraph (the common LibreOffice/pandoc "figure" layout) leaves an empty wrapper paragraph — drop it so the image isn't preceded by a blank line.
-                            if let Some(pid) = fr.enclosing_para.as_deref()
-                                && !fr.para_had_text
-                            {
-                                doc.remove_block(pid);
-                            }
-                        } else {
-                            // Picture missing from the container → preserve verbatim.
-                            let raw = s[fr.raw_start..end].to_string();
-                            let id =
-                                start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
-                            doc.set_attr(&id, "xml", raw.as_str());
-                        }
-                        cur = None;
-                        frame = None;
-                    }
-                }
-                _ => {}
-            }
+        if frame.is_some() {
+            advance_frame(
+                &ev,
+                s,
+                pos_after(),
+                &mut frame,
+                container,
+                doc,
+                &mut prev,
+                &mut cur,
+                &mut cur_len,
+            )?;
             continue;
         }
 
         // Inside an inline `text:note`: collect its raw XML until it closes, then parse it into a note + record a reference marker at the captured position.
-        if let Some((start, depth, block, idx)) = note.as_mut() {
-            match &ev {
-                Event::Start(_) => *depth += 1,
-                Event::End(_) => {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let Some(b) = block.clone() {
-                            let nid = super::notes::import_note(&raw, doc);
-                            note_refs.push((b, *idx, nid));
-                        }
-                        note = None;
-                    }
-                }
-                _ => {}
-            }
+        if note.is_some() {
+            advance_note(&ev, s, pos_after(), &mut note, doc, &mut note_refs);
             continue;
         }
 
         // Inside an inline `office:annotation` (comment): collect its raw XML until it closes, then
         // parse it, remembering the start so the matching `annotation-end` (or, for a point comment, the same position) anchors a `comment` mark.
-        if let Some((start, depth, block, idx)) = annotation.as_mut() {
-            match &ev {
-                Event::Start(_) => *depth += 1,
-                Event::End(_) => {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let Some(b) = block.clone() {
-                            let (name, cid) = super::comments::import_annotation(&raw, doc);
-                            match name {
-                                // A ranged comment: stash it until its annotation-end.
-                                Some(n) => {
-                                    open_comments.insert(n, (cid, b, *idx));
-                                }
-                                // A point comment (no office:name): anchor a 1-char range at the insertion point if there's a character there, else a zero-width range that import drops.
-                                None => comment_ranges.push((b, *idx, *idx, cid)),
-                            }
-                        }
-                        annotation = None;
-                    }
-                }
-                _ => {}
-            }
+        if annotation.is_some() {
+            advance_annotation(
+                &ev,
+                s,
+                pos_after(),
+                &mut annotation,
+                doc,
+                &mut open_comments,
+                &mut comment_ranges,
+            );
             continue;
         }
 
         // Inside the `text:tracked-changes` block: capture its raw XML until it closes, then parse the changed-region declarations into an `xml:id → (change id, kind)` map for body markers.
-        if let Some((start, depth)) = tracked.as_mut() {
-            match &ev {
-                Event::Start(_) => *depth += 1,
-                Event::End(_) => {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        for decl in super::changes::import_tracked_changes(&raw) {
-                            let cid = doc.insert_change(decl.kind, &decl.author, &decl.date);
-                            change_decls.insert(decl.xml_id, (cid, decl.kind));
-                        }
-                        tracked = None;
-                    }
-                }
-                _ => {}
-            }
+        if tracked.is_some() {
+            advance_tracked(&ev, s, pos_after(), &mut tracked, doc, &mut change_decls);
             continue;
         }
 
@@ -400,7 +534,12 @@ pub(crate) fn parse_body(
                     // A footnote/endnote reference: splice the placeholder char now (so later text in this
                     // paragraph lands after it), capture the element verbatim, and defer the `note-ref` mark until all text is in place.
                     let idx = cur_len;
-                    append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                    append(
+                        doc,
+                        cur.as_deref(),
+                        &mut cur_len,
+                        &FIELD_PLACEHOLDER.to_string(),
+                    );
                     note = Some((pos_before, 1, cur.clone(), idx));
                 }
                 b"office:annotation" if in_text && cur.is_some() => {
@@ -469,7 +608,10 @@ pub(crate) fn parse_body(
                     let ordered = *list_stack.last().unwrap_or(&false);
                     doc.set_attr(&id, "ordered", ordered);
                     // 0-based nesting depth. Match the markdown codec: only emit `level` when nested, so a top-level item's attr set stays identical across codecs.
-                    let level = (list_stack.len() as i64 - 1).max(0);
+                    let level = i64::try_from(list_stack.len())
+                        .unwrap_or(i64::MAX)
+                        .saturating_sub(1)
+                        .max(0);
                     if level > 0 {
                         doc.set_attr(&id, "level", level);
                     }
@@ -513,7 +655,7 @@ pub(crate) fn parse_body(
                 }
                 b"table:table" if in_text => {
                     table_id = Some(attr_val(&e, b"table:name").unwrap_or_else(|| {
-                        table_seq += 1;
+                        table_seq = table_seq.saturating_add(1);
                         format!("t{table_seq}")
                     }));
                     trow = 0;
@@ -523,8 +665,8 @@ pub(crate) fn parse_body(
                     if let Some(tid) = table_id.clone() {
                         let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
                         doc.set_attr(&id, "table", tid.as_str());
-                        doc.set_attr(&id, "row", trow as i64);
-                        doc.set_attr(&id, "col", tcol as i64);
+                        doc.set_attr(&id, "row", i64::try_from(trow).unwrap_or(i64::MAX));
+                        doc.set_attr(&id, "col", i64::try_from(tcol).unwrap_or(i64::MAX));
                     }
                 }
                 b"text:span" if in_text => {
@@ -654,27 +796,30 @@ pub(crate) fn parse_body(
                         change_ranges.push((b, cur_len, cur_len, kind, cid));
                     }
                 }
-                b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
-                b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
+                b"text:tab" if in_text => append(doc, cur.as_deref(), &mut cur_len, "\t"),
+                b"text:line-break" if in_text => append(doc, cur.as_deref(), &mut cur_len, "\n"),
                 b"text:s" if in_text => {
                     let n = attr_val(&e, b"text:c")
                         .and_then(|v| v.parse::<usize>().ok())
                         .unwrap_or(1)
                         .min(256);
-                    append(doc, &cur, &mut cur_len, &" ".repeat(n));
+                    append(doc, cur.as_deref(), &mut cur_len, &" ".repeat(n));
                 }
                 b"table:table-cell" if in_text => {
                     if let Some(tid) = table_id.clone() {
                         let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
                         doc.set_attr(&id, "table", tid.as_str());
-                        doc.set_attr(&id, "row", trow as i64);
-                        doc.set_attr(&id, "col", tcol as i64);
+                        doc.set_attr(&id, "row", i64::try_from(trow).unwrap_or(i64::MAX));
+                        doc.set_attr(&id, "col", i64::try_from(tcol).unwrap_or(i64::MAX));
                         cur = None;
                     }
-                    tcol += 1;
+                    tcol = tcol.saturating_add(1);
                 }
                 _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
-                    let raw = s[pos_before..reader.buffer_position() as usize].to_string();
+                    let raw = s
+                        .get(pos_before..pos_after())
+                        .unwrap_or_default()
+                        .to_string();
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
                     doc.set_attr(&id, "xml", raw.as_str());
                     cur = None;
@@ -698,10 +843,10 @@ pub(crate) fn parse_body(
                     table_id = None;
                     cur = None;
                 }
-                b"table:table-row" => trow += 1,
+                b"table:table-row" => trow = trow.saturating_add(1),
                 b"table:table-cell" => {
                     cur = None;
-                    tcol += 1;
+                    tcol = tcol.saturating_add(1);
                 }
                 b"text:list-item" => {
                     flush_para_marks!();
@@ -745,7 +890,7 @@ pub(crate) fn parse_body(
                     // Skip pretty-printer indentation between structural elements — otherwise list items / headings import with blank leading/trailing lines and huge vertical gaps.
                     if !txt.is_empty() && !is_layout_whitespace(&txt) {
                         doc.splice_text(b, cur_len, 0, &txt);
-                        cur_len += txt.chars().count();
+                        cur_len = cur_len.saturating_add(txt.chars().count());
                     }
                 }
             }
@@ -754,6 +899,39 @@ pub(crate) fn parse_body(
         }
     }
 
+    apply_deferred_marks(
+        doc,
+        pending_marks,
+        note_refs,
+        open_comments,
+        comment_ranges,
+        open_bookmarks,
+        bookmark_ranges,
+        open_changes,
+        change_ranges,
+    );
+    Ok(())
+}
+
+/// Apply every mark deferred during the parse: span/paragraph text marks, note-reference
+/// markers, and the comment/bookmark/tracked-change anchor ranges — closing any range whose
+/// explicit end never arrived by extending it to the block's end (or one character, if that's
+/// still zero-width and text follows).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is a distinct kind of mark gathered by parse_body over the whole parse"
+)]
+fn apply_deferred_marks(
+    doc: &mut DocMut,
+    pending_marks: Vec<(String, usize, usize, String, MarkValue)>,
+    note_refs: Vec<(String, usize, String)>,
+    mut open_comments: BTreeMap<String, (String, String, usize)>,
+    mut comment_ranges: Vec<(String, usize, usize, String)>,
+    mut open_bookmarks: BTreeMap<String, (String, usize)>,
+    bookmark_ranges: Vec<(String, usize, usize, String)>,
+    mut open_changes: BTreeMap<String, (String, ChangeKind, String, usize)>,
+    mut change_ranges: Vec<(String, usize, usize, ChangeKind, String)>,
+) {
     // Apply marks now that all text is present (exact ranges, no expansion).
     for (b, start, end, name, value) in pending_marks {
         if start >= end {
@@ -767,7 +945,7 @@ pub(crate) fn parse_body(
     }
     // Note-reference markers: cover the placeholder spliced when each `text:note` opened, with a `note-ref` mark valued with the note id.
     for (b, idx, nid) in note_refs {
-        doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
+        doc.add_mark(&b, idx, idx.saturating_add(1), MARK_NOTE_REF, nid.as_str());
     }
     // Any annotation whose `office:annotation-end` never arrived (a point comment, or a malformed range) still anchors at its start, extending to the block's end when content follows.
     for (name, (cid, b, start)) in std::mem::take(&mut open_comments) {
@@ -779,7 +957,7 @@ pub(crate) fn parse_body(
     for (b, start, mut end, cid) in comment_ranges {
         if end <= start {
             let blen = doc_block_len(doc, &b);
-            end = (start + 1).min(blen);
+            end = start.saturating_add(1).min(blen);
         }
         if end > start {
             doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
@@ -804,13 +982,12 @@ pub(crate) fn parse_body(
     for (b, start, mut end, kind, cid) in change_ranges {
         if end <= start {
             let blen = doc_block_len(doc, &b);
-            end = (start + 1).min(blen);
+            end = start.saturating_add(1).min(blen);
         }
         if end > start {
             doc.add_change_mark(kind, &b, start, end, &cid);
         }
     }
-    Ok(())
 }
 
 /// The character length of a body block's text (0 if absent).
