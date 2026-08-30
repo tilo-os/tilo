@@ -16,7 +16,7 @@ fn presence_key_widget_path_equality_and_hash() {
     assert_ne!(a, c);
 
     let mut map = std::collections::HashMap::new();
-    map.insert(a.clone(), 1u32);
+    map.insert(a, 1u32);
     assert_eq!(map.get(&b), Some(&1));
     assert_eq!(map.get(&c), None);
 }
@@ -55,7 +55,7 @@ fn caret_is_single_location_per_peer() {
     // A second peer is unaffected.
     let bob = UserId("bob".into());
     ctx.set_caret(&a, bob.clone(), 1);
-    ctx.set_caret(&b, alice.clone(), 6);
+    ctx.set_caret(&b, alice, 6);
     assert_eq!(
         ctx.caret_for(&a, &bob),
         Some(1),

@@ -175,16 +175,8 @@ mod tests {
         let rw = vec![PathBuf::from("/b")];
         let plan = plan_from_paths(&ro, &rw);
         let abi = TARGET_ABI;
-        let ro_access = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/a"))
-            .unwrap()
-            .access;
-        let rw_access = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/b"))
-            .unwrap()
-            .access;
+        let ro_access = plan.iter().find(|r| r.path == *"/a").unwrap().access;
+        let rw_access = plan.iter().find(|r| r.path == *"/b").unwrap().access;
         assert!(rw_access.contains(ro_access), "rw is superset of ro");
         assert_eq!(rw_access, AccessFs::from_all(abi));
     }

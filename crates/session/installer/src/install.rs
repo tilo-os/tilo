@@ -389,9 +389,9 @@ mod tests {
                 "--yes",
             ]
         );
-        assert!(!args.iter().any(|a| *a == "--timezone"));
-        assert!(!args.iter().any(|a| *a == "--keymap"));
-        assert!(!args.iter().any(|a| *a == "--keyvariant"));
+        assert!(!args.contains(&"--timezone"));
+        assert!(!args.contains(&"--keymap"));
+        assert!(!args.contains(&"--keyvariant"));
     }
 
     #[test]
@@ -409,8 +409,8 @@ mod tests {
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.iter().any(|a| *a == "--keyvariant"));
-        assert!(!args.iter().any(|a| *a == "--keymap"));
+        assert!(!args.contains(&"--keyvariant"));
+        assert!(!args.contains(&"--keymap"));
     }
 
     #[test]
@@ -451,8 +451,8 @@ mod tests {
         let yes = args.iter().position(|a| *a == "--yes").unwrap();
         assert!(enc < yes, "--encrypt must precede --yes");
         // No PIN / FIDO2 requested → those flags are absent.
-        assert!(!args.iter().any(|a| *a == "--pin"));
-        assert!(!args.iter().any(|a| *a == "--fido2"));
+        assert!(!args.contains(&"--pin"));
+        assert!(!args.contains(&"--fido2"));
     }
 
     #[test]
@@ -494,7 +494,7 @@ mod tests {
         );
         // The PIN secret must never appear in the argv.
         assert!(
-            !args.iter().any(|a| *a == "1234"),
+            !args.contains(&"1234"),
             "the PIN value must not leak onto the command line"
         );
     }
@@ -516,9 +516,9 @@ mod tests {
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(!args.iter().any(|a| *a == "--encrypt"));
-        assert!(!args.iter().any(|a| *a == "--pin"));
-        assert!(!args.iter().any(|a| *a == "--fido2"));
+        assert!(!args.contains(&"--encrypt"));
+        assert!(!args.contains(&"--pin"));
+        assert!(!args.contains(&"--fido2"));
     }
 
     #[test]
@@ -536,9 +536,9 @@ mod tests {
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-        assert!(args.iter().any(|a| *a == "--encrypt"));
-        assert!(args.iter().any(|a| *a == "--fido2"));
-        assert!(!args.iter().any(|a| *a == "--pin"));
+        assert!(args.contains(&"--encrypt"));
+        assert!(args.contains(&"--fido2"));
+        assert!(!args.contains(&"--pin"));
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         assert!(
-            !args.iter().any(|a| *a == "--encrypt"),
+            !args.contains(&"--encrypt"),
             "default options must not request encryption"
         );
     }

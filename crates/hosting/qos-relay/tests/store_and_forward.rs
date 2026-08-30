@@ -9,7 +9,7 @@
 //!   3. Peer A publishes delta D1. B is offline → D1 gets queued.
 //!   4. Peer A disconnects, publishes nothing more.
 //!   5. Peer B connects + subscribes.
-//!   6. The relay's Ready reports pending_deltas=1 and immediately
+//!   6. The relay's Ready reports `pending_deltas=1` and immediately
 //!      delivers D1 to B.
 
 use std::time::Duration;

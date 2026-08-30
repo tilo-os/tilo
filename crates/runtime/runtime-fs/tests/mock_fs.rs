@@ -86,7 +86,7 @@ impl file_handle::Server for FakeFile {
             Err(e) => return Promise::err(e),
         };
         let mut store = self.store.borrow_mut();
-        let entry = store.entry(self.path.clone()).or_insert_with(Vec::new);
+        let entry = store.entry(self.path.clone()).or_default();
         if entry.len() < offset {
             entry.resize(offset, 0);
         }
@@ -118,7 +118,7 @@ impl file_handle::Server for FakeFile {
         mut results: file_handle::MetadataResults,
     ) -> Promise<(), capnp::Error> {
         let store = self.store.borrow();
-        let size = store.get(&self.path).map(|b| b.len() as u64).unwrap_or(0);
+        let size = store.get(&self.path).map_or(0, |b| b.len() as u64);
         let mut md = results.get().init_metadata();
         md.set_kind(WireKind::File);
         md.set_size(size);
@@ -144,7 +144,7 @@ impl workspace_fs::Server for FakeFs {
         };
         let path = match r.get_path().and_then(|t| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
         }) {
             Ok(p) => normalise(&p),
@@ -158,10 +158,7 @@ impl workspace_fs::Server for FakeFs {
         if matches!(mode, OpenMode::Write) {
             self.store.borrow_mut().insert(path.clone(), Vec::new());
         } else if matches!(mode, OpenMode::Append) {
-            self.store
-                .borrow_mut()
-                .entry(path.clone())
-                .or_insert_with(Vec::new);
+            self.store.borrow_mut().entry(path.clone()).or_default();
         }
         let file = FakeFile {
             store: self.store.clone(),
@@ -183,7 +180,7 @@ impl workspace_fs::Server for FakeFs {
         };
         let path = match r.get_path().and_then(|t| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
         }) {
             Ok(p) => normalise(&p),
@@ -227,11 +224,14 @@ impl workspace_fs::Server for FakeFs {
         params: workspace_fs::StatParams,
         mut results: workspace_fs::StatResults,
     ) -> Promise<(), capnp::Error> {
-        let path = match params.get().and_then(|r| r.get_path()).and_then(|t| {
-            t.to_str()
-                .map(|s| s.to_owned())
-                .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
-        }) {
+        let path = match params
+            .get()
+            .and_then(runtime_fs::fs_capnp::workspace_fs::stat_params::Reader::get_path)
+            .and_then(|t| {
+                t.to_str()
+                    .map(std::borrow::ToOwned::to_owned)
+                    .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
+            }) {
             Ok(p) => normalise(&p),
             Err(e) => return Promise::err(e),
         };
@@ -261,11 +261,14 @@ impl workspace_fs::Server for FakeFs {
         params: workspace_fs::RemoveParams,
         _results: workspace_fs::RemoveResults,
     ) -> Promise<(), capnp::Error> {
-        let path = match params.get().and_then(|r| r.get_path()).and_then(|t| {
-            t.to_str()
-                .map(|s| s.to_owned())
-                .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
-        }) {
+        let path = match params
+            .get()
+            .and_then(runtime_fs::fs_capnp::workspace_fs::remove_params::Reader::get_path)
+            .and_then(|t| {
+                t.to_str()
+                    .map(std::borrow::ToOwned::to_owned)
+                    .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
+            }) {
             Ok(p) => normalise(&p),
             Err(e) => return Promise::err(e),
         };

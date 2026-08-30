@@ -3885,8 +3885,10 @@ mod tests {
         assert!(app.downloads.contains_key("tk_g2"));
         // Let it finish (backdate the start past the download duration) and run
         // one real frame's sync — the per-frame progression completes it.
-        app.downloads
-            .insert("tk_g2".into(), Instant::now() - Duration::from_secs(30));
+        app.downloads.insert(
+            "tk_g2".into(),
+            Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
+        );
         app.sync(&mut doc, &automerge::ROOT);
         // It flipped to the done/offline state and persisted to the document.
         assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Cached);
@@ -3934,8 +3936,10 @@ mod tests {
             "download progress survives the per-frame reload",
         );
         // Finish it and run a frame: the indicator flips to the done state.
-        app.downloads
-            .insert("tk_g1".into(), Instant::now() - Duration::from_secs(30));
+        app.downloads.insert(
+            "tk_g1".into(),
+            Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
+        );
         draw_once(&mut app, &mut doc);
         assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Cached);
         assert!(
@@ -3997,7 +4001,7 @@ mod tests {
             "at least one real glyph precedes it: {mid:?}"
         );
         assert!(
-            tr.measure_weighted(&mid, 13.0, None, TextWeight::Regular).0 as f64 <= mid_w,
+            f64::from(tr.measure_weighted(&mid, 13.0, None, TextWeight::Regular).0) <= mid_w,
             "the elided string fits inside the column budget",
         );
 
@@ -4220,7 +4224,10 @@ mod tests {
             before + 1,
             "Add to queue grows the queue"
         );
-        assert_eq!(app.pb.queue.last().map(|s| s.as_str()), Some("tk_s2"));
+        assert_eq!(
+            app.pb.queue.last().map(std::string::String::as_str),
+            Some("tk_s2")
+        );
     }
 
     #[test]
@@ -4410,15 +4417,15 @@ mod tests {
 
         // An album deep-link opens the album page.
         assert!(app.open_deep_link(&SearchHit::album_link(&album), &mut doc));
-        assert_eq!(app.view, View::Album(album.clone()));
+        assert_eq!(app.view, View::Album(album));
 
         // An artist deep-link opens the artist page.
         assert!(app.open_deep_link(&SearchHit::artist_link(&artist), &mut doc));
-        assert_eq!(app.view, View::Artist(artist.clone()));
+        assert_eq!(app.view, View::Artist(artist));
 
         // A playlist deep-link opens the playlist page.
         assert!(app.open_deep_link(&SearchHit::playlist_link(&playlist), &mut doc));
-        assert_eq!(app.view, View::Playlist(playlist.clone()));
+        assert_eq!(app.view, View::Playlist(playlist));
 
         // A track deep-link actually plays that track through the real play path.
         assert!(app.open_deep_link(&SearchHit::track_link(&track), &mut doc));
@@ -4479,7 +4486,7 @@ mod tests {
         Widget::activate_search_result(&mut app, &arow.action_id, &mut doc, &automerge::ROOT);
         assert_eq!(
             app.view,
-            View::Artist(artist.id.clone()),
+            View::Artist(artist.id),
             "activation opens the artist page"
         );
     }
@@ -4496,7 +4503,10 @@ mod tests {
             &mut doc,
         );
         let pl = app.lib.playlist("pl_morning").unwrap().clone();
-        assert_eq!(pl.track_ids.last().map(|s| s.as_str()), Some("tk_h2"));
+        assert_eq!(
+            pl.track_ids.last().map(std::string::String::as_str),
+            Some("tk_h2")
+        );
         app.dispatch(
             Action::RemoveFromPlaylist {
                 playlist: "pl_morning".into(),
@@ -4742,12 +4752,11 @@ mod tests {
     #[cfg(all(feature = "live", feature = "audio"))]
     fn audio_server_present() -> bool {
         let run = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
-        run.map(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
-            .unwrap_or(false)
+        run.is_some_and(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
             || std::env::var_os("PULSE_SERVER").is_some()
     }
 
-    /// Whether the GStreamer decode chain for a staged YouTube audio stream (an
+    /// Whether the `GStreamer` decode chain for a staged `YouTube` audio stream (an
     /// m4a/AAC file: `filesrc ! qtdemux ! avdec_aac/faad ! audioconvert !
     /// audioresample ! autoaudiosink`) is installed. The render-proof skips
     /// honestly when it isn't — a stock build without `gstreamer1-libav` can't
@@ -4786,12 +4795,11 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
 
     /// **Full-track proof** (`--features live,audio`; needs `yt-dlp` on the host):
-    /// a real YouTube track must play *past the ~1-minute SABR-truncation point*.
+    /// a real `YouTube` track must play *past the ~1-minute SABR-truncation point*.
     /// rustypipe's iOS/TV direct URL only serves its first ~1 minute; the app
     /// resolves a fully-rangeable URL via yt-dlp (the `android_vr` client) so the
     /// whole song streams. We stage the full file, seek to ~88 s, and require the
@@ -4972,7 +4980,7 @@ mod tests {
             "tk_g1", "tk_g2", "tk_g3", "tk_g4", "tk_g5", "tk_p1", "tk_p2", "tk_p3",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
     }
 
@@ -4996,7 +5004,7 @@ mod tests {
         );
         assert_eq!(app.shuffle_order.len(), q.len());
         let mut sorted = app.shuffle_order.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(
             sorted,
             (0..q.len()).collect::<Vec<usize>>(),
@@ -5019,7 +5027,7 @@ mod tests {
         app.shuffle_rng = 0xABCD_1234_9876_5432;
         let q: Vec<String> = ["a", "b", "c", "d", "e", "f"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         app.dispatch(
             Action::Play {
@@ -5040,7 +5048,7 @@ mod tests {
         // linear queue: proof the dead shuffle button now drives playback.
         assert_eq!(visited, order, "Next follows the shuffled permutation");
         let mut vs = visited.clone();
-        vs.sort();
+        vs.sort_unstable();
         assert_eq!(
             vs,
             (0..q.len()).collect::<Vec<usize>>(),
@@ -5059,7 +5067,10 @@ mod tests {
     fn shuffled_repeat_all_keeps_playing_after_the_last_track() {
         let (mut app, mut doc) = app_with_doc();
         app.shuffle_rng = 0x0F0F_1234_5678_9ABC;
-        let q: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let q: Vec<String> = ["a", "b", "c", "d"]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         app.dispatch(
             Action::Play {
                 queue: q.clone(),
@@ -5082,14 +5093,11 @@ mod tests {
     fn disabling_shuffle_returns_to_linear_order() {
         let (mut app, mut doc) = app_with_doc();
         app.shuffle_rng = 0x5;
-        let q: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        app.dispatch(
-            Action::Play {
-                queue: q.clone(),
-                index: 0,
-            },
-            &mut doc,
-        );
+        let q: Vec<String> = ["a", "b", "c", "d"]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        app.dispatch(Action::Play { queue: q, index: 0 }, &mut doc);
         app.dispatch(Action::ToggleShuffle, &mut doc); // on
         assert!(!app.shuffle_order.is_empty());
         app.dispatch(Action::ToggleShuffle, &mut doc); // off
@@ -5279,7 +5287,7 @@ mod tests {
         );
         assert!(high >= 95, "the far right is near max volume");
         assert!(
-            (app.audio.volume() - app.pb.volume as f32 / 100.0).abs() < 1e-6,
+            (app.audio.volume() - f32::from(app.pb.volume) / 100.0).abs() < 1e-6,
             "the audio engine tracks the dragged volume"
         );
     }
@@ -5392,7 +5400,7 @@ mod tests {
     }
 
     /// A press-drag across the search field selects a range — proving the real
-    /// mouse routing reaches the TextInput's drag-select on the event path.
+    /// mouse routing reaches the `TextInput`'s drag-select on the event path.
     #[test]
     fn search_drag_selects_range_via_event_path() {
         let (mut app, mut doc) = app_with_doc();
@@ -5919,7 +5927,7 @@ mod tests {
         let left = 260.0;
         let right = 1372.0;
         let cols = render::track_row_columns(left, right, true);
-        let mid = (left + right) / 2.0;
+        let mid = f64::midpoint(left, right);
         assert!(
             (cols.album_x - mid).abs() < 130.0,
             "album sits near the row middle (album {} vs mid {mid})",
@@ -5955,7 +5963,7 @@ mod tests {
         let band_bot = body.y1 - 24.0;
         let layout = render::lyrics_layout(body, band_top, band_bot);
         let art = layout.art.expect("wide layout shows cover art on the left");
-        let body_mid = (body.x0 + body.x1) / 2.0;
+        let body_mid = f64::midpoint(body.x0, body.x1);
         assert!(art.center().x < body_mid, "cover art sits in the left half");
         assert!(
             art.width() >= 180.0,
@@ -6165,8 +6173,7 @@ mod tests {
                 app.hits
                     .iter()
                     .any(|h| h.action == Action::SelectSearchTab(tab)),
-                "the {:?} filter tab is a clickable target",
-                tab,
+                "the {tab:?} filter tab is a clickable target",
             );
         }
         // Clicking Albums switches instantly (synchronously): the view now shows

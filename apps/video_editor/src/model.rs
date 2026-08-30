@@ -492,7 +492,7 @@ impl Project {
             if !c.covers(t) {
                 continue;
             }
-            if best.map_or(true, |(_, idx)| track.index > idx) {
+            if best.is_none_or(|(_, idx)| track.index > idx) {
                 best = Some((c, track.index));
             }
         }
@@ -639,7 +639,7 @@ impl Project {
         let mut best: Option<(f64, f64)> = None; // (candidate, distance)
         for &c in candidates {
             let d = (c - t).abs();
-            if d <= tol && best.map_or(true, |(_, bd)| d < bd) {
+            if d <= tol && best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((c, d));
             }
         }

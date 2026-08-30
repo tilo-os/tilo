@@ -718,37 +718,34 @@ impl CustomizePanel {
                         export_requested: false,
                     };
                 };
-                match &key_ev.logical_key {
-                    Key::Named(NamedKey::Enter | NamedKey::Escape) => {
-                        self.blur();
-                        CzResponse {
-                            handled: true,
-                            export_requested: false,
-                        }
+                if let Key::Named(NamedKey::Enter | NamedKey::Escape) = &key_ev.logical_key {
+                    self.blur();
+                    CzResponse {
+                        handled: true,
+                        export_requested: false,
                     }
-                    _ => {
-                        // Route the keystroke to the focused input, then dispatch
-                        // the field's absolute-set action with its fresh value.
-                        let field_rect = g.field(f);
-                        let inner = Rect::new(
-                            field_rect.x0 + 12.0,
-                            field_rect.y0,
-                            field_rect.x1 - 12.0,
-                            field_rect.y1,
-                        );
-                        let input = self.input(f);
-                        input.set_focus(true);
-                        input.apply_layout_external(inner);
-                        let (mut h, mut ft) = (false, None);
-                        input.handle_event(
-                            event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
-                        );
-                        let value = self.input(f).value().to_string();
-                        self.dispatch(doc, host, Self::field_action(f, value));
-                        CzResponse {
-                            handled: true,
-                            export_requested: false,
-                        }
+                } else {
+                    // Route the keystroke to the focused input, then dispatch
+                    // the field's absolute-set action with its fresh value.
+                    let field_rect = g.field(f);
+                    let inner = Rect::new(
+                        field_rect.x0 + 12.0,
+                        field_rect.y0,
+                        field_rect.x1 - 12.0,
+                        field_rect.y1,
+                    );
+                    let input = self.input(f);
+                    input.set_focus(true);
+                    input.apply_layout_external(inner);
+                    let (mut h, mut ft) = (false, None);
+                    input.handle_event(
+                        event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    );
+                    let value = self.input(f).value().to_string();
+                    self.dispatch(doc, host, Self::field_action(f, value));
+                    CzResponse {
+                        handled: true,
+                        export_requested: false,
                     }
                 }
             }
@@ -819,7 +816,7 @@ impl CustomizePanel {
     }
 
     /// The encrypt-toggle rect for `content`, so a test can click the real
-    /// on-screen affordance (the affordance == ActionSpec covenant).
+    /// on-screen affordance (the affordance == `ActionSpec` covenant).
     #[cfg(test)]
     pub fn encrypt_rect(content: Rect) -> Rect {
         Self::geom(content).encrypt

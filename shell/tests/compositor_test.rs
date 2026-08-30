@@ -52,10 +52,10 @@ fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<
                     // Tab.tile is serialized as externally-tagged enum:
                     // `{"Foreign":{"app_id":"…","surface_id":N}}`.
                     let foreign = tab.get("tile").and_then(|t| t.get("Foreign"));
-                    if let Some(f) = foreign {
-                        if f.get("app_id").and_then(|a| a.as_str()) == Some(app_id) {
-                            return Some(true);
-                        }
+                    if let Some(f) = foreign
+                        && f.get("app_id").and_then(|a| a.as_str()) == Some(app_id)
+                    {
+                        return Some(true);
                     }
                 }
             }
@@ -165,7 +165,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for TestClient {
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -196,7 +196,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for TestClient {
         _: &mut Self,
         _: &wl_compositor::WlCompositor,
         _: wl_compositor::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -208,7 +208,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for TestClient {
         _: &mut Self,
         _: &wl_surface::WlSurface,
         _: wl_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -220,7 +220,7 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for TestClient {
         _: &mut Self,
         wm_base: &xdg_wm_base::XdgWmBase,
         event: xdg_wm_base::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -235,7 +235,7 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for TestClient {
         _: &mut Self,
         xdg_surface: &xdg_surface::XdgSurface,
         event: xdg_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -250,7 +250,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for TestClient {
         _: &mut Self,
         _: &xdg_toplevel::XdgToplevel,
         _: xdg_toplevel::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -311,13 +311,11 @@ fn run_client_assertions(socket_name: &str, dump_path: &std::path::Path) {
     round_trip_until_bound(&conn, &mut queue, &mut client, Duration::from_secs(3));
     let compositor = client
         .compositor
-        .as_ref()
-        .cloned()
+        .clone()
         .expect("compositor global never advertised");
     let wm_base = client
         .wm_base
-        .as_ref()
-        .cloned()
+        .clone()
         .expect("xdg_wm_base global never advertised");
 
     let surface = compositor.create_surface(&qh, ());

@@ -2460,11 +2460,11 @@ mod permissions_pane_tests {
             .expect("the workspace-scoped app grant has a row");
         assert_eq!(row.subject.kind, SubjectKind::App);
         assert_eq!(row.allows, "Administer this workspace");
-        assert!(
+        assert_eq!(
             apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
                 .revoked
-                .len()
-                == 1
+                .len(),
+            1
         );
         assert!(!ws.allows(
             &ws.actor_for_app("firefox"),

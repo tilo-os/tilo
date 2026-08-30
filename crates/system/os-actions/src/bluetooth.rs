@@ -122,13 +122,13 @@ mod tests {
     #[test]
     fn parse_bluetoothctl_power_yes() {
         let s = "Controller AA:BB\n\tName: Foo\n\tPowered: yes\n\tDiscoverable: no";
-        assert_eq!(parse_bluetoothctl_power(s).unwrap(), true);
+        assert!(parse_bluetoothctl_power(s).unwrap());
     }
 
     #[test]
     fn parse_bluetoothctl_power_no() {
         let s = "\tPowered: no";
-        assert_eq!(parse_bluetoothctl_power(s).unwrap(), false);
+        assert!(!parse_bluetoothctl_power(s).unwrap());
     }
 
     #[test]

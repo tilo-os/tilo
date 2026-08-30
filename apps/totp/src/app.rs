@@ -1010,7 +1010,7 @@ mod tests {
         let mut app = AuthenticatorApp::new();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        if crate::storage::vault_path().map_or(true, |p| !p.exists()) {
+        if crate::storage::vault_path().is_none_or(|p| !p.exists()) {
             assert_eq!(app.vault.len(), 0, "live app must not seed demo accounts");
         }
     }

@@ -46,7 +46,7 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
 fn render(picker: &mut FilePicker, w: u32, h: u32, renderer: &mut OffscreenRenderer) -> Vec<u8> {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
-    picker.set_rect(Rect::new(0.0, 0.0, w as f64, h as f64));
+    picker.set_rect(Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
     picker.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);

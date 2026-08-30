@@ -203,7 +203,7 @@ mod tests {
             Some((Value::Scalar(s), _)) => {
                 assert!(
                     matches!(s.as_ref(), automerge::ScalarValue::Str(v) if v.as_str() == expected)
-                )
+                );
             }
             other => panic!("view.selected must be a scalar string, got {other:?}"),
         }

@@ -66,7 +66,7 @@ fn chrome_state_shared_across_sibling_widgets() {
 
     // Two clones stand for two chrome widgets holding the same state.
     let a = chrome.clone();
-    let b = chrome.clone();
+    let b = chrome;
 
     a.borrow_mut().overlays.overview = true;
     assert!(b.borrow().overlays.overview);
@@ -217,7 +217,7 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
     // The fallback only fires when the active workspace has no roster of its
     // own; clear every workspace so the precondition is stated, not borrowed.
     let mut tree = WorkspaceTree::bootstrap_default();
-    for ws in tree.workspaces.iter_mut() {
+    for ws in &mut tree.workspaces {
         ws.collaborators.clear();
     }
     let wheel = SidebarWheelChrome::from_tree(&tree);
@@ -266,7 +266,7 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
-    for ws in tree.workspaces.iter_mut() {
+    for ws in &mut tree.workspaces {
         ws.collaborators.clear();
     }
     tree.collaborators = vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
@@ -448,10 +448,10 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     sync_tab_presence_from_tree(&tree, &mut ctx);
 
     let key_a = PresenceKey::Tab {
-        id: format!("{:x}", tab_a),
+        id: format!("{tab_a:x}"),
     };
     let key_b = PresenceKey::Tab {
-        id: format!("{:x}", tab_b),
+        id: format!("{tab_b:x}"),
     };
     assert_eq!(ctx.peers_on(&key_a), &[UserId("a".into())]);
     assert_eq!(ctx.peers_on(&key_b), &[UserId("b".into())]);
@@ -460,8 +460,7 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     let all_peers: Vec<&UserId> = ctx.here.values().flat_map(|v| v.iter()).collect();
     assert!(
         all_peers.iter().all(|u| u.0 != "c"),
-        "collaborator with no active_tab must not register anywhere: {:?}",
-        all_peers
+        "collaborator with no active_tab must not register anywhere: {all_peers:?}"
     );
 }
 
@@ -642,7 +641,7 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
 /// Clicking the top-bar overview button must toggle
 /// `chrome.overlays.overview`, driven end-to-end. Reproduces the
 /// user-reported "overview button doesn't work" bug: if dispatch is
-/// intercepted before TopBarChrome sees the click, `overview` stays false.
+/// intercepted before `TopBarChrome` sees the click, `overview` stays false.
 #[test]
 fn overview_button_click_toggles_overview_overlay() {
     use automerge::AutoCommit;
@@ -704,7 +703,7 @@ fn overview_button_click_toggles_overview_overlay() {
         btn.area() > 0.0,
         "draw should have populated overview_btn_rect"
     );
-    let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
+    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
 
     // The widget tracks the cursor itself, because winit delivers MouseInput
     // without a position.
@@ -798,7 +797,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
 
     // Sibling probe, drawn once so its overview_btn_rect gives click coords.
     let probe_chrome = ChromeState::new(tree.clone());
-    let mut probe = TopBarChrome::from_tree(&tree).with_chrome(probe_chrome.clone());
+    let mut probe = TopBarChrome::from_tree(&tree).with_chrome(probe_chrome);
     let theme = Theme::dark();
     let mut probe_taffy: TaffyTree<()> = TaffyTree::new();
     let mut probe_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -807,8 +806,8 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(W as f32),
-                    height: Dimension::length(H as f32),
+                    width: Dimension::length(W),
+                    height: Dimension::length(H),
                 },
                 ..Default::default()
             },
@@ -844,7 +843,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         &probe_presence,
     );
     let btn = probe.overview_btn_rect();
-    let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
+    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
 
     let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);

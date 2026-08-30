@@ -1309,7 +1309,7 @@ mod tests {
             views: 1,
             published: "now".into(),
             duration: 60,
-            description: "".into(),
+            description: String::new(),
             likes: 0,
             seed: "x".into(),
             thumbnail_url: String::new(),

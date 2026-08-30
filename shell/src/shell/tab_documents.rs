@@ -403,7 +403,7 @@ mod tests {
         let ka = a.host.presence_key();
         let kb = b.host.presence_key();
         assert!(ka.is_some(), "a hosted tab has a presence identity");
-        assert_ne!(ka, kb, "two tabs of one app must not share a presence key",);
+        assert_ne!(ka, kb, "two tabs of one app must not share a presence key");
 
         // Same for the key the *body* publishes under (what
         // `EditorApp::draw` looks caret up by): the record must be part

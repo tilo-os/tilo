@@ -142,12 +142,11 @@ fn no_services_flag_skips_required_resolution() {
 #[test]
 #[ignore = "requires bwrap + unprivileged user namespaces; run with --ignored"]
 fn hello_world_runs() {
-    let bwrap = match bwrap_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("bwrap not installed; skipping");
-            return;
-        }
+    let bwrap = if let Some(p) = bwrap_path() {
+        p
+    } else {
+        eprintln!("bwrap not installed; skipping");
+        return;
     };
     let payload = tempfile::tempdir().unwrap();
     let _bin = build_hello(payload.path());
@@ -174,12 +173,11 @@ fn hello_world_runs() {
 #[test]
 #[ignore = "requires bwrap; run with --ignored"]
 fn no_services_flag_skips_required() {
-    let bwrap = match bwrap_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("bwrap not installed; skipping");
-            return;
-        }
+    let bwrap = if let Some(p) = bwrap_path() {
+        p
+    } else {
+        eprintln!("bwrap not installed; skipping");
+        return;
     };
     let payload = tempfile::tempdir().unwrap();
     let _bin = build_hello(payload.path());
@@ -202,12 +200,11 @@ fn no_services_flag_skips_required() {
 #[test]
 #[ignore = "requires bwrap; run with --ignored"]
 fn optional_service_missing_warns_and_runs() {
-    let bwrap = match bwrap_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("bwrap not installed; skipping");
-            return;
-        }
+    let bwrap = if let Some(p) = bwrap_path() {
+        p
+    } else {
+        eprintln!("bwrap not installed; skipping");
+        return;
     };
     let dir = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
@@ -238,7 +235,9 @@ fn optional_service_missing_warns_and_runs() {
 
 #[test]
 fn manifest_declared_runtime_missing_bundle_fails() {
-    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Manifest points at a runtime whose bundle doesn't exist anywhere on
     // the search path: expect a RuntimeBundleMissing error naming the
     // paths looked at.
@@ -327,14 +326,16 @@ fn install_signed_bundle(
 
 /// When an app manifest declares a runtime bundle, the launcher's argv
 /// should: bind the bundle at /usr/lib/qos-runtime/<v>/, set
-/// LD_LIBRARY_PATH to <mount>/lib, and NOT include the --minimal-libs
+/// `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
 /// loader binds even if the flag is on.
 #[test]
 fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
     use launcher::sandbox::build_bwrap_argv;
 
-    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Set up a real signed bundle so resolve_runtime + its integrity
     // check are happy.
     let user_home = tempfile::tempdir().unwrap();
@@ -426,7 +427,9 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
     use launcher::sandbox::build_bwrap_argv;
 
-    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let user_home = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("XDG_DATA_HOME", user_home.path());
@@ -713,7 +716,9 @@ fs = "optional@2"
 /// --allow-unsigned-runtime makes the resolve succeed.
 #[test]
 fn unsigned_bundle_is_refused_unless_opted_in() {
-    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().unwrap();
     let user_home = tempfile::tempdir().unwrap();
     unsafe {
@@ -754,7 +759,9 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
 /// publisher works; a matching key accepts; a mismatched key refuses.
 #[test]
 fn trusted_publisher_file_gates_mount() {
-    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().unwrap();
     let user_home = tempfile::tempdir().unwrap();
     unsafe {
@@ -822,7 +829,9 @@ fn trusted_publisher_file_gates_mount() {
 /// its actual key still accepts; pinning to a different key refuses.
 #[test]
 fn signed_bundle_publisher_pin_enforced() {
-    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().unwrap();
     let user_home = tempfile::tempdir().unwrap();
     unsafe {

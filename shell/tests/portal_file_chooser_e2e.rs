@@ -345,7 +345,7 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
         .iter()
         .find(|w| w.id == ws)
         .expect("workspace")
-        .app_capabilities(&APP.to_string())
+        .app_capabilities(APP)
         .into_iter()
         .filter_map(|c| match Capability::from_capability(c) {
             Some(Capability::Filesystem { path, .. }) => Some(path),
@@ -460,7 +460,7 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
         .iter()
         .find(|w| w.id == ws)
         .expect("workspace")
-        .app_capabilities(&APP.to_string())
+        .app_capabilities(APP)
         .into_iter()
         .filter_map(|c| match Capability::from_capability(c) {
             Some(Capability::Filesystem { path, mode, .. }) if path == handed => Some(mode),

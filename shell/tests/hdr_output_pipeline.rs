@@ -71,7 +71,7 @@ fn sdr_surface_on_hdr_output_selects_and_performs_encode() {
     // Run the encode the op selected (the CPU mirror of the WGSL kernel).
     let white = map_sdr_pixel_to_pq_bt2020([255, 255, 255]);
     for (i, c) in white.iter().enumerate() {
-        let nits = pq_eotf(*c as f32 / 1023.0);
+        let nits = pq_eotf(f32::from(*c) / 1023.0);
         assert!(
             (nits - SDR_REFERENCE_WHITE_NITS).abs() < 6.0,
             "encoded SDR white channel {i} = {nits} nits, expected ~{SDR_REFERENCE_WHITE_NITS}"
@@ -84,7 +84,7 @@ fn sdr_surface_on_hdr_output_selects_and_performs_encode() {
     );
     let gray = map_sdr_pixel_to_pq_bt2020([128, 128, 128]);
     for c in gray {
-        let nits = pq_eotf(c as f32 / 1023.0);
+        let nits = pq_eotf(f32::from(c) / 1023.0);
         assert!(
             nits > 5.0 && nits < SDR_REFERENCE_WHITE_NITS,
             "encoded mid-gray = {nits} nits should sit below reference white, never at peak"

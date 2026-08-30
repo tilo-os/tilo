@@ -92,7 +92,7 @@ impl H264Encoder {
     }
 
     /// Constructs with explicit bitrate and periodic IDR cadence. A zero
-    /// `keyframe_interval_frames` preserves OpenH264's automatic cadence.
+    /// `keyframe_interval_frames` preserves `OpenH264`'s automatic cadence.
     pub fn new_with_bitrate_and_keyframe_interval(
         width: u32,
         height: u32,
@@ -169,7 +169,7 @@ mod tests {
         let mse: f64 = a
             .iter()
             .zip(b)
-            .map(|(x, y)| (*x as f64 - *y as f64).powi(2))
+            .map(|(x, y)| (f64::from(*x) - f64::from(*y)).powi(2))
             .sum::<f64>()
             / a.len() as f64;
         if mse == 0.0 {

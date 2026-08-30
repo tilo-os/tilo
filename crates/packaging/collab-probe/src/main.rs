@@ -68,17 +68,16 @@ fn main() -> ExitCode {
     // The fd is the whole subject of the exercise, so report it before
     // using it. `service_fd` returns None both when the env var is absent
     // and when it names something not open — the two shapes the handoff can fail in.
-    match runtime_portal::service_fd("collab") {
-        Some(fd) => println!("probe: collab service fd = {fd}"),
-        None => {
-            eprintln!(
-                "probe: FAIL no usable collab service fd. QOS_SVC_COLLAB_FD={:?}. \
-                 The launcher did not put a live descriptor on that number, so \
-                 this app cannot collaborate at all.",
-                std::env::var("QOS_SVC_COLLAB_FD").ok(),
-            );
-            return ExitCode::from(3);
-        }
+    if let Some(fd) = runtime_portal::service_fd("collab") {
+        println!("probe: collab service fd = {fd}")
+    } else {
+        eprintln!(
+            "probe: FAIL no usable collab service fd. QOS_SVC_COLLAB_FD={:?}. \
+             The launcher did not put a live descriptor on that number, so \
+             this app cannot collaborate at all.",
+            std::env::var("QOS_SVC_COLLAB_FD").ok(),
+        );
+        return ExitCode::from(3);
     }
 
     let rt = match tokio::runtime::Builder::new_current_thread()

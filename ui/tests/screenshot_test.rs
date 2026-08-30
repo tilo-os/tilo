@@ -28,12 +28,11 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 
 #[test]
 fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
-    let mut renderer = match try_new_renderer(128, 64) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(128, 64) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
+        return;
     };
 
     let mut scene = Scene::new();
@@ -77,12 +76,11 @@ fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
 
 #[test]
 fn headless_renderer_writes_a_png_file() {
-    let mut renderer = match try_new_renderer(32, 32) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(32, 32) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
+        return;
     };
 
     let mut scene = Scene::new();
@@ -126,12 +124,11 @@ fn headless_renderer_captures_a_widget_tree() {
     use ui::widget::{Container, Widget};
 
     let (w, h) = (160, 80);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
+        return;
     };
 
     let mut widget: Box<dyn Widget> = Box::new(Container::new().with_background().filling());
@@ -203,12 +200,11 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
     // 240 wide gives us room for the first 96 px min-width pill + gap;
     // 40 tall matches TAB_BAR_HEIGHT exactly.
     let (w, h) = (240u32, 40u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
+        return;
     };
 
     let tabs = vec![TabDescriptor::new(1, "a"), TabDescriptor::new(2, "b")];

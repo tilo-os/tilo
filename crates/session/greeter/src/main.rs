@@ -139,7 +139,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 /// `seed` pre-populates the username/password CRDT objects so the
 /// non-form screens render representative text. Because the composed
 /// children are only created *inside* `build_layout`, we sync a second time
-/// afterwards so those children (the TextInputs) pull their values from the
+/// afterwards so those children (the `TextInputs`) pull their values from the
 /// document — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,

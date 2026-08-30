@@ -277,7 +277,7 @@ mod tests {
         let peaks = peaks_from_wav_bytes(&wav, 16).expect("real WAV → peaks");
         assert_eq!(peaks.len(), 16);
         // Normalized: some bucket hits ~1.0 (the loud half).
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.98);
+        assert!(peaks.iter().copied().fold(0.0, f32::max) > 0.98);
         // The first-half buckets are clearly louder than the second-half ones.
         let first: f32 = peaks[..8].iter().sum();
         let second: f32 = peaks[8..].iter().sum();
@@ -311,7 +311,7 @@ mod tests {
         let peaks = cache.peaks(id).expect("warmed peaks");
         assert_eq!(peaks.len(), WAVE_BUCKETS);
         assert!(
-            peaks.iter().cloned().fold(0.0, f32::max) > 0.9,
+            peaks.iter().copied().fold(0.0, f32::max) > 0.9,
             "a real signal is present"
         );
         std::fs::remove_file(&f).ok();

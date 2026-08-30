@@ -86,7 +86,7 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
 fn pixel_hash(buf: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in buf {
-        h ^= *b as u64;
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x100000001b3);
     }
     h
@@ -113,12 +113,11 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
 #[test]
 fn group_row_visual_journey_distinguishes_all_states() {
     let (w, h) = (960u32, 220u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping group-row journey");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping group-row journey");
+        return;
     };
 
     let g_a = make_group(
@@ -177,12 +176,11 @@ fn group_row_visual_journey_distinguishes_all_states() {
 #[test]
 fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     let (w, h) = (960u32, 220u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
+        return;
     };
 
     let mut row = GroupRow::new(vec![
@@ -239,12 +237,11 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
 #[test]
 fn group_row_fresh_render_is_deterministic() {
     let (w, h) = (600u32, 200u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
+        return;
     };
     let mut r1 = GroupRow::new(vec![
         make_group(1, &[(1, "X", AppKind::Editor)]),
@@ -302,12 +299,11 @@ fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
 
     // Wide enough that all three 600px groups + gaps fit on-screen.
     let (w, h) = (1900u32, 220u32);
-    let mut renderer = match try_new_renderer(w, h) {
-        Some(r) => r,
-        None => {
-            eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
-            return;
-        }
+    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
+        r
+    } else {
+        eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
+        return;
     };
 
     let mut row = GroupRow::new(vec![
@@ -396,7 +392,10 @@ fn tabbar_grab_point(row: &GroupRow, idx: usize) -> Point {
     let g = row.group_at_for_test(idx).expect("group at idx");
     let bar = g.bar_rect();
     let last = g.tab_rects().last().copied().unwrap_or(bar);
-    Point::new((last.x1 + bar.x1) / 2.0, (bar.y0 + bar.y1) / 2.0)
+    Point::new(
+        f64::midpoint(last.x1, bar.x1),
+        f64::midpoint(bar.y0, bar.y1),
+    )
 }
 
 fn center_x_of_group(row: &GroupRow, idx: usize) -> f64 {

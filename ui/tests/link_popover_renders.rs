@@ -3,7 +3,7 @@
 //! the page title.
 //!
 //! Drives the popover through the `BlockEditor`'s test hooks because
-//! the full keystroke chain needs a TaffyTree which isn't trivial to
+//! the full keystroke chain needs a `TaffyTree` which isn't trivial to
 //! construct here. The popover's own filtering / arrow-nav / Enter
 //! semantics are unit-pinned in `widget::link_popover::tests`.
 

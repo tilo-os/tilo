@@ -38,14 +38,15 @@ const CANVAS_W: u32 = 290;
 const CANVAS_H: u32 = 700;
 
 fn screenshots_dir() -> PathBuf {
-    let root = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let root = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join("target")
-        });
+        },
+        PathBuf::from,
+    );
     root.join("nirios-screenshots")
 }
 
@@ -89,7 +90,7 @@ fn render_disc_at(
     // `visible_width_px` is linear in the diameter, so one ratio solves it;
     // the 48px of slack keeps the active marker's halo in frame.
     let mut disc = SidebarWheelDisc::new(spokes);
-    let target_visible = CANVAS_W as f64 - 48.0;
+    let target_visible = f64::from(CANVAS_W) - 48.0;
     let scaled_diameter = disc.diameter_px * (target_visible / disc.visible_width_px());
     disc = disc.with_diameter(scaled_diameter);
     // Keep the default 4500px diameter. Mounted at the canvas's LEFT edge,
@@ -156,11 +157,7 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     let path = screenshots_dir().join("wheel-disc-01-baseline.png");
     let bg = Color::from_rgb8(0x02, 0x06, 0x14);
     renderer.render_png(&scene, bg, &path);
-    assert!(
-        path.exists(),
-        "snapshot PNG should be written to {:?}",
-        path
-    );
+    assert!(path.exists(), "snapshot PNG should be written to {path:?}");
 
     // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
     // convention.
@@ -187,7 +184,7 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
     renderer.render_png(
         &scene,
         Color::BLACK,
-        &screenshots_dir().join("wheel-disc-03-high-contrast.png"),
+        screenshots_dir().join("wheel-disc-03-high-contrast.png"),
     );
 
     // A row a quarter of the way down: high enough to miss the active
@@ -233,7 +230,7 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
 
     let luma = |x: u32, y: u32| {
         let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
-        (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32
+        (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) as u32
     };
 
     let (r_in, r_out) = disc.label_band_radii();
@@ -241,11 +238,11 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     let footprint = disc.get_rect();
     // The band's vertical middle, where it is at full alpha and widest.
     let row_y = c.y.round() as u32;
-    let on_band = ((c.x + (r_in + r_out) / 2.0).round() as u32).min(CANVAS_W - 1);
+    let on_band = ((c.x + f64::midpoint(r_in, r_out)).round() as u32).min(CANVAS_W - 1);
     // Well inside the inner radius, where a hollow body would show through.
     let inside_arc = ((c.x + r_in - 24.0).round() as u32).min(CANVAS_W - 1);
     assert!(
-        (inside_arc as f64) > footprint.x0 + 2.0,
+        f64::from(inside_arc) > footprint.x0 + 2.0,
         "probe at x={inside_arc} is outside the disc's own footprint {footprint:?} \
          — it would be testing open wallpaper"
     );
@@ -271,7 +268,7 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     // visible.
     let outside = ((c.x + r_out + RIM_SHADOW_CLEARANCE).round() as u32).min(CANVAS_W - 1);
     assert!(
-        (outside as f64) > footprint.x1 - 1.0 || (outside as f64) > c.x + r_out,
+        f64::from(outside) > footprint.x1 - 1.0 || f64::from(outside) > c.x + r_out,
         "probe at x={outside} is not past the rim at {:.0}",
         c.x + r_out
     );
@@ -311,7 +308,7 @@ fn the_band_is_filled_flat_with_a_single_colour() {
     // the current geometry happens to put it. The band-thickness figure this
     // used to carry came to exactly one sector when the step widened, which
     // put the sample straight through the next label.
-    let mid_r = (r_in + r_out) / 2.0;
+    let mid_r = f64::midpoint(r_in, r_out);
     let off = f64::from(disc.spoke_gap_deg()).to_radians() * 0.3;
     let y = (c.y - mid_r * off.sin()).round();
     let dy = y - c.y;
@@ -329,7 +326,7 @@ fn the_band_is_filled_flat_with_a_single_colour() {
         .step_by(4)
         .map(|x| {
             let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y_u);
-            (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32
+            (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) as u32
         })
         .collect();
     let lo = *samples.iter().min().unwrap();
@@ -362,7 +359,7 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
         renderer.render_png(
             &scene,
             Color::from_rgb8(0x02, 0x06, 0x14),
-            &screenshots_dir().join(format!("wheel-disc-04-{name}.png")),
+            screenshots_dir().join(format!("wheel-disc-04-{name}.png")),
         );
         (disc.spoke_hit_rects.clone(), disc.spoke_gap_deg())
     };
@@ -432,13 +429,13 @@ fn the_disc_takes_its_colours_from_the_theme() {
         let rgba = renderer.render(&scene, ground);
         let (r_in, r_out) = disc.label_band_radii();
         let c = disc.disc_centre();
-        let radius = (r_in + r_out) / 2.0;
+        let radius = f64::midpoint(r_in, r_out);
         let probe = |deg: f64| -> (i32, i32, i32) {
             let a = deg.to_radians();
             let x = ((c.x + radius * a.cos()).round().max(0.0) as u32).min(CANVAS_W - 1);
             let y = ((c.y + radius * a.sin()).round().max(0.0) as u32).min(CANVAS_H - 1);
             let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
-            (r as i32, g as i32, b as i32)
+            (i32::from(r), i32::from(g), i32::from(b))
         };
         // Offset as a fraction of the disc's own detent, not a fixed angle: the
         // step is derived per layout, so 4 deg was inside the active sector
@@ -459,7 +456,11 @@ fn the_disc_takes_its_colours_from_the_theme() {
         let delta = [lit.0 - unlit.0, lit.1 - unlit.1, lit.2 - unlit.2];
         let lead = |c: [i32; 3]| (0..3).max_by_key(|&i| c[i]).expect("three channels");
         let want = theme.tokens.colors.categorical(0);
-        let want_ch = lead([want.r() as i32, want.g() as i32, want.b() as i32]);
+        let want_ch = lead([
+            i32::from(want.r()),
+            i32::from(want.g()),
+            i32::from(want.b()),
+        ]);
         assert_eq!(
             lead(delta),
             want_ch,

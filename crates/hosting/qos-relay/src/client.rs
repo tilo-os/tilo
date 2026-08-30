@@ -197,23 +197,20 @@ impl RelayClient {
                 tokio::select! {
                     biased;
                     ob = outbound_rx.recv() => {
-                        match ob {
-                            Some(env) => {
-                                let Ok(bytes) = crate::transport::encode(&env) else { break };
-                                if send.write_all(&bytes).await.is_err() { break; }
-                            }
-                            None => {
-                                let _ = send.finish();
-                                // Keep the endpoint alive long enough to flush the final
-                                // Unsubscribe/FIN. Bound the wait so a dead network cannot
-                                // strand this detached cleanup task indefinitely.
-                                let _ = tokio::time::timeout(
-                                    std::time::Duration::from_secs(2),
-                                    send.stopped(),
-                                )
-                                .await;
-                                break;
-                            }
+                        if let Some(env) = ob {
+                            let Ok(bytes) = crate::transport::encode(&env) else { break };
+                            if send.write_all(&bytes).await.is_err() { break; }
+                        } else {
+                            let _ = send.finish();
+                            // Keep the endpoint alive long enough to flush the final
+                            // Unsubscribe/FIN. Bound the wait so a dead network cannot
+                            // strand this detached cleanup task indefinitely.
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                send.stopped(),
+                            )
+                            .await;
+                            break;
                         }
                     }
                     ib = reader.read_next() => {
@@ -270,7 +267,7 @@ impl RelayClient {
     /// Disconnect, waiting until the relay has been told.
     ///
     /// Prefer this to dropping the handle whenever the disconnect is
-    /// deliberate. `Connection::close` only queues CONNECTION_CLOSE and there
+    /// deliberate. `Connection::close` only queues `CONNECTION_CLOSE` and there
     /// is no per-connection flush; `Endpoint::close` is what waits for the
     /// driver to put it on the wire. Without that wait the endpoint dies with
     /// the handle first, and the relay keeps the subscription until its idle

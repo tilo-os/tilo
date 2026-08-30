@@ -297,7 +297,7 @@ mod tests {
         let reloaded = load(d.path(), home, &dirs);
         let docs = reloaded
             .iter()
-            .find(|f| f.path == PathBuf::from("/home/u/Dokumente"))
+            .find(|f| f.path == *"/home/u/Dokumente")
             .unwrap();
         assert_eq!(
             docs.kind,

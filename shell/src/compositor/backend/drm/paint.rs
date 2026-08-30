@@ -494,7 +494,7 @@ mod tests {
 
     fn rect_scene(w: u32, h: u32, color: Color) -> Scene {
         let mut scene = Scene::new();
-        let rect = vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+        let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
         scene
     }

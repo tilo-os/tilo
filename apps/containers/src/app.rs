@@ -1629,7 +1629,7 @@ mod palette_launcher_tests {
             name: reference.clone(),
             verb: "Remove image".into(),
             target: ConfirmTarget::Image {
-                reference: reference.clone(),
+                reference: reference,
             },
         });
         // A cursor move builds + lays out the dialog so its primary rect resolves.

@@ -524,6 +524,30 @@ fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, S
     s
 }
 
+/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
+/// row whose vertical band contains `py` if any, else the globally nearest
+/// gap by Euclidean distance to the gap's vertical extent.
+pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
+    let mut best: Option<(&Gap, f64)> = None;
+    for g in gaps {
+        let dy = if py < g.top {
+            g.top - py
+        } else if py > g.bottom {
+            py - g.bottom
+        } else {
+            0.0
+        };
+        let dx = (g.x - px).abs();
+        // Strongly prefer gaps whose band contains py, then nearest x.
+        let cost = dy * 4.0 + dx;
+        match best {
+            Some((_, c)) if c <= cost => {}
+            _ => best = Some((g, cost)),
+        }
+    }
+    best.map(|(g, _)| g)
+}
+
 #[cfg(test)]
 mod layout_tests {
     use super::*;
@@ -573,28 +597,4 @@ mod layout_tests {
              (name {name_baseline:.2} vs paren {paren_baseline:.2})"
         );
     }
-}
-
-/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
-/// row whose vertical band contains `py` if any, else the globally nearest
-/// gap by Euclidean distance to the gap's vertical extent.
-pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
-    let mut best: Option<(&Gap, f64)> = None;
-    for g in gaps {
-        let dy = if py < g.top {
-            g.top - py
-        } else if py > g.bottom {
-            py - g.bottom
-        } else {
-            0.0
-        };
-        let dx = (g.x - px).abs();
-        // Strongly prefer gaps whose band contains py, then nearest x.
-        let cost = dy * 4.0 + dx;
-        match best {
-            Some((_, c)) if c <= cost => {}
-            _ => best = Some((g, cost)),
-        }
-    }
-    best.map(|(g, _)| g)
 }

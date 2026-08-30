@@ -801,7 +801,7 @@ mod tests {
     fn bootstrap_seeds_address_bar() {
         let engine = TestEngine::new();
         // Headless so the test never spawns the network filter loader.
-        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let mut w = BrowserWidget::with_engine(engine, true);
         let (state, root) = synced(&mut w);
         assert_eq!(
             BrowserWidget::read_url(&state, &root).as_deref(),

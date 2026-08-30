@@ -13,7 +13,7 @@ fn wheel_paginate_cooldown_blocks_second_call() {
     assert!(v.try_paginate(1, Duration::from_millis(STRIP_COOLDOWN_MS + 10)));
     assert_eq!(v.active_index(), 2);
     // clamps at end
-    assert!(!v.try_paginate(1, Duration::from_millis(10_000)));
+    assert!(!v.try_paginate(1, Duration::from_secs(10)));
     assert_eq!(v.active_index(), 2);
 }
 

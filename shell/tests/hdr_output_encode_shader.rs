@@ -18,7 +18,7 @@ fn cpu_encode_places_sdr_white_at_reference_white() {
     let code = map_sdr_pixel_to_pq_bt2020([255, 255, 255]);
     // Decode the PQ code back to nits: every channel ≈ 203 cd/m².
     for (i, c) in code.iter().enumerate() {
-        let nits = pq_eotf(*c as f32 / 1023.0);
+        let nits = pq_eotf(f32::from(*c) / 1023.0);
         assert!(
             (nits - SDR_REFERENCE_WHITE_NITS).abs() < 6.0,
             "white channel {i} decoded to {nits} nits, expected ~{SDR_REFERENCE_WHITE_NITS}",
@@ -37,7 +37,7 @@ fn cpu_encode_mid_gray_is_below_reference_white() {
     // 203-nit diffuse-white ceiling — never clipped up to peak.
     let code = map_sdr_pixel_to_pq_bt2020([128, 128, 128]);
     for c in code {
-        let nits = pq_eotf(c as f32 / 1023.0);
+        let nits = pq_eotf(f32::from(c) / 1023.0);
         assert!(
             nits > 5.0 && nits < SDR_REFERENCE_WHITE_NITS,
             "mid-gray = {nits} nits"

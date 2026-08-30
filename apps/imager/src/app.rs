@@ -3217,7 +3217,7 @@ mod tests {
     }
 
     fn center(r: Rect) -> Point {
-        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
     /// The rect of the first hit matching `pred`, from this frame's layout.
@@ -3631,7 +3631,10 @@ mod tests {
 
         // Click the real on-screen toggle: move the pointer onto it, then press.
         let rect = CustomizePanel::encrypt_rect(app.content_rect());
-        let (cx, cy) = ((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        let (cx, cy) = (
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        );
         feed(&mut app, &mut doc, &cursor_ev(cx, cy));
         feed(&mut app, &mut doc, &click_ev());
 

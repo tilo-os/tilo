@@ -334,7 +334,7 @@ mod tests {
         ] {
             // The one legitimate mention is the denial itself, which names these things to rule them out.
             let denied = all.contains(&format!("no {weasel}"))
-                || all.contains(&format!("no backup code, no recovery phrase"));
+                || all.contains(&"no backup code, no recovery phrase".to_string());
             assert!(
                 !all.contains(weasel) || denied,
                 "copy must not offer {weasel:?} unless it is denying it: {all}"
@@ -377,8 +377,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         ));
         let system = qos_user_identity::IdentityPaths::under(dir.join("system"));
         let minted = mint_into_with_paths(&dir, &system).expect("mint");

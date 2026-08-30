@@ -260,7 +260,7 @@ mod tests {
 
         // Pin a place and zoom in through the real command path.
         let fav = home.path().join("Projects");
-        assert!(w.apply_command(FileCommand::AddFavorite(fav.clone())));
+        assert!(w.apply_command(FileCommand::AddFavorite(fav)));
         assert!(w.apply_command(FileCommand::ZoomIn));
 
         // Both persisted to per-user config *files*, not the CRDT.

@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn parse_malformed_json_returns_structured_error() {
-        let err = parse_command(r#"this is not json"#).unwrap_err();
+        let err = parse_command(r"this is not json").unwrap_err();
         let Response::Err { code, .. } = err else {
             panic!("expected Response::Err");
         };

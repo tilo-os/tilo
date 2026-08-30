@@ -720,8 +720,7 @@ impl TileLayer {
     fn is_backing_off(&self, id: TileId) -> bool {
         self.failed
             .get(&id)
-            .map(|f| Instant::now() < f.retry_at)
-            .unwrap_or(false)
+            .is_some_and(|f| Instant::now() < f.retry_at)
     }
 }
 
@@ -1467,7 +1466,7 @@ mod tests {
     /// silent-TLS-failure shipped.
     ///
     /// Ignored by default so hermetic CI stays offline; run it explicitly with:
-    ///   cargo test -p maps --lib -- --ignored live_tile_fetch_real_network
+    ///   cargo test -p maps --lib -- --ignored `live_tile_fetch_real_network`
     /// It uses `.expect()` on `send()` so a TLS/provider failure surfaces as the
     /// actual error message rather than a swallowed `None`.
     #[test]
@@ -1593,7 +1592,7 @@ mod tests {
     /// The decisive offline-download real-path test: `start_download` must
     /// actually **fetch tiles over HTTP and persist the PNGs to the on-disk
     /// cache** (not just count). Runs the full production path —
-    /// start_download → worker → HTTP GET → decode → write_cache → drain — and
+    /// `start_download` → worker → HTTP GET → decode → `write_cache` → drain — and
     /// then asserts the exact `z/x/y.png` files exist on disk.
     #[test]
     fn download_fetches_and_persists_tiles_to_disk() {

@@ -33,12 +33,11 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
             compatible_surface: None,
         })
         .block_on();
-    let adapter = match adapter_opt {
-        Ok(a) => a,
-        Err(_) => {
-            eprintln!("skipping: no wgpu adapter (no llvmpipe or GPU)");
-            return;
-        }
+    let adapter = if let Ok(a) = adapter_opt {
+        a
+    } else {
+        eprintln!("skipping: no wgpu adapter (no llvmpipe or GPU)");
+        return;
     };
     let info = adapter.get_info();
     eprintln!(

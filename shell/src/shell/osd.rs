@@ -206,10 +206,10 @@ mod tests {
         let o = Osd::brightness(0.5);
         let t0 = o.raised_at;
         // Just before the fade begins: still fully opaque.
-        let before_fade = t0 + OSD_HOLD - OSD_FADE - Duration::from_millis(1);
+        let before_fade = (t0 + OSD_HOLD).checked_sub(OSD_FADE).unwrap() - Duration::from_millis(1);
         assert_eq!(o.alpha_at(before_fade), 1.0);
         // Halfway through the fade: partly transparent, not yet gone.
-        let mid = t0 + OSD_HOLD - OSD_FADE / 2;
+        let mid = (t0 + OSD_HOLD).checked_sub(OSD_FADE / 2).unwrap();
         let a = o.alpha_at(mid);
         assert!(a > 0.0 && a < 1.0, "expected a partial alpha, got {a}");
     }

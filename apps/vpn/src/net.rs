@@ -302,9 +302,9 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         // The loopback is always administratively up. If `ip` is unavailable
         // the probe returns None — assert the real result either way rather
         // than fabricate one.
-        match probe_interface_up("lo") {
-            Some(up) => assert!(up, "loopback must report UP"),
-            None => { /* `ip` binary unavailable on this box — honestly unknown */ }
+        if let Some(up) = probe_interface_up("lo") {
+            assert!(up, "loopback must report UP")
+        } else { /* `ip` binary unavailable on this box — honestly unknown */
         }
     }
 
@@ -314,8 +314,7 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         Command::new("ip")
             .args(args)
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     #[test]

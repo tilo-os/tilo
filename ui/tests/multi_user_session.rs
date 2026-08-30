@@ -38,7 +38,7 @@ fn memory_relay_fans_out_presence_as_remote_presence_update() {
         path: vec![PathSegment::Field("body".into())],
     };
     alice.send(CollabRequest::Presence {
-        key: key.clone(),
+        key: key,
         payload: PresencePayload::Caret { pos: 42 },
     });
     relay.drain_peer_outbox(&alice);
@@ -54,8 +54,7 @@ fn memory_relay_fans_out_presence_as_remote_presence_update() {
                 ..
             } if user_id == "alice"
         )),
-        "bob must receive alice's caret presence attributed to alice, got {:?}",
-        events
+        "bob must receive alice's caret presence attributed to alice, got {events:?}"
     );
     // Sender does not get own broadcast back.
     assert!(alice.poll().is_empty());
@@ -113,7 +112,7 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
     let bob_peer = relay.attach("bob");
 
     let (mut _alice_app, _alice_state) = headless_app("alice", alice_peer.clone());
-    let (mut bob_app, _bob_state) = headless_app("bob", bob_peer.clone());
+    let (mut bob_app, _bob_state) = headless_app("bob", bob_peer);
 
     let key = PresenceKey::Widget {
         path: vec![PathSegment::Field("body".into())],
@@ -290,9 +289,7 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
         "save_incremental must emit non-empty bytes after a mutation"
     );
 
-    alice_peer.send(CollabRequest::SyncIncremental {
-        data: delta.clone(),
-    });
+    alice_peer.send(CollabRequest::SyncIncremental { data: delta });
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 

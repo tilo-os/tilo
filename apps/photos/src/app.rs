@@ -553,7 +553,7 @@ impl PhotosApp {
                 .as_deref()
                 .and_then(pixels::decode)
             {
-                self.original = Some((open.path.clone(), img))
+                self.original = Some((open.path.clone(), img));
             } else {
                 self.original = None;
                 self.rendered = None;

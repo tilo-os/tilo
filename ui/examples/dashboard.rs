@@ -2,13 +2,13 @@
 //! to eyeball the incremental-rendering work from the 2026-05-23
 //! perf plan. Opens a single window with:
 //!
-//!   - 11 animating widgets in the header (3 ProgressBars +
+//!   - 11 animating widgets in the header (3 `ProgressBars` +
 //!     8 Spinners) — exercises `needs_animation_frame` + the
 //!     gate.
 //!   - 8 panels × 20 rows = ~160 cached leaves (Text + Button
 //!     + Avatar + Badge in rotation) — exercises the per-widget
 //!       `Scene::append` path.
-//!   - A footer with extra Avatars / Badges + a ToggleGroup so
+//!   - A footer with extra Avatars / Badges + a `ToggleGroup` so
 //!     a click target is always within reach.
 //!
 //! Run with:
@@ -59,21 +59,21 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                             leak_label(&format!("dash_btnlbl_{row_idx}")),
                             None,
                         ))),
-                ))
+                ));
             }
             1 => {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
                         .push(Box::new(Badge::count((i as u32) * 3))),
-                ))
+                ));
             }
             _ => {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
                         .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
-                ))
+                ));
             }
         }
     }

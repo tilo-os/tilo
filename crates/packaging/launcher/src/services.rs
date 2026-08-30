@@ -339,7 +339,7 @@ mod tests {
                 "/proc/self/fd is how this test observes descriptors; without \
                  it there is nothing here to assert",
             )
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|entry| std::fs::read_link(entry.path()).ok())
             .map(|target| target.display().to_string())
             .filter(|target| target.starts_with("socket:"))

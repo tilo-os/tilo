@@ -327,8 +327,7 @@ mod tests {
             bridge
                 .accept_thread
                 .as_ref()
-                .map(|h| !h.is_finished())
-                .unwrap_or(false),
+                .is_some_and(|h| !h.is_finished()),
             "accept thread should be running before drop"
         );
         let started = Instant::now();

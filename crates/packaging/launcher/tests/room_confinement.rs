@@ -98,7 +98,7 @@ fn run_in_room(payload: &Path, room: Option<&str>, argv: &[&str]) -> String {
         workspace_id: room.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
-            passthrough_argv: argv.iter().map(|s| s.to_string()).collect(),
+            passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..RunOptions::default()
     };
@@ -371,8 +371,7 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
         assert!(
             !std::path::Path::new(target)
                 .metadata()
-                .map(|m| m.len() == 5)
-                .unwrap_or(false),
+                .is_ok_and(|m| m.len() == 5),
             "{target} was actually modified on the host"
         );
     }

@@ -2,7 +2,7 @@
 //!
 //! Capture is dormant until the Win+P controller starts a connection. Scenes
 //! are rendered at a receiver-friendly size on the compositor thread, while
-//! OpenH264 encoding and socket I/O happen on a one-frame bounded worker. If
+//! `OpenH264` encoding and socket I/O happen on a one-frame bounded worker. If
 //! encoding falls behind, the newest repaint replaces future work rather than
 //! back-pressuring input and animation.
 

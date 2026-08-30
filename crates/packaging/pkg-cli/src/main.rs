@@ -14,7 +14,7 @@
 //! deployed, lives in an iroh-blobs store doing chunk-level
 //! dedup/streaming — gzip would only waste CPU. `qpkg.toml` is
 //! convention-only (duplicates what's in signed-root) so `tar tf` shows
-//! the PackageId without decoding binary.
+//! the `PackageId` without decoding binary.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -117,7 +117,7 @@ enum Command {
         /// `registry_id` stamped into a freshly-created index.
         #[arg(long = "registry-id", default_value = "local")]
         registry_id: String,
-        /// Target arch when the manifest declares more than one (x86_64 | aarch64); inferred otherwise.
+        /// Target arch when the manifest declares more than one (`x86_64` | aarch64); inferred otherwise.
         #[arg(long)]
         arch: Option<String>,
         /// Build + sign the entry and print it (with content hash); upload nothing.
@@ -242,7 +242,7 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
         );
     }
     // Sign with the has_signature bit already set so verify recomputes the same bytes.
-    let mut pre_signed = signed.clone();
+    let mut pre_signed = signed;
     pre_signed.signature = Some([0u8; 64]);
     let sig = identity
         .sign_signed_root(&pre_signed)
@@ -263,7 +263,7 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
         .map_err(|e| anyhow!("store: {e}"))?;
     let new_id = new_signed.package_id();
     write_qpkg(file, new_id, &new_store)?;
-    eprintln!("re-signed {} -> {}", id, new_id);
+    eprintln!("re-signed {id} -> {new_id}");
     Ok(())
 }
 
@@ -344,8 +344,8 @@ fn cmd_inspect(file: &Path) -> Result<()> {
     let collection = Collection::decode(&collection_bytes)?;
     println!("--- payload ({} files) ---", collection.entries.len());
     for (p, h) in &collection.entries {
-        let size = store.get(h).ok().flatten().map(|b| b.len()).unwrap_or(0);
-        println!("  {p}  (blake3:{}, {size} bytes)", h);
+        let size = store.get(h).ok().flatten().map_or(0, |b| b.len());
+        println!("  {p}  (blake3:{h}, {size} bytes)");
     }
     Ok(())
 }
@@ -507,7 +507,7 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
     for (h, b) in store.iter() {
         // Skip the three blobs already written under human-readable names;
         // they also live under blobs/<hex> for tooling that dedupes by hash.
-        let name = format!("blobs/{}", h);
+        let name = format!("blobs/{h}");
         tar_append_bytes(&mut tar, &name, b)?;
     }
     tar.finish().context("finalise tar")?;
@@ -564,11 +564,11 @@ fn tar_append_str<W: Write>(tar: &mut tar::Builder<W>, name: &str, s: &str) -> R
 }
 
 fn toml_to_string<T: serde::Serialize>(v: &T) -> Result<String> {
-    Ok(toml::to_string_pretty(v).context("toml encode qpkg.toml")?)
+    toml::to_string_pretty(v).context("toml encode qpkg.toml")
 }
 
 fn toml_from_str(s: &str) -> Result<QpkgHeader> {
-    Ok(toml::from_str(s).context("toml decode qpkg.toml")?)
+    toml::from_str(s).context("toml decode qpkg.toml")
 }
 
 // identity I/O
@@ -642,8 +642,7 @@ fn registry_entry_for(
     let package = &meta.manifest.package;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let mut entry = registry_types::RegistryEntry {
         package_id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),

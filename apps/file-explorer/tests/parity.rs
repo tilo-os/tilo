@@ -185,7 +185,7 @@ fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
 #[test]
 fn back_button_moves_to_parent_and_noops_at_root() {
     let mut w = FileExplorerWidget::new();
-    let start_parent = w.current_path().parent().map(|p| p.to_path_buf());
+    let start_parent = w.current_path().parent().map(std::path::Path::to_path_buf);
     w.back();
     assert_eq!(
         Some(w.current_path()),
@@ -575,8 +575,7 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
     let rect = w.get_rect();
     assert!(
         rect.width() > 0.0 && rect.height() > 0.0,
-        "apply_layout must produce a non-zero rect for the composed widget; got {:?}",
-        rect
+        "apply_layout must produce a non-zero rect for the composed widget; got {rect:?}"
     );
 
     // draw must not panic and must fill a non-empty scene.

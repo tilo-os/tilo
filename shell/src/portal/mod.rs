@@ -713,7 +713,7 @@ mod tests {
         }
 
         let portal = GrantStoreHandle::new(handle.clone());
-        let chrome = ChromeState::new_with_handle(handle.clone());
+        let chrome = ChromeState::new_with_handle(handle);
 
         // Simulate an `Allow → Session` outcome for `camera-app`.
         let caller = PortalCaller::new(ws_id, "camera-app");

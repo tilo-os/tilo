@@ -93,7 +93,7 @@ fn a_launched_window_is_a_dominant_share_of_every_display() {
 fn the_widest_setting_reaches_the_edge_of_every_display() {
     for (name, usable) in DISPLAYS {
         let widest = WindowWidth::Fraction(WIDTH_MAX_PERMILLE).resolve(usable);
-        assert_eq!(widest, usable, "the widest width must span {name} exactly",);
+        assert_eq!(widest, usable, "the widest width must span {name} exactly");
         assert_eq!(
             max_group_px(usable),
             usable,

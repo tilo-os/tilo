@@ -2006,7 +2006,7 @@ impl TerminalWidget {
     /// selection (for middle-click paste) and, when "select to copy" is on,
     /// the clipboard too.
     fn finish_selection(&mut self) {
-        let collapsed = self.selection.map_or(true, |s| s.is_collapsed());
+        let collapsed = self.selection.is_none_or(|s| s.is_collapsed());
         if collapsed {
             if self.drag_granularity == Granularity::Char
                 && let Some(sel) = self.selection
@@ -2385,7 +2385,7 @@ impl Perform for TerminalPerformer<'_> {
         // CRDT is touched a single time when the line changes or an action
         // flushes (below). This is what turns a screenful of output from O(n²)
         // per-cell CRDT writes into O(cells) memory edits + O(lines) commits.
-        let need_load = self.print_buf.as_ref().map_or(true, |b| b.line_obj != line_obj);
+        let need_load = self.print_buf.as_ref().is_none_or(|b| b.line_obj != line_obj);
         if need_load {
             self.flush_print_buf();
             let text_id = match self.state.get(&line_obj, "text") {
@@ -2400,7 +2400,7 @@ impl Perform for TerminalPerformer<'_> {
                 },
                 _ => Vec::new(),
             };
-            self.print_buf = Some(PrintBuf { line_obj: line_obj, text_id, text, attrs });
+            self.print_buf = Some(PrintBuf { line_obj, text_id, text, attrs });
         }
         let buf = self.print_buf.as_mut().expect("print_buf loaded above");
 

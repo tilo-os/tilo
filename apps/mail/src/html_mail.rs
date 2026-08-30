@@ -225,9 +225,9 @@ mod tests {
     fn base64_decode(s: &str) -> Vec<u8> {
         fn val(c: u8) -> Option<u32> {
             match c {
-                b'A'..=b'Z' => Some((c - b'A') as u32),
-                b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-                b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+                b'A'..=b'Z' => Some(u32::from(c - b'A')),
+                b'a'..=b'z' => Some(u32::from(c - b'a' + 26)),
+                b'0'..=b'9' => Some(u32::from(c - b'0' + 52)),
                 b'+' => Some(62),
                 b'/' => Some(63),
                 _ => None,

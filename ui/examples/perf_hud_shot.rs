@@ -9,8 +9,8 @@
 //! HUD you see here is pixel-for-pixel the one the live app paints; only the
 //! surface is offscreen.
 //!
-//! Run:  cargo run -p ui --example perf_hud_shot
-//! Out:  $PERF_HUD_OUT (default /tmp/perf_hud/hud.png)
+//! Run:  cargo run -p ui --example `perf_hud_shot`
+//! Out:  $`PERF_HUD_OUT` (default /`tmp/perf_hud/hud.png`)
 //!
 //! `PERF_HUD_FRAMES=N` sets how many real frames feed the rolling graph.
 
@@ -81,10 +81,9 @@ fn main() {
                     height: AvailableSpace::Definite(HEIGHT as f32),
                 },
                 |known, available, node_id, _, _| {
-                    node_map
-                        .get(&node_id)
-                        .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                        .unwrap_or(Size::ZERO)
+                    node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, &mut tr)
+                    })
                 },
             )
             .unwrap();
@@ -108,7 +107,7 @@ fn main() {
         Affine::IDENTITY,
         &mut tr,
         &theme,
-        (WIDTH as f64, HEIGHT as f64),
+        (f64::from(WIDTH), f64::from(HEIGHT)),
     );
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.bg_app, &out);

@@ -406,7 +406,7 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             a.len() <= 48,
             "TPM2B_AUTH is refused above ~48 bytes on real implementations"
         );
-        assert!(a.iter().all(|b| b.is_ascii_hexdigit()));
+        assert!(a.iter().all(u8::is_ascii_hexdigit));
         assert_ne!(*a, *new_reset_auth().unwrap());
     }
 }

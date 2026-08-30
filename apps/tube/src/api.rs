@@ -981,7 +981,7 @@ mod tests {
         assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
     }
 
-    /// Real-path check: actually call SponsorBlock, DeArrow and Return YouTube
+    /// Real-path check: actually call `SponsorBlock`, `DeArrow` and Return `YouTube`
     /// Dislike and assert the parsed shapes. Honestly gated — it only touches
     /// the network when `TUBE_NET_TESTS=1`, so offline/CI runs pass trivially
     /// rather than being silently `#[ignore]`d. Run with:

@@ -125,7 +125,7 @@ fn drawn_of(scene: &Scene) -> Drawn {
     for run in &e.resources.glyph_runs {
         push_f32(&mut b, run.font_size);
         push_u32(&mut b, run.font.index);
-        push_u32(&mut b, run.hint as u32);
+        push_u32(&mut b, u32::from(run.hint));
         push_u32(&mut b, run.glyphs.start as u32);
         push_u32(&mut b, run.glyphs.end as u32);
         for v in run.transform.matrix {
@@ -250,7 +250,7 @@ fn assert_same_frame(a: &LocalRender, b: &LocalRender, what: &str) {
 
 fn non_background_pixels(rgba: &[u8]) -> usize {
     rgba.chunks_exact(4)
-        .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 16 && px[3] > 16)
+        .filter(|px| u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2]) > 16 && px[3] > 16)
         .count()
 }
 
@@ -268,7 +268,9 @@ fn two_peers(
     CollaborationManager,
     std::path::PathBuf,
 ) {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let sock = std::env::temp_dir().join(format!("quick-coedit-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);

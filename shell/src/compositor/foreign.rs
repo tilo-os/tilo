@@ -2002,7 +2002,7 @@ mod tests {
                 id: one.tab_id + 1_000_000,
                 title: one.title.clone(),
                 tile: ShellTile::Foreign {
-                    app_id: one.app_id.clone(),
+                    app_id: one.app_id,
                     surface_id: surface,
                 },
             }
@@ -2059,9 +2059,9 @@ mod tests {
         tree: &mut WorkspaceTree,
         surface: SurfaceId,
     ) -> Option<crate::shell::state::Tab> {
-        for ws in tree.workspaces.iter_mut() {
-            for strip in ws.strips.iter_mut() {
-                for group in strip.window_groups.iter_mut() {
+        for ws in &mut tree.workspaces {
+            for strip in &mut ws.strips {
+                for group in &mut strip.window_groups {
                     if let Some(i) = group.tabs.iter().position(|t| {
                         matches!(
                             &t.tile,

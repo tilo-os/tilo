@@ -543,7 +543,7 @@ mod tests {
         let key = "/s/1".to_string();
         // Hand-stage a started, pointer-only session.
         backend.sessions.lock().unwrap().insert(
-            key.clone(),
+            key,
             RemoteDesktopSession {
                 app_id: "org.remote".into(),
                 devices: device_type::POINTER,

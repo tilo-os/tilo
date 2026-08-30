@@ -469,7 +469,7 @@ mod tests {
     use crate::command::new_sink;
 
     fn lay(bar: &mut BreadcrumbBar, width: f64) {
-        bar.rect = Rect::new(0.0, 0.0, width, BAR_HEIGHT as f64);
+        bar.rect = Rect::new(0.0, 0.0, width, f64::from(BAR_HEIGHT));
         let mut tr = TextRenderer::new();
         bar.relayout(&mut tr);
     }

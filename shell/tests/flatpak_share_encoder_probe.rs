@@ -112,7 +112,7 @@ fn requested_nvenc_falls_back_when_hardware_absent() {
     let _ = session.chosen_encoder();
 }
 
-/// On a real VA-API host with a wired encoder, Auto picks VaApi.
+/// On a real VA-API host with a wired encoder, Auto picks `VaApi`.
 /// `#[ignore]`d (CI runners lack `/dev/dri`); run with `--include-ignored`
 /// on a workstation. Self-skips without a functional H.264 VA-API path.
 #[test]
@@ -125,7 +125,6 @@ fn auto_probe_picks_vaapi_when_hardware_present() {
              feature; rerun with --features vaapi to actually exercise \
              the probe path"
         );
-        return;
     }
     #[cfg(feature = "vaapi")]
     {

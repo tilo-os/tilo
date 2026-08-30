@@ -190,9 +190,9 @@ mod tests {
         let tiny_dense = ((1600, 1200), (120u32, 90u32)); // ~339 dpi, 5.9in
         let scale = derive_scale(tiny_dense.0, Some(tiny_dense.1));
         assert!(
-            (tiny_dense.0.0 as f64 / scale) >= MIN_LOGICAL_WIDTH,
+            (f64::from(tiny_dense.0.0) / scale) >= MIN_LOGICAL_WIDTH,
             "scale {scale} leaves a {}px logical desktop, below the floor",
-            tiny_dense.0.0 as f64 / scale
+            f64::from(tiny_dense.0.0) / scale
         );
     }
 

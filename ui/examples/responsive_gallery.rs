@@ -1,9 +1,9 @@
 //! Responsive gallery — shows the toolkit's flex/wrap behaviour and CRDT
 //! session persistence, now also exercising the newer shared components
-//! (SearchField, Chip, StatTile, Banner) in a layout that reflows as the
+//! (`SearchField`, Chip, `StatTile`, Banner) in a layout that reflows as the
 //! window narrows. Chips and stat tiles wrap; the toolbar buttons wrap.
 //!
-//! Run:  cargo run -p ui --example responsive_gallery
+//! Run:  cargo run -p ui --example `responsive_gallery`
 
 use std::fs;
 

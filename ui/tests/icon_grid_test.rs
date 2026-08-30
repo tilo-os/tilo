@@ -1,5 +1,5 @@
 //! Offscreen render guard for [`IconGrid`]: drives the full
-//! build_layout → measure → apply_layout → draw pipeline and asserts the
+//! `build_layout` → measure → `apply_layout` → draw pipeline and asserts the
 //! grid rasterises non-empty pixels (icons + labels + a selection fill).
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other

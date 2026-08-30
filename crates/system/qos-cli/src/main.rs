@@ -140,8 +140,7 @@ fn is_root() -> bool {
                 .find_map(|l| l.strip_prefix("Uid:"))
                 .and_then(|v| v.split_whitespace().next().map(str::to_string))
         })
-        .map(|uid| uid == "0")
-        .unwrap_or(false)
+        .is_some_and(|uid| uid == "0")
 }
 
 fn run_helper_directly(args: &[&str]) -> Result<ExitCode> {

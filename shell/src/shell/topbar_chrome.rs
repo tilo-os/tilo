@@ -1936,7 +1936,7 @@ mod tests {
         let bar_bottom = bar.rect.y1;
         assert!(bar_bottom > 0.0, "topbar rect must have non-zero y1");
         assert!(
-            (bar_bottom - TOPBAR_HEIGHT_PX as f64).abs() < 0.5,
+            (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
     }
@@ -1982,7 +1982,7 @@ mod tests {
 
         // Invited but not redeemed: an avatar here would falsely claim
         // he's in the workspace.
-        let mut asked = empty.clone();
+        let mut asked = empty;
         asked.collaborators = vec![
             crate::shell::state::Collaborator::new("peer@11895642303397647149", "bob")
                 .as_invited(),

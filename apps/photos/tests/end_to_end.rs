@@ -1,7 +1,7 @@
 //! The scenario, end to end: open a photograph, adjust it, get the result out.
 //!
 //! These drive the real widget through the same five passes `ui::App` runs —
-//! sync, build_layout, compute_layout, apply_layout, draw — so an assertion
+//! sync, `build_layout`, `compute_layout`, `apply_layout`, draw — so an assertion
 //! here is an assertion about the production path and not about a helper that
 //! agrees with itself.
 
@@ -101,7 +101,7 @@ impl Harness {
     }
 
     fn window_rect(&self) -> Rect {
-        Rect::new(0.0, 0.0, self.size.0 as f64, self.size.1 as f64)
+        Rect::new(0.0, 0.0, f64::from(self.size.0), f64::from(self.size.1))
     }
 }
 
@@ -289,11 +289,11 @@ fn rotating_changes_the_exported_pixels() {
     let brightness = |img: &Rgba, fx: f64, fy: f64| {
         let p = img
             .pixel(
-                ((img.w as f64 - 1.0) * fx) as u32,
-                ((img.h as f64 - 1.0) * fy) as u32,
+                ((f64::from(img.w) - 1.0) * fx) as u32,
+                ((f64::from(img.h) - 1.0) * fy) as u32,
             )
             .unwrap();
-        p[0] as u32 + p[1] as u32 + p[2] as u32
+        u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
     };
     assert!(
         brightness(&after, 0.72, 0.28) > brightness(&after, 0.28, 0.72),
@@ -388,8 +388,7 @@ fn cropping_to_the_view_keeps_what_the_viewport_frames() {
     let view = hz.app.visible_rect();
     assert!(
         (view.w - 0.5).abs() < 0.05,
-        "a 2x zoom should frame about half the width, got {:?}",
-        view
+        "a 2x zoom should frame about half the width, got {view:?}"
     );
 
     let e = PhotosDoc::edits(&hz.state.doc).cropped_from_view(view);
@@ -404,7 +403,7 @@ fn cropping_to_the_view_keeps_what_the_viewport_frames() {
         after.h
     );
     assert!(
-        (after.w as i64 - 200).abs() <= 12,
+        (i64::from(after.w) - 200).abs() <= 12,
         "expected about half the width, got {}",
         after.w
     );

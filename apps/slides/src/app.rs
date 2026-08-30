@@ -6934,7 +6934,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        let before = app.slide().map(|s| s.elements.len()).unwrap_or(0);
+        let before = app.slide().map_or(0, |s| s.elements.len());
 
         let mut handled = false;
         app.on_key(
@@ -7860,7 +7860,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        let before = app.slide().map(|s| s.elements.len()).unwrap_or(0);
+        let before = app.slide().map_or(0, |s| s.elements.len());
 
         // The Image tool asks the host portal for a file WITHOUT fabricating an
         // element and WITHOUT drawing any in-app picker (HIG §5).
@@ -7916,7 +7916,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        let before = app.slide().map(|s| s.elements.len()).unwrap_or(0);
+        let before = app.slide().map_or(0, |s| s.elements.len());
 
         app.portal_rx = Some(crate::portal::inject_for_test(
             crate::portal::PortalOutcome::Cancelled,
@@ -7981,7 +7981,7 @@ mod tests {
         let id = s.add(Element::text("Hi", 100.0, 100.0, 500.0, 160.0, 40.0));
         let (mut app, mut doc) = app_doc(s);
         sized(&mut app, 1280.0, 800.0);
-        app.sel = Some(id.clone());
+        app.sel = Some(id);
         let p = sel_center(&app);
 
         // First click + release: selects, arms then releases a (zero-length) move.
@@ -8016,7 +8016,7 @@ mod tests {
 
     /// Dragging a thumbnail down the rail past the threshold reorders the deck
     /// and persists the move to the CRDT — the whole gesture on the real
-    /// on_press → CursorMoved → on_release path.
+    /// `on_press` → `CursorMoved` → `on_release` path.
     #[test]
     fn dragging_a_thumbnail_reorders_the_deck_in_the_crdt() {
         let (mut app, mut doc) = reorder_app();
@@ -8243,10 +8243,10 @@ mod tests {
 
         // Row 0 = Bring to front. Choosing it raises `a` above `b`.
         app.ctx_menu.click_item(0);
-        if let Some(idx) = app.ctx_menu.take_selection() {
-            if let Some(Some(hit)) = app.ctx_hits.get(idx).cloned() {
-                app.apply_hit(&mut doc, hit);
-            }
+        if let Some(idx) = app.ctx_menu.take_selection()
+            && let Some(Some(hit)) = app.ctx_hits.get(idx).cloned()
+        {
+            app.apply_hit(&mut doc, hit);
         }
         let za = loaded(&doc).slides[0].element(&a).unwrap().z;
         let zb = loaded(&doc).slides[0].element(&b).unwrap().z;
@@ -8346,8 +8346,8 @@ mod tests {
         key_event(Key::Named(k), None)
     }
 
-    /// The font-size NumberInput's + stepper raises the size through the real
-    /// event path (item: adopt the shared NumberInput for font size).
+    /// The font-size `NumberInput`'s + stepper raises the size through the real
+    /// event path (item: adopt the shared `NumberInput` for font size).
     #[test]
     fn font_size_number_input_steps_and_writes_through() {
         let mut s = Slide::new(Layout::Blank);
@@ -8372,8 +8372,8 @@ mod tests {
         );
     }
 
-    /// The embeddable ColorPicker writes a concrete hex fill through the real
-    /// event path (item: integrate the ColorPicker for the inspector fill).
+    /// The embeddable `ColorPicker` writes a concrete hex fill through the real
+    /// event path (item: integrate the `ColorPicker` for the inspector fill).
     #[test]
     fn fill_color_picker_writes_a_hex_fill() {
         let mut s = Slide::new(Layout::Blank);
@@ -8488,7 +8488,7 @@ mod tests {
         );
     }
 
-    /// The inline title editor is the shared TextInput, so it supports real
+    /// The inline title editor is the shared `TextInput`, so it supports real
     /// selection — Ctrl+A selects the whole title, then typing replaces it.
     #[test]
     fn title_input_supports_select_all_and_replace() {
@@ -8520,7 +8520,7 @@ mod tests {
         // Backspace deletes the last title char through the TextInput → CRDT.
         let title0 = app.deck.title.clone();
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
-        let mut expect: String = title0.clone();
+        let mut expect: String = title0;
         expect.pop();
         assert_eq!(
             loaded(&doc).title,
@@ -9034,7 +9034,7 @@ mod tests {
         app.reload(&doc);
 
         let (_, thumbs, _) = app.compute_overview();
-        let (idx, rect) = thumbs.get(2).cloned().expect("a third overview card");
+        let (idx, rect) = thumbs.get(2).copied().expect("a third overview card");
         let mut handled = false;
         app.last_mouse = rect.center();
         app.on_press(&mut doc, rect.center(), &mut handled);
@@ -9262,7 +9262,7 @@ mod tests {
     // === drag-to-delete zone ==============================================
 
     /// Dropping a dragged slide thumbnail on the red dashed delete zone removes
-    /// that slide from the CRDT (the whole on_press → drag → on_release path).
+    /// that slide from the CRDT (the whole `on_press` → drag → `on_release` path).
     #[test]
     fn dropping_a_slide_on_the_delete_zone_removes_it_from_the_crdt() {
         let (mut app, mut doc) = reorder_app();

@@ -300,7 +300,7 @@ mod tests {
                 let Some((_region, amount)) = value.split_once(':') else {
                     continue;
                 };
-                let digits: String = amount.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits: String = amount.chars().filter(char::is_ascii_digit).collect();
                 if let Ok(kib) = digits.parse::<u64>() {
                     total += kib;
                     saw_any = true;

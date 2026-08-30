@@ -24,7 +24,7 @@ use crate::network::protocol::NeighbourMsg;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
-const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_mins(10);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 pub type WorkspaceId = u64;
@@ -194,7 +194,7 @@ async fn run(
             command = cmd_rx.recv() => match command {
                 Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                     subscribers.insert(ws, on_event);
-                    if !topics.contains_key(&ws) {
+                    if let std::collections::hash_map::Entry::Vacant(e) = topics.entry(ws) {
                         let bootstrap = peers.keys().copied().collect();
                         match gossip.subscribe(topic_id(ws), bootstrap).await {
                             Ok(topic) => {
@@ -216,13 +216,13 @@ async fn run(
                                     }
                                     let _ = tx.send(InternalEvent::Closed { ws }).await;
                                 });
-                                topics.insert(ws, TopicRuntime { sender, pump });
+                                e.insert(TopicRuntime { sender, pump });
                             }
                             Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
                         }
                     }
                     if let Some(identity) = host_identity.as_ref() {
-                        for addr in hosts.values().cloned().collect::<Vec<_>>() {
+                        for addr in hosts.values().cloned() {
                             schedule_host_topic(
                                 &endpoint,
                                 identity,
@@ -276,7 +276,7 @@ async fn run(
                         tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                         continue;
                     };
-                    for ws in topics.keys().copied().collect::<Vec<_>>() {
+                    for ws in topics.keys().copied() {
                         schedule_host_topic(
                             &endpoint,
                             identity,
@@ -390,8 +390,8 @@ async fn run(
                     out.push(endpoint.addr());
                 }
                 if let Some(identity) = host_identity.as_ref() {
-                    for ws in topics.keys().copied().collect::<Vec<_>>() {
-                        for addr in hosts.values().cloned().collect::<Vec<_>>() {
+                    for ws in topics.keys().copied() {
+                        for addr in hosts.values().cloned() {
                             schedule_host_topic(
                                 &endpoint,
                                 identity,

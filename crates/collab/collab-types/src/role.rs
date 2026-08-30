@@ -169,9 +169,7 @@ mod tests {
             ] {
                 assert!(
                     role_permits(Role::Owner, kind, op),
-                    "Owner should permit {:?} on {:?}",
-                    op,
-                    kind
+                    "Owner should permit {op:?} on {kind:?}"
                 );
             }
         }

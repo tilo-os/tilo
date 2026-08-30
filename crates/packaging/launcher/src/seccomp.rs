@@ -469,7 +469,7 @@ mod tests {
 
         let mut status = 0i32;
         // SAFETY: `pid` is our own child from the fork above.
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
         assert!(
             libc::WIFEXITED(status),
             "child did not exit normally (status {status:#x})"
@@ -524,7 +524,7 @@ mod tests {
             let previous = std::env::var_os(JIT_POLICY_PATH_ENV);
             // SAFETY: as above.
             unsafe {
-                std::env::set_var(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"))
+                std::env::set_var(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"));
             };
             Self {
                 _dir: dir,
