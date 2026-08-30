@@ -57,8 +57,28 @@ the notes binary disappears.
 | Heading 3   | `### heading`                                  |
 | Bullet      | `- item`  (indent with two leading spaces)     |
 | Checklist   | `- [ ] open` / `- [x] done`                    |
-| Code block  | ` ```lang ` … ` ``` ` (single-line body, v0.1) |
+| Code block  | ` ```lang ` … ` ``` `                         |
+| TeX formula | ` ```tex ` / ` ```latex ` / ` ```math `       |
+| Typst math  | ` ```typst ` / ` ```typst-math `               |
 | Divider     | a line of exactly `---`                        |
+
+Each formula card identifies its TeX or Typst syntax and offers a direct
+**Source / Visual** switch. Source mode keeps the fenced text editable with a
+live preview; Visual mode uses the same structured two-dimensional editor as
+Calculator. New formulas created from the `/` block menu default to Visual,
+and the last mode selected becomes the default for the next formula in that
+editing session. The per-card choice persists in Markdown as a fence info
+attribute (for example, ` ```typst visual `), while switching modes without
+editing preserves the original source byte-for-byte.
+
+TeX coverage includes common symbols and operators,
+fractions, roots, scripts, large-operator limits, scalable delimiters,
+matrices/arrays/cases/alignment, accents, binomials, text operators, and common
+math alphabets. Typst math supports the corresponding expression syntax and
+constructors such as `frac`, `root`, `mat`, `vec`, and `cases`. Unsupported
+package macros remain visible and produce a preview diagnostic; source is never
+dropped. Once a user changes a formula in Visual mode, the semantic tree is
+serialized back to canonical native TeX or Typst.
 
 Inline marks inside any non-code block:
 
@@ -108,13 +128,6 @@ Inline marks inside any non-code block:
 The shape of the app is right; these are sharp edges that will get
 filed down in follow-up phases.
 
-- **Code blocks are single-line.** The fenced code block parses and
-  serialises one body line per block. Newlines inside the block are
-  rendered as literal `\n` characters.
-- **Code-block text uses the proportional UI font.** Inline `code`
-  chips render in the canonical monospace family; full-block code is
-  still on the proportional font until a per-block font override
-  lands.
 - **Link text doesn't track renames.** A `[[Welcome]]` link points at
   the page id resolved at the time the block was parsed. If you
   rename the target page, the link still navigates correctly but the
