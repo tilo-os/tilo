@@ -23,6 +23,13 @@ use crate::shell::state::{
 };
 pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
 
+fn visual_notification_alerts_enabled() -> bool {
+    settings_store::load_section("accessibility")
+        .get("visual_alerts")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// One capability request waiting for the user to answer it. Dropping
 /// without answering drops the `reply` sender, which the portal side
 /// reads as deny — refusal, not a hang.
@@ -291,6 +298,9 @@ pub struct ChromeState {
     /// Independent of [`Self::session_locked`], which suppresses
     /// lock-screen *content* but still shows a count.
     dnd: bool,
+    /// Short, bounded edge flash requested by the visual-alert accessibility
+    /// setting. Local session state only; it is never synced or written back.
+    visual_alert_until: Option<std::time::Instant>,
     /// Mirrored from the compositor's `SessionManager` each frame.
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
@@ -377,6 +387,7 @@ impl ChromeState {
             notification_bridge: None,
             notification_history: Vec::new(),
             dnd: false,
+            visual_alert_until: None,
             session_locked: false,
             fullscreen_group: None,
             maximized_group: None,
@@ -788,6 +799,10 @@ impl ChromeState {
             self.bump();
             return id;
         }
+        if visual_notification_alerts_enabled() {
+            self.visual_alert_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(450));
+        }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
         while self.notifications.len() > MAX_NOTIFICATIONS {
@@ -796,6 +811,12 @@ impl ChromeState {
         }
         self.bump();
         id
+    }
+
+    /// Whether shell chrome should paint the accessibility edge flash this
+    /// frame. No timer thread or persistent alert state is needed.
+    pub fn visual_alert_active(&self, now: std::time::Instant) -> bool {
+        self.visual_alert_until.is_some_and(|until| now < until)
     }
 
     /// Every path that removes a toast (and the DND-suppression path)
@@ -1041,6 +1062,24 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
+
+#[cfg(test)]
+mod visual_alert_tests {
+    use super::*;
+
+    #[test]
+    fn edge_flash_is_strictly_bounded() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        chrome.borrow_mut().visual_alert_until = Some(now + std::time::Duration::from_millis(450));
+        assert!(chrome.borrow().visual_alert_active(now));
+        assert!(
+            !chrome
+                .borrow()
+                .visual_alert_active(now + std::time::Duration::from_millis(451))
+        );
+    }
+}
 
 #[cfg(test)]
 mod active_tab_tests {

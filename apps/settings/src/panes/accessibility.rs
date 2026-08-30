@@ -159,12 +159,22 @@ impl AccessibilityPane {
             ]),
         );
 
-        // Capabilities without a compositor/apply path are deliberately rows,
-        // not writable preferences. This keeps the pane useful without
-        // promising assistive technology that the current session cannot run.
+        // Working cross-application assists stay writable here. Capabilities
+        // without an apply path remain status rows below so Settings never
+        // promises an inert preference.
         let advanced_card = card(
             "More assistive technology",
             rows(vec![
+                setting_row_described(
+                    "Screen reader",
+                    "Read focused controls and live announcements aloud",
+                    Self::toggle("a11y.screen_reader", SCREEN_READER_KEY),
+                ),
+                setting_row_described(
+                    "Visual alerts",
+                    "Flash a clear screen-edge alert when a notification arrives",
+                    Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY),
+                ),
                 value_row(
                     "Colour filters",
                     "Unavailable until output shaders expose filters",
@@ -185,14 +195,6 @@ impl AccessibilityPane {
                     "Live captions",
                     "Unavailable until a local captioning service exists",
                 ),
-                value_row(
-                    "Visual alerts",
-                    "Unavailable until shell alerts expose a visual route",
-                ),
-                value_row(
-                    "Screen reader",
-                    "Unavailable until the AT-SPI reader lifecycle is installed",
-                ),
             ]),
         );
 
@@ -202,8 +204,10 @@ impl AccessibilityPane {
                 "Vision comforts are the same settings the Appearance pane \
                  offers — changing them here or there updates one shared value. \
                  Pointer sizing, sticky keys and slow keys are applied by the \
-                 compositor's input layer. Unsupported capabilities are \
-                 identified explicitly instead of being stored as inert toggles.",
+                 compositor's input layer. The screen reader reloads in every \
+                 qOS app and visual alerts are rendered by shell chrome. \
+                 Unsupported capabilities are identified explicitly instead \
+                 of being stored as inert toggles.",
             )]),
         );
 
