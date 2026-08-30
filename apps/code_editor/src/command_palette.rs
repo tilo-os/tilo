@@ -23,7 +23,7 @@ pub enum PaletteKind {
 }
 
 /// Commands the palette can dispatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     NewFile,
     OpenFolder,
