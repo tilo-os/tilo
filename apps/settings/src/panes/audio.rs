@@ -1,5 +1,5 @@
-//! Audio pane — output volume + mute, microphone input level, and the
-//! system-sound preferences.
+//! Audio pane — output volume + mute, microphone input level, device
+//! capabilities, diagnostics, and per-application routing.
 //!
 //! Every control here drives real state:
 //! - **Volume / Mute** forward to `os_actions` (`wpctl` on the default
@@ -7,10 +7,9 @@
 //! - **Input level** forwards to the default *source* via `wpctl`
 //!   (`@DEFAULT_AUDIO_SOURCE@`) through [`InputControl`], sampled once on
 //!   construction so the slider rests at the mic's current gain.
-//! - **Event sounds / chat join / chat leave** are durable preferences
-//!   persisted to the shared system-preferences store
-//!   ([`crate::prefs::SystemPrefs`]); the compositor's notification layer
-//!   reads them when deciding whether to play a sound.
+//! Notification delivery sounds live in Notifications. Collaboration event
+//! sounds are not offered here until the shell has a real consumer; Settings
+//! never persists a switch that nothing applies.
 //!
 //! Device *selection* enumerates the real sinks/sources from `wpctl status`
 //! ([`parse_wpctl_status`]); when more than one output (or input) device
@@ -41,9 +40,6 @@
 //   `audio.input_volume`      — f64 in `[0.0, 1.0]`, input slider
 //   `audio.output_device`     — string, chosen sink name (when >1 sink)
 //   `audio.input_device`      — string, chosen source name (when >1 source)
-//   `audio.event_sounds`      — bool, master system-sound toggle
-//   `audio.chat_join_sound`   — bool, play on peer join
-//   `audio.chat_leave_sound`  — bool, play on peer leave
 
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
@@ -102,9 +98,6 @@ const FOLLOW_DEFAULT: &str = "Default";
 pub const VOLUME_KEY: &str = "audio.volume";
 pub const MUTED_KEY: &str = "audio.muted";
 pub const INPUT_VOLUME_KEY: &str = "audio.input_volume";
-pub const EVENT_SOUNDS_KEY: &str = "audio.event_sounds";
-pub const CHAT_JOIN_KEY: &str = "audio.chat_join_sound";
-pub const CHAT_LEAVE_KEY: &str = "audio.chat_leave_sound";
 /// CRDT key the output-device (sink) dropdown writes the chosen name into.
 pub const OUTPUT_DEVICE_KEY: &str = "audio.output_device";
 /// CRDT key the input-device (source) dropdown writes the chosen name into.
@@ -396,7 +389,6 @@ pub struct AudioPane {
     last_volume: f32,
     last_input: f32,
     last_muted: bool,
-    last_prefs: AudioPrefs,
     /// Name of the default sink we last set/seeded, guarding re-dispatch.
     last_sink: Option<String>,
     /// Name of the default source we last set/seeded, guarding re-dispatch.
@@ -447,7 +439,11 @@ impl Default for AudioPane {
 
 impl AudioPane {
     pub fn new() -> Self {
-        let initial = os_actions::get_volume().unwrap_or(0.5);
+        let initial_state = os_actions::get_volume_state().unwrap_or(os_actions::VolumeState {
+            level: 0.5,
+            muted: false,
+        });
+        let initial = initial_state.level;
         let initial_input = get_source_volume().unwrap_or(0.75);
         let prefs = SystemPrefs::load().audio;
         let mut devices = list_audio_devices();
@@ -515,8 +511,7 @@ impl AudioPane {
             initial_prefs: prefs.clone(),
             last_volume: initial,
             last_input: initial_input,
-            last_muted: false,
-            last_prefs: prefs,
+            last_muted: initial_state.muted,
             last_sink,
             last_source,
             persist_prefs: true,
@@ -573,7 +568,6 @@ impl AudioPane {
             last_volume: initial_volume,
             last_input: initial_input,
             last_muted: false,
-            last_prefs: AudioPrefs::default(),
             last_sink: None,
             last_source: None,
             persist_prefs: false,
@@ -808,44 +802,11 @@ impl AudioPane {
             "No applications are recording.",
         );
 
-        // --- System sounds card: master toggle + per-event collaboration
-        //     sounds. Each is a durable preference.
-        let sounds = card(
-            "System sounds",
-            rows(vec![
-                setting_row(
-                    "Event sounds",
-                    Box::new(
-                        Toggle::new("settings.audio.event_sounds", EVENT_SOUNDS_KEY)
-                            .with_id("audio.event_sounds"),
-                    ),
-                ),
-                setting_row(
-                    "Someone joins a chat",
-                    Box::new(
-                        Toggle::new("settings.audio.chat_join", CHAT_JOIN_KEY)
-                            .with_id("audio.chat_join"),
-                    ),
-                ),
-                setting_row(
-                    "Someone leaves a chat",
-                    Box::new(
-                        Toggle::new("settings.audio.chat_leave", CHAT_LEAVE_KEY)
-                            .with_id("audio.chat_leave"),
-                    ),
-                ),
-                caption(
-                    "Collaboration sounds play when peers join or leave a \
-                     shared workspace or chat.",
-                ),
-            ]),
-        );
-
         let mut cards = vec![output, input];
         if let Some(hardware) = hardware {
             cards.push(hardware);
         }
-        cards.extend([apps, recording, sounds]);
+        cards.extend([apps, recording]);
         crate::widgets::cards(cards)
     }
 
@@ -1080,7 +1041,11 @@ impl Widget for AudioPane {
                 VOLUME_KEY,
                 automerge::ScalarValue::F64(f64::from(self.initial_volume)),
             );
-            let _ = state.put(root, MUTED_KEY, automerge::ScalarValue::Boolean(false));
+            let _ = state.put(
+                root,
+                MUTED_KEY,
+                automerge::ScalarValue::Boolean(self.last_muted),
+            );
             let _ = state.put(
                 root,
                 BALANCE_KEY,
@@ -1095,21 +1060,6 @@ impl Widget for AudioPane {
                 INPUT_VOLUME_KEY,
                 automerge::ScalarValue::F64(f64::from(self.initial_input)),
             );
-            let _ = state.put(
-                root,
-                EVENT_SOUNDS_KEY,
-                automerge::ScalarValue::Boolean(self.initial_prefs.event_sounds),
-            );
-            let _ = state.put(
-                root,
-                CHAT_JOIN_KEY,
-                automerge::ScalarValue::Boolean(self.initial_prefs.chat_join),
-            );
-            let _ = state.put(
-                root,
-                CHAT_LEAVE_KEY,
-                automerge::ScalarValue::Boolean(self.initial_prefs.chat_leave),
-            );
             // Seed the device pickers with the current defaults so they rest
             // on the active device.
             if let Some(name) = self.devices.default_sink() {
@@ -1118,7 +1068,6 @@ impl Widget for AudioPane {
             if let Some(name) = self.devices.default_source() {
                 let _ = state.put(root, INPUT_DEVICE_KEY, name);
             }
-            self.last_prefs = self.initial_prefs.clone();
             for hw in &self.graph.hardware {
                 if let Some(active) = hw
                     .active_profile
@@ -1134,27 +1083,43 @@ impl Widget for AudioPane {
         if let Some(new) = read_f64(state, root, VOLUME_KEY) {
             let new = new as f32;
             if (new - self.last_volume).abs() > 0.001 {
-                self.last_volume = new;
-                if let Err(e) = self.dispatcher.set_volume(new.clamp(0.0, 1.0) * 100.0) {
-                    warn!(target: "qos::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
+                match self.dispatcher.set_volume(new.clamp(0.0, 1.0) * 100.0) {
+                    Ok(()) => self.last_volume = new,
+                    Err(e) => {
+                        let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
+                        self.runtime_notice = Some(format!("Volume could not be changed: {e}"));
+                        self.structure_dirty = true;
+                        warn!(target: "qos::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
+                    }
                 }
             }
         }
         if let Some(new) = read_f64(state, root, INPUT_VOLUME_KEY) {
             let new = new as f32;
             if (new - self.last_input).abs() > 0.001 {
-                self.last_input = new;
-                if let Err(e) = self.input.set_input_volume(new.clamp(0.0, 1.0) * 100.0) {
-                    warn!(target: "qos::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
+                match self.input.set_input_volume(new.clamp(0.0, 1.0) * 100.0) {
+                    Ok(()) => self.last_input = new,
+                    Err(e) => {
+                        let _ = state.put(root, INPUT_VOLUME_KEY, f64::from(self.last_input));
+                        self.runtime_notice =
+                            Some(format!("Input level could not be changed: {e}"));
+                        self.structure_dirty = true;
+                        warn!(target: "qos::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
+                    }
                 }
             }
         }
         if let Some(b) = read_bool(state, root, MUTED_KEY)
             && b != self.last_muted
         {
-            self.last_muted = b;
-            if let Err(e) = self.dispatcher.toggle_mute() {
-                warn!(target: "qos::settings", op = "toggle_mute", error = %e, "audio pane dispatch failed");
+            match self.dispatcher.set_mute(b) {
+                Ok(()) => self.last_muted = b,
+                Err(e) => {
+                    let _ = state.put(root, MUTED_KEY, self.last_muted);
+                    self.runtime_notice = Some(format!("Mute could not be changed: {e}"));
+                    self.structure_dirty = true;
+                    warn!(target: "qos::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
+                }
             }
         }
         if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
@@ -1244,40 +1209,28 @@ impl Widget for AudioPane {
             }
             self.structure_dirty = true;
         }
-        // System-sound preferences → persist to the shared store on change.
-        if let Some(b) = read_bool(state, root, EVENT_SOUNDS_KEY)
-            && b != self.last_prefs.event_sounds
-        {
-            self.last_prefs.event_sounds = b;
-            Self::persist_audio(|a| a.event_sounds = b);
-        }
-        if let Some(b) = read_bool(state, root, CHAT_JOIN_KEY)
-            && b != self.last_prefs.chat_join
-        {
-            self.last_prefs.chat_join = b;
-            Self::persist_audio(|a| a.chat_join = b);
-        }
-        if let Some(b) = read_bool(state, root, CHAT_LEAVE_KEY)
-            && b != self.last_prefs.chat_leave
-        {
-            self.last_prefs.chat_leave = b;
-            Self::persist_audio(|a| a.chat_leave = b);
-        }
         // Output-device (sink) selection → wpctl set-default, guarded so a
         // selection at rest doesn't re-fire.
         if let Some(name) = read_str(state, root, OUTPUT_DEVICE_KEY)
             && self.last_sink.as_deref() != Some(name.as_str())
             && let Some(id) = self.devices.sink_id(&name)
         {
-            // Persist the chosen default sink so it is remembered across
-            // sessions (the preferred output stays selected).
-            if self.persist_prefs {
-                let nm = name.clone();
-                Self::persist_audio(|a| a.output_device = Some(nm));
-            }
-            self.last_sink = Some(name);
-            if let Err(e) = self.device.set_default(id) {
-                warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
+            match self.device.set_default(id) {
+                Ok(()) => {
+                    if self.persist_prefs {
+                        let nm = name.clone();
+                        Self::persist_audio(|a| a.output_device = Some(nm));
+                    }
+                    self.last_sink = Some(name);
+                }
+                Err(e) => {
+                    if let Some(previous) = self.last_sink.as_deref() {
+                        let _ = state.put(root, OUTPUT_DEVICE_KEY, previous);
+                    }
+                    self.runtime_notice = Some(format!("Output device could not be changed: {e}"));
+                    self.structure_dirty = true;
+                    warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
+                }
             }
         }
         // Input-device (source) selection → wpctl set-default.
@@ -1285,13 +1238,22 @@ impl Widget for AudioPane {
             && self.last_source.as_deref() != Some(name.as_str())
             && let Some(id) = self.devices.source_id(&name)
         {
-            if self.persist_prefs {
-                let nm = name.clone();
-                Self::persist_audio(|a| a.input_device = Some(nm));
-            }
-            self.last_source = Some(name);
-            if let Err(e) = self.device.set_default(id) {
-                warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
+            match self.device.set_default(id) {
+                Ok(()) => {
+                    if self.persist_prefs {
+                        let nm = name.clone();
+                        Self::persist_audio(|a| a.input_device = Some(nm));
+                    }
+                    self.last_source = Some(name);
+                }
+                Err(e) => {
+                    if let Some(previous) = self.last_source.as_deref() {
+                        let _ = state.put(root, INPUT_DEVICE_KEY, previous);
+                    }
+                    self.runtime_notice = Some(format!("Input device could not be changed: {e}"));
+                    self.structure_dirty = true;
+                    warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
+                }
             }
         }
         // Per-application streams: seed each stream's route/volume/mute keys
@@ -1329,6 +1291,11 @@ impl Widget for AudioPane {
                     self.last_device_profile.insert(hw.id, choice);
                 }
                 Err(e) => {
+                    if let Some(previous) = self.last_device_profile.get(&hw.id) {
+                        let _ = state.put(root, device_profile_key(hw.id), previous.as_str());
+                    }
+                    self.runtime_notice = Some(format!("Device profile could not be changed: {e}"));
+                    self.structure_dirty = true;
                     warn!(target: "qos::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed")
                 }
             }
@@ -1611,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn mute_toggle_invokes_toggle_mute() {
+    fn mute_toggle_sets_the_requested_state() {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane =
             AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
@@ -1621,7 +1588,7 @@ mod tests {
         let _ = doc.put(&root, MUTED_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
         let calls = rec.calls();
-        assert_eq!(calls, vec!["toggle_mute()"]);
+        assert_eq!(calls, vec!["set_mute(true)"]);
     }
 
     /// Records the device ids a `set_default` call switches to, so the picker
