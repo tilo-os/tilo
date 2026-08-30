@@ -257,6 +257,19 @@ EPUB presentation MathML lowers directly into that tree for both inline and
 display formulas. A linear fallback remains attached to each formula for
 search, selection, and accessibility.
 
+The same tree has source front ends for practical TeX math and Typst math.
+Notes treats fenced `tex`/`latex`/`math` and `typst`/`typst-math` blocks as
+formula cards with an explicit syntax badge and a persisted Source/Visual mode.
+Source mode is editable text with a live preview; Visual mode reuses the
+calculator's structured editor core, promoted into `ui::math::edit`. Switching
+modes is lossless until a structured edit occurs, at which point the shared
+tree serializes to canonical native TeX or Typst. Both parsers are total: package-specific
+or unsupported input is preserved visibly and reported as a preview diagnostic
+rather than discarded. Their shared coverage includes scripts, fractions,
+indexed roots, large operators and limits, constructed delimiter families,
+matrices, arrays, cases, aligned rows, accents, binomials, common mathematical
+alphabets, Greek, relations, sets, and arrows.
+
 The real ebook integration is pinned by
 `apps/ebook/tests/fixtures/typography/math-reader.png`. Regenerate it only after
 visual approval:
