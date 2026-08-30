@@ -42,7 +42,6 @@ openmls_basic_credential = "0.6"
 openmls_traits = "0.6"
 # TLS-codec for serialising MlsMessage{In,Out}: Welcome bytes ride
 # the wire as TLS-serialised opaque blobs.
-tls_codec = "0.4"
 
 thiserror.workspace = true
 

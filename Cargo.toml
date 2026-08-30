@@ -3,7 +3,12 @@
 # runs: it must be compiled with `--target wasm32-wasip2` and produces a
 # Component Model `.wasm`, not a host-target library. Build it explicitly:
 # `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
-exclude = ["crates/doc/qdoc-codec-markdown-wasm", "vendor/winit"]
+exclude = [
+    "crates/doc/qdoc-codec-markdown-wasm",
+    "vendor/vello",
+    "vendor/vello_encoding",
+    "vendor/winit",
+]
 # `runtime-dylib` is a workspace member (so it shares the lockfile,
 # target dir, and crate SVHs with the apps that link it) but is kept
 # OUT of `default-members`: a bare `cargo build` / `cargo test` never
