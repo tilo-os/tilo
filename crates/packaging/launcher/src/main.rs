@@ -86,6 +86,10 @@ enum Cmd {
         /// decided by the manifest plus `--capabilities`.
         #[arg(long)]
         open: Option<PathBuf>,
+        /// A validated URI for the app to handle. Forwarded as one opaque
+        /// argv value; it is never parsed as a command line.
+        #[arg(long, conflicts_with = "open")]
+        open_uri: Option<String>,
     },
     /// Launch a CLI command from an already-installed package. Used by the
     /// PATH shim (`qos-cli-shim`).
@@ -126,6 +130,8 @@ enum Cmd {
         /// argument, not a permission — see `run --open`.
         #[arg(long)]
         open: Option<PathBuf>,
+        #[arg(long, conflicts_with = "open")]
+        open_uri: Option<String>,
         /// Fall back to `--minimal-libs` when the manifest declares a runtime
         /// bundle that is not installed.
         #[arg(long)]
@@ -189,6 +195,7 @@ fn main() -> ExitCode {
             app_id,
             render_node,
             open,
+            open_uri,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -214,6 +221,7 @@ fn main() -> ExitCode {
                 app_id,
                 render_node,
                 open_document: open,
+                open_uri,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -242,6 +250,7 @@ fn main() -> ExitCode {
             wayland_socket,
             workspace_id,
             open,
+            open_uri,
             allow_missing_runtime,
             allow_unsigned_runtime,
         } => exec_installed(
@@ -250,6 +259,7 @@ fn main() -> ExitCode {
             wayland_socket,
             workspace_id,
             open,
+            open_uri,
             allow_missing_runtime,
             allow_unsigned_runtime,
         ),
@@ -275,6 +285,7 @@ fn exec_installed(
     wayland_socket: Option<PathBuf>,
     workspace_id: Option<String>,
     open: Option<PathBuf>,
+    open_uri: Option<String>,
     allow_missing_runtime: bool,
     allow_unsigned_runtime: bool,
 ) -> ExitCode {
@@ -317,6 +328,7 @@ fn exec_installed(
         workspace_id,
         app_id: Some(package.to_string()),
         open_document: open,
+        open_uri,
         ..Default::default()
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
@@ -482,6 +494,7 @@ fn run_installed(
         // A CLI invocation's arguments are the user's own, forwarded through
         // `LaunchMode::Cli`; no document to open on its behalf.
         open_document: None,
+        open_uri: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
