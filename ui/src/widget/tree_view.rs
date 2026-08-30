@@ -20,6 +20,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub type NodeId = u64;
@@ -182,21 +183,19 @@ impl<T: 'static> Widget for TreeView<T> {
     ) -> taffy::NodeId {
         let rows = self.visible_rows().len().max(1);
         let height = (rows as f64) * ROW_HEIGHT;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::length(height as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(height as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -516,7 +515,7 @@ mod tests {
 
     fn dispatch(view: &mut TreeView<()>, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -571,18 +570,16 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root_taffy = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(80.0),
-                    },
-                    ..Default::default()
+        let root_taffy = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(80.0),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        );
         taffy
             .compute_layout(root_taffy, taffy::Size::MAX_CONTENT)
             .unwrap();

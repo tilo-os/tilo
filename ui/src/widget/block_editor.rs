@@ -19,6 +19,7 @@ use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan};
@@ -330,12 +331,11 @@ impl BlockEditor {
                     Some(rest.to_string())
                 };
                 let mut body: Vec<&str> = Vec::new();
-                while let Some(next) = lines.peek() {
-                    if *next == "```" {
-                        lines.next();
+                while let Some(next) = lines.next() {
+                    if next == "```" {
                         break;
                     }
-                    body.push(lines.next().unwrap());
+                    body.push(next);
                 }
                 editor
                     .blocks
@@ -428,7 +428,10 @@ impl BlockEditor {
                 }
                 BlockKind::Numbered { indent } => {
                     push_indent(&mut out, *indent);
-                    out.push_str(&format!("{}. ", ordinals[i].max(1)));
+                    out.push_str(&format!(
+                        "{}. ",
+                        ordinals.get(i).copied().unwrap_or(0).max(1)
+                    ));
                     out.push_str(b.text());
                 }
                 BlockKind::Checklist { indent, done } => {
@@ -548,11 +551,10 @@ impl BlockEditor {
     /// a minimal splice.
     fn reconcile_structure_to_doc(&mut self, state: &mut AutoCommit, list: &ObjId) {
         let mut doc_idx = 0usize;
-        let len = self.blocks.len();
-        for i in 0..len {
-            let kind_str = kind_to_str(&self.blocks[i].kind);
-            let local_text = self.blocks[i].line.value().to_string();
-            if let Some(bound) = self.blocks[i].line.bound_obj() {
+        for block in &mut self.blocks {
+            let kind_str = kind_to_str(&block.kind);
+            let local_text = block.line.value().to_string();
+            if let Some(bound) = block.line.bound_obj() {
                 // Delete any doc blocks before the bound one — they
                 // were removed locally.
                 while doc_idx < state.length(list)
@@ -568,17 +570,23 @@ impl BlockEditor {
                     push_text_diff(state, &bound, &local_text);
                     doc_idx += 1;
                 } else {
-                    // Bound object vanished from the doc — re-insert.
-                    let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
-                    self.blocks[i].line.bind_text(t);
-                    doc_idx += 1;
+                    // Bound object vanished from the doc — re-insert. A
+                    // `None` here means the doc's `list` itself was
+                    // concurrently removed; leave the block unbound rather
+                    // than desync `doc_idx` from a write that never landed.
+                    if let Some(t) = insert_doc_block(state, list, doc_idx, &kind_str, &local_text)
+                    {
+                        block.line.bind_text(t);
+                        doc_idx += 1;
+                    }
                 }
             } else {
                 // New block (e.g. the suffix of a split): insert a
                 // fresh doc block and bind it.
-                let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
-                self.blocks[i].line.bind_text(t);
-                doc_idx += 1;
+                if let Some(t) = insert_doc_block(state, list, doc_idx, &kind_str, &local_text) {
+                    block.line.bind_text(t);
+                    doc_idx += 1;
+                }
             }
         }
         while state.length(list) > doc_idx {
@@ -623,9 +631,11 @@ impl BlockEditor {
             let fi = fi.min(self.blocks.len().saturating_sub(1));
             self.focused = Some(fi);
             self.is_focused = true;
-            self.blocks[fi].line.set_focus(true);
-            if let Some(c) = saved_caret {
-                self.blocks[fi].line.set_cursor_pos(c);
+            if let Some(b) = self.blocks.get_mut(fi) {
+                b.line.set_focus(true);
+                if let Some(c) = saved_caret {
+                    b.line.set_cursor_pos(c);
+                }
             }
         }
     }
@@ -701,14 +711,20 @@ impl BlockEditor {
     /// block's kind — backspacing a paragraph into a heading folds the
     /// text into the heading, not the reverse.
     pub fn merge_with_previous(&mut self, idx: usize) {
-        if idx == 0 || idx >= self.blocks.len() {
+        if idx == 0 {
             return;
         }
-        let cur_text = self.blocks[idx].line.value().to_string();
-        let prev_text = self.blocks[idx - 1].line.value().to_string();
+        let Some(cur_text) = self.blocks.get(idx).map(|b| b.line.value().to_string()) else {
+            return;
+        };
+        let Some(prev_text) = self.blocks.get(idx - 1).map(|b| b.line.value().to_string()) else {
+            return;
+        };
         let join_at = prev_text.len();
         let merged = format!("{prev_text}{cur_text}");
-        self.blocks[idx - 1].line.set_text(&merged);
+        if let Some(b) = self.blocks.get_mut(idx - 1) {
+            b.line.set_text(&merged);
+        }
         self.blocks.remove(idx);
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
@@ -903,11 +919,13 @@ impl BlockEditor {
             let text = b.line.value().to_string();
             let cursor = b.line.cursor_pos().min(text.len());
             let start = open_byte.min(text.len());
-            if cursor > start {
+            if cursor > start
+                && let (Some(head), Some(tail)) = (text.get(..start), text.get(cursor..))
+            {
                 // Drop bytes [start, cursor) — the `/<filter>` slice.
                 let mut new_text = String::with_capacity(text.len());
-                new_text.push_str(&text[..start]);
-                new_text.push_str(&text[cursor..]);
+                new_text.push_str(head);
+                new_text.push_str(tail);
                 b.line.set_text(&new_text);
                 b.line.set_cursor_pos(start);
             }
@@ -960,10 +978,13 @@ impl BlockEditor {
         if cursor <= start {
             return;
         }
+        let (Some(head), Some(tail)) = (text.get(..start), text.get(cursor..)) else {
+            return;
+        };
         let mut new_text = String::with_capacity(text.len() + page.title.len());
-        new_text.push_str(&text[..start]);
+        new_text.push_str(head);
         new_text.push_str(&page.title);
-        new_text.push_str(&text[cursor..]);
+        new_text.push_str(tail);
         b.line.set_text(&new_text);
         let mark_range = start..(start + page.title.len());
         b.line
@@ -1093,17 +1114,17 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
     let mut level: u8 = 0;
     let b = line.as_bytes();
     while level < MAX_LIST_INDENT {
-        if b.len() >= bytes + 2 && &b[bytes..bytes + 2] == b"  " {
+        if b.get(bytes..bytes + 2) == Some(&b"  "[..]) {
             bytes += 2;
             level += 1;
-        } else if b.len() > bytes && b[bytes] == b'\t' {
+        } else if b.get(bytes) == Some(&b'\t') {
             bytes += 1;
             level += 1;
         } else {
             break;
         }
     }
-    (level, &line[bytes..])
+    (level, line.get(bytes..).unwrap_or_default())
 }
 
 /// The digits are discarded — ordinals are recomputed from list
@@ -1111,14 +1132,16 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
 fn strip_ordered_prefix(body: &str) -> Option<&str> {
     let bytes = body.as_bytes();
     let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
+    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
         i += 1;
     }
-    if i == 0 || i + 1 >= bytes.len() {
+    if i == 0 {
         return None;
     }
-    if (bytes[i] == b'.' || bytes[i] == b')') && bytes[i + 1] == b' ' {
-        Some(&body[i + 2..])
+    let sep = *bytes.get(i)?;
+    let next = *bytes.get(i + 1)?;
+    if (sep == b'.' || sep == b')') && next == b' ' {
+        body.get(i + 2..)
     } else {
         None
     }
@@ -1159,8 +1182,12 @@ pub fn numbered_ordinals(blocks: &[Block]) -> Vec<u32> {
         match b.kind {
             BlockKind::Numbered { indent } => {
                 let lvl = (indent as usize).min(MAX_LIST_INDENT as usize);
-                counters[lvl] += 1;
-                out[i] = counters[lvl];
+                if let Some(counter) = counters.get_mut(lvl) {
+                    *counter += 1;
+                    if let Some(o) = out.get_mut(i) {
+                        *o = *counter;
+                    }
+                }
                 for c in counters.iter_mut().skip(lvl + 1) {
                     *c = 0;
                 }
@@ -1323,24 +1350,24 @@ fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
     }
 }
 
+/// Returns `None` if `list` was concurrently removed from the document —
+/// the only way `insert_object`/`put_object` can fail here — leaving the
+/// caller's local block unbound rather than panicking on a legitimate CRDT
+/// race.
 fn insert_doc_block(
     state: &mut AutoCommit,
     list: &ObjId,
     index: usize,
     kind: &str,
     text: &str,
-) -> ObjId {
-    let block = state
-        .insert_object(list, index, ObjType::Map)
-        .expect("insert block map never fails");
+) -> Option<ObjId> {
+    let block = state.insert_object(list, index, ObjType::Map).ok()?;
     let _ = state.put(&block, "kind", kind);
-    let text_id = state
-        .put_object(&block, "text", ObjType::Text)
-        .expect("put_object block text never fails");
+    let text_id = state.put_object(&block, "text", ObjType::Text).ok()?;
     if !text.is_empty() {
         let _ = state.splice_text(&text_id, 0, 0, text);
     }
-    text_id
+    Some(text_id)
 }
 
 /// A single minimal splice, since the structural ops that call this
@@ -1378,8 +1405,20 @@ impl BlockEditor {
         }
         let anchor_block = anchor.block.min(self.blocks.len() - 1);
         let cursor_block = cursor.block.min(self.blocks.len() - 1);
-        let anchor_byte = clamp_char_boundary(self.blocks[anchor_block].line.value(), anchor.byte);
-        let cursor_byte = clamp_char_boundary(self.blocks[cursor_block].line.value(), cursor.byte);
+        let Some(anchor_byte) = self
+            .blocks
+            .get(anchor_block)
+            .map(|b| clamp_char_boundary(b.line.value(), anchor.byte))
+        else {
+            return;
+        };
+        let Some(cursor_byte) = self
+            .blocks
+            .get(cursor_block)
+            .map(|b| clamp_char_boundary(b.line.value(), cursor.byte))
+        else {
+            return;
+        };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
     }
@@ -1397,7 +1436,10 @@ impl BlockEditor {
             if block_idx > start.block {
                 out.push('\n');
             }
-            let text = self.blocks[block_idx].line.value();
+            let Some(block) = self.blocks.get(block_idx) else {
+                continue;
+            };
+            let text = block.line.value();
             let from = if block_idx == start.block {
                 clamp_char_boundary(text, start.byte)
             } else {
@@ -1408,8 +1450,10 @@ impl BlockEditor {
             } else {
                 text.len()
             };
-            if from <= to {
-                out.push_str(&text[from..to]);
+            if from <= to
+                && let Some(slice) = text.get(from..to)
+            {
+                out.push_str(slice);
             }
         }
         Some(out)
@@ -1426,38 +1470,65 @@ impl BlockEditor {
         if start >= end || end.block >= self.blocks.len() {
             return false;
         }
-        let start_text = self.blocks[start.block].line.value().to_string();
-        let end_text = self.blocks[end.block].line.value().to_string();
+        // Every index below is `start.block`, `end.block`, or derived from
+        // them plus `inserted.len()`; the bounds check above proves
+        // `start.block <= end.block < self.blocks.len()`, and `drain`/
+        // `insert` only ever touch the tail from `start.block` onward, so
+        // `start.block` and the later `last_idx` stay valid throughout.
+        // Still routed through `.get()`/`.get_mut()` rather than `[]` —
+        // this widget must not panic on a text edit even if that invariant
+        // is ever violated by a future change.
+        let (Some(start_text), Some(end_text)) = (
+            self.blocks
+                .get(start.block)
+                .map(|b| b.line.value().to_string()),
+            self.blocks
+                .get(end.block)
+                .map(|b| b.line.value().to_string()),
+        ) else {
+            return false;
+        };
         let start_byte = clamp_char_boundary(&start_text, start.byte);
         let end_byte = clamp_char_boundary(&end_text, end.byte);
-        let prefix_marks = self.blocks[start.block]
-            .line
-            .marks()
-            .iter()
-            .filter_map(|span| {
-                (span.range.start < start_byte).then(|| {
-                    MarkSpan::new(
-                        span.range.start..span.range.end.min(start_byte),
-                        span.mark.clone(),
-                    )
-                })
+        let prefix_marks = self
+            .blocks
+            .get(start.block)
+            .map(|b| {
+                b.line
+                    .marks()
+                    .iter()
+                    .filter_map(|span| {
+                        (span.range.start < start_byte).then(|| {
+                            MarkSpan::new(
+                                span.range.start..span.range.end.min(start_byte),
+                                span.mark.clone(),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        let suffix_marks = self.blocks[end.block]
-            .line
-            .marks()
-            .iter()
-            .filter_map(|span| {
-                (span.range.end > end_byte).then(|| {
-                    MarkSpan::new(
-                        span.range.start.max(end_byte) - end_byte..span.range.end - end_byte,
-                        span.mark.clone(),
-                    )
-                })
+            .unwrap_or_default();
+        let suffix_marks = self
+            .blocks
+            .get(end.block)
+            .map(|b| {
+                b.line
+                    .marks()
+                    .iter()
+                    .filter_map(|span| {
+                        (span.range.end > end_byte).then(|| {
+                            MarkSpan::new(
+                                span.range.start.max(end_byte) - end_byte
+                                    ..span.range.end - end_byte,
+                                span.mark.clone(),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        let prefix = &start_text[..start_byte];
-        let suffix = &end_text[end_byte..];
+            .unwrap_or_default();
+        let prefix = start_text.get(..start_byte).unwrap_or_default();
+        let suffix = end_text.get(end_byte..).unwrap_or_default();
         let cleaned = replacement
             .replace("\r\n", "\n")
             .replace('\r', "\n")
@@ -1466,23 +1537,28 @@ impl BlockEditor {
             .collect::<String>();
         let inserted: Vec<&str> = cleaned.split('\n').collect();
 
-        let first_kind = self.blocks[start.block].kind.clone();
-        let first_soft_break = self.blocks[start.block].soft_break;
-        let first_body = format!("{prefix}{}", inserted[0]);
-        self.blocks[start.block].line.set_text(&first_body);
-        self.blocks[start.block]
-            .line
-            .set_marks(prefix_marks.clone());
-        self.blocks[start.block].soft_break = first_soft_break;
+        let Some(first_kind) = self.blocks.get(start.block).map(|b| b.kind.clone()) else {
+            return false;
+        };
+        let first_soft_break = self
+            .blocks
+            .get(start.block)
+            .map(|b| b.soft_break)
+            .unwrap_or_default();
+        // `str::split` on any string (including empty) always yields at
+        // least one item, so `inserted` is never empty.
+        let first_body = format!("{prefix}{}", inserted.first().copied().unwrap_or(""));
+        if let Some(b) = self.blocks.get_mut(start.block) {
+            b.line.set_text(&first_body);
+            b.line.set_marks(prefix_marks.clone());
+            b.soft_break = first_soft_break;
+        }
 
         if start.block < end.block {
             self.blocks.drain(start.block + 1..=end.block);
         }
         let (caret_block, caret_byte) = if inserted.len() == 1 {
             let caret = first_body.len();
-            self.blocks[start.block]
-                .line
-                .set_text(&format!("{first_body}{suffix}"));
             let mut marks = prefix_marks;
             for span in suffix_marks {
                 crate::widget::marks::add_mark_to_range(
@@ -1491,7 +1567,10 @@ impl BlockEditor {
                     span.mark,
                 );
             }
-            self.blocks[start.block].line.set_marks(marks);
+            if let Some(b) = self.blocks.get_mut(start.block) {
+                b.line.set_text(&format!("{first_body}{suffix}"));
+                b.line.set_marks(marks);
+            }
             (start.block, caret)
         } else {
             for (offset, line) in inserted.iter().enumerate().skip(1) {
@@ -1515,7 +1594,9 @@ impl BlockEditor {
                     )
                 })
                 .collect();
-            self.blocks[last_idx].line.set_marks(shifted_suffix_marks);
+            if let Some(b) = self.blocks.get_mut(last_idx) {
+                b.line.set_marks(shifted_suffix_marks);
+            }
             (last_idx, last_insert_len)
         };
 
@@ -1558,8 +1639,11 @@ impl BlockEditor {
                 if ctrl {
                     return match logical_key {
                         Key::Character(c) if c.eq_ignore_ascii_case("a") => {
-                            let end_block = self.blocks.len() - 1;
-                            let end_byte = self.blocks[end_block].line.value().len();
+                            let end_block = self.blocks.len().saturating_sub(1);
+                            let end_byte = self
+                                .blocks
+                                .get(end_block)
+                                .map_or(0, |b| b.line.value().len());
                             self.select_document_range(
                                 DocumentPosition { block: 0, byte: 0 },
                                 DocumentPosition {
@@ -1589,7 +1673,14 @@ impl BlockEditor {
                     };
                 }
                 if !modifiers.state().shift_key() {
-                    let (start, end) = self.document_selection.unwrap().ordered();
+                    // Guaranteed `Some`: this handler returned early above
+                    // if `document_selection` was `None`, and nothing
+                    // between there and here clears it when `ctrl` is
+                    // false.
+                    let Some(selection) = self.document_selection else {
+                        return false;
+                    };
+                    let (start, end) = selection.ordered();
                     let collapse = match logical_key {
                         Key::Named(
                             NamedKey::ArrowLeft
@@ -1652,10 +1743,14 @@ impl BlockEditor {
                 return Some(i);
             }
         }
-        if y < self.blocks[0].line.get_rect().y0 {
+        if self
+            .blocks
+            .first()
+            .is_some_and(|b| y < b.line.get_rect().y0)
+        {
             Some(0)
         } else {
-            Some(self.blocks.len() - 1)
+            Some(self.blocks.len().saturating_sub(1))
         }
     }
 
@@ -1686,28 +1781,26 @@ impl BlockEditor {
         };
         if let Some((prev_lo, prev_hi)) = self.cross_block_drag_touched {
             for i in prev_lo..=prev_hi {
-                if (i < lo_block || i > hi_block) && i < self.blocks.len() {
-                    let pos = self.blocks[i].line.inner_mut().cursor_pos();
-                    self.blocks[i].line.inner_mut().set_selection(pos, pos);
+                if (i < lo_block || i > hi_block)
+                    && let Some(b) = self.blocks.get_mut(i)
+                {
+                    let pos = b.line.inner_mut().cursor_pos();
+                    b.line.inner_mut().set_selection(pos, pos);
                 }
             }
         }
         self.cross_block_drag_touched = Some((lo_block, hi_block));
         if start_block == end_block {
-            if start_block < self.blocks.len() {
-                self.blocks[start_block]
-                    .line
-                    .inner_mut()
-                    .set_selection(start_byte, end_byte);
+            if let Some(b) = self.blocks.get_mut(start_block) {
+                b.line.inner_mut().set_selection(start_byte, end_byte);
             }
             return;
         }
         let forward = start_block < end_block;
         for i in lo_block..=hi_block {
-            if i >= self.blocks.len() {
+            let Some(len) = self.blocks.get(i).map(|b| b.line.value().len()) else {
                 continue;
-            }
-            let len = self.blocks[i].line.value().len();
+            };
             let (a, c) = if i == start_block {
                 if forward {
                     (start_byte, len)
@@ -1725,7 +1818,9 @@ impl BlockEditor {
             } else {
                 (len, 0)
             };
-            self.blocks[i].line.inner_mut().set_selection(a, c);
+            if let Some(b) = self.blocks.get_mut(i) {
+                b.line.inner_mut().set_selection(a, c);
+            }
         }
     }
 
@@ -1747,7 +1842,9 @@ impl BlockEditor {
             from_block + 1
         };
         let active_byte = if dir < 0 {
-            self.blocks[target_block].line.value().len()
+            self.blocks
+                .get(target_block)
+                .map_or(0, |b| b.line.value().len())
         } else {
             0
         };
@@ -1762,9 +1859,9 @@ impl BlockEditor {
         self.document_selection = None;
         if let Some((lo, hi)) = self.cross_block_drag_touched.take() {
             for i in lo..=hi {
-                if i < self.blocks.len() {
-                    let pos = self.blocks[i].line.inner_mut().cursor_pos();
-                    self.blocks[i].line.inner_mut().set_selection(pos, pos);
+                if let Some(b) = self.blocks.get_mut(i) {
+                    let pos = b.line.inner_mut().cursor_pos();
+                    b.line.inner_mut().set_selection(pos, pos);
                 }
             }
         }
@@ -1793,21 +1890,19 @@ impl Widget for BlockEditor {
 
         // Same structure: refresh kind + text (RichTextLine::sync pulls
         // bound text without disturbing the local caret).
-        for i in 0..self.blocks.len() {
+        for (i, block) in self.blocks.iter_mut().enumerate() {
             let k = kind_from_str(&read_block_kind(state, &list, i));
-            if self.blocks[i].kind != k {
-                self.blocks[i].kind = k;
+            if block.kind != k {
+                block.kind = k;
                 self.structure_dirty = true;
             }
-            if self.blocks[i].line.bound_obj().is_none()
+            if block.line.bound_obj().is_none()
                 && let Some(t) = doc_text_obj(state, &list, i)
             {
-                self.blocks[i].line.bind_text(t);
+                block.line.bind_text(t);
             }
-            self.blocks[i]
-                .line
-                .set_local_author(self.local_author.clone());
-            self.blocks[i].line.sync(state, &list);
+            block.line.set_local_author(self.local_author.clone());
+            block.line.sync(state, &list);
         }
     }
 
@@ -1849,31 +1944,29 @@ impl Widget for BlockEditor {
             }
             self.child_nodes.push(n);
         }
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    align_items: Some(taffy::AlignItems::Stretch),
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                align_items: Some(taffy::AlignItems::Stretch),
+                gap: taffy::Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
                 },
-                &self.child_nodes,
-            )
-            .unwrap();
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &self.child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1883,7 +1976,7 @@ impl Widget for BlockEditor {
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         // Taffy's child list is authoritative (not `self.child_nodes`)
         // so any internal re-ordering taffy applies is tolerated.
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         for (b, child_node) in self.blocks.iter_mut().zip(children.iter()) {
             b.line.apply_layout(taffy, *child_node, new_origin);
             // Shift prefixed kinds' text rect right of a reserved gutter
@@ -1914,14 +2007,15 @@ impl Widget for BlockEditor {
         let tokens = &theme.tokens;
 
         // Painted BEFORE block content so the live caret stays on top.
-        let is_lone_empty_paragraph = self.blocks.len() == 1
-            && matches!(self.blocks[0].kind, BlockKind::Paragraph)
-            && self.blocks[0].line.value().is_empty();
-        if is_lone_empty_paragraph {
-            let line_rect = self.blocks[0].line.get_rect();
+        if self.blocks.len() == 1
+            && let Some(first) = self.blocks.first()
+            && matches!(first.kind, BlockKind::Paragraph)
+            && first.line.value().is_empty()
+        {
+            let line_rect = first.line.get_rect();
             // Same vertical centring as the inner TextInput so the hint
             // reads as this line's placeholder, not a floating label.
-            let size = self.blocks[0].line.font_size();
+            let size = first.line.font_size();
             let line_height = f64::from(size) * 1.25;
             let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
             // 2px right of the caret so it doesn't collide with the bar.
@@ -2093,9 +2187,9 @@ impl Widget for BlockEditor {
 
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
         // fresh `char_x_positions`.
-        for i in 0..self.blocks.len() {
+        for (i, b) in self.blocks.iter().enumerate() {
             let key = block_presence_key(i);
-            let line = &self.blocks[i].line;
+            let line = &b.line;
             let brect = line.get_rect();
             let _tr_rect = {
                 let p0 = transform * Point::new(brect.x0, brect.y0);
@@ -2264,8 +2358,11 @@ impl Widget for BlockEditor {
             && c.eq_ignore_ascii_case("a")
             && !self.blocks.is_empty()
         {
-            let end_block = self.blocks.len() - 1;
-            let end_byte = self.blocks[end_block].line.value().len();
+            let end_block = self.blocks.len().saturating_sub(1);
+            let end_byte = self
+                .blocks
+                .get(end_block)
+                .map_or(0, |b| b.line.value().len());
             self.select_document_range(
                 DocumentPosition { block: 0, byte: 0 },
                 DocumentPosition {
@@ -2349,12 +2446,9 @@ impl Widget for BlockEditor {
             // coordinator picks up the slack across block boundaries.
             self.clear_cross_block_selection();
             if let Some(block_idx) = self.block_at_y(self.last_mouse_pos.y)
-                && block_idx < self.blocks.len()
+                && let Some(b) = self.blocks.get_mut(block_idx)
             {
-                let byte = self.blocks[block_idx]
-                    .line
-                    .inner_mut()
-                    .byte_at_x(self.last_mouse_pos.x);
+                let byte = b.line.inner_mut().byte_at_x(self.last_mouse_pos.x);
                 self.cross_block_drag_start = Some((block_idx, byte));
             }
         }
@@ -2382,11 +2476,10 @@ impl Widget for BlockEditor {
             if let Some((start_block, start_byte)) = self.cross_block_drag_start {
                 let any_dragging = self.blocks.iter().any(|b| b.line.inner().is_dragging());
                 if any_dragging && let Some(end_block) = self.block_at_y(logical.y) {
-                    let end_byte = if end_block < self.blocks.len() {
-                        self.blocks[end_block].line.inner_mut().byte_at_x(logical.x)
-                    } else {
-                        0
-                    };
+                    let end_byte = self
+                        .blocks
+                        .get_mut(end_block)
+                        .map_or(0, |b| b.line.inner_mut().byte_at_x(logical.x));
                     self.paint_cross_block_selection(start_block, start_byte, end_block, end_byte);
                 }
             }
@@ -2656,8 +2749,8 @@ impl BlockEditor {
                 // Same as Enter, but marks the new block soft_break.
                 self.split_at_cursor(idx, split_at);
                 let new_idx = idx + 1;
-                if new_idx < self.blocks.len() {
-                    self.blocks[new_idx].soft_break = true;
+                if let Some(b) = self.blocks.get_mut(new_idx) {
+                    b.soft_break = true;
                 }
             }
             LineSignal::BackspaceAtStart => {

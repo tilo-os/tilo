@@ -6,6 +6,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
@@ -1497,21 +1498,19 @@ impl Widget for TabBar {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::length(TAB_BAR_HEIGHT as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(TAB_BAR_HEIGHT as f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -2677,7 +2676,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = b.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2740,7 +2739,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = b.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2797,7 +2796,7 @@ mod tests {
             button: MouseButton::Left,
         };
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -2990,9 +2989,7 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
         let node_a = a.build_layout(&mut taffy, &theme, &mut node_map);
-        let root_a = taffy
-            .new_with_children(Style::default(), &[node_a])
-            .unwrap();
+        let root_a = taffy.parent_node(Style::default(), &[node_a]);
         taffy
             .compute_layout(root_a, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -3001,9 +2998,7 @@ mod tests {
         let mut taffy2 = TaffyTree::<()>::new();
         let mut node_map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node_b = b.build_layout(&mut taffy2, &theme, &mut node_map2);
-        let root_b = taffy2
-            .new_with_children(Style::default(), &[node_b])
-            .unwrap();
+        let root_b = taffy2.parent_node(Style::default(), &[node_b]);
         taffy2
             .compute_layout(root_b, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -3149,7 +3144,7 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
         };
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -3241,7 +3236,7 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
         };
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -3386,7 +3381,7 @@ mod tests {
             button: MouseButton::Left,
         };
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -3456,7 +3451,7 @@ mod tests {
             button: MouseButton::Left,
         };
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -3695,7 +3690,7 @@ mod tests {
         ];
 
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut state = automerge::AutoCommit::new();
         let root_id = automerge::ROOT;
 
@@ -3822,7 +3817,7 @@ mod tests {
         ];
 
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut state = automerge::AutoCommit::new();
         let root_id = automerge::ROOT;
         let mut handled = false;
@@ -4134,7 +4129,7 @@ mod tests {
         // rects in `tab_rects` until the next apply_layout, so index 1 now
         // matches live tab 3, not the closing tab.
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -4365,7 +4360,7 @@ mod tests {
             button: MouseButton::Left,
         };
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut state = automerge::AutoCommit::new();
@@ -4448,20 +4443,18 @@ mod tests {
         // auto`, so it only takes the group's width as a column's cross axis. A
         // row parent would leave it content-sized — zero, for a leaf with no
         // measure func — a shape no live group has.
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: Dimension::length(width as f32),
-                        height: Dimension::length(TAB_BAR_HEIGHT as f32),
-                    },
-                    ..Default::default()
+        let root = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: taffy::Size {
+                    width: Dimension::length(width as f32),
+                    height: Dimension::length(TAB_BAR_HEIGHT as f32),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        );
         taffy
             .compute_layout(
                 root,

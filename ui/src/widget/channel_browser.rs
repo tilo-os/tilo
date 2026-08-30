@@ -26,6 +26,7 @@ use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 // ---------------------------------------------------------------------
@@ -818,21 +819,19 @@ impl Widget for ChannelBrowser {
             + (rows * ROW_HEIGHT as f32).min(10.0 * ROW_HEIGHT as f32)
             + FOOTER_HEIGHT as f32
             + SPACE_HEADER_HEIGHT as f32;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(640.0),
-                    height: Dimension::length(height),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(640.0),
+                height: Dimension::length(height),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -1230,7 +1229,7 @@ mod tests {
 
     fn dispatch(b: &mut ChannelBrowser, event: &WindowEvent, mods: Modifiers) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();

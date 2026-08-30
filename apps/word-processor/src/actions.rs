@@ -22,9 +22,11 @@ use serde::{Deserialize, Serialize};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut};
 
+use crate::num;
+
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 /// Registry `type_id` for every word-processor action.
@@ -289,7 +291,13 @@ impl Action for WordProcessorAction {
                     c: &c,
                     ids: &mut ids,
                 };
-                dm.splice_text_in(region.to_region(), block, *at, *del as isize, ins);
+                dm.splice_text_in(
+                    region.to_region(),
+                    block,
+                    *at,
+                    num::isize_of_usize(*del),
+                    ins,
+                );
             }
 
             WordProcessorAction::SetMark {
@@ -411,8 +419,8 @@ impl Action for WordProcessorAction {
                     for col in 0..*cols {
                         let id = dm.insert_block(prev.as_deref(), "cell");
                         dm.set_attr(&id, "table", table_id.as_str());
-                        dm.set_attr(&id, "row", row as i64);
-                        dm.set_attr(&id, "col", col as i64);
+                        dm.set_attr(&id, "row", num::i64_of_usize(row));
+                        dm.set_attr(&id, "col", num::i64_of_usize(col));
                         prev = Some(id);
                     }
                 }
@@ -434,8 +442,8 @@ impl Action for WordProcessorAction {
                     ids: &mut ids,
                 };
                 let hash = dm.put_blob(bytes);
-                if *at < char_count {
-                    dm.splice_text(block, *at, (char_count - *at) as isize, "");
+                if let Some(tail) = char_count.checked_sub(*at).filter(|n| *n > 0) {
+                    dm.splice_text(block, *at, num::isize_of_usize(tail), "");
                 }
                 let img = dm.insert_block(Some(block), "image");
                 dm.set_attr(&img, "blob", hash.as_str());
@@ -462,8 +470,8 @@ impl Action for WordProcessorAction {
                     c: &c,
                     ids: &mut ids,
                 };
-                if *at < char_count {
-                    dm.splice_text(block, *at, (char_count - *at) as isize, "");
+                if let Some(tail) = char_count.checked_sub(*at).filter(|n| *n > 0) {
+                    dm.splice_text(block, *at, num::isize_of_usize(tail), "");
                 }
                 let new = dm.insert_block(Some(block), "paragraph");
                 if !tail.is_empty() {
@@ -531,8 +539,13 @@ pub fn register(registry: &mut ActionRegistry) {
 /// on-screen affordances both dispatch. The single point that turns an action
 /// into a replayable envelope.
 pub fn encode(action: &WordProcessorAction) -> EncodedAction {
-    EncodedAction::encode(WORD_PROCESSOR_ACTION_TYPE, action)
-        .expect("WordProcessorAction is always serializable")
+    // The action is a plain serde enum over owned data, so the JSON encode
+    // cannot fail. Were it ever to, an empty payload simply fails to decode
+    // at the far end — a no-op — instead of aborting the process.
+    EncodedAction::encode(WORD_PROCESSOR_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: WORD_PROCESSOR_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -705,8 +718,15 @@ pub struct WpResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, WORD_PROCESSOR_ACTION_TYPE, action)
-        .expect("encode word-processor action")
+    // Built from `encode`, which is total, rather than the fallible
+    // `ActionSpec::immediate` — the two produce the same spec.
+    ActionSpec {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: None,
+        locus: action.locus(),
+        input: ActionInput::Immediate(encode(action)),
+    }
 }
 
 /// A short label for a structural block in the palette.
@@ -850,7 +870,7 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::{ActionInput, LocalTransport};
+    use qos_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -861,7 +881,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

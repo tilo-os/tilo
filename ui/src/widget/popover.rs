@@ -29,6 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Height of one option row.
@@ -292,15 +293,13 @@ impl Widget for Popover {
         // A zero-extent leaf: the body is positioned manually against the
         // anchor + viewport in `place`, not by the parent's flexbox. Register
         // in the node map so the host's overlay/hit sweeps still reach us.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -591,7 +590,7 @@ mod tests {
 
     fn dispatch(p: &mut Popover, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();

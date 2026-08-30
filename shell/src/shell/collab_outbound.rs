@@ -382,10 +382,21 @@ pub mod recording {
 
     impl RecordingSink {
         /// Everything published so far, oldest first.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned by a prior panic on
+        /// another thread.
         pub fn snapshot(&self) -> Vec<Sent> {
             self.sent.lock().unwrap().clone()
         }
 
+        /// Takes everything published so far, leaving the sink empty.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned by a prior panic on
+        /// another thread.
         pub fn drain(&self) -> Vec<Sent> {
             std::mem::take(&mut *self.sent.lock().unwrap())
         }

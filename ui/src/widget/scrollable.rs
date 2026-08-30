@@ -6,6 +6,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, Widget};
 use automerge::{AutoCommit, ObjId};
@@ -626,15 +627,15 @@ impl Widget for Scrollable {
             ..Default::default()
         };
         let node = match child_node {
-            Some(c) => taffy.new_with_children(style, &[c]).unwrap(),
-            None => taffy.new_leaf(style).unwrap(),
+            Some(c) => taffy.parent_node(style, &[c]),
+            None => taffy.leaf_node(style),
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -644,28 +645,29 @@ impl Widget for Scrollable {
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
         if let Some(c) = &mut self.child {
-            let child_node = taffy.children(node).unwrap()[0];
-            c.apply_layout(
-                taffy,
-                child_node,
-                Point::new(
-                    self.rect.x0 - f64::from(self.offset_x),
-                    self.rect.y0 - f64::from(self.offset_y),
-                ),
-            );
-            let cl = taffy.layout(child_node).unwrap();
-            self.content_w = cl.content_size.width.max(cl.size.width);
-            self.content_h = cl.content_size.height.max(cl.size.height);
+            if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
+                c.apply_layout(
+                    taffy,
+                    child_node,
+                    Point::new(
+                        self.rect.x0 - f64::from(self.offset_x),
+                        self.rect.y0 - f64::from(self.offset_y),
+                    ),
+                );
+                let cl = taffy.layout(child_node).copied().unwrap_or_default();
+                self.content_w = cl.content_size.width.max(cl.size.width);
+                self.content_h = cl.content_size.height.max(cl.size.height);
 
-            // taffy's content_size can still cap at the available block for
-            // a flex column shorter than the literal sum of its children.
-            // Walk the subtree and take the deeper of the two so scrolling
-            // always reaches the real last pixel.
-            let scroll_origin_y = self.rect.y0 - f64::from(self.offset_y);
-            let max_y = max_bottom_edge(self.child.as_deref().unwrap());
-            let walked_h = (max_y - scroll_origin_y).max(0.0) as f32;
-            if walked_h > self.content_h {
-                self.content_h = walked_h;
+                // taffy's content_size can still cap at the available block for
+                // a flex column shorter than the literal sum of its children.
+                // Walk the subtree and take the deeper of the two so scrolling
+                // always reaches the real last pixel.
+                let scroll_origin_y = self.rect.y0 - f64::from(self.offset_y);
+                let max_y = max_bottom_edge(c.as_ref());
+                let walked_h = (max_y - scroll_origin_y).max(0.0) as f32;
+                if walked_h > self.content_h {
+                    self.content_h = walked_h;
+                }
             }
             self.clamp();
         }
@@ -1102,7 +1104,7 @@ mod tests {
 
     fn dispatch(s: &mut Scrollable, event: &WindowEvent) -> bool {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -1272,19 +1274,17 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let mut tr = TextRenderer::new();
         let scroll_node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Block,
-                    size: Size {
-                        width: Dimension::length(400.0),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
+        let parent = taffy.parent_node(
+            Style {
+                display: taffy::Display::Block,
+                size: Size {
+                    width: Dimension::length(400.0),
+                    height: Dimension::auto(),
                 },
-                &[scroll_node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[scroll_node],
+        );
         taffy
             .compute_layout_with_measure(
                 parent,
@@ -1316,19 +1316,17 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let mut tr = TextRenderer::new();
         let scroll_node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Block,
-                    size: Size {
-                        width: Dimension::length(400.0),
-                        height: Dimension::auto(),
-                    },
-                    ..Default::default()
+        let parent = taffy.parent_node(
+            Style {
+                display: taffy::Display::Block,
+                size: Size {
+                    width: Dimension::length(400.0),
+                    height: Dimension::auto(),
                 },
-                &[scroll_node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[scroll_node],
+        );
         taffy
             .compute_layout_with_measure(
                 parent,
@@ -1389,18 +1387,16 @@ mod tests {
             .with_height(300.0)
             .with_content_gutter(GUTTER);
         let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(400.0),
-                        height: Dimension::length(300.0),
-                    },
-                    ..Default::default()
+        let parent = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(400.0),
+                    height: Dimension::length(300.0),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        );
         taffy
             .compute_layout_with_measure(
                 parent,
@@ -1445,18 +1441,16 @@ mod tests {
             .with_child(tall_child())
             .with_height(300.0);
         let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(400.0),
-                        height: Dimension::length(300.0),
-                    },
-                    ..Default::default()
+        let parent = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(400.0),
+                    height: Dimension::length(300.0),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        );
         taffy
             .compute_layout_with_measure(
                 parent,
@@ -1559,7 +1553,7 @@ mod tests {
         mods: &winit::event::Modifiers,
     ) -> bool {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

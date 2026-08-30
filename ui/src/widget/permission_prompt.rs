@@ -22,6 +22,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub const PROMPT_HEIGHT: f64 = 80.0;
@@ -231,23 +232,21 @@ impl Widget for PermissionPrompt {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(PROMPT_HEIGHT as f32),
-                },
-                flex_grow: 0.0,
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(PROMPT_HEIGHT as f32),
+            },
+            flex_grow: 0.0,
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -474,7 +473,7 @@ mod tests {
 
     fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

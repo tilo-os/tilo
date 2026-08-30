@@ -41,6 +41,7 @@ use qos_actions::{
 
 use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta};
+use crate::num;
 
 /// Registry `type_id` for every Notes action.
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
@@ -164,7 +165,7 @@ impl Action for NotesAction {
                         .collect();
                     siblings.sort_by_key(|p| p.order);
                     for (i, mut m) in siblings.into_iter().enumerate() {
-                        let new_order = i as u32;
+                        let new_order = num::u32_of_usize(i);
                         if m.order != new_order {
                             m.order = new_order;
                             NotesDoc::upsert_page_meta(doc, &m);

@@ -43,7 +43,12 @@ impl SystemMonitor {
         let ram = if total == 0 {
             0.0
         } else {
-            (self.sys.used_memory() as f32 / total as f32 * 100.0).clamp(0.0, 100.0)
+            // Display-only ratio for a sparkline: a few bytes of precision
+            // loss out of a multi-GB total is invisible at percentage
+            // granularity.
+            #[allow(clippy::cast_precision_loss)]
+            let pct = self.sys.used_memory() as f32 / total as f32 * 100.0;
+            pct.clamp(0.0, 100.0)
         };
         if self.cap == 0 {
             return;

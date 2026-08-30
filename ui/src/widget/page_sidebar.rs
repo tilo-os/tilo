@@ -24,6 +24,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::drag::{DragController, ListMetrics};
 
@@ -736,7 +737,7 @@ impl Widget for PageSidebar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

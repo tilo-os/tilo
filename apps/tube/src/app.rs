@@ -1562,7 +1562,7 @@ impl Widget for TubeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = crate::widgets::node_layout(taffy, node);
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

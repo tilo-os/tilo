@@ -27,6 +27,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{put_if_changed, put_text_diffed};
 
 use crate::model::{PageId, PageMeta};
+use crate::num;
 
 /// Namespace for the workspace document helpers. Stateless — every
 /// function takes the doc explicitly.
@@ -114,7 +115,7 @@ impl NotesDoc {
             };
 
             let order = match doc.get(&page, "order") {
-                Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0) as u32,
+                Ok(Some((Value::Scalar(v), _))) => num::u32_of_i64(v.to_i64().unwrap_or(0)),
                 _ => 0,
             };
 

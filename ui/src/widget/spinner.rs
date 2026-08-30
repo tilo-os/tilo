@@ -16,6 +16,7 @@ use winit::event::WindowEvent;
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Sized to the concept's body text (14px line-height ≈ 20px) while leaving the
@@ -91,21 +92,19 @@ impl Widget for Spinner {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.size),
-                    height: Dimension::length(self.size),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(self.size),
+                height: Dimension::length(self.size),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -213,7 +212,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -259,7 +258,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -288,7 +287,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();

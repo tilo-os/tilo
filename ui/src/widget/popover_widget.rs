@@ -23,6 +23,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Side of the anchor the popover prefers to render on; flips to its
@@ -329,15 +330,13 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         // `apply_layout` against `anchor_rect` and `viewport`, not the
         // parent's flexbox.
         let _ = self.content.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -492,15 +491,13 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(self.intrinsic.width),
-                        height: Dimension::length(self.intrinsic.height),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(self.intrinsic.width),
+                    height: Dimension::length(self.intrinsic.height),
+                },
+                ..Default::default()
+            });
             node_map.insert(node, self as *mut dyn Widget);
             node
         }
@@ -579,7 +576,7 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = p.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -673,7 +670,7 @@ mod tests {
         );
 
         let mut tree: TaffyTree<()> = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mods = winit::event::Modifiers::default();

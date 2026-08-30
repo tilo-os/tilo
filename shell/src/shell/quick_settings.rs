@@ -129,11 +129,12 @@ impl QuickSettings {
         self.volume = value.clamp(0.0, 100.0);
     }
 
-    /// The currently visible level. Always at least `Root`.
+    /// The currently visible level. Always at least `Root`: `nav_stack`
+    /// starts as `[Root]` and [`Self::pop_level`] refuses to pop the last
+    /// frame, so this fallback is unreachable rather than load-bearing.
     pub fn current_level(&self) -> &QsLevel {
-        self.nav_stack
-            .last()
-            .expect("nav_stack always has at least Root")
+        const ROOT: QsLevel = QsLevel::Root;
+        self.nav_stack.last().unwrap_or(&ROOT)
     }
 
     pub fn push_level(&mut self, level: QsLevel) {
@@ -261,8 +262,8 @@ mod tests {
     fn brightness_volume_clamp() {
         let mut q = QuickSettings::new();
         q.set_brightness(150.0);
-        assert_eq!(q.brightness(), 100.0);
+        assert!((q.brightness() - 100.0).abs() < f32::EPSILON);
         q.set_volume(-5.0);
-        assert_eq!(q.volume(), 0.0);
+        assert!(q.volume().abs() < f32::EPSILON);
     }
 }

@@ -30,6 +30,7 @@ impl Mods {
         (self.0 & other.0) == other.0
     }
 
+    #[must_use]
     pub const fn union(self, other: Mods) -> Mods {
         Mods(self.0 | other.0)
     }

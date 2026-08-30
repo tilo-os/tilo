@@ -3,6 +3,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::SpringParams;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -93,21 +94,19 @@ impl Widget for WorkspaceView {
     ) -> NodeId {
         // Zero-height: this is a keyboard-handler + animation driver, not a
         // visible rect. Workspace chrome lives in the top bar.
-        let n = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(0.0),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let n = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(0.0),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
         n
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
-        let l = taffy.layout(n).unwrap();
+        let l = taffy.layout(n).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

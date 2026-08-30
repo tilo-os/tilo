@@ -160,9 +160,8 @@ pub fn to_linear(expr: &MathExpr) -> String {
 }
 
 fn write_row(row: &Row, out: &mut String) {
-    let mut i = 0;
-    while i < row.len() {
-        match &row[i] {
+    for node in row {
+        match node {
             Node::Char(c) => out.push(*c),
             Node::Sup { exp } => {
                 out.push('^');
@@ -204,7 +203,6 @@ fn write_row(row: &Row, out: &mut String) {
                 out.push(')');
             }
         }
-        i += 1;
     }
 }
 
@@ -243,6 +241,13 @@ impl LinParser {
         self.chars.get(self.pos).copied()
     }
 
+    /// Advance past the current character. Only ever reached after [`peek`]
+    /// yielded `Some`, so `pos` stays inside `chars`; saturating keeps a
+    /// wrapped cursor unrepresentable if that ever stops holding.
+    fn bump(&mut self) {
+        self.pos = self.pos.saturating_add(1);
+    }
+
     /// Parse a sequence of atoms until one of `stop` chars (consumed by the
     /// caller) or end of input. Builds `^` and `/` structures as it goes.
     fn parse_row(&mut self, stop: &[char]) -> Row {
@@ -253,12 +258,12 @@ impl LinParser {
             }
             match c {
                 '^' => {
-                    self.pos += 1;
+                    self.bump();
                     let exp = self.parse_superscript();
                     row.push(Node::Sup { exp });
                 }
                 '/' => {
-                    self.pos += 1;
+                    self.bump();
                     // Denominator is the next immediate operand; numerator is
                     // the operand already emitted (last node, unwrapping a
                     // redundant paren).
@@ -280,7 +285,7 @@ impl LinParser {
                     row.push(Node::Frac { num, den });
                 }
                 '(' => {
-                    self.pos += 1;
+                    self.bump();
                     let body = self.parse_row(&[')']);
                     self.expect(')');
                     row.push(Node::Paren { body });
@@ -288,7 +293,7 @@ impl LinParser {
                 c if c.is_ascii_alphabetic() => {
                     let name = self.read_ident();
                     if self.peek() == Some('(') {
-                        self.pos += 1;
+                        self.bump();
                         if name == "sqrt" {
                             let radicand = self.parse_row(&[')']);
                             self.expect(')');
@@ -299,7 +304,7 @@ impl LinParser {
                         } else if name == "root" {
                             let index = self.parse_row(&[',', ')']);
                             if self.peek() == Some(',') {
-                                self.pos += 1;
+                                self.bump();
                                 let radicand = self.parse_row(&[')']);
                                 self.expect(')');
                                 row.push(Node::Sqrt {
@@ -333,7 +338,7 @@ impl LinParser {
                     }
                 }
                 _ => {
-                    self.pos += 1;
+                    self.bump();
                     row.push(Node::Char(c));
                 }
             }
@@ -345,7 +350,7 @@ impl LinParser {
     /// bare `^2` / `^x` / `^sin(x)` takes a single operand.
     fn parse_superscript(&mut self) -> Row {
         if self.peek() == Some('(') {
-            self.pos += 1;
+            self.bump();
             let r = self.parse_row(&[')']);
             self.expect(')');
             r
@@ -359,13 +364,13 @@ impl LinParser {
     fn parse_operand_row(&mut self) -> Row {
         match self.peek() {
             Some('(') => {
-                self.pos += 1;
+                self.bump();
                 let body = self.parse_row(&[')']);
                 self.expect(')');
                 vec![Node::Paren { body }]
             }
             Some('-') => {
-                self.pos += 1;
+                self.bump();
                 let mut r = vec![Node::Char('-')];
                 r.extend(self.parse_operand_row());
                 r
@@ -375,7 +380,7 @@ impl LinParser {
                 while let Some(c) = self.peek() {
                     if c.is_ascii_digit() || c == '.' {
                         r.push(Node::Char(c));
-                        self.pos += 1;
+                        self.bump();
                     } else {
                         break;
                     }
@@ -392,8 +397,10 @@ impl LinParser {
                     };
                     let nodes = sub.parse_row(&[]);
                     // advance self by what sub consumed past `name(`
-                    let consumed = sub.pos.saturating_sub(name.chars().count() + 1);
-                    self.pos += consumed;
+                    let consumed = sub
+                        .pos
+                        .saturating_sub(name.chars().count().saturating_add(1));
+                    self.pos = self.pos.saturating_add(consumed);
                     // Keep exactly the single produced call node. `next()`
                     // already yields only the first; the truncate that used to
                     // stand here computed 1.max(len.min(1)), which is always 1.
@@ -411,24 +418,28 @@ impl LinParser {
     }
 
     fn tail(&self) -> impl Iterator<Item = char> + '_ {
-        self.chars[self.pos..].iter().copied()
+        self.chars.get(self.pos..).unwrap_or(&[]).iter().copied()
     }
 
     fn read_ident(&mut self) -> String {
         let start = self.pos;
         while let Some(c) = self.peek() {
             if c.is_ascii_alphanumeric() || c == '_' {
-                self.pos += 1;
+                self.bump();
             } else {
                 break;
             }
         }
-        self.chars[start..self.pos].iter().collect()
+        self.chars
+            .get(start..self.pos)
+            .unwrap_or(&[])
+            .iter()
+            .collect()
     }
 
     fn expect(&mut self, c: char) {
         if self.peek() == Some(c) {
-            self.pos += 1;
+            self.bump();
         }
     }
 }

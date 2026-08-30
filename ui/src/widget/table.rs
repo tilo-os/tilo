@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 
+use crate::widget::TaffyTreeExt;
 use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
@@ -665,15 +666,13 @@ impl Widget for Table {
         let (total_w, total_h) = self.total_size();
 
         let node = if self.is_empty() {
-            taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: length(total_w as f32),
-                        height: length(total_h as f32),
-                    },
-                    ..Default::default()
-                })
-                .unwrap()
+            taffy.leaf_node(Style {
+                size: Size {
+                    width: length(total_w as f32),
+                    height: length(total_h as f32),
+                },
+                ..Default::default()
+            })
         } else {
             let child_nodes: Vec<NodeId> = self
                 .cells
@@ -681,34 +680,32 @@ impl Widget for Table {
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
             let cols: Vec<_> = self.col_widths.iter().map(|w| length(*w as f32)).collect();
-            taffy
-                .new_with_children(
-                    Style {
-                        display: Display::Grid,
-                        size: Size {
-                            width: length(total_w as f32),
-                            height: length(total_h as f32),
-                        },
-                        padding: TaffyRect {
-                            left: length(LEFT_GUTTER as f32),
-                            right: length(RIGHT_PAD as f32),
-                            top: length(TOP_GUTTER as f32),
-                            bottom: length(BOTTOM_PAD as f32),
-                        },
-                        grid_template_columns: cols,
-                        grid_auto_rows: vec![length(ROW_H as f32)],
-                        ..Default::default()
+            taffy.parent_node(
+                Style {
+                    display: Display::Grid,
+                    size: Size {
+                        width: length(total_w as f32),
+                        height: length(total_h as f32),
                     },
-                    &child_nodes,
-                )
-                .unwrap()
+                    padding: TaffyRect {
+                        left: length(LEFT_GUTTER as f32),
+                        right: length(RIGHT_PAD as f32),
+                        top: length(TOP_GUTTER as f32),
+                        bottom: length(BOTTOM_PAD as f32),
+                    },
+                    grid_template_columns: cols,
+                    grid_auto_rows: vec![length(ROW_H as f32)],
+                    ..Default::default()
+                },
+                &child_nodes,
+            )
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

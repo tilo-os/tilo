@@ -154,26 +154,72 @@ impl CalcModel {
     /// populated, lived-in calculator + graphs. NEVER used by the live event
     /// loop (which boots empty via [`CalcModel::default`]).
     pub fn seeded() -> Self {
-        let mut m = CalcModel::default();
-        // A lived-in 3D surface list — several `z = f(x, y)` sheets at
-        // different heights so the Graph 3D shot shows multiple, distinctly
-        // coloured surfaces (not a lone surface).
-        m.surfaces = vec![
-            PlotFn {
-                expr: DEFAULT_SURFACE.to_string(),
-                visible: true,
-            },
-            PlotFn {
-                expr: "0.05*(x^2+y^2)-3".into(),
-                visible: true,
-            },
-            PlotFn {
-                expr: "3-0.06*(x^2+y^2)".into(),
-                visible: true,
-            },
-        ];
-        m.active_surface = 0;
-        m.mode = Mode::Graph2d;
+        let mut m = CalcModel {
+            mode: Mode::Graph2d,
+            expr: "sin(0.5)+cos(0.5)".to_string(),
+            ans: 1.0,
+            memory: 42.0,
+            history: vec![
+                HistoryEntry {
+                    expr: "12*(4+3)".into(),
+                    result: "84".into(),
+                },
+                HistoryEntry {
+                    expr: "sqrt(2)".into(),
+                    result: "1.4142135624".into(),
+                },
+                HistoryEntry {
+                    expr: "5!".into(),
+                    result: "120".into(),
+                },
+                HistoryEntry {
+                    expr: "log(2,1024)".into(),
+                    result: "10".into(),
+                },
+                HistoryEntry {
+                    expr: "2^10".into(),
+                    result: "1024".into(),
+                },
+            ],
+            funcs: vec![
+                PlotFn {
+                    expr: "(x^2+1)/(x-3)".into(),
+                    visible: true,
+                },
+                PlotFn {
+                    expr: "0.25*x^2-2".into(),
+                    visible: true,
+                },
+                PlotFn {
+                    expr: "sqrt(x+6)".into(),
+                    visible: true,
+                },
+                PlotFn {
+                    expr: "sin(x)".into(),
+                    visible: true,
+                },
+            ],
+            active_fn: 0,
+            // A lived-in 3D surface list — several `z = f(x, y)` sheets at
+            // different heights so the Graph 3D shot shows multiple, distinctly
+            // coloured surfaces (not a lone surface).
+            surfaces: vec![
+                PlotFn {
+                    expr: DEFAULT_SURFACE.to_string(),
+                    visible: true,
+                },
+                PlotFn {
+                    expr: "0.05*(x^2+y^2)-3".into(),
+                    visible: true,
+                },
+                PlotFn {
+                    expr: "3-0.06*(x^2+y^2)".into(),
+                    visible: true,
+                },
+            ],
+            active_surface: 0,
+            ..CalcModel::default()
+        };
         // The headless screenshot picks which tab it captures via this hook;
         // unset (the live default) keeps the lived-in Graph 2D launch view.
         if let Some(want) = std::env::var_os("QOS_CALC_MODE") {
@@ -183,50 +229,6 @@ impl CalcModel {
                 _ => Mode::Graph2d,
             };
         }
-        m.expr = "sin(0.5)+cos(0.5)".to_string();
-        m.ans = 1.0;
-        m.history = vec![
-            HistoryEntry {
-                expr: "12*(4+3)".into(),
-                result: "84".into(),
-            },
-            HistoryEntry {
-                expr: "sqrt(2)".into(),
-                result: "1.4142135624".into(),
-            },
-            HistoryEntry {
-                expr: "5!".into(),
-                result: "120".into(),
-            },
-            HistoryEntry {
-                expr: "log(2,1024)".into(),
-                result: "10".into(),
-            },
-            HistoryEntry {
-                expr: "2^10".into(),
-                result: "1024".into(),
-            },
-        ];
-        m.funcs = vec![
-            PlotFn {
-                expr: "(x^2+1)/(x-3)".into(),
-                visible: true,
-            },
-            PlotFn {
-                expr: "0.25*x^2-2".into(),
-                visible: true,
-            },
-            PlotFn {
-                expr: "sqrt(x+6)".into(),
-                visible: true,
-            },
-            PlotFn {
-                expr: "sin(x)".into(),
-                visible: true,
-            },
-        ];
-        m.active_fn = 0;
-        m.memory = 42.0;
         // Shot-only: a single long function so the headless screenshot can show
         // a formula that overflows the fixed-height field and scrolls within it
         // (caret kept in view at the end) rather than resizing the row.
@@ -456,121 +458,137 @@ impl KeypadLayout {
     /// The row-major key list for this layout. Each layout is a dense grid of
     /// `cols()` columns.
     pub fn keys(self) -> Vec<Key> {
+        match self {
+            KeypadLayout::Compact => Self::compact_keys(),
+            KeypadLayout::Standard => Self::standard_keys(),
+            KeypadLayout::Scientific => Self::scientific_keys(),
+        }
+    }
+
+    /// 4 cols × 6 rows — the everyday essentials.
+    fn compact_keys() -> Vec<Key> {
+        use Key::{Backspace, Clear, Digit, Dot, Equals, Ins};
+        vec![
+            Clear,
+            Backspace,
+            Ins("("),
+            Ins(")"),
+            Ins("sin("),
+            Ins("cos("),
+            Ins("^"),
+            Ins("sqrt("),
+            Digit('7'),
+            Digit('8'),
+            Digit('9'),
+            Ins("/"),
+            Digit('4'),
+            Digit('5'),
+            Digit('6'),
+            Ins("*"),
+            Digit('1'),
+            Digit('2'),
+            Digit('3'),
+            Ins("-"),
+            Digit('0'),
+            Dot,
+            Equals,
+            Ins("+"),
+        ]
+    }
+
+    /// 5 cols × 7 rows — essentials + common scientific keys.
+    fn standard_keys() -> Vec<Key> {
         use Key::{
             Ans, Backspace, Clear, Digit, Dot, DoubleZero, Equals, Ins, Percent, ToggleSign, Wrap,
         };
-        match self {
-            // 4 cols × 6 rows — the everyday essentials.
-            KeypadLayout::Compact => vec![
-                Clear,
-                Backspace,
-                Ins("("),
-                Ins(")"),
-                Ins("sin("),
-                Ins("cos("),
-                Ins("^"),
-                Ins("sqrt("),
-                Digit('7'),
-                Digit('8'),
-                Digit('9'),
-                Ins("/"),
-                Digit('4'),
-                Digit('5'),
-                Digit('6'),
-                Ins("*"),
-                Digit('1'),
-                Digit('2'),
-                Digit('3'),
-                Ins("-"),
-                Digit('0'),
-                Dot,
-                Equals,
-                Ins("+"),
-            ],
-            // 5 cols × 7 rows — essentials + common scientific keys.
-            KeypadLayout::Standard => vec![
-                Clear,
-                Backspace,
-                Ins("("),
-                Ins(")"),
-                Ins("!"),
-                Ins("sin("),
-                Ins("cos("),
-                Ins("tan("),
-                Ins("pi"),
-                Ins("e"),
-                Ins("ln("),
-                Ins("^"),
-                Ins("sqrt("),
-                Percent,
-                Ins("/"),
-                Wrap("(", ")^2"),
-                Ins("1/("),
-                Digit('7'),
-                Digit('8'),
-                Digit('9'),
-                Ins("*"),
-                ToggleSign,
-                Digit('4'),
-                Digit('5'),
-                Digit('6'),
-                Ins("-"),
-                Ans,
-                Digit('1'),
-                Digit('2'),
-                Digit('3'),
-                Ins("+"),
-                DoubleZero,
-                Digit('0'),
-                Dot,
-                Equals,
-            ],
-            // 6 cols × 7 rows — the full scientific pad.
-            KeypadLayout::Scientific => vec![
-                Clear,
-                Backspace,
-                Ins("("),
-                Ins(")"),
-                Ins("mod("),
-                Ins("!"),
-                Ins("sin("),
-                Ins("cos("),
-                Ins("tan("),
-                Ins("pi"),
-                Ins("e"),
-                Percent,
-                Ins("asin("),
-                Ins("acos("),
-                Ins("atan("),
-                Ins("^"),
-                Ins("sqrt("),
-                Ins("/"),
-                Ins("ln("),
-                Ins("log10("),
-                Digit('7'),
-                Digit('8'),
-                Digit('9'),
-                Ins("*"),
-                Ins("exp("),
-                Ins("1/("),
-                Digit('4'),
-                Digit('5'),
-                Digit('6'),
-                Ins("-"),
-                Wrap("(", ")^2"),
-                ToggleSign,
-                Digit('1'),
-                Digit('2'),
-                Digit('3'),
-                Ins("+"),
-                DoubleZero,
-                Ans,
-                Digit('0'),
-                Dot,
-                Ins(","),
-                Equals,
-            ],
-        }
+        vec![
+            Clear,
+            Backspace,
+            Ins("("),
+            Ins(")"),
+            Ins("!"),
+            Ins("sin("),
+            Ins("cos("),
+            Ins("tan("),
+            Ins("pi"),
+            Ins("e"),
+            Ins("ln("),
+            Ins("^"),
+            Ins("sqrt("),
+            Percent,
+            Ins("/"),
+            Wrap("(", ")^2"),
+            Ins("1/("),
+            Digit('7'),
+            Digit('8'),
+            Digit('9'),
+            Ins("*"),
+            ToggleSign,
+            Digit('4'),
+            Digit('5'),
+            Digit('6'),
+            Ins("-"),
+            Ans,
+            Digit('1'),
+            Digit('2'),
+            Digit('3'),
+            Ins("+"),
+            DoubleZero,
+            Digit('0'),
+            Dot,
+            Equals,
+        ]
+    }
+
+    /// 6 cols × 7 rows — the full scientific pad.
+    fn scientific_keys() -> Vec<Key> {
+        use Key::{
+            Ans, Backspace, Clear, Digit, Dot, DoubleZero, Equals, Ins, Percent, ToggleSign, Wrap,
+        };
+        vec![
+            Clear,
+            Backspace,
+            Ins("("),
+            Ins(")"),
+            Ins("mod("),
+            Ins("!"),
+            Ins("sin("),
+            Ins("cos("),
+            Ins("tan("),
+            Ins("pi"),
+            Ins("e"),
+            Percent,
+            Ins("asin("),
+            Ins("acos("),
+            Ins("atan("),
+            Ins("^"),
+            Ins("sqrt("),
+            Ins("/"),
+            Ins("ln("),
+            Ins("log10("),
+            Digit('7'),
+            Digit('8'),
+            Digit('9'),
+            Ins("*"),
+            Ins("exp("),
+            Ins("1/("),
+            Digit('4'),
+            Digit('5'),
+            Digit('6'),
+            Ins("-"),
+            Wrap("(", ")^2"),
+            ToggleSign,
+            Digit('1'),
+            Digit('2'),
+            Digit('3'),
+            Ins("+"),
+            DoubleZero,
+            Ans,
+            Digit('0'),
+            Dot,
+            Ins(","),
+            Equals,
+        ]
     }
 }
 
@@ -699,9 +717,16 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "2+3 is exactly 5 in f64; an approximate compare would stop \
+                  proving that `=` stores the evaluated value verbatim"
+    )]
     fn equals_pushes_history_and_sets_ans() {
-        let mut m = CalcModel::default();
-        m.expr = "2+3".into();
+        let mut m = CalcModel {
+            expr: "2+3".into(),
+            ..CalcModel::default()
+        };
         m.commit_equals();
         assert_eq!(m.ans, 5.0);
         assert_eq!(m.history[0].result, "5");
@@ -711,34 +736,47 @@ mod tests {
 
     #[test]
     fn digit_after_equals_starts_fresh() {
-        let mut m = CalcModel::default();
-        m.expr = "5".into();
-        m.after_equals = true;
+        let mut m = CalcModel {
+            expr: "5".into(),
+            after_equals: true,
+            ..CalcModel::default()
+        };
         apply_key(&mut m, &Key::Digit('7'));
         assert_eq!(m.expr, "7");
     }
 
     #[test]
     fn operator_after_equals_continues() {
-        let mut m = CalcModel::default();
-        m.expr = "5".into();
-        m.after_equals = true;
+        let mut m = CalcModel {
+            expr: "5".into(),
+            after_equals: true,
+            ..CalcModel::default()
+        };
         apply_key(&mut m, &Key::Ins("+"));
         assert_eq!(m.expr, "5+");
     }
 
     #[test]
     fn backspace_drops_function_name() {
-        let mut m = CalcModel::default();
-        m.expr = "2+sin(".into();
+        let mut m = CalcModel {
+            expr: "2+sin(".into(),
+            ..CalcModel::default()
+        };
         apply_key(&mut m, &Key::Backspace);
         assert_eq!(m.expr, "2+");
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "10 + 10 is exact in f64; the point of the test is the exact \
+                  accumulated total"
+    )]
     fn memory_add_accumulates() {
-        let mut m = CalcModel::default();
-        m.expr = "10".into();
+        let mut m = CalcModel {
+            expr: "10".into(),
+            ..CalcModel::default()
+        };
         apply_key(&mut m, &Key::MemAdd);
         apply_key(&mut m, &Key::MemAdd);
         assert_eq!(m.memory, 20.0);

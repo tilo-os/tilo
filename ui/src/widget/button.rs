@@ -4,6 +4,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -532,22 +533,20 @@ impl Widget for Button {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let (w, h) = self.size.unwrap_or((120.0, 40.0));
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: Size {
+                width: Dimension::length(w),
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

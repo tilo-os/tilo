@@ -4,6 +4,7 @@
 //! component-instance model, not per-instance formatting. Persisted in the
 //! document (qdoc meta) so it round-trips and survives reopen.
 
+use crate::num;
 use qdoc::AttrVal;
 use qdoc::schema::{
     STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
@@ -20,11 +21,14 @@ pub fn color_to_hex(c: [u8; 3]) -> String {
 /// `#rrggbb` (or `rrggbb`) → `[r,g,b]`; non-hex falls back to black.
 pub fn hex_to_color(s: &str) -> [u8; 3] {
     let h = s.trim().trim_start_matches('#');
+    // `get` returns `None` on a non-boundary split, so a multi-byte character
+    // in the six positions falls through to black instead of panicking.
     if h.len() == 6
+        && let (Some(rs), Some(gs), Some(bs)) = (h.get(0..2), h.get(2..4), h.get(4..6))
         && let (Ok(r), Ok(g), Ok(b)) = (
-            u8::from_str_radix(&h[0..2], 16),
-            u8::from_str_radix(&h[2..4], 16),
-            u8::from_str_radix(&h[4..6], 16),
+            u8::from_str_radix(rs, 16),
+            u8::from_str_radix(gs, 16),
+            u8::from_str_radix(bs, 16),
         )
     {
         return [r, g, b];
@@ -34,8 +38,8 @@ pub fn hex_to_color(s: &str) -> [u8; 3] {
 
 fn attr_f32(props: &BTreeMap<String, AttrVal>, key: &str, default: f32) -> f32 {
     match props.get(key) {
-        Some(AttrVal::Float(f)) => *f as f32,
-        Some(AttrVal::Int(n)) => *n as f32,
+        Some(AttrVal::Float(f)) => num::f32_of_f64(*f),
+        Some(AttrVal::Int(n)) => num::f32_of_i64(*n),
         _ => default,
     }
 }
@@ -228,14 +232,14 @@ impl StyleSheet {
     /// Allocate a fresh, unused `customN` style id (never colliding with an
     /// existing entry). Used by the Duplicate / New-style flows.
     pub fn fresh_custom_id(&self) -> String {
-        let mut n = 1;
-        loop {
-            let cand = format!("custom{n}");
-            if !self.styles.contains_key(&cand) {
-                return cand;
-            }
-            n += 1;
-        }
+        // Pigeonhole: at most `len()` of the `len() + 1` candidates can be
+        // taken, so the range always contains a free id. The fallback keeps
+        // the search bounded rather than looping on a counter that could wrap.
+        let limit = self.styles.len().saturating_add(1);
+        (1..=limit)
+            .map(|n| format!("custom{n}"))
+            .find(|cand| !self.styles.contains_key(cand))
+            .unwrap_or_else(|| format!("custom{}", limit.saturating_add(1)))
     }
 
     /// Style ids in a stable presentation order (built-ins first, then custom).

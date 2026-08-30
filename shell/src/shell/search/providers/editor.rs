@@ -46,7 +46,7 @@ impl SearchProvider for EditorProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", KIND)
+        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", &KIND)
     }
 }
 

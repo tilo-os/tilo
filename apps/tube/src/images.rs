@@ -21,9 +21,10 @@ pub fn image_fetcher() -> Fetcher {
         .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
         .timeout(Duration::from_secs(10))
         .build()
-        // Only a static user-agent + timeout are set (no proxy/TLS config that
-        // could fail to parse), so `build()` cannot return `Err` here.
-        .expect("reqwest client builder cannot fail with these fixed options");
+        // Only a static user-agent + timeout are set (no proxy/TLS config
+        // that could fail to parse), so this realistically never falls back
+        // to the unconfigured default — but a fetcher must not panic.
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
     Arc::new(move |url: &str| {
         // Promote protocol-relative CDN URLs (`//yt3.ggpht.com/…`) to https so
         // the request has a scheme — some sources hand these back and reqwest

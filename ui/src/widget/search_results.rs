@@ -27,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::search::{SearchGroup, SearchResult};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 const PAD: f64 = 8.0; // card inner padding
@@ -372,22 +373,20 @@ impl Widget for SearchResultsView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(self.desired_height() as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(self.desired_height() as f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

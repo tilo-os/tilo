@@ -50,7 +50,15 @@ pub fn contrast_ratio(a: Color, b: Color) -> f64 {
 /// measured against the *composited* result, not the wash in isolation.
 pub fn composite_over(fg: Color, bg: Color) -> Color {
     let a = f64::from(fg.a()) / 255.0;
-    let mix = |f: u8, b: u8| (f64::from(f) * a + f64::from(b) * (1.0 - a)).round() as u8;
+    let mix = |f: u8, b: u8| {
+        let v = f64::from(f) * a + f64::from(b) * (1.0 - a);
+        // f, b ∈ [0, 255] and a ∈ [0, 1], so the convex combination `v` is
+        // always within [0, 255] — rounding then casting cannot truncate or
+        // lose sign.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let out = v.round() as u8;
+        out
+    };
     Color::from_rgb8(
         mix(fg.r(), bg.r()),
         mix(fg.g(), bg.g()),

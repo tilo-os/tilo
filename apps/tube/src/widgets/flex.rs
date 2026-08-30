@@ -466,16 +466,16 @@ impl Widget for Flex {
         let _ = theme;
 
         let node = if child_nodes.is_empty() {
-            taffy.new_leaf(style).unwrap()
+            super::leaf_node(taffy, style)
         } else {
-            taffy.new_with_children(style, &child_nodes).unwrap()
+            super::parent_node(taffy, style, &child_nodes)
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = super::node_layout(taffy, node);
         let w = f64::from(layout.size.width.max(layout.content_size.width));
         let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = Rect::new(
