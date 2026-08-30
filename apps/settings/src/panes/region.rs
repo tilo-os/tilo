@@ -24,13 +24,17 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::region::{Currency, DateStyle, Measurement, RegionSettings, TimeStyle};
+use crate::region::{
+    Currency, DateStyle, FirstDayOfWeek, Measurement, NumberStyle, RegionSettings, TimeStyle,
+};
 use crate::widgets::{caption, card, choice_row, rows};
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
 pub const TIME_KEY: &str = "region.time_format";
 pub const MEASUREMENT_KEY: &str = "region.measurement";
+pub const NUMBER_STYLE_KEY: &str = "region.number_style";
+pub const FIRST_DAY_KEY: &str = "region.first_day";
 
 pub struct RegionPane {
     settings: RegionSettings,
@@ -99,6 +103,26 @@ impl RegionPane {
             .with_id("region.measurement")
             .with_placeholder(loc.measurement.label());
 
+        let number_style = Dropdown::new(
+            NumberStyle::ALL
+                .iter()
+                .map(|style| style.label().to_string())
+                .collect(),
+            NUMBER_STYLE_KEY,
+        )
+        .with_id("region.number_style")
+        .with_placeholder(loc.number_style.label());
+
+        let first_day = Dropdown::new(
+            FirstDayOfWeek::ALL
+                .iter()
+                .map(|day| day.label().to_string())
+                .collect(),
+            FIRST_DAY_KEY,
+        )
+        .with_id("region.first_day")
+        .with_placeholder(loc.first_day_of_week.label());
+
         let formats = card(
             "Formats",
             rows(vec![
@@ -106,6 +130,8 @@ impl RegionPane {
                 choice_row("Date format", Box::new(date)),
                 choice_row("Time format", Box::new(time)),
                 choice_row("Measurement", Box::new(units)),
+                choice_row("Number format", Box::new(number_style)),
+                choice_row("First day of week", Box::new(first_day)),
             ]),
         );
 
@@ -113,7 +139,7 @@ impl RegionPane {
         let preview = card(
             "Preview",
             rows(vec![
-                preview_line("Amount", &format!("{}1,234.50", loc.currency.symbol())),
+                preview_line("Amount", &loc.number_style.amount(loc.currency.symbol())),
                 preview_line("Date", loc.date_format.example()),
                 preview_line("Time", loc.time_format.example()),
                 preview_line(
@@ -123,6 +149,7 @@ impl RegionPane {
                         Measurement::Imperial => "70 \u{00B0}F",
                     },
                 ),
+                preview_line("Calendar week starts", loc.first_day_of_week.label()),
             ]),
         );
 
@@ -164,6 +191,8 @@ impl Widget for RegionPane {
             let _ = state.put(root, DATE_KEY, loc.date_format.label());
             let _ = state.put(root, TIME_KEY, loc.time_format.label());
             let _ = state.put(root, MEASUREMENT_KEY, loc.measurement.label());
+            let _ = state.put(root, NUMBER_STYLE_KEY, loc.number_style.label());
+            let _ = state.put(root, FIRST_DAY_KEY, loc.first_day_of_week.label());
             self.needs_seed = false;
         }
 
@@ -195,6 +224,20 @@ impl Widget for RegionPane {
             && *m != self.settings.locale.measurement
         {
             self.settings.locale.measurement = *m;
+            changed = true;
+        }
+        if let Some(label) = Self::read_str(state, root, NUMBER_STYLE_KEY)
+            && let Some(style) = NumberStyle::ALL.iter().find(|style| style.label() == label)
+            && *style != self.settings.locale.number_style
+        {
+            self.settings.locale.number_style = *style;
+            changed = true;
+        }
+        if let Some(label) = Self::read_str(state, root, FIRST_DAY_KEY)
+            && let Some(day) = FirstDayOfWeek::ALL.iter().find(|day| day.label() == label)
+            && *day != self.settings.locale.first_day_of_week
+        {
+            self.settings.locale.first_day_of_week = *day;
             changed = true;
         }
 
