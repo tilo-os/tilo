@@ -128,6 +128,7 @@ impl Default for DisplayPrefs {
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
 /// reads at session start.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InputPrefs {
     pub natural_scroll: bool,
     pub tap_to_click: bool,
@@ -137,6 +138,20 @@ pub struct InputPrefs {
     pub key_repeat: f64,
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
+    pub tap_drag: bool,
+    pub disable_while_typing: bool,
+    pub middle_emulation: bool,
+    pub left_handed: bool,
+    /// `adaptive` or `flat`; capability-gated by libinput.
+    pub accel_profile: String,
+    pub touchpad_gestures: bool,
+    /// XKB compose option (`ralt`, `menu`, …), or none.
+    pub compose_key: Option<String>,
+    /// Ordered XKB layouts. `keyboard_layout` remains the active first item
+    /// for backward compatibility with old sessions.
+    pub keyboard_layouts: Vec<String>,
+    /// Stable connector name used to map an absolute pen/tablet.
+    pub pen_output: Option<String>,
 }
 
 impl Default for InputPrefs {
@@ -147,6 +162,15 @@ impl Default for InputPrefs {
             pointer_speed: 0.5,
             key_repeat: 0.5,
             keyboard_layout: "us".to_string(),
+            tap_drag: true,
+            disable_while_typing: true,
+            middle_emulation: true,
+            left_handed: false,
+            accel_profile: "adaptive".into(),
+            touchpad_gestures: true,
+            compose_key: None,
+            keyboard_layouts: vec!["us".into()],
+            pen_output: None,
         }
     }
 }
