@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -47,104 +48,63 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+const APP_ID: &str = "dev.qos.sheets";
+const SCENARIOS: &[&str] = &[
+    "file",
+    "format",
+    "docsettings",
+    "editing",
+    "pointmode",
+    "summary",
+    "multiselect",
+    "tabmenu",
+    "fbarselect",
+    "commandpalette",
+    "fillseries",
+    "pasteformula",
+];
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let scenario = parse_scenario_arg(&args);
-
-        let mut app = sheets::SheetsApp::new();
-        app.shots_mode();
-        // The scenario hook runs after the document is seeded (in
-        // `render_shot_to_png`, post-`sync`), because opening a menu, starting
-        // an edit, or driving a fill/paste operates on the live state. It
-        // receives the document so a scenario can dispatch real actions.
-        type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
-        let setup: Setup = match scenario.as_deref() {
-            Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
-            Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),
-            Some("docsettings") => Box::new(|a, _d| a.shots_open_doc_settings()),
-            Some("editing") => Box::new(|a, _d| a.shots_begin_edit()),
-            Some("pointmode") => Box::new(|a, _d| a.shots_build_formula()),
-            Some("summary") => Box::new(|a, _d| a.shots_select_summary_range()),
-            Some("multiselect") => Box::new(|a, _d| a.shots_multi_select()),
-            Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
-            Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
-            Some("commandpalette") => Box::new(|a, _d| a.shots_open_command_palette()),
-            Some("fillseries") => Box::new(sheets::SheetsApp::shots_fill_series),
-            Some("pasteformula") => Box::new(sheets::SheetsApp::shots_paste_formula),
-            _ => Box::new(|_a, _d| {}),
-        };
-        render_shot_to_png(app, viewport, &out, setup)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            spec,
-            sheets::app_root(),
-            "dev.qos.sheets",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.sheets");
-    let mut app = ui::App::new(state, sheets::app_root()).with_autosave(autosave);
-    // Register Sheets' actions so the shell's Ctrl+K palette can decode + replay
-    // the same workbook mutations the on-screen affordances dispatch.
+fn configure(app: &mut ui::App) {
     sheets::actions::register(app.action_registry_mut());
-    app.run();
-    Ok(())
 }
 
-/// Parse `--viewport WxH` (e.g. `--viewport 560x720`) for `--shots`.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let spec = if arg == "--viewport" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--viewport=")
-        };
-        if let Some(spec) = spec {
-            let (w, h) = spec.split_once(['x', 'X'])?;
-            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
+pub fn main() {
+    ui::launch::run_or_exit(
+        LaunchSpec::new(APP_ID, sheets::app_root)
+            .shot_handler(render_shot)
+            .scenarios(SCENARIOS)
+            .configure_app(configure),
+    );
 }
 
-/// Parse `--scenario NAME` for `--shots`, selecting which surface to snap into
-/// view for the captured frame.
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let scenario = args.scenario.as_deref();
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
+    let mut app = sheets::SheetsApp::new();
+    app.shots_mode();
+    // The scenario hook runs after the document is seeded (in
+    // `render_shot_to_png`, post-`sync`), because opening a menu, starting an
+    // edit, or driving a fill/paste operates on the live state.
+    type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
+    let setup: Setup = match scenario {
+        Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
+        Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),
+        Some("docsettings") => Box::new(|a, _d| a.shots_open_doc_settings()),
+        Some("editing") => Box::new(|a, _d| a.shots_begin_edit()),
+        Some("pointmode") => Box::new(|a, _d| a.shots_build_formula()),
+        Some("summary") => Box::new(|a, _d| a.shots_select_summary_range()),
+        Some("multiselect") => Box::new(|a, _d| a.shots_multi_select()),
+        Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
+        Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
+        Some("commandpalette") => Box::new(|a, _d| a.shots_open_command_palette()),
+        Some("fillseries") => Box::new(sheets::SheetsApp::shots_fill_series),
+        Some("pasteformula") => Box::new(sheets::SheetsApp::shots_paste_formula),
+        _ => Box::new(|_a, _d| {}),
+    };
+    render_shot_to_png(app, viewport, out, setup)
+        .map_err(|error| LaunchError::Operation(format!("Sheets screenshot failed: {error}")))
 }
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
