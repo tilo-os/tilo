@@ -34,6 +34,11 @@ jobs:
       - name: CI selector unit tests
         run: python3 -m unittest tools/tests/test_ci_select.py
 
+      - name: Application text-stack contract
+        run: |
+          python3 tools/check_app_text_contract.py
+          python3 -m unittest tools/tests/test_app_text_contract.py
+
   audit:
     runs-on: runner
     container:
