@@ -94,9 +94,7 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
             Event::Text(t) if in_region && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty()
-                        && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
-                    {
+                    if !txt.is_empty() && !super::content::is_layout_whitespace(&txt) {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
