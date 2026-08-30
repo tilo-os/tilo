@@ -230,6 +230,10 @@ pub struct App {
     /// tree each tick for [`crate::widget::Widget::appearance_intent`] and
     /// re-themes live.
     pub appearance_reconcile: bool,
+    /// Shared settings-file watcher for OS-wide theme changes made by Theme
+    /// Studio. Throttled so the render loop does not stat the file per frame.
+    theme_store_stamp: Option<std::time::SystemTime>,
+    last_theme_store_check: Instant,
     modifiers: winit::event::Modifiers,
 
     nav_gestures: crate::gesture::NavGestureRecognizer,
@@ -326,6 +330,7 @@ pub struct App {
 
 impl App {
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
+        let configured_theme = Theme::configured();
         let mut app = Self {
             state,
             root_widget,
@@ -340,13 +345,16 @@ impl App {
             // Finalised below, once base_theme/a11y/text_scale all exist.
             last_frame_size: None,
             last_layout_px: None,
-            theme: Theme::dark(),
+            theme: configured_theme.clone(),
             debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
             focusable_order: Vec::new(),
             autofocus_first: false,
             autofocus_on_structure_change: false,
             appearance_reconcile: false,
+            theme_store_stamp: settings_store::settings_path()
+                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            last_theme_store_check: Instant::now(),
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
@@ -386,7 +394,7 @@ impl App {
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,
-            base_theme: Theme::dark(),
+            base_theme: configured_theme,
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
@@ -884,6 +892,24 @@ impl App {
             self.structure_dirty = true;
         }
         changed
+    }
+
+    fn reconcile_configured_theme(&mut self) -> bool {
+        if self.last_theme_store_check.elapsed() < Duration::from_millis(750) {
+            return false;
+        }
+        self.last_theme_store_check = Instant::now();
+        let stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if stamp == self.theme_store_stamp {
+            return false;
+        }
+        self.theme_store_stamp = stamp;
+        self.base_theme = Theme::configured();
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+        true
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -3578,7 +3604,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        if app.reconcile_appearance() {
+        // Run both: Settings' open Appearance pane may intentionally override
+        // the file-level base with its richer live accessibility intent.
+        let configured_changed = app.reconcile_configured_theme();
+        let appearance_changed = app.reconcile_appearance();
+        if configured_changed || appearance_changed {
             app.needs_sync = true;
             window.request_redraw();
         }

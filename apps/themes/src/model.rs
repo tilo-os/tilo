@@ -12,8 +12,7 @@
 use serde::{Deserialize, Serialize};
 use ui::color_compat::ColorCompat;
 use ui::text_render::FontChoice;
-use ui::theme::Theme;
-use ui::tokens::{Colors, PaletteSpec};
+use ui::theme::{CUSTOM_THEME_SCHEMA_VERSION, CustomThemeSpec, Theme};
 use vello::peniko::Color;
 
 /// An sRGB colour as three 8-bit channels. Chosen over `peniko::Color`
@@ -306,71 +305,34 @@ impl ThemeSpec {
             return t;
         }
 
-        let mut t = if self.dark_base {
-            Theme::dark()
-        } else {
-            Theme::light()
-        };
-        t.name = self.name.clone();
+        Theme::from_custom_spec(&self.to_custom_spec())
+            .expect("Theme Studio keeps custom theme values in the shared schema's valid ranges")
+    }
 
-        // Derive the tokens the reduced spec doesn't carry so a custom palette
-        // reads coherently: a deep popover surface, a quieter tertiary text
-        // tier, and matching ramps / scrim / glass.
-        let popover = if self.dark_base {
-            mix(self.surface_base, [0, 0, 0], 0.40)
-        } else {
-            [255, 255, 255]
-        };
-        let text_tertiary = mix(self.text_dim, self.surface_base, 0.40);
-        t.tokens.colors = Colors::themed(PaletteSpec {
-            dark: self.dark_base,
-            base: color(self.surface_base),
-            raised: color(self.surface_raised),
-            popover: color(popover),
-            text: color(self.text_primary),
-            text_dim: color(self.text_dim),
-            text_tertiary: color(text_tertiary),
-            border: color(self.border),
-            focus: color(self.accent),
-            accent: color(self.accent),
-            accent_hover: color(self.accent_hover),
-            success: color(self.success),
-            warning: color(self.warning),
-            danger: color(self.danger),
-            info: color(self.info),
-            window_card: None,
-        });
-
-        let radius = self.radius_px();
-        t.tokens.radii.sm = (radius * 0.5).max(0.0);
-        t.tokens.radii.md = radius;
-        t.tokens.radii.lg = radius * 1.5;
-        t.tokens.radii.xl = radius * 2.4;
-
-        let sp = self.spacing_px();
-        t.tokens.spacing.s2 = (sp * 0.66).max(2.0);
-        t.tokens.spacing.s3 = sp;
-        t.tokens.spacing.s4 = sp * 1.33;
-
-        t.tokens.typography.sans_family = self.font.clone();
-
-        // Legacy shortcut fields (consumed by most widgets' draw paths).
-        t.bg_app = color(self.surface_base);
-        t.bg_primary = color(self.surface_raised);
-        t.bg_hover = color(self.surface_hover());
-        t.bg_active = color(self.surface_active());
-        t.border_standard = color(self.border);
-        t.border_focus = color(self.accent);
-        t.text_primary = color(self.text_primary);
-        t.text_dim = color(self.text_dim);
-        t.text_tertiary = color(text_tertiary);
-        t.accent_primary = color(self.accent);
-        t.accent_hover = color(self.accent_hover);
-        t.status_success = color(self.success);
-        t.radius_standard = f64::from(radius);
-        t.padding_standard = sp;
-        t.gap_standard = sp;
-        t
+    /// Convert the editor artifact to the versioned runtime contract. Keeping
+    /// this mapping here means Theme Studio owns editing concerns such as
+    /// normalised sliders, while `ui` alone owns theme materialisation.
+    pub fn to_custom_spec(&self) -> CustomThemeSpec {
+        CustomThemeSpec {
+            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
+            id: self.id.clone(),
+            name: self.name.clone(),
+            dark_base: self.dark_base,
+            accent: self.accent,
+            accent_hover: self.accent_hover,
+            surface_base: self.surface_base,
+            surface_raised: self.surface_raised,
+            text_primary: self.text_primary,
+            text_dim: self.text_dim,
+            border: self.border,
+            success: self.success,
+            warning: self.warning,
+            danger: self.danger,
+            info: self.info,
+            radius_px: self.radius_px(),
+            spacing_px: self.spacing_px(),
+            font: self.font.clone(),
+        }
     }
 
     /// Capture a `ui` theme's tokens into an editable spec.
