@@ -80,11 +80,17 @@ impl PeerToastQueue {
             if elapsed < BATCH_WINDOW {
                 break;
             }
-            let boundary = head_t + BATCH_WINDOW;
+            // `Instant::checked_add` can't panic; a batch window that
+            // (unreachably, for a 1-second constant) overflowed just
+            // closes the batch at `head_t` instead.
+            let boundary = head_t.checked_add(BATCH_WINDOW).unwrap_or(head_t);
             let mut batch = Vec::new();
             while let Some(front) = self.pending.front() {
                 if front.t <= boundary {
-                    batch.push(self.pending.pop_front().unwrap());
+                    let Some(event) = self.pending.pop_front() else {
+                        break;
+                    };
+                    batch.push(event);
                 } else {
                     break;
                 }
@@ -144,10 +150,11 @@ fn format_batch(kind: PeerEventKind, batch: &[&QueuedEvent]) -> ReadyToast {
     let mut names: Vec<String> = batch.iter().map(|e| e.name.clone()).collect();
     names.sort();
     names.dedup();
+    let name_at = |i: usize| names.get(i).map_or("", String::as_str);
     match names.len() {
         1 => ReadyToast {
             kind,
-            title: format!("{} {verb}", names[0]),
+            title: format!("{} {verb}", name_at(0)),
             body: String::new(),
         },
         n if n <= 3 => ReadyToast {
@@ -158,7 +165,13 @@ fn format_batch(kind: PeerEventKind, batch: &[&QueuedEvent]) -> ReadyToast {
         n => ReadyToast {
             kind,
             title: format!("{n} peers {verb}"),
-            body: format!("{}, {}, {}, +{} more", names[0], names[1], names[2], n - 3),
+            body: format!(
+                "{}, {}, {}, +{} more",
+                name_at(0),
+                name_at(1),
+                name_at(2),
+                n.saturating_sub(3)
+            ),
         },
     }
 }
