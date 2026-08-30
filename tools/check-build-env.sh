@@ -15,7 +15,11 @@ MODULES=(
   libavcodec libavformat libavutil
   gstreamer-1.0 gstreamer-app-1.0 openssl
 )
-BINARIES=(capnp)
+# Test subjects rather than build tools, but a missing one fails a test instead
+# of naming itself: bwrap runs the launcher's confinement suites, alacritty is
+# the real Wayland client the handshake test drives, and rust-analyzer is the
+# real language server the code editor's suite drives.
+BINARIES=(capnp bwrap alacritty rust-analyzer)
 
 missing=0
 command -v pkg-config >/dev/null 2>&1 || { echo "pkg-config not installed — nothing here can be checked" >&2; exit 2; }
