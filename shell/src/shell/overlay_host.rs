@@ -72,6 +72,17 @@ enum ComposerHit {
     Submit,
 }
 
+/// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
+/// bridging the transport-agnostic widget layer to `ShellNetwork`.
+type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>;
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently-toggled, documented piece of overlay/transition \
+              state (palette visibility, quick-settings open edge, peer-sync enablement, ...); \
+              folding them into an enum or bitflags would not group any of them meaningfully \
+              and would ripple through this whole file's field accesses"
+)]
 pub struct ShellOverlayHost {
     rect: Rect,
     content: Box<dyn Widget>,
@@ -234,7 +245,7 @@ pub struct ShellOverlayHost {
     /// `ShellNetwork`, keeping the widget layer transport-agnostic.
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
-    peer_sync_bridge: Option<std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>>,
+    peer_sync_bridge: Option<PeerSyncBridge>,
     /// Hit rects of the connect prompt's buttons, published by
     /// [`Self::draw_peer_sync`]. Empty when the prompt is not painted.
     peer_sync_prompt_rects: Vec<(PeerSyncPromptButton, Rect)>,
@@ -395,8 +406,15 @@ fn elide_token(token: &str) -> String {
     if chars.len() <= 20 {
         return token.to_string();
     }
-    let head: String = chars[..10].iter().collect();
-    let tail: String = chars[chars.len() - 6..].iter().collect();
+    let Some(head_chars) = chars.get(..10) else {
+        return token.to_string();
+    };
+    let tail_start = chars.len().saturating_sub(6);
+    let Some(tail_chars) = chars.get(tail_start..) else {
+        return token.to_string();
+    };
+    let head: String = head_chars.iter().collect();
+    let tail: String = tail_chars.iter().collect();
     format!("{head}…{tail}")
 }
 
@@ -413,7 +431,8 @@ fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> 
 /// `onboarding::MintedIdentity::grouped_fingerprint`).
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
-    let tail: Vec<char> = chars[chars.len().saturating_sub(8)..].to_vec();
+    let tail_start = chars.len().saturating_sub(8);
+    let tail: Vec<char> = chars.get(tail_start..).map_or_else(Vec::new, <[char]>::to_vec);
     if tail.len() <= 4 {
         return tail.into_iter().collect();
     }
@@ -498,7 +517,7 @@ fn draw_invite_person_row(
         &who,
         name_size,
         colors.text_primary,
-        transform * Affine::translate((text_x, rect.y0 + 2.0)),
+        transform.pre_translate((text_x, rect.y0 + 2.0).into()),
         None,
     );
     let sub = text_renderer.elide_to_width(sub, sub_size, (rect.x1 - text_x) as f32);
@@ -507,7 +526,7 @@ fn draw_invite_person_row(
         &sub,
         sub_size,
         colors.text_dim,
-        transform * Affine::translate((text_x, rect.y0 + 2.0 + f64::from(name_size) + 6.0)),
+        transform.pre_translate((text_x, rect.y0 + 2.0 + f64::from(name_size) + 6.0).into()),
         None,
     );
     rect.y0 + 2.0 + f64::from(name_size) + 6.0 + f64::from(sub_size)
@@ -542,7 +561,7 @@ fn draw_invite_code(
         code,
         size,
         colors.text_primary,
-        transform * Affine::translate((field.x0 + 14.0, field.y0 + 10.0)),
+        transform.pre_translate((field.x0 + 14.0, field.y0 + 10.0).into()),
         None,
     );
     field.y1
@@ -717,11 +736,10 @@ fn draw_filter_chip(
         label,
         text_size,
         text_color,
-        transform
-            * Affine::translate((
+        transform.pre_translate((
                 rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
                 rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            )),
+            ).into()),
         None,
     );
 }
@@ -1210,11 +1228,10 @@ impl ShellOverlayHost {
             &caption,
             size,
             colors.text_dim,
-            transform
-                * Affine::translate((
+            transform.pre_translate((
                     rect.center().x - f64::from(cw) / 2.0,
                     rect.y1 - 12.0 - f64::from(ch),
-                )),
+                ).into()),
             None,
             TextWeight::Medium,
         );
@@ -1315,7 +1332,7 @@ impl ShellOverlayHost {
     /// one, `/invite` and `/connect` push to a queue nothing drains.
     pub fn with_peer_sync_bridge(
         mut self,
-        bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
+        bridge: PeerSyncBridge,
     ) -> Self {
         self.set_peer_sync_bridge(bridge);
         self
@@ -1326,7 +1343,7 @@ impl ShellOverlayHost {
     /// `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(
         &mut self,
-        bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
+        bridge: PeerSyncBridge,
     ) {
         self.peer_sync_bridge = Some(bridge);
     }
@@ -4356,7 +4373,7 @@ impl ShellOverlayHost {
             hint,
             size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x1 - f64::from(w) - 24.0, card.y1 - 24.0)),
+            transform.pre_translate((card.x1 - f64::from(w) - 24.0, card.y1 - 24.0).into()),
             None,
         );
     }
@@ -5276,7 +5293,9 @@ impl Widget for ShellOverlayHost {
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let scaled = |s: f64| -> Affine {
-            Affine::translate((cx, cy)) * Affine::scale(s) * Affine::translate((-cx, -cy))
+            Affine::translate((cx, cy))
+                .pre_scale(s)
+                .pre_translate((-cx, -cy).into())
         };
 
         self.content
@@ -5323,7 +5342,21 @@ impl Widget for ShellOverlayHost {
             let panel_xform = if (overview_scale - 1.0).abs() > f64::EPSILON
                 || overview_dy.abs() > f64::EPSILON
             {
-                Affine::translate((0.0, overview_dy)) * scaled(overview_scale) * transform
+                {
+                    // `Affine`'s `Mul` composes transform matrices with plain
+                    // float multiply-adds — it cannot overflow or panic —
+                    // but kurbo has no non-operator way to compose an
+                    // already-built `Affine` (`scaled(...)`) into a chain,
+                    // only the canonical-kind `pre_*`/`then_*` combinators.
+                    #[allow(
+                        clippy::arithmetic_side_effects,
+                        reason = "Affine * Affine is a panic-free float matrix multiply; no \
+                                  combinator exists to compose an arbitrary already-built Affine"
+                    )]
+                    {
+                        Affine::translate((0.0, overview_dy)) * scaled(overview_scale) * transform
+                    }
+                }
             } else {
                 transform
             };
@@ -5388,9 +5421,9 @@ impl Widget for ShellOverlayHost {
                 let cx = panel_rect.center().x;
                 let cy = panel_rect.center().y;
                 transform
-                    * Affine::translate((cx, cy + dy))
-                    * Affine::scale(scale)
-                    * Affine::translate((-cx, -cy))
+                    .pre_translate((cx, cy + dy).into())
+                    .pre_scale(scale)
+                    .pre_translate((-cx, -cy).into())
             } else {
                 transform
             };
@@ -5464,9 +5497,9 @@ impl Widget for ShellOverlayHost {
                 let cx = qs_rect.center().x;
                 let cy = qs_rect.y0;
                 transform
-                    * Affine::translate((cx, cy + dy))
-                    * Affine::scale(scale)
-                    * Affine::translate((-cx, -cy))
+                    .pre_translate((cx, cy + dy).into())
+                    .pre_scale(scale)
+                    .pre_translate((-cx, -cy).into())
             } else {
                 transform
             };
@@ -5526,7 +5559,7 @@ impl Widget for ShellOverlayHost {
             // desktop breathing.
             let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.25);
             let sheet_xform = if slide > 0.0 {
-                transform * Affine::translate((slide, 0.0))
+                transform.pre_translate((slide, 0.0).into())
             } else {
                 transform
             };
@@ -5569,7 +5602,7 @@ impl Widget for ShellOverlayHost {
             draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             let sheet = self.projection_rect();
             let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.22);
-            let xform = transform * Affine::translate((slide, 0.0));
+            let xform = transform.pre_translate((slide, 0.0).into());
             if openness < 1.0 {
                 scene.push_layer(
                     Fill::NonZero,
@@ -5622,9 +5655,9 @@ impl Widget for ShellOverlayHost {
                 let cx = palette_rect.center().x;
                 let cy = palette_rect.center().y;
                 transform
-                    * Affine::translate((cx, cy + dy))
-                    * Affine::scale(scale)
-                    * Affine::translate((-cx, -cy))
+                    .pre_translate((cx, cy + dy).into())
+                    .pre_scale(scale)
+                    .pre_translate((-cx, -cy).into())
             } else {
                 transform
             };
@@ -8057,7 +8090,7 @@ impl ShellOverlayHost {
             &name,
             name_size,
             colors.text_primary,
-            transform * Affine::translate((x0, top)),
+            transform.pre_translate((x0, top).into()),
             None,
             TextWeight::Semibold,
         );
@@ -8066,7 +8099,7 @@ impl ShellOverlayHost {
             &sub,
             sub_size,
             colors.text_dim,
-            transform * Affine::translate((x0, top + f64::from(name_h) + 2.0)),
+            transform.pre_translate((x0, top + f64::from(name_h) + 2.0).into()),
             None,
         );
     }
@@ -8184,7 +8217,7 @@ impl ShellOverlayHost {
                 &name,
                 name_size,
                 colors.text_primary,
-                transform * Affine::translate((content.x0, here_rect.y0)),
+                transform.pre_translate((content.x0, here_rect.y0).into()),
                 None,
                 TextWeight::Bold,
             );
@@ -8211,7 +8244,7 @@ impl ShellOverlayHost {
                 &access,
                 tokens.typography.scale.base,
                 colors.text_dim,
-                transform * Affine::translate((content.x0, here_rect.y0 + f64::from(name_h) + 6.0)),
+                transform.pre_translate((content.x0, here_rect.y0 + f64::from(name_h) + 6.0).into()),
                 None,
             );
         } else {
@@ -8222,7 +8255,7 @@ impl ShellOverlayHost {
                 "No room selected",
                 name_size,
                 colors.text_dim,
-                transform * Affine::translate((content.x0, here_rect.y0)),
+                transform.pre_translate((content.x0, here_rect.y0).into()),
                 None,
                 TextWeight::Bold,
             );
@@ -8235,7 +8268,7 @@ impl ShellOverlayHost {
             "Shared out of here",
             caption_size,
             colors.text_tertiary,
-            transform * Affine::translate((content.x0, shares_top + 6.0)),
+            transform.pre_translate((content.x0, shares_top + 6.0).into()),
             None,
         );
         let row_h = OVERVIEW_SHARE_ROW_HEIGHT_PX;
@@ -8278,7 +8311,7 @@ impl ShellOverlayHost {
                 "Nothing in this room is shared out of it",
                 body_size,
                 colors.text_dim,
-                transform * Affine::translate((content.x0 + glyph + 8.0, body_top(sy))),
+                transform.pre_translate((content.x0 + glyph + 8.0, body_top(sy)).into()),
                 None,
             );
         } else {
@@ -8310,11 +8343,10 @@ impl ShellOverlayHost {
                     &with,
                     with_size,
                     colors.text_dim,
-                    transform
-                        * Affine::translate((
+                    transform.pre_translate((
                             content.x1 - f64::from(with_w),
                             sy + (row_h - f64::from(with_h)) / 2.0,
-                        )),
+                        ).into()),
                     None,
                 );
                 let what_x = content.x0 + glyph + 8.0;
@@ -8325,7 +8357,7 @@ impl ShellOverlayHost {
                     &what,
                     body_size,
                     colors.text_primary,
-                    transform * Affine::translate((what_x, body_top(sy))),
+                    transform.pre_translate((what_x, body_top(sy)).into()),
                     None,
                 );
                 sy += row_h;
@@ -8339,11 +8371,10 @@ impl ShellOverlayHost {
                     &more,
                     tokens.typography.scale.sm,
                     colors.text_tertiary,
-                    transform
-                        * Affine::translate((
+                    transform.pre_translate((
                             content.x0 + glyph + 8.0,
                             sy + (row_h - f64::from(more_h)) / 2.0,
-                        )),
+                        ).into()),
                     None,
                 );
             }
@@ -8355,7 +8386,7 @@ impl ShellOverlayHost {
             "Go to",
             caption_size,
             colors.text_tertiary,
-            transform * Affine::translate((content.x0, self.overview_list_caption_top() + 6.0)),
+            transform.pre_translate((content.x0, self.overview_list_caption_top() + 6.0).into()),
             None,
         );
 
@@ -8425,7 +8456,7 @@ impl ShellOverlayHost {
             "New room",
             add_size,
             add_color,
-            transform * Affine::translate((gx + glyph + 10.0, gcy - f64::from(add_h) / 2.0)),
+            transform.pre_translate((gx + glyph + 10.0, gcy - f64::from(add_h) / 2.0).into()),
             None,
         );
         self.add_workspace_rect = add_rect;
@@ -8508,7 +8539,7 @@ impl ShellOverlayHost {
             title,
             tsize,
             colors.text_primary,
-            transform * Affine::translate((rect.x0 + 24.0, rect.y0 + 24.0)),
+            transform.pre_translate((rect.x0 + 24.0, rect.y0 + 24.0).into()),
             None,
         );
 
@@ -8523,7 +8554,7 @@ impl ShellOverlayHost {
             &label,
             lsize,
             colors.text_dim,
-            transform * Affine::translate((rect.x0 + 24.0, rect.y0 + 72.0)),
+            transform.pre_translate((rect.x0 + 24.0, rect.y0 + 72.0).into()),
             None,
         );
 
@@ -8584,7 +8615,7 @@ impl ShellOverlayHost {
                 label,
                 lsize,
                 color,
-                transform * Affine::translate((tx, ty)),
+                transform.pre_translate((tx, ty).into()),
                 None,
             );
             tx += f64::from(w) + 32.0;
@@ -8677,7 +8708,7 @@ impl ShellOverlayHost {
             "Name",
             tokens.typography.scale.sm,
             colors.text_dim,
-            transform * Affine::translate((rect.x0 + 24.0, body_y)),
+            transform.pre_translate((rect.x0 + 24.0, body_y).into()),
             None,
         );
         let input_rect = self.ws_settings_name_rect();
@@ -8706,7 +8737,7 @@ impl ShellOverlayHost {
             shown,
             input_size,
             colors.text_primary,
-            transform * Affine::translate((input_rect.x0 + 12.0, input_rect.y0 + 6.0)),
+            transform.pre_translate((input_rect.x0 + 12.0, input_rect.y0 + 6.0).into()),
             None,
         );
         if editing {
@@ -8737,7 +8768,7 @@ impl ShellOverlayHost {
             "Invite Link",
             tokens.typography.scale.sm,
             colors.text_dim,
-            transform * Affine::translate((rect.x0 + 40.0, invite_y)),
+            transform.pre_translate((rect.x0 + 40.0, invite_y).into()),
             None,
         );
         let url_pill = Rect::new(
@@ -8764,7 +8795,7 @@ impl ShellOverlayHost {
             &invite_url,
             tokens.typography.scale.sm,
             colors.text_primary,
-            transform * Affine::translate((url_pill.x0 + 12.0, url_pill.y0 + 8.0)),
+            transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 8.0).into()),
             None,
         );
         let copy_btn = self.ws_settings_copy_rect();
@@ -8794,11 +8825,10 @@ impl ShellOverlayHost {
             copy_label,
             tokens.typography.scale.sm,
             colors.text_primary,
-            transform
-                * Affine::translate((
+            transform.pre_translate((
                     copy_btn.x0 + (copy_btn.width() - f64::from(cw)) / 2.0,
                     copy_btn.y0 + 8.0,
-                )),
+                ).into()),
             None,
         );
 
@@ -8811,7 +8841,7 @@ impl ShellOverlayHost {
             "Collaborators",
             tokens.typography.scale.sm,
             colors.text_dim,
-            transform * Affine::translate((rect.x0 + 24.0, collab_y)),
+            transform.pre_translate((rect.x0 + 24.0, collab_y).into()),
             None,
         );
         // Exactly one tile, real `me` or not, so the You-badge fill count
@@ -8841,7 +8871,7 @@ impl ShellOverlayHost {
                 name,
                 tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((tx + 12.0, row_y + 12.0)),
+                transform.pre_translate((tx + 12.0, row_y + 12.0).into()),
                 None,
             );
             if *is_self {
@@ -8865,7 +8895,7 @@ impl ShellOverlayHost {
                     "You",
                     tokens.typography.scale.xs,
                     colors.text_primary,
-                    transform * Affine::translate((tx + tile_w - 36.0, row_y + 13.0)),
+                    transform.pre_translate((tx + tile_w - 36.0, row_y + 13.0).into()),
                     None,
                 );
             }
@@ -8883,7 +8913,7 @@ impl ShellOverlayHost {
             hint,
             hsize,
             colors.text_dim,
-            transform * Affine::translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0)),
+            transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
             None,
         );
     }
@@ -9071,7 +9101,7 @@ impl ShellOverlayHost {
             title,
             title_size,
             colors.text_primary,
-            transform * Affine::translate((rect.x0 + pad, y)),
+            transform.pre_translate((rect.x0 + pad, y).into()),
             None,
         );
         y += f64::from(title_size) + 14.0;
@@ -9084,7 +9114,7 @@ impl ShellOverlayHost {
                 "Who are you inviting?",
                 body_size,
                 colors.text_dim,
-                transform * Affine::translate((rect.x0 + pad, y)),
+                transform.pre_translate((rect.x0 + pad, y).into()),
                 None,
             );
             y += f64::from(body_size) + 8.0;
@@ -9114,7 +9144,7 @@ impl ShellOverlayHost {
                     "Their name",
                     name_size,
                     colors.text_dim,
-                    transform * Affine::translate((field.x0 + 12.0, ty)),
+                    transform.pre_translate((field.x0 + 12.0, ty).into()),
                     None,
                 );
             } else {
@@ -9123,7 +9153,7 @@ impl ShellOverlayHost {
                     &shown,
                     name_size,
                     colors.text_primary,
-                    transform * Affine::translate((field.x0 + 12.0, ty)),
+                    transform.pre_translate((field.x0 + 12.0, ty).into()),
                     None,
                 );
             }
@@ -9155,7 +9185,7 @@ impl ShellOverlayHost {
                 &note,
                 body_size,
                 colors.text_dim,
-                transform * Affine::translate((rect.x0 + pad, y)),
+                transform.pre_translate((rect.x0 + pad, y).into()),
                 None,
             );
             y += f64::from(body_size) + 10.0;
@@ -9238,7 +9268,7 @@ impl ShellOverlayHost {
                     } else {
                         colors.text_primary
                     },
-                    transform * Affine::translate((rect.x0 + pad, y)),
+                    transform.pre_translate((rect.x0 + pad, y).into()),
                     None,
                 );
                 y += f64::from(name_size) + 8.0;
@@ -9248,7 +9278,7 @@ impl ShellOverlayHost {
                         "Not a whole invite yet",
                         body_size,
                         colors.text_dim,
-                        transform * Affine::translate((rect.x0 + pad, y)),
+                        transform.pre_translate((rect.x0 + pad, y).into()),
                         None,
                     );
                     y += f64::from(body_size) + 8.0;
@@ -9263,7 +9293,7 @@ impl ShellOverlayHost {
                 &status,
                 body_size,
                 colors.text_primary,
-                transform * Affine::translate((rect.x0 + pad, y)),
+                transform.pre_translate((rect.x0 + pad, y).into()),
                 None,
             );
         }
@@ -9312,11 +9342,10 @@ impl ShellOverlayHost {
                     label,
                     body_size,
                     colors.text_primary,
-                    transform
-                        * Affine::translate((
+                    transform.pre_translate((
                             f64::midpoint(brect.x0, brect.x1) - f64::from(tw) / 2.0,
                             f64::midpoint(brect.y0, brect.y1) - f64::from(th) / 2.0,
-                        )),
+                        ).into()),
                     None,
                 );
                 self.peer_sync_prompt_rects.push((which, brect));
@@ -9392,11 +9421,10 @@ impl ShellOverlayHost {
                 &text,
                 chip_text_size,
                 if is_active { active_text } else { idle_text },
-                transform
-                    * Affine::translate((
+                transform.pre_translate((
                         f64::midpoint(seg.x0, seg.x1) - f64::from(tw) / 2.0,
                         f64::midpoint(seg.y0, seg.y1) - f64::from(th) / 2.0,
-                    )),
+                    ).into()),
                 None,
             );
         }
@@ -9703,7 +9731,7 @@ impl ShellOverlayHost {
                 label,
                 tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((card.x0 + 12.0, card.y1 - 36.0)),
+                transform.pre_translate((card.x0 + 12.0, card.y1 - 36.0).into()),
                 None,
                 TextWeight::Semibold,
             );
@@ -9712,7 +9740,7 @@ impl ShellOverlayHost {
                 sub_line,
                 tokens.typography.scale.xs,
                 colors.text_primary.with_alpha_factor(0.70),
-                transform * Affine::translate((card.x0 + 12.0, card.y1 - 18.0)),
+                transform.pre_translate((card.x0 + 12.0, card.y1 - 18.0).into()),
                 None,
             );
         }
@@ -9746,7 +9774,7 @@ impl ShellOverlayHost {
             profile_label,
             tokens.typography.scale.sm,
             colors.text_primary,
-            transform * Affine::translate((pp.x0 + 44.0, pp.y0 + 8.0)),
+            transform.pre_translate((pp.x0 + 44.0, pp.y0 + 8.0).into()),
             None,
             TextWeight::Semibold,
         );
@@ -9755,7 +9783,7 @@ impl ShellOverlayHost {
             "Power Profile",
             tokens.typography.scale.xs,
             colors.text_dim,
-            transform * Affine::translate((pp.x0 + 44.0, pp.y0 + 26.0)),
+            transform.pre_translate((pp.x0 + 44.0, pp.y0 + 26.0).into()),
             None,
         );
         let chev_cx = pp.x1 - 16.0;
@@ -9840,7 +9868,7 @@ impl ShellOverlayHost {
             "Project",
             type_scale.xl,
             colors.text_primary,
-            transform * Affine::translate((r.x0 + 20.0, r.y0 + 18.0)),
+            transform.pre_translate((r.x0 + 20.0, r.y0 + 18.0).into()),
             None,
             TextWeight::Semibold,
         );
@@ -9849,7 +9877,7 @@ impl ShellOverlayHost {
             "Choose how this desktop appears, then pick a display.",
             type_scale.xs,
             colors.text_dim,
-            transform * Affine::translate((r.x0 + 20.0, r.y0 + 49.0)),
+            transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
             Some((r.width() - 88.0) as f32),
         );
 
@@ -9926,7 +9954,7 @@ impl ShellOverlayHost {
                 } else {
                     colors.text_dim.with_alpha_factor(0.52)
                 },
-                transform * Affine::translate((cell.x0 + 12.0, cell.y0 + 39.0)),
+                transform.pre_translate((cell.x0 + 12.0, cell.y0 + 39.0).into()),
                 Some((cell.width() - 18.0) as f32),
                 TextWeight::Medium,
             );
@@ -9951,7 +9979,7 @@ impl ShellOverlayHost {
             "Share audio",
             type_scale.sm,
             colors.text_primary,
-            transform * Affine::translate((r.x0 + 52.0, r.y0 + 174.0)),
+            transform.pre_translate((r.x0 + 52.0, r.y0 + 174.0).into()),
             None,
         );
         let toggle = Rect::new(r.x1 - 58.0, r.y0 + 170.0, r.x1 - 20.0, r.y0 + 192.0);
@@ -9984,7 +10012,7 @@ impl ShellOverlayHost {
             "Stream",
             type_scale.xs,
             colors.text_dim,
-            transform * Affine::translate((r.x0 + 20.0, r.y0 + 218.0)),
+            transform.pre_translate((r.x0 + 20.0, r.y0 + 218.0).into()),
             None,
             TextWeight::Medium,
         );
@@ -10029,11 +10057,10 @@ impl ShellOverlayHost {
                 label,
                 type_scale.xs,
                 colors.text_primary,
-                transform
-                    * Affine::translate((
+                transform.pre_translate((
                         chip.center().x - f64::from(label_w) / 2.0,
                         chip.center().y - f64::from(label_h) / 2.0,
-                    )),
+                    ).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10047,7 +10074,7 @@ impl ShellOverlayHost {
                 "Receiver PIN or password",
                 type_scale.xs,
                 colors.text_primary,
-                transform * Affine::translate((r.x0 + 20.0, r.y0 + 253.0)),
+                transform.pre_translate((r.x0 + 20.0, r.y0 + 253.0).into()),
                 None,
                 TextWeight::Semibold,
             );
@@ -10062,7 +10089,7 @@ impl ShellOverlayHost {
                 "Leave blank unless the receiver asks. Enter connects.",
                 type_scale.xs,
                 colors.text_dim,
-                transform * Affine::translate((r.x0 + 20.0, r.y0 + 324.0)),
+                transform.pre_translate((r.x0 + 20.0, r.y0 + 324.0).into()),
                 Some((r.width() - 40.0) as f32),
             );
         } else {
@@ -10076,7 +10103,7 @@ impl ShellOverlayHost {
             "Available displays",
             type_scale.sm,
             colors.text_primary,
-            transform * Affine::translate((r.x0 + 20.0, devices_heading_y)),
+            transform.pre_translate((r.x0 + 20.0, devices_heading_y).into()),
             None,
             TextWeight::Semibold,
         );
@@ -10130,7 +10157,7 @@ impl ShellOverlayHost {
                 message,
                 type_scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((r.center().x - f64::from(mw) / 2.0, r.y0 + 330.0)),
+                transform.pre_translate((r.center().x - f64::from(mw) / 2.0, r.y0 + 330.0).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10142,7 +10169,7 @@ impl ShellOverlayHost {
                 &detail,
                 type_scale.xs,
                 colors.text_dim,
-                transform * Affine::translate((r.center().x - f64::from(dw) / 2.0, r.y0 + 354.0)),
+                transform.pre_translate((r.center().x - f64::from(dw) / 2.0, r.y0 + 354.0).into()),
                 None,
             );
         } else {
@@ -10185,7 +10212,7 @@ impl ShellOverlayHost {
                     &name,
                     type_scale.sm,
                     colors.text_primary,
-                    transform * Affine::translate((row.x0 + 46.0, row.y0 + 8.0)),
+                    transform.pre_translate((row.x0 + 46.0, row.y0 + 8.0).into()),
                     None,
                     TextWeight::Medium,
                 );
@@ -10207,7 +10234,7 @@ impl ShellOverlayHost {
                     } else {
                         colors.text_dim
                     },
-                    transform * Affine::translate((row.x0 + 46.0, row.y0 + 31.0)),
+                    transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
                     Some((row.width() - 142.0) as f32),
                 );
                 let action = Rect::new(row.x1 - 86.0, row.y0 + 11.0, row.x1 - 10.0, row.y1 - 11.0);
@@ -10239,11 +10266,10 @@ impl ShellOverlayHost {
                     } else {
                         colors.text_primary
                     },
-                    transform
-                        * Affine::translate((
+                    transform.pre_translate((
                             action.center().x - f64::from(lw) / 2.0,
                             action.center().y - f64::from(lh) / 2.0,
-                        )),
+                        ).into()),
                     None,
                     TextWeight::Medium,
                 );
@@ -10257,7 +10283,7 @@ impl ShellOverlayHost {
             footer,
             type_scale.xs,
             colors.text_dim,
-            transform * Affine::translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0)),
+            transform.pre_translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0).into()),
             None,
         );
     }
@@ -10295,7 +10321,7 @@ impl ShellOverlayHost {
             title,
             tokens.typography.scale.sm,
             colors.text_primary,
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate((tx, ty).into()),
             None,
             TextWeight::Semibold,
         );
@@ -10321,7 +10347,7 @@ impl ShellOverlayHost {
             message,
             tokens.typography.scale.sm,
             tokens.colors.text_dim,
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate((tx, ty).into()),
             None,
         );
     }
@@ -10419,7 +10445,7 @@ impl ShellOverlayHost {
                 &net.ssid,
                 tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((label_x, label_y)),
+                transform.pre_translate((label_x, label_y).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10636,7 +10662,7 @@ impl ShellOverlayHost {
             "This network is protected",
             tokens.typography.scale.xs,
             colors.text_dim,
-            transform * Affine::translate((lock_box.x1 + 8.0, sub_y + 1.0)),
+            transform.pre_translate((lock_box.x1 + 8.0, sub_y + 1.0).into()),
             None,
             TextWeight::Medium,
         );
@@ -10684,7 +10710,7 @@ impl ShellOverlayHost {
                 "Password",
                 text_size,
                 colors.text_dim.with_alpha_factor(0.6),
-                transform * Affine::translate((text_x, text_y)),
+                transform.pre_translate((text_x, text_y).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10694,7 +10720,7 @@ impl ShellOverlayHost {
                 &masked,
                 text_size,
                 colors.text_primary,
-                transform * Affine::translate((text_x, text_y)),
+                transform.pre_translate((text_x, text_y).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10727,7 +10753,7 @@ impl ShellOverlayHost {
                 err,
                 tokens.typography.scale.xs,
                 colors.semantic.danger,
-                transform * Affine::translate((field.x0 + 2.0, field.y1 + 8.0)),
+                transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10737,7 +10763,7 @@ impl ShellOverlayHost {
                 "Connecting…",
                 tokens.typography.scale.xs,
                 colors.text_dim,
-                transform * Affine::translate((field.x0 + 2.0, field.y1 + 8.0)),
+                transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10813,11 +10839,10 @@ impl ShellOverlayHost {
             label,
             size,
             color,
-            transform
-                * Affine::translate((
+            transform.pre_translate((
                     rect.center().x - f64::from(w) / 2.0,
                     rect.center().y - f64::from(h) / 2.0,
-                )),
+                ).into()),
             None,
             TextWeight::Semibold,
         );
@@ -10883,7 +10908,7 @@ impl ShellOverlayHost {
                 &dev.name,
                 tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((label_x, label_y)),
+                transform.pre_translate((label_x, label_y).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -10954,7 +10979,7 @@ impl ShellOverlayHost {
             "Collaborators",
             tokens.typography.scale.lg,
             colors.text_primary,
-            transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 16.0)),
+            transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
             None,
         );
 
@@ -10978,7 +11003,7 @@ impl ShellOverlayHost {
                 reason,
                 tokens.typography.scale.sm,
                 colors.semantic.danger,
-                transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
+                transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
                 None,
             );
         }
@@ -10990,7 +11015,7 @@ impl ShellOverlayHost {
                     "No peers connected",
                     tokens.typography.scale.sm,
                     colors.text_dim,
-                    transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
+                    transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
                     None,
                 );
             }
@@ -11036,11 +11061,10 @@ impl ShellOverlayHost {
                     &initial,
                     size,
                     colors.text_dim,
-                    transform
-                        * Affine::translate((
+                    transform.pre_translate((
                             center.x - f64::from(iw) / 2.0,
                             center.y - f64::from(ih) / 2.0,
-                        )),
+                        ).into()),
                     None,
                     TextWeight::Semibold,
                 );
@@ -11064,7 +11088,7 @@ impl ShellOverlayHost {
                 } else {
                     colors.text_primary
                 },
-                transform * Affine::translate((rect.x0 + 44.0, row_y + 7.0)),
+                transform.pre_translate((rect.x0 + 44.0, row_y + 7.0).into()),
                 None,
             );
             // Suppressed when the label already carries the word, or it
@@ -11075,7 +11099,7 @@ impl ShellOverlayHost {
                     "agent",
                     tokens.typography.scale.xs,
                     colors.text_dim,
-                    transform * Affine::translate((rect.x1 - 56.0, row_y + 9.0)),
+                    transform.pre_translate((rect.x1 - 56.0, row_y + 9.0).into()),
                     None,
                 );
             }
@@ -11098,7 +11122,7 @@ impl ShellOverlayHost {
                     &sub,
                     tokens.typography.scale.xs,
                     colors.text_dim,
-                    transform * Affine::translate((rect.x1 - 16.0 - f64::from(rw), row_y + 21.0)),
+                    transform.pre_translate((rect.x1 - 16.0 - f64::from(rw), row_y + 21.0).into()),
                     None,
                 );
             }
@@ -11153,11 +11177,10 @@ impl ShellOverlayHost {
                     label,
                     btn_size,
                     colors.text_primary,
-                    transform
-                        * Affine::translate((
+                    transform.pre_translate((
                             rect.center().x - f64::from(tw) / 2.0,
                             rect.center().y - f64::from(th) / 2.0,
-                        )),
+                        ).into()),
                     None,
                     TextWeight::Medium,
                 );
@@ -11192,7 +11215,7 @@ impl ShellOverlayHost {
             "Room activity",
             size,
             colors.text_primary,
-            transform * Affine::translate((row.x0 + 12.0, row.center().y - f64::from(lh) / 2.0)),
+            transform.pre_translate((row.x0 + 12.0, row.center().y - f64::from(lh) / 2.0).into()),
             None,
         );
         // A right-pointing guillemet reads as "opens a surface" without
@@ -11204,11 +11227,10 @@ impl ShellOverlayHost {
             chevron,
             size,
             colors.text_dim,
-            transform
-                * Affine::translate((
+            transform.pre_translate((
                     row.x1 - 12.0 - f64::from(cw),
                     row.center().y - f64::from(ch) / 2.0,
-                )),
+                ).into()),
             None,
         );
     }
