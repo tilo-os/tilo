@@ -161,15 +161,15 @@ pub fn flatpak_open_plan(item: &StoreItem) -> SpawnPlan {
 /// Flatpak install/remove via the host `flatpak` CLI.
 pub fn flatpak_plan(item: &StoreItem, install: bool) -> SpawnPlan {
     if install {
+        let mut args = vec!["install".into(), "--user".into(), "--noninteractive".into()];
+        if let Some(path) = item.install_ref_path.as_ref() {
+            args.push(path.clone());
+        } else {
+            args.extend(["flathub".into(), item.id.clone()]);
+        }
         SpawnPlan {
             program: "flatpak".into(),
-            args: vec![
-                "install".into(),
-                "--user".into(),
-                "--noninteractive".into(),
-                "flathub".into(),
-                item.id.clone(),
-            ],
+            args,
             status_line: format!("Installing Flatpak {}…", item.name),
         }
     } else {
@@ -354,6 +354,7 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source: StoreSource::Qos {
                 registry_name: "qOS".into(),
             },
@@ -378,6 +379,7 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source: StoreSource::Flathub,
             versions: vec![StoreItemVersion {
                 version: "1.0".into(),
@@ -464,6 +466,15 @@ mod tests {
         assert!(ins.args.contains(&"org.example.Chess".to_string()));
         let rm = flatpak_plan(&item, false);
         assert_eq!(rm.args[0], "uninstall");
+    }
+
+    #[test]
+    fn flatpak_ref_install_uses_the_selected_file() {
+        let mut item = flatpak_item("Chess", InstalledState::Not);
+        item.install_ref_path = Some("/tmp/chess.flatpakref".into());
+        let plan = flatpak_plan(&item, true);
+        assert!(plan.args.contains(&"/tmp/chess.flatpakref".to_string()));
+        assert!(!plan.args.contains(&"flathub".to_string()));
     }
 
     /// The gap this closes: an installed Flatpak had no action that

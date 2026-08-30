@@ -36,14 +36,17 @@ pub mod actions;
 pub mod app;
 pub mod config;
 pub mod flathub_client;
+pub mod flatpakref;
 pub mod installed;
 pub mod model;
 pub mod registry_client;
 pub mod shots;
 pub mod sources;
 pub mod widgets;
+pub mod worker;
 
 pub use app::StoreApp;
+pub use flatpakref::FlatpakRef;
 pub use model::{
     ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource,
 };

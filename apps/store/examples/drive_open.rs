@@ -46,6 +46,7 @@ fn main() {
         icon_url: None,
         homepage_url: None,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: "local test registry".into(),
         },

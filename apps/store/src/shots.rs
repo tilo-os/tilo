@@ -41,6 +41,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         icon_url: None,
         homepage_url: None,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: "qOS main".into(),
         },
@@ -62,6 +63,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         icon_url: None,
         homepage_url: None,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Flathub,
         versions: vec![StoreItemVersion {
             version: "3.2.1".into(),
