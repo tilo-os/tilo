@@ -84,6 +84,12 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
 }
 
 /// Build the full offline catalogue.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one block of fixture literals per bundled channel/video/comment; splitting it \
+              would only relocate the sample data, not shrink what a reader must trace for \
+              one entry"
+)]
 pub fn model() -> TubeModel {
     let chans = vec![
         channel(
@@ -135,6 +141,13 @@ pub fn model() -> TubeModel {
             "24/7 beats to relax / study / debug FUSE drivers to.",
         ),
     ];
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "indexes a fixed, hand-authored literal list a few lines above by a \
+                  literal position at each call site; an out-of-range index here is a \
+                  sample-data authoring bug that should fail loudly during development, \
+                  not a runtime risk from untrusted input"
+    )]
     let c = |i: usize| &chans[i];
 
     let videos = vec![
