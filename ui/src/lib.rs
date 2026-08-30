@@ -49,6 +49,7 @@ pub mod history_source;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod launch;
 pub mod mpris;
 pub mod nav_stack;
 pub mod offscreen;
