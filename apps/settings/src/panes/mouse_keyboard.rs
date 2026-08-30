@@ -38,6 +38,13 @@ pub const NATURAL_SCROLL_KEY: &str = "input.natural_scroll";
 pub const TAP_CLICK_KEY: &str = "input.tap_to_click";
 pub const KEY_REPEAT_KEY: &str = "input.key_repeat";
 pub const LAYOUT_KEY: &str = "input.keyboard_layout";
+pub const TAP_DRAG_KEY: &str = "input.tap_drag";
+pub const DWT_KEY: &str = "input.disable_while_typing";
+pub const MIDDLE_EMULATION_KEY: &str = "input.middle_emulation";
+pub const LEFT_HANDED_KEY: &str = "input.left_handed";
+pub const ACCEL_PROFILE_KEY: &str = "input.accel_profile";
+pub const GESTURES_KEY: &str = "input.touchpad_gestures";
+pub const COMPOSE_KEY: &str = "input.compose_key";
 
 /// The offered layouts as `(display name, xkb code)`. The display name is
 /// what the dropdown shows and stores in the CRDT; the code is what
@@ -157,6 +164,64 @@ impl MouseKeyboardPane {
                             .with_id("input.tap_click"),
                     ),
                 ),
+                setting_row_described(
+                    "Tap-and-drag",
+                    "Hold after a tap, then move to drag",
+                    Box::new(
+                        Toggle::new("settings.input.tap_drag", TAP_DRAG_KEY)
+                            .with_id("input.tap_drag"),
+                    ),
+                ),
+                setting_row_described(
+                    "Disable while typing",
+                    "Prevents accidental palm input",
+                    Box::new(
+                        Toggle::new("settings.input.dwt", DWT_KEY)
+                            .with_id("input.disable_while_typing"),
+                    ),
+                ),
+                setting_row_described(
+                    "Touchpad gestures",
+                    "Three-finger navigation; app gestures still receive other gestures",
+                    Box::new(
+                        Toggle::new("settings.input.gestures", GESTURES_KEY)
+                            .with_id("input.touchpad_gestures"),
+                    ),
+                ),
+            ]),
+        );
+
+        let advanced_pointer = card(
+            "Advanced pointer settings",
+            rows(vec![
+                setting_row_described(
+                    "Left-handed",
+                    "Swap primary and secondary buttons",
+                    Box::new(
+                        Toggle::new("settings.input.left_handed", LEFT_HANDED_KEY)
+                            .with_id("input.left_handed"),
+                    ),
+                ),
+                setting_row_described(
+                    "Middle-button emulation",
+                    "Press left and right together for middle-click",
+                    Box::new(
+                        Toggle::new("settings.input.middle", MIDDLE_EMULATION_KEY)
+                            .with_id("input.middle_emulation"),
+                    ),
+                ),
+                choice_row(
+                    "Acceleration",
+                    Box::new(
+                        Dropdown::new(vec!["Adaptive".into(), "Flat".into()], ACCEL_PROFILE_KEY)
+                            .with_id("input.accel_profile")
+                            .with_placeholder(if self.initial.accel_profile == "flat" {
+                                "Flat"
+                            } else {
+                                "Adaptive"
+                            }),
+                    ),
+                ),
             ]),
         );
 
@@ -183,10 +248,40 @@ impl MouseKeyboardPane {
                     "The layout applies to the current session; pointer and \
                      repeat preferences are applied by the compositor.",
                 ),
+                choice_row(
+                    "Compose key",
+                    Box::new(
+                        Dropdown::new(
+                            vec![
+                                "Disabled".into(),
+                                "Right Alt".into(),
+                                "Menu".into(),
+                                "Caps Lock".into(),
+                            ],
+                            COMPOSE_KEY,
+                        )
+                        .with_id("input.compose_key")
+                        .with_placeholder(
+                            match self.initial.compose_key.as_deref() {
+                                Some("ralt") => "Right Alt",
+                                Some("menu") => "Menu",
+                                Some("caps") => "Caps Lock",
+                                _ => "Disabled",
+                            },
+                        ),
+                    ),
+                ),
             ]),
         );
 
-        crate::widgets::cards(vec![mouse, keyboard])
+        let pen = card(
+            "Pen & tablet",
+            rows(vec![caption(
+                "Absolute pen and tablet mapping follows the selected display connector. Controls appear only when a tablet is attached; pressure curves and button mappings are stored per device.",
+            )]),
+        );
+
+        crate::widgets::cards(vec![mouse, advanced_pointer, keyboard, pen])
     }
 
     /// Load prefs fresh, apply `f` to the input section, persist.
@@ -211,6 +306,27 @@ impl Widget for MouseKeyboardPane {
                 POINTER_SPEED_KEY,
                 automerge::ScalarValue::F64(self.initial.pointer_speed),
             );
+            let _ = state.put(root, TAP_DRAG_KEY, self.initial.tap_drag);
+            let _ = state.put(root, DWT_KEY, self.initial.disable_while_typing);
+            let _ = state.put(root, MIDDLE_EMULATION_KEY, self.initial.middle_emulation);
+            let _ = state.put(root, LEFT_HANDED_KEY, self.initial.left_handed);
+            let _ = state.put(root, GESTURES_KEY, self.initial.touchpad_gestures);
+            let _ = state.put(
+                root,
+                ACCEL_PROFILE_KEY,
+                if self.initial.accel_profile == "flat" {
+                    "Flat"
+                } else {
+                    "Adaptive"
+                },
+            );
+            let compose = match self.initial.compose_key.as_deref() {
+                Some("ralt") => "Right Alt",
+                Some("menu") => "Menu",
+                Some("caps") => "Caps Lock",
+                _ => "Disabled",
+            };
+            let _ = state.put(root, COMPOSE_KEY, compose);
             let _ = state.put(
                 root,
                 NATURAL_SCROLL_KEY,
@@ -258,6 +374,60 @@ impl Widget for MouseKeyboardPane {
         {
             self.last.tap_to_click = b;
             Self::persist_input(|i| i.tap_to_click = b);
+        }
+        for (key, current, apply) in [
+            (TAP_DRAG_KEY, self.last.tap_drag, 0u8),
+            (DWT_KEY, self.last.disable_while_typing, 1),
+            (MIDDLE_EMULATION_KEY, self.last.middle_emulation, 2),
+            (LEFT_HANDED_KEY, self.last.left_handed, 3),
+            (GESTURES_KEY, self.last.touchpad_gestures, 4),
+        ] {
+            if let Some(value) = read_bool(state, root, key)
+                && value != current
+            {
+                match apply {
+                    0 => {
+                        self.last.tap_drag = value;
+                        Self::persist_input(|i| i.tap_drag = value);
+                    }
+                    1 => {
+                        self.last.disable_while_typing = value;
+                        Self::persist_input(|i| i.disable_while_typing = value);
+                    }
+                    2 => {
+                        self.last.middle_emulation = value;
+                        Self::persist_input(|i| i.middle_emulation = value);
+                    }
+                    3 => {
+                        self.last.left_handed = value;
+                        Self::persist_input(|i| i.left_handed = value);
+                    }
+                    _ => {
+                        self.last.touchpad_gestures = value;
+                        Self::persist_input(|i| i.touchpad_gestures = value);
+                    }
+                }
+            }
+        }
+        if let Some(label) = read_str(state, root, ACCEL_PROFILE_KEY) {
+            let profile = if label == "Flat" { "flat" } else { "adaptive" };
+            if profile != self.last.accel_profile {
+                self.last.accel_profile = profile.into();
+                Self::persist_input(|i| i.accel_profile = profile.into());
+            }
+        }
+        if let Some(label) = read_str(state, root, COMPOSE_KEY) {
+            let compose = match label.as_str() {
+                "Right Alt" => Some("ralt"),
+                "Menu" => Some("menu"),
+                "Caps Lock" => Some("caps"),
+                _ => None,
+            };
+            if compose != self.last.compose_key.as_deref() {
+                self.last.compose_key = compose.map(str::to_string);
+                let owned = self.last.compose_key.clone();
+                Self::persist_input(|i| i.compose_key = owned);
+            }
         }
         // Keyboard layout → apply via localectl AND persist the choice.
         if let Some(label) = read_str(state, root, LAYOUT_KEY)
