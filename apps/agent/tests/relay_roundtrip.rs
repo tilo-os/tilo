@@ -208,6 +208,7 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
 
     // The agent, on its own thread, once.
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: room,
@@ -430,6 +431,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
 
     // A room, and no record to tell the room's documents apart.
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: room,
@@ -582,6 +584,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     }
 
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: Uuid::new_v4(),
@@ -658,6 +661,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: room,
@@ -780,6 +784,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: room,

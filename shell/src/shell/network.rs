@@ -200,8 +200,15 @@ pub struct InboundAppPresence {
     pub peer: u64,
     pub app_id: String,
     pub cluster_id: String,
-    /// The serialised `CollabRequest::Presence`, opaque here.
-    pub frame: Vec<u8>,
+    pub payload: InboundAppPresencePayload,
+}
+
+/// Typed peer presence, plus the one-release read seam for peers that still
+/// embed a legacy JSON request. New publishes never construct `LegacyJson`.
+#[derive(Debug, Clone)]
+pub enum InboundAppPresencePayload {
+    Typed(collab_types::PeerPresence),
+    LegacyJson(Vec<u8>),
 }
 
 /// One received *signed* app-CRDT envelope. Distinct from
@@ -445,6 +452,7 @@ impl ShellNetwork {
             NeighbourMsg::AppCrdtIncremental { cluster_id, .. }
             | NeighbourMsg::AppCrdtIncrementalSigned { cluster_id, .. }
             | NeighbourMsg::AppPresence { cluster_id, .. }
+            | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
             | NeighbourMsg::AppCrdtSnapshot { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
         };
@@ -676,14 +684,17 @@ impl ShellNetwork {
     /// Publish an app's presence frame to the peers in its room —
     /// without this a peer's caret never reaches another machine, since
     /// the broker's local fan-out only reaches apps on *this* host.
-    /// `frame` is the serialised `CollabRequest::Presence`, passed
-    /// through untouched.
-    pub fn publish_app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
-        let msg = NeighbourMsg::AppPresence {
+    pub fn publish_app_presence(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
+    ) {
+        let msg = NeighbourMsg::AppPresenceV2 {
             peer: self.local_peer_id_hash(),
             app_id,
             cluster_id,
-            frame,
+            presence,
         };
         let _ = self.publish_message(msg);
     }
@@ -702,12 +713,42 @@ impl ShellNetwork {
         cluster_id: String,
         frame: Vec<u8>,
     ) {
+        self.queue_app_presence(
+            peer,
+            app_id,
+            cluster_id,
+            InboundAppPresencePayload::LegacyJson(frame),
+        );
+    }
+
+    pub fn handle_typed_app_presence_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
+    ) {
+        self.queue_app_presence(
+            peer,
+            app_id,
+            cluster_id,
+            InboundAppPresencePayload::Typed(presence),
+        );
+    }
+
+    fn queue_app_presence(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        payload: InboundAppPresencePayload,
+    ) {
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
             buf.push(InboundAppPresence {
                 peer,
                 app_id,
                 cluster_id,
-                frame,
+                payload,
             });
         }
     }
@@ -1187,18 +1228,17 @@ impl ShellNetwork {
                         ui::collaboration::PresencePayload::Arrived,
                         ui::collaboration::PresencePayload::Left,
                     ] {
-                        let frame = ui::collaboration::CollabRequest::Presence {
-                            key: ui::presence::PresenceKey::Workspace {
-                                id: room.to_string(),
-                            },
-                            payload,
+                        let key = ui::presence::PresenceKey::Workspace {
+                            id: room.to_string(),
                         };
-                        if let Ok(frame) = serde_json::to_vec(&frame) {
-                            self.handle_app_presence_message(
+                        if let Some(presence) =
+                            crate::shell::collab_presence::to_peer(&key, &payload)
+                        {
+                            self.handle_typed_app_presence_message(
                                 host_peer,
                                 String::new(),
                                 room.to_string(),
-                                frame,
+                                presence,
                             );
                         }
                     }
@@ -1342,6 +1382,23 @@ impl ShellNetwork {
                             app_id.clone(),
                             cluster_id.clone(),
                             frame.clone(),
+                        );
+                    }
+                    continue;
+                }
+                if let NeighbourMsg::AppPresenceV2 {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref presence,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_typed_app_presence_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            presence.clone(),
                         );
                     }
                     continue;
@@ -1642,25 +1699,20 @@ mod tests {
             2,
             "Arrived + Left prompt a bounded app snapshot refresh"
         );
-        let payloads: Vec<_> = app_events
-            .iter()
-            .map(|event| {
-                serde_json::from_slice::<ui::collaboration::CollabRequest>(&event.frame).unwrap()
-            })
-            .collect();
+        let payloads: Vec<_> = app_events.iter().map(|event| &event.payload).collect();
         assert!(matches!(
             payloads[0],
-            ui::collaboration::CollabRequest::Presence {
-                payload: ui::collaboration::PresencePayload::Arrived,
+            InboundAppPresencePayload::Typed(collab_types::PeerPresence {
+                payload: collab_types::PeerPresencePayload::Arrived,
                 ..
-            }
+            })
         ));
         assert!(matches!(
             payloads[1],
-            ui::collaboration::CollabRequest::Presence {
-                payload: ui::collaboration::PresencePayload::Left,
+            InboundAppPresencePayload::Typed(collab_types::PeerPresence {
+                payload: collab_types::PeerPresencePayload::Left,
                 ..
-            }
+            })
         ));
     }
 

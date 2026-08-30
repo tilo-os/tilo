@@ -170,6 +170,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
     );
     let (mut replica, acted) = run(
         |sock, room| Config {
+            endpoint: None,
             socket: Some(sock),
             app_id: APP.into(),
             cluster: room,
@@ -322,6 +323,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         )
     };
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: room,
@@ -450,6 +452,7 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
     let replica = seed_document_with_image("Scribe: delete the image");
     let (replica, acted) = run(
         |sock, room| Config {
+            endpoint: None,
             socket: Some(sock),
             app_id: APP.into(),
             cluster: room,

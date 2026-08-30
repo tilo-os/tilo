@@ -19,7 +19,12 @@ use crate::wire::Link;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The broker socket; `None` resolves the session default.
+    /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
+    /// the launcher. Normal sessions leave this `None` and inherit the fd.
+    pub endpoint: Option<PathBuf>,
+    /// Legacy JSON broker used only by socket-level characterization tests.
+    /// Production callers leave this `None` and inherit `QOS_SVC_COLLAB_FD`.
+    #[doc(hidden)]
     pub socket: Option<PathBuf>,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
@@ -131,11 +136,25 @@ fn block_key(block_id: &str) -> PresenceKey {
 impl Session {
     /// Connect, announce the route, and ask the room for the document.
     pub fn connect(cfg: Config) -> Result<Self> {
-        let path = cfg
-            .socket
-            .clone()
-            .unwrap_or_else(crate::wire::default_socket_path);
-        let mut link = Link::connect(&path)?;
+        let legacy_test_transport = cfg.socket.is_some();
+        let mut link = match &cfg.socket {
+            Some(path) => Link::connect_legacy(path)?,
+            None => match &cfg.endpoint {
+                Some(path) => Link::connect_endpoint(
+                    path,
+                    &cfg.app_id,
+                    cfg.cluster,
+                    cfg.record.clone(),
+                    Some(cfg.name.clone()),
+                )?,
+                None => Link::connect(
+                    &cfg.app_id,
+                    cfg.cluster,
+                    cfg.record.clone(),
+                    Some(cfg.name.clone()),
+                )?,
+            },
+        };
         // The name here is self-declared, and a self-declared name is
         // spoofable — which is why a *peer's* name is resolved through the
         // room document, under the authority that admitted it, rather than
@@ -144,17 +163,19 @@ impl Session {
         // that the agent is admitted by a capability its inviter granted,
         // so nothing false is being asserted about who is in the room; the
         // name is a label on a participant that was already let in.
-        link.send(&CollabRequest::Hello {
-            app_id: cfg.app_id.clone(),
-            cluster_id: cfg.cluster,
-            record: cfg.record.clone(),
-            handle: Some(cfg.name.clone()),
-        })?;
+        if legacy_test_transport {
+            link.send(&CollabRequest::Hello {
+                app_id: cfg.app_id.clone(),
+                cluster_id: cfg.cluster,
+                record: cfg.record.clone(),
+                handle: Some(cfg.name.clone()),
+            })?;
+        }
         // The late-join handshake: every peer in the room answers an
         // `Arrived` with its full document.
         ask_for_document(&mut link)?;
         tracing::info!(
-            socket = %path.display(),
+            transport = if legacy_test_transport { "legacy-test-socket" } else if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
             app = %cfg.app_id,
             room = %cfg.cluster,
             record = ?cfg.record,

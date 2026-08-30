@@ -31,7 +31,7 @@
 //! | `CollabEvent::RemotePresenceUpdate { .. }`       | [`Inbound::Presence`]          |
 //!
 //! Keeping the mapping here — rather than importing `ui` — mirrors the
-//! `collab-bridge` crate, which likewise translates the toolkit
+//! native shell collaboration service, which likewise translates the toolkit
 //! protocol without pulling `ui`/wgpu into a transport crate.
 //!
 //! # Presence attribution

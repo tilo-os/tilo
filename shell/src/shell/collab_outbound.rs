@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use collab_types::{ArtifactId, SignedOp};
+use collab_types::{ArtifactId, PeerPresence, SignedOp};
 
 use crate::shell::collab_broker::CrdtRoute;
 use crate::shell::network::ShellNetwork;
@@ -47,10 +47,8 @@ pub trait PeerPublishSink: Send + Sync {
         data: Vec<u8>,
     );
 
-    /// Republish a presence frame — a serialised `CollabRequest::Presence`,
-    /// so a caret published over capnp and one over JSON are the same
-    /// bytes on the wire.
-    fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>);
+    /// Republish typed presence independently of the local app transport.
+    fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence);
 
     /// Ask the room whether anyone still holds a range of history.
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
@@ -87,8 +85,8 @@ impl PeerPublishSink for ShellNetwork {
         self.publish_app_crdt_snapshot(app_id, cluster_id, record_id, data);
     }
 
-    fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
-        self.publish_app_presence(app_id, cluster_id, frame);
+    fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence) {
+        self.publish_app_presence(app_id, cluster_id, presence);
     }
 
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
@@ -236,11 +234,16 @@ impl PeerPublisher {
     /// The app id rides along so the receiver can attribute the caret;
     /// the record is dropped since "who else is here" is a room fact,
     /// and a peer editing a different document is still a legitimate audience.
-    pub fn presence(&self, route: &CrdtRoute, transport: Transport, frame: Vec<u8>) -> bool {
+    pub fn presence(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        presence: PeerPresence,
+    ) -> bool {
         let Some(sink) = self.ready_quietly(route, transport, "presence") else {
             return false;
         };
-        sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), frame);
+        sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), presence);
         true
     }
 
@@ -341,7 +344,7 @@ pub mod recording {
     use std::sync::Mutex;
 
     /// What actually reached the wire, in order.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq)]
     pub enum Sent {
         Incremental {
             app_id: String,
@@ -364,7 +367,7 @@ pub mod recording {
         Presence {
             app_id: String,
             cluster_id: String,
-            frame: Vec<u8>,
+            presence: PeerPresence,
         },
         Scrollback {
             before_seq: u64,
@@ -434,11 +437,11 @@ pub mod recording {
             });
         }
 
-        fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
+        fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence) {
             self.sent.lock().unwrap().push(Sent::Presence {
                 app_id,
                 cluster_id,
-                frame,
+                presence,
             });
         }
 
@@ -460,6 +463,13 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let pubr = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
         (pubr, sink)
+    }
+
+    fn presence() -> PeerPresence {
+        PeerPresence {
+            key: vec![1, 2, 3],
+            payload: collab_types::PeerPresencePayload::Arrived,
+        }
     }
 
     #[test]
@@ -530,7 +540,7 @@ mod tests {
                 "route {route:?} addresses nobody, so no snapshot either",
             );
             assert!(
-                !pubr.presence(&route, Transport::Json, vec![7]),
+                !pubr.presence(&route, Transport::Json, presence()),
                 "route {route:?} addresses nobody, so no presence either",
             );
             assert!(
@@ -554,7 +564,7 @@ mod tests {
         assert!(!pubr.is_wired());
         assert!(!pubr.document_incremental(&route, Transport::Capnp, vec![1]));
         assert!(!pubr.document_snapshot(&route, Transport::Capnp, vec![1]));
-        assert!(!pubr.presence(&route, Transport::Capnp, vec![1]));
+        assert!(!pubr.presence(&route, Transport::Capnp, presence()));
         assert!(!pubr.scrollback_request(
             &route,
             Transport::Capnp,
@@ -604,13 +614,14 @@ mod tests {
     fn presence_reaches_the_room_and_leaves_the_record_behind() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
-        assert!(pubr.presence(&route, Transport::Capnp, vec![1, 2, 3]));
+        let presence = presence();
+        assert!(pubr.presence(&route, Transport::Capnp, presence.clone()));
         assert_eq!(
             sink.drain(),
             vec![Sent::Presence {
                 app_id: "words".into(),
                 cluster_id: "77777777-7777-4777-8777-777777777777".into(),
-                frame: vec![1, 2, 3],
+                presence,
             }],
         );
     }

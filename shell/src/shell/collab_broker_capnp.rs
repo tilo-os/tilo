@@ -1,6 +1,6 @@
 // `Promise::from_future(async move {..})` refines capnp-rpc's declared
 // `Promise<.., capnp::Error>` return type — the intended pattern, but it
-// trips `refining_impl_trait`. Same pin as the collab-bridge crate.
+// trips `refining_impl_trait`.
 #![allow(refining_impl_trait)]
 
 //! Native Cap'n Proto server for the qOS collaboration broker.
@@ -37,7 +37,7 @@ use runtime_collab::raw::{
     OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
     presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
 
 use crate::shell::collab_broker::{
@@ -164,19 +164,18 @@ impl CapnpBrokerState {
         &self.publisher
     }
 
-    /// Encodes as the serialised `CollabRequest::Presence` the receiving
-    /// drain decodes, so a caret published over capnp and one published
-    /// over JSON are the same bytes on the wire.
+    /// Converts once into the transport-neutral peer presence envelope.
+    /// Peer replication does not embed either local RPC dialect.
     fn publish_presence(&self, route: &CrdtRoute, key: PresenceKey, payload: PresencePayload) {
-        let Ok(frame) = serde_json::to_vec(&CollabRequest::Presence { key, payload }) else {
+        let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) else {
             tracing::warn!(
                 channel = %route.channel_key(),
-                "capnp broker: a presence frame would not encode; peers will \
+                "capnp broker: presence would not encode; peers will \
                  not see this person move",
             );
             return;
         };
-        self.publisher().presence(route, Transport::Capnp, frame);
+        self.publisher().presence(route, Transport::Capnp, presence);
     }
 
     /// Delegates to the shared [`PeerTable`] so ids never collide with
@@ -1309,14 +1308,17 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use ui::collaboration::CollabRequest;
 
-    use crate::shell::collab_broker::{BrokerHandle, spawn_full, spawn_with_publisher};
+    use crate::shell::collab_broker::{
+        BrokerHandle, spawn_full, spawn_native, spawn_with_publisher,
+    };
     use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
 
     fn unique_paths(label: &str) -> (PathBuf, PathBuf) {
         let pid = std::process::id();
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let json = std::env::temp_dir().join(format!("qos-broker-{label}-{pid}-{nanos}.json.sock"));
         let capnp =
             std::env::temp_dir().join(format!("qos-broker-{label}-{pid}-{nanos}.capnp.sock"));
@@ -1372,8 +1374,8 @@ mod tests {
             issued_by: owner_pk,
             subject: editor_pk,
             claims: vec![],
-            valid_from: now - Duration::from_hours(8760),
-            valid_until: now + Duration::from_hours(87600),
+            valid_from: now - Duration::from_secs(365 * 24 * 3600),
+            valid_until: now + Duration::from_secs(10 * 365 * 24 * 3600),
             signature: Signature::from_bytes([0u8; 64]),
         };
         let sb = att.signing_bytes().expect("attestation signing_bytes");
@@ -1436,8 +1438,8 @@ mod tests {
         );
 
         let (op_tx, op_rx) = std::sync::mpsc::channel::<(Vec<u8>, String)>();
-        let capnp_path_clone = capnp_path;
-        let channel_id = channel_id;
+        let capnp_path_clone = capnp_path.clone();
+        let channel_id = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1493,7 +1495,7 @@ mod tests {
         write_json_frame(
             &mut legacy,
             &CollabRequest::SignedSyncIncremental {
-                envelope: Box::new(op),
+                envelope: Box::new(op.clone()),
             },
         );
 
@@ -1544,7 +1546,7 @@ mod tests {
             b"hi-legacy",
         );
         let op_bytes = postcard::to_stdvec(&op).expect("postcard signed op");
-        let capnp_path_clone = capnp_path;
+        let capnp_path_clone = capnp_path.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1643,8 +1645,8 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(400));
 
-        let capnp_path_pub = capnp_path;
-        let channel_id_pub = channel_id;
+        let capnp_path_pub = capnp_path.clone();
+        let channel_id_pub = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1736,7 +1738,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         let artifact_bytes = artifact.0.as_bytes().to_vec();
-        let capnp_path_clone = capnp_path;
+        let capnp_path_clone = capnp_path.clone();
         let (batch_tx, batch_rx) = std::sync::mpsc::channel::<runtime_collab::ScrollbackBatch>();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -1981,8 +1983,8 @@ mod tests {
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
         let net = Arc::new(net);
         let net_for_arrival = Arc::clone(&net);
-        let handle =
-            spawn_full(json_path, Some(capnp_path.clone()), Some(net)).expect("spawn broker");
+        let handle = spawn_full(json_path.clone(), Some(capnp_path.clone()), Some(net))
+            .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
@@ -1990,8 +1992,8 @@ mod tests {
 
         net_for_arrival.note_snapshot_request(&cluster.to_string());
 
-        let capnp_path_clone = capnp_path;
-        let joined = channel_id;
+        let capnp_path_clone = capnp_path.clone();
+        let joined = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2049,15 +2051,19 @@ mod tests {
         let (json_path, capnp_path) = unique_paths("capnp-outbound");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_full(json_path, Some(capnp_path.clone()), Some(Arc::new(net)))
-            .expect("spawn broker");
+        let handle = spawn_full(
+            json_path.clone(),
+            Some(capnp_path.clone()),
+            Some(Arc::new(net)),
+        )
+        .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
             CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md").channel_key();
 
-        let capnp_path_clone = capnp_path;
-        let joined = channel_id;
+        let capnp_path_clone = capnp_path.clone();
+        let joined = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2134,8 +2140,12 @@ mod tests {
         let (json_path, capnp_path) = unique_paths("capnp-unaddressed");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_full(json_path, Some(capnp_path.clone()), Some(Arc::new(net)))
-            .expect("spawn broker");
+        let handle = spawn_full(
+            json_path.clone(),
+            Some(capnp_path.clone()),
+            Some(Arc::new(net)),
+        )
+        .expect("spawn broker");
 
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
@@ -2144,7 +2154,7 @@ mod tests {
         )
         .channel_key();
 
-        let capnp_path_clone = capnp_path;
+        let capnp_path_clone = capnp_path.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2180,7 +2190,11 @@ mod tests {
     #[test]
     fn an_unsigned_frame_reaches_a_subscriber_tagged_with_its_kind() {
         let (json_path, capnp_path) = unique_paths("capnp-unsigned-kind");
-        let handle = spawn_full(json_path, Some(capnp_path.clone()), None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), None).expect("spawn typed broker");
+        assert!(
+            !json_path.exists(),
+            "the production typed service must not create a legacy socket"
+        );
 
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
@@ -2190,7 +2204,7 @@ mod tests {
         .channel_key();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let capnp_path_clone = capnp_path;
+        let capnp_path_clone = capnp_path.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2268,15 +2282,16 @@ mod tests {
     #[test]
     fn a_documents_delta_reaches_its_own_app_and_not_the_app_beside_it() {
         let (json_path, capnp_path) = unique_paths("capnp-app-scoped");
-        let handle = spawn_full(json_path, Some(capnp_path.clone()), None).expect("spawn broker");
+        let handle =
+            spawn_full(json_path.clone(), Some(capnp_path.clone()), None).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let words = CrdtRoute::app("dev.qos.word-processor", cluster.clone()).channel_key();
         let files = CrdtRoute::app("dev.qos.file-explorer", cluster.clone()).channel_key();
-        let room = CrdtRoute::cluster(cluster).channel_key();
+        let room = CrdtRoute::cluster(cluster.clone()).channel_key();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let capnp_path_clone = capnp_path;
+        let capnp_path_clone = capnp_path.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

@@ -48,6 +48,7 @@ pub mod event;
 pub mod identity;
 pub mod invite;
 pub mod op;
+pub mod peer;
 pub mod redaction;
 pub mod role;
 pub mod space;
@@ -80,6 +81,7 @@ pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
 pub use op::{EncryptionMetadata, SignedOp};
+pub use peer::{PeerPresence, PeerPresencePayload};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,

@@ -181,8 +181,8 @@ def main() -> None:
         display_file = run / "qos-session" / "wayland-display"
         wait_for(lambda: display_file.exists(), 30, "the Wayland display file", comp_log)
         display = display_file.read_text().strip()
-        broker = run / "qos" / "services" / "collab-json.sock"
-        wait_for(lambda: broker.exists(), 30, "the JSON broker socket", comp_log)
+        broker = run / "qos" / "services" / "collab.sock"
+        wait_for(lambda: broker.exists(), 30, "the typed broker socket", comp_log)
 
         state = control(ctl, {"op": "state_dump"})["state"]
         tree = state["workspace_tree"]
@@ -190,25 +190,28 @@ def main() -> None:
         room = ws["room"]
         print(f"room {room}; display {display}")
 
-        # The word processor, as a client of this compositor, on the JSON
-        # broker, announcing the room and its own handle — the env the
-        # launcher would export for it.
+        # The word processor inherits the same connected service fd the real
+        # launcher supplies.
         control(ctl, {"op": "place_next_window", "app_id": "dev.qos.word-processor"})
         wp_env = dict(env)
         wp_env.update({
             "WAYLAND_DISPLAY": display,
-            "QUICK_COLLAB_SOCK": str(broker),
             "QOS_PACKAGE_ID": "dev.qos.word-processor",
             "QOS_WORKSPACE_ID": room,
             "QUICK_APP_ID": "ada",
             "QOS_USER_ID": "ada",
             "RUST_LOG": "warn",
         })
+        wp_service = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        wp_service.connect(str(broker))
+        wp_env["QOS_SVC_COLLAB_FD"] = str(wp_service.fileno())
         wp = subprocess.Popen(
             [str(BIN / "word-processor"), str(brief)],
             env=wp_env, stdout=subprocess.DEVNULL, stderr=open(wp_log, "w"),
+            pass_fds=(wp_service.fileno(),),
             preexec_fn=die_with_parent(),
         )
+        wp_service.close()
         procs.append(track(wp))
 
         def tile():
@@ -222,7 +225,7 @@ def main() -> None:
 
         # The agent: same room, same record, its own name.
         record = f"file:{brief.resolve()}"
-        argv = [str(BIN / "qos-agent"), "--socket", str(broker), "--workspace", room,
+        argv = [str(BIN / "qos-agent"), "--endpoint", str(broker), "--workspace", room,
                 "--record", record, "--name", "Claude", "--once", "--pace-ms", "600"]
         if args.no_model:
             argv.append("--no-model")
