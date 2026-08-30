@@ -8,7 +8,7 @@ use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +29,7 @@ impl WorkspaceView {
         let wc = workspace_count.max(1);
         Self {
             workspace_count: wc,
-            active_index: active_index.min(wc - 1),
+            active_index: active_index.min(wc.saturating_sub(1)),
             slide: Spring::new(
                 0.0,
                 SpringParams {
@@ -55,17 +55,23 @@ impl WorkspaceView {
                 if self.active_index == 0 {
                     return false;
                 }
-                (self.active_index - 1, -1.0_f32)
+                (self.active_index.saturating_sub(1), -1.0_f32)
             }
             WorkspaceSwitchDirection::Down => {
-                if self.active_index + 1 >= self.workspace_count {
+                if self.active_index.saturating_add(1) >= self.workspace_count {
                     return false;
                 }
-                (self.active_index + 1, 1.0_f32)
+                (self.active_index.saturating_add(1), 1.0_f32)
             }
         };
         self.active_index = new_idx;
         // Kick the slide spring: snap to incoming offset then relax to 0.
+        // The workspace view's own on-screen height is always many orders
+        // of magnitude below f32::MAX, so this narrowing can't truncate.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "screen-space pixel height never approaches f32::MAX"
+        )]
         let h = self.rect.height().max(300.0) as f32;
         self.slide.snap(direction_sign * h);
         self.slide.set_target(0.0);
@@ -126,7 +132,7 @@ impl Widget for WorkspaceView {
         // to re-paint it.
         let offset = self.slide.value();
         if offset.abs() > f32::EPSILON {
-            let t = transform * Affine::translate((0.0, f64::from(offset)));
+            let t = transform.pre_translate(Vec2::new(0.0, f64::from(offset)));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 t,
