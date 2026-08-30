@@ -91,6 +91,7 @@ impl Toolbar {
         }
     }
 
+    #[must_use]
     pub fn push_button(mut self, label: &str, on_click: impl FnMut() + 'static) -> Self {
         self.items.push(ToolbarItem::Button {
             label: label.to_string(),
@@ -100,12 +101,14 @@ impl Toolbar {
         self
     }
 
+    #[must_use]
     pub fn push_separator(mut self) -> Self {
         self.items.push(ToolbarItem::Separator);
         self.item_hover.push(false);
         self
     }
 
+    #[must_use]
     pub fn push_spacer(mut self) -> Self {
         self.items.push(ToolbarItem::Spacer);
         self.item_hover.push(false);
@@ -148,7 +151,7 @@ impl Toolbar {
             ToolbarItem::Button { label, .. } => {
                 let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
                 let text_axis = match self.orientation {
-                    Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
+                    Orientation::Horizontal => count_to_f64(label.chars().count()) * APPROX_CHAR_W,
                     Orientation::Vertical => f64::from(theme.tokens.typography.scale.sm),
                 };
                 (text_axis + pad).max(f64::from(theme.tokens.spacing.s8))
@@ -188,7 +191,7 @@ impl Toolbar {
                 break;
             }
             used += e;
-            n += 1;
+            n = n.saturating_add(1);
         }
         // Collapsing everything leaves a toolbar that is only a `…` chip —
         // honest for a genuinely tiny strip, but never collapse when the
@@ -202,6 +205,191 @@ impl Toolbar {
     pub fn is_overflow_open(&self) -> bool {
         self.overflow_open
     }
+
+    /// `build_layout` only has the theme (not the final width);
+    /// `apply_layout` has the post-taffy width, so the overflow fit is
+    /// decided here, using the same approximate, theme-free extents as
+    /// [`Self::place_visible_items`] below so the two agree. Split out of
+    /// `apply_layout` to keep it under clippy's line budget.
+    fn decide_visible_count(&self, axis_total: f64) -> usize {
+        let item_axis = |it: &ToolbarItem| -> f64 {
+            match it {
+                ToolbarItem::Spacer => 0.0,
+                ToolbarItem::Separator => SEPARATOR_LINE_PX + 8.0,
+                ToolbarItem::Button { label, .. } => {
+                    let text_axis = match self.orientation {
+                        Orientation::Horizontal => {
+                            count_to_f64(label.chars().count()) * APPROX_CHAR_W
+                        }
+                        Orientation::Vertical => 16.0,
+                    };
+                    (text_axis + 16.0).max(32.0)
+                }
+            }
+        };
+        let total_extent: f64 = self.items.iter().map(&item_axis).sum();
+        if total_extent <= axis_total {
+            return self.items.len();
+        }
+        let budget = (axis_total - OVERFLOW_CHIP_AXIS_PX).max(0.0);
+        let mut acc = 0.0;
+        let mut fit = 0usize;
+        for it in &self.items {
+            let e = item_axis(it);
+            if acc + e > budget {
+                break;
+            }
+            acc += e;
+            fit = fit.saturating_add(1);
+        }
+        fit
+    }
+
+    /// Per-item axis extent for the first `n_visible` items, plus how many
+    /// of them are spacers — the two inputs [`Self::place_visible_items`]
+    /// needs to turn a visible-count decision into rects. Split out of
+    /// `place_visible_items` to keep it under clippy's line budget.
+    fn measure_visible_axes(&self, n_visible: usize) -> (Vec<f64>, usize) {
+        let mut measured_axes = vec![0.0_f64; n_visible];
+        let mut spacer_count = 0usize;
+        for (i, it) in self.items.iter().take(n_visible).enumerate() {
+            match it {
+                ToolbarItem::Spacer => {
+                    spacer_count = spacer_count.saturating_add(1);
+                }
+                ToolbarItem::Separator => {
+                    if let Some(slot) = measured_axes.get_mut(i) {
+                        *slot = SEPARATOR_LINE_PX + 8.0;
+                    }
+                }
+                ToolbarItem::Button { label, .. } => {
+                    let pad = 16.0;
+                    let text_axis = match self.orientation {
+                        Orientation::Horizontal => {
+                            count_to_f64(label.chars().count()) * APPROX_CHAR_W
+                        }
+                        Orientation::Vertical => 16.0,
+                    };
+                    if let Some(slot) = measured_axes.get_mut(i) {
+                        *slot = (text_axis + pad).max(32.0);
+                    }
+                }
+            }
+        }
+        (measured_axes, spacer_count)
+    }
+
+    /// Places `item_rects` (and the overflow chip rect) for the
+    /// `self.visible_count` decided by [`Self::decide_visible_count`].
+    /// `apply_layout` has no `Theme`, so extents are recomputed here with
+    /// the same hardcoded constants as `decide_visible_count` rather than
+    /// calling `measure_item_axis` — approximate, but deterministic and
+    /// consistent with the overflow decision just made. Split out of
+    /// `apply_layout` to keep it under clippy's line budget.
+    fn place_visible_items(&mut self, axis_total: f64) {
+        let n_visible = self.visible_count.min(self.items.len());
+        let overflow = self.has_overflow();
+
+        let (measured_axes, spacer_count) = self.measure_visible_axes(n_visible);
+        let used: f64 = measured_axes.iter().sum();
+        let chip_reserve = if overflow { OVERFLOW_CHIP_AXIS_PX } else { 0.0 };
+        let residual = (axis_total - used - chip_reserve).max(0.0);
+        let per_spacer = if spacer_count > 0 {
+            residual / count_to_f64(spacer_count)
+        } else {
+            0.0
+        };
+
+        let cross_start = match self.orientation {
+            Orientation::Horizontal => self.rect.y0,
+            Orientation::Vertical => self.rect.x0,
+        };
+        let cross_end = match self.orientation {
+            Orientation::Horizontal => self.rect.y1,
+            Orientation::Vertical => self.rect.x1,
+        };
+
+        let mut axis_cursor = match self.orientation {
+            Orientation::Horizontal => self.rect.x0,
+            Orientation::Vertical => self.rect.y0,
+        };
+
+        for (i, item) in self.items.iter().take(n_visible).enumerate() {
+            let extent = if matches!(item, ToolbarItem::Spacer) {
+                per_spacer
+            } else {
+                measured_axes.get(i).copied().unwrap_or(0.0)
+            };
+            let r = match self.orientation {
+                Orientation::Horizontal => {
+                    Rect::new(axis_cursor, cross_start, axis_cursor + extent, cross_end)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cross_start, axis_cursor, cross_end, axis_cursor + extent)
+                }
+            };
+            if let Some(slot) = self.item_rects.get_mut(i) {
+                *slot = r;
+            }
+            axis_cursor += extent;
+        }
+        // Items beyond `visible_count` keep `Rect::ZERO`: not rendered as
+        // their own rect, and any hover targeting them is silently
+        // dropped on the next `handle_event` (CursorMoved reads
+        // `item_rects`).
+        for r in self.item_rects.iter_mut().skip(n_visible) {
+            *r = Rect::ZERO;
+        }
+
+        if overflow {
+            self.overflow_rect = match self.orientation {
+                Orientation::Horizontal => Rect::new(
+                    self.rect.x1 - OVERFLOW_CHIP_AXIS_PX,
+                    cross_start,
+                    self.rect.x1,
+                    cross_end,
+                ),
+                Orientation::Vertical => Rect::new(
+                    cross_start,
+                    self.rect.y1 - OVERFLOW_CHIP_AXIS_PX,
+                    cross_end,
+                    self.rect.y1,
+                ),
+            };
+        } else {
+            self.overflow_rect = Rect::ZERO;
+        }
+    }
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
+/// pure `f64` matrix multiply-add with no overflow trap, so it cannot
+/// panic regardless of operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// Widens a character/spacer count to `f64` for layout math. Goes through
+/// `u32` (exactly representable in `f64`) with a saturating fallback
+/// rather than an `as` cast, so it's lossless for any realistic label
+/// length or item count.
+fn count_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Narrows a layout dimension to `f32` for taffy. Every call site is a
+/// toolbar axis extent, always many orders of magnitude below `f32::MAX`,
+/// so the truncation the lint warns about can't actually occur.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "toolbar axis extents never approach f32::MAX"
+)]
+fn to_f32(v: f64) -> f32 {
+    v as f32
 }
 
 impl Widget for Toolbar {
@@ -267,133 +455,8 @@ impl Widget for Toolbar {
             Orientation::Vertical => self.rect.height(),
         };
 
-        // build_layout only has the theme (not the final width); apply_layout
-        // has the post-taffy width, so the overflow fit is decided here,
-        // using the same approximate, theme-free extents as the placement
-        // pass below so the two agree.
-        let item_axis = |it: &ToolbarItem| -> f64 {
-            match it {
-                ToolbarItem::Spacer => 0.0,
-                ToolbarItem::Separator => SEPARATOR_LINE_PX + 8.0,
-                ToolbarItem::Button { label, .. } => {
-                    let text_axis = match self.orientation {
-                        Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
-                        Orientation::Vertical => 16.0,
-                    };
-                    (text_axis + 16.0).max(32.0)
-                }
-            }
-        };
-        let total_extent: f64 = self.items.iter().map(&item_axis).sum();
-        if total_extent <= axis_total {
-            self.visible_count = self.items.len();
-        } else {
-            let budget = (axis_total - OVERFLOW_CHIP_AXIS_PX).max(0.0);
-            let mut acc = 0.0;
-            let mut fit = 0usize;
-            for it in &self.items {
-                let e = item_axis(it);
-                if acc + e > budget {
-                    break;
-                }
-                acc += e;
-                fit += 1;
-            }
-            self.visible_count = fit;
-        }
-
-        let n_visible = self.visible_count.min(self.items.len());
-        let overflow = self.has_overflow();
-
-        // `apply_layout` has no `Theme`, so extents are recomputed here
-        // with the same hardcoded constants as `item_axis` above rather
-        // than calling `measure_item_axis` — approximate, but deterministic
-        // and consistent with the overflow decision just made.
-        let mut measured_axes = vec![0.0_f64; n_visible];
-        let mut spacer_count = 0usize;
-        for (i, it) in self.items.iter().take(n_visible).enumerate() {
-            match it {
-                ToolbarItem::Spacer => {
-                    spacer_count += 1;
-                }
-                ToolbarItem::Separator => {
-                    measured_axes[i] = SEPARATOR_LINE_PX + 8.0;
-                }
-                ToolbarItem::Button { label, .. } => {
-                    let pad = 16.0;
-                    let text_axis = match self.orientation {
-                        Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
-                        Orientation::Vertical => 16.0,
-                    };
-                    measured_axes[i] = (text_axis + pad).max(32.0);
-                }
-            }
-        }
-        let used: f64 = measured_axes.iter().sum();
-        let chip_reserve = if overflow { OVERFLOW_CHIP_AXIS_PX } else { 0.0 };
-        let residual = (axis_total - used - chip_reserve).max(0.0);
-        let per_spacer = if spacer_count > 0 {
-            residual / spacer_count as f64
-        } else {
-            0.0
-        };
-
-        let cross_start = match self.orientation {
-            Orientation::Horizontal => self.rect.y0,
-            Orientation::Vertical => self.rect.x0,
-        };
-        let cross_end = match self.orientation {
-            Orientation::Horizontal => self.rect.y1,
-            Orientation::Vertical => self.rect.x1,
-        };
-
-        let mut axis_cursor = match self.orientation {
-            Orientation::Horizontal => self.rect.x0,
-            Orientation::Vertical => self.rect.y0,
-        };
-
-        for (i, item) in self.items.iter().take(n_visible).enumerate() {
-            let extent = if matches!(item, ToolbarItem::Spacer) {
-                per_spacer
-            } else {
-                measured_axes[i]
-            };
-            let r = match self.orientation {
-                Orientation::Horizontal => {
-                    Rect::new(axis_cursor, cross_start, axis_cursor + extent, cross_end)
-                }
-                Orientation::Vertical => {
-                    Rect::new(cross_start, axis_cursor, cross_end, axis_cursor + extent)
-                }
-            };
-            self.item_rects[i] = r;
-            axis_cursor += extent;
-        }
-        // Items beyond `visible_count` keep `Rect::ZERO`: not rendered as
-        // their own rect, and any hover targeting them is silently dropped
-        // on the next `handle_event` (CursorMoved reads `item_rects`).
-        for r in self.item_rects.iter_mut().skip(n_visible) {
-            *r = Rect::ZERO;
-        }
-
-        if overflow {
-            self.overflow_rect = match self.orientation {
-                Orientation::Horizontal => Rect::new(
-                    self.rect.x1 - OVERFLOW_CHIP_AXIS_PX,
-                    cross_start,
-                    self.rect.x1,
-                    cross_end,
-                ),
-                Orientation::Vertical => Rect::new(
-                    cross_start,
-                    self.rect.y1 - OVERFLOW_CHIP_AXIS_PX,
-                    cross_end,
-                    self.rect.y1,
-                ),
-            };
-        } else {
-            self.overflow_rect = Rect::ZERO;
-        }
+        self.visible_count = self.decide_visible_count(axis_total);
+        self.place_visible_items(axis_total);
     }
 
     fn draw(
@@ -409,12 +472,17 @@ impl Widget for Toolbar {
         let font_size = tokens.typography.scale.sm;
         let n_visible = self.visible_count.min(self.items.len());
 
-        for i in 0..n_visible {
-            let r = self.item_rects[i];
+        for (i, (item, &r)) in self
+            .items
+            .iter()
+            .zip(self.item_rects.iter())
+            .enumerate()
+            .take(n_visible)
+        {
             if r.is_zero_area() {
                 continue;
             }
-            match &self.items[i] {
+            match item {
                 ToolbarItem::Button { label, .. } => {
                     let hovered = self.item_hover.get(i).copied().unwrap_or(false);
                     let bg = if hovered {
@@ -432,7 +500,7 @@ impl Widget for Toolbar {
                         label,
                         font_size,
                         tokens.colors.text_primary,
-                        transform * Affine::translate((tx, ty)),
+                        translated(transform, tx, ty),
                         None,
                     );
                 }
@@ -494,7 +562,7 @@ impl Widget for Toolbar {
                 label,
                 font_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((tx, ty)),
+                translated(transform, tx, ty),
                 None,
             );
         }
@@ -521,8 +589,11 @@ impl Widget for Toolbar {
                 }
                 for (i, h) in self.item_hover.iter_mut().enumerate() {
                     let new_h = i < n_visible
-                        && matches!(self.items[i], ToolbarItem::Button { .. })
-                        && self.item_rects[i].contains(pos);
+                        && self
+                            .items
+                            .get(i)
+                            .is_some_and(|it| matches!(it, ToolbarItem::Button { .. }))
+                        && self.item_rects.get(i).is_some_and(|r| r.contains(pos));
                     if new_h != *h {
                         *h = new_h;
                         *handled = true;
@@ -542,7 +613,7 @@ impl Widget for Toolbar {
                 let n_visible = self.visible_count.min(self.items.len());
                 for i in 0..n_visible {
                     if self.item_hover.get(i).copied().unwrap_or(false)
-                        && let ToolbarItem::Button { on_click, .. } = &mut self.items[i]
+                        && let Some(ToolbarItem::Button { on_click, .. }) = self.items.get_mut(i)
                     {
                         on_click();
                         *handled = true;
@@ -610,7 +681,7 @@ mod tests {
                 node,
                 Style {
                     size: Size {
-                        width: Dimension::length(axis_extent as f32),
+                        width: Dimension::length(to_f32(axis_extent)),
                         height: Dimension::length(28.0),
                     },
                     ..Default::default()
@@ -621,7 +692,7 @@ mod tests {
             .compute_layout(
                 node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(axis_extent as f32),
+                    width: taffy::AvailableSpace::Definite(to_f32(axis_extent)),
                     height: taffy::AvailableSpace::Definite(28.0),
                 },
             )
