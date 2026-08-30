@@ -83,7 +83,10 @@ pub use privacy::{
     monitor_media_usage, revoke_media_client,
 };
 pub use session::{SessionAction, perform_session_action};
-pub use time::{get_ntp, now_clock, now_date, set_ntp};
+pub use time::{
+    TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
+    set_timezone, valid_timezone,
+};
 pub use tool_intent::{
     BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
     ToolReply, ToolRequest, VpnRoute, open_tool, tool_intent_from_env,

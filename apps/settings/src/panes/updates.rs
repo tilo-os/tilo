@@ -54,6 +54,10 @@ pub const ROLLBACK_KEY: &str = "updates.rollback";
 pub const ROLLBACK_CONFIRM_KEY: &str = "updates.rollback.confirm";
 pub const FIRMWARE_REFRESH_KEY: &str = "updates.firmware.refresh";
 pub const FIRMWARE_INSTALL_KEY: &str = "updates.firmware.install";
+pub const SCHEDULE_KEY: &str = "updates.schedule";
+pub const METERED_KEY: &str = "updates.metered";
+
+const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 
 /// The channels offered by the release-channel dropdown.
 pub const CHANNELS: &[&str] = &["Stable", "Testing", "Nightly"];
@@ -65,6 +69,107 @@ pub const CHANNELS: &[&str] = &["Stable", "Testing", "Nightly"];
 pub struct UpdateStatus {
     pub current_version: String,
     pub staged_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpdateDetails {
+    /// Recent real bootc unit journal lines, newest last.
+    pub history: Vec<String>,
+    /// OCI documentation/source URL declared by the current or staged image.
+    pub release_notes: Option<String>,
+    /// Whether qOS's delayed boot confirmation/rollback floor is armed.
+    pub rollback_health: Option<String>,
+}
+
+impl UpdateDetails {
+    fn from_system(rollback_target: Option<&str>) -> Self {
+        let bootc_json = Command::new("bootc")
+            .args(["status", "--format", "json"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).to_string());
+        let release_notes = bootc_json.as_deref().and_then(parse_bootc_release_notes);
+        let history = Command::new("journalctl")
+            .args([
+                "-u",
+                "bootc-fetch-apply-updates.service",
+                "-n",
+                "6",
+                "--output=short-iso",
+                "--no-pager",
+            ])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| parse_update_history(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_default();
+        let protection_enabled = Command::new("systemctl")
+            .args(["is-enabled", "qos-rollback-confirm.timer"])
+            .output()
+            .ok()
+            .is_some_and(|output| {
+                matches!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    "enabled" | "enabled-runtime"
+                )
+            });
+        let rollback_health = Some(match (protection_enabled, rollback_target) {
+            (true, Some(target)) => format!("Protected · fallback available: {target}"),
+            (true, None) => "Boot confirmation active · no previous image retained yet".into(),
+            (false, Some(target)) => {
+                format!("Fallback available ({target}); automatic confirmation not reported")
+            }
+            (false, None) => "Rollback protection state is not reported".into(),
+        });
+        Self {
+            history,
+            release_notes,
+            rollback_health,
+        }
+    }
+}
+
+pub fn parse_update_history(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|line| {
+            line.chars()
+                .filter(|character| !character.is_control())
+                .take(220)
+                .collect::<String>()
+        })
+        .filter(|line| !line.trim().is_empty() && !line.contains("-- No entries --"))
+        .collect()
+}
+
+pub fn parse_bootc_release_notes(json: &str) -> Option<String> {
+    fn visit(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                for key in [
+                    "org.opencontainers.image.documentation",
+                    "org.opencontainers.image.url",
+                    "org.opencontainers.image.source",
+                    "documentation",
+                    "releaseNotes",
+                ] {
+                    if let Some(url) = map.get(key).and_then(serde_json::Value::as_str)
+                        && matches!(url.split_once("://"), Some(("https", _)))
+                        && url.len() <= 512
+                    {
+                        return Some(url.to_string());
+                    }
+                }
+                map.values().find_map(visit)
+            }
+            serde_json::Value::Array(values) => values.iter().find_map(visit),
+            _ => None,
+        }
+    }
+    serde_json::from_str(json)
+        .ok()
+        .and_then(|root| visit(&root))
 }
 
 impl UpdateStatus {
@@ -157,6 +262,21 @@ pub trait UpdateControl: Send + Sync {
     fn rollback_target(&self) -> Option<String>;
     /// Make the next boot the previous deployment.
     fn roll_back(&self) -> Result<(), String>;
+    fn schedule(&self) -> Option<String> {
+        None
+    }
+    fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
+        Err("update scheduling is unavailable on this machine".into())
+    }
+    fn allow_metered(&self) -> Option<bool> {
+        None
+    }
+    fn set_allow_metered(&self, _allow: bool) -> Result<(), String> {
+        Err("metered update policy is unavailable on this machine".into())
+    }
+    fn check_now(&self) -> Result<(), String> {
+        Err("checking for updates is unavailable on this machine".into())
+    }
 }
 
 /// The words on the rollback card. Constants because they are the pane's
@@ -198,6 +318,48 @@ const UPDATE_TIMER: &str = "bootc-fetch-apply-updates.timer";
 /// session in `wheel` to start exactly this one — see
 /// `os/etc/polkit-1/rules.d/49-qos-updates.rules`.
 const ROLLBACK_UNIT: &str = "qos-deployment-rollback.service";
+const UPDATE_POLICY_PATH: &str = "/var/lib/qos/update-policy";
+
+fn read_update_policy() -> std::collections::BTreeMap<String, String> {
+    fs::read_to_string(UPDATE_POLICY_PATH)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn start_update_policy(action: &str) -> Result<(), String> {
+    if !matches!(
+        action,
+        "schedule-system"
+            | "schedule-daily"
+            | "schedule-weekly"
+            | "metered-allow"
+            | "metered-avoid"
+    ) {
+        return Err("invalid update policy action".into());
+    }
+    let unit = format!("qos-update-policy@{action}.service");
+    let output = Command::new("systemctl")
+        .args(["start", "--wait", &unit])
+        .output()
+        .map_err(|error| format!("systemctl not available: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if error.is_empty() {
+            format!("{unit} failed")
+        } else {
+            error
+        })
+    }
+}
 
 /// The control for a machine that has none: no systemd, no bootc, a test.
 ///
@@ -219,6 +381,11 @@ impl UpdateControl for UnavailableControl {
     }
     fn roll_back(&self) -> Result<(), String> {
         Err("rolling back is not available on this machine".into())
+    }
+
+    // Hermetic/test control: the injected StatusProvider is the check source.
+    fn check_now(&self) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -289,6 +456,59 @@ impl UpdateControl for RealUpdateControl {
         } else {
             err
         })
+    }
+
+    fn schedule(&self) -> Option<String> {
+        Some(
+            match read_update_policy().get("schedule").map(String::as_str) {
+                Some("daily") => "Daily",
+                Some("weekly") => "Weekly",
+                _ => "System schedule",
+            }
+            .to_string(),
+        )
+    }
+
+    fn set_schedule(&self, schedule: &str) -> Result<(), String> {
+        start_update_policy(match schedule {
+            "System schedule" => "schedule-system",
+            "Daily" => "schedule-daily",
+            "Weekly" => "schedule-weekly",
+            _ => return Err("unknown update schedule".into()),
+        })
+    }
+
+    fn allow_metered(&self) -> Option<bool> {
+        Some(
+            read_update_policy()
+                .get("metered")
+                .is_some_and(|value| value == "allow"),
+        )
+    }
+
+    fn set_allow_metered(&self, allow: bool) -> Result<(), String> {
+        start_update_policy(if allow {
+            "metered-allow"
+        } else {
+            "metered-avoid"
+        })
+    }
+
+    fn check_now(&self) -> Result<(), String> {
+        let output = Command::new("systemctl")
+            .args(["start", "--wait", "qos-deployment-update.service"])
+            .output()
+            .map_err(|error| format!("systemctl not available: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(if error.is_empty() {
+                "update service failed; see its system journal".into()
+            } else {
+                error
+            })
+        }
     }
 }
 
@@ -362,6 +582,7 @@ fn now_stamp() -> String {
 
 pub struct UpdatesPane {
     status: UpdateStatus,
+    details: UpdateDetails,
     prefs: UpdatePrefs,
     last_prefs: UpdatePrefs,
     status_provider: StatusProvider,
@@ -371,6 +592,8 @@ pub struct UpdatesPane {
     /// The update timer's actual state, as read from the machine. `None` means
     /// it could not be read, and the switch says so instead of guessing.
     timer_enabled: Option<bool>,
+    schedule: Option<String>,
+    allow_metered: Option<bool>,
     /// What this machine can go back to, if anything.
     rollback_target: Option<String>,
     /// `None` means fwupd is unavailable; `Some([])` means it answered and
@@ -412,9 +635,13 @@ impl UpdatesPane {
             prefs.auto = on;
         }
         let rollback_target = control.rollback_target();
+        let details = UpdateDetails::from_system(rollback_target.as_deref());
+        let schedule = control.schedule();
+        let allow_metered = control.allow_metered();
         let firmware_updates = os_actions::get_firmware_updates().ok();
         Self {
             status,
+            details,
             prefs,
             last_prefs: UpdatePrefs::default(),
             status_provider,
@@ -422,6 +649,8 @@ impl UpdatesPane {
             rebooter: Arc::new(RealRebooter),
             control,
             timer_enabled,
+            schedule,
+            allow_metered,
             rollback_target,
             firmware_updates,
             firmware_state: FirmwareUiState::Idle,
@@ -471,12 +700,15 @@ impl UpdatesPane {
     ) -> Self {
         let timer_enabled = control.timer_enabled();
         let rollback_target = control.rollback_target();
+        let schedule = control.schedule();
+        let allow_metered = control.allow_metered();
         let mut prefs = prefs;
         if let Some(on) = timer_enabled {
             prefs.auto = on;
         }
         Self {
             status,
+            details: UpdateDetails::default(),
             prefs: prefs.clone(),
             last_prefs: prefs,
             status_provider,
@@ -484,6 +716,8 @@ impl UpdatesPane {
             rebooter,
             control,
             timer_enabled,
+            schedule,
+            allow_metered,
             rollback_target,
             firmware_updates: None,
             firmware_state: FirmwareUiState::Idle,
@@ -589,24 +823,36 @@ impl UpdatesPane {
         };
         let status_card = card("Software updates", action);
 
+        let overview = card(
+            "Update overview",
+            rows(vec![
+                value_row(
+                    "Operating system",
+                    if self.status.staged_version.is_some() {
+                        "Update staged · restart required"
+                    } else {
+                        "No staged update"
+                    },
+                ),
+                value_row(
+                    "Device firmware",
+                    match &self.firmware_updates {
+                        None => "fwupd unavailable",
+                        Some(updates) if updates.is_empty() => "Up to date",
+                        Some(_) => "Updates available",
+                    },
+                ),
+            ]),
+        );
+
         let detail = card(
             "Details",
             rows(vec![
                 value_row("Current version", &self.status.current_version),
                 value_row("Last checked", &self.prefs.last_checked),
-                choice_row(
+                value_row(
                     "Release channel",
-                    Box::new(
-                        Dropdown::new(
-                            CHANNELS
-                                .iter()
-                                .map(std::string::ToString::to_string)
-                                .collect(),
-                            CHANNEL_KEY,
-                        )
-                        .with_id("updates.channel")
-                        .with_placeholder(&self.prefs.channel),
-                    ),
+                    "Managed by the installed bootc image reference",
                 ),
                 match self.timer_enabled {
                     Some(_) => setting_row(
@@ -620,6 +866,29 @@ impl UpdatesPane {
                     // updating itself, which is worse than saying so.
                     None => value_row("Automatic updates", "unavailable on this machine"),
                 },
+                match &self.schedule {
+                    Some(schedule) => choice_row(
+                        "Download schedule",
+                        Box::new(
+                            Dropdown::new(
+                                UPDATE_SCHEDULES.iter().map(ToString::to_string).collect(),
+                                SCHEDULE_KEY,
+                            )
+                            .with_placeholder(schedule),
+                        ),
+                    ),
+                    None => value_row("Download schedule", "unavailable on this machine"),
+                },
+                match self.allow_metered {
+                    Some(_) => setting_row(
+                        "Download on metered connections",
+                        Box::new(
+                            Toggle::new("settings.updates.metered", METERED_KEY)
+                                .with_id("updates.metered"),
+                        ),
+                    ),
+                    None => value_row("Metered connections", "policy service is unavailable"),
+                },
                 Box::new(
                     Row::new()
                         .push(Box::new(Button::new(
@@ -631,6 +900,29 @@ impl UpdatesPane {
                 ),
             ]),
         );
+
+        let mut lifecycle_rows = vec![value_row(
+            "Rollback health",
+            self.details
+                .rollback_health
+                .as_deref()
+                .unwrap_or("Not reported"),
+        )];
+        lifecycle_rows.push(value_row(
+            "Release notes",
+            self.details
+                .release_notes
+                .as_deref()
+                .unwrap_or("The image does not publish a documentation URL"),
+        ));
+        if self.details.history.is_empty() {
+            lifecycle_rows.push(caption(
+                "No bootc update-service history is available in the system journal.",
+            ));
+        } else {
+            lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
+        }
+        let lifecycle_card = card("History & recovery health", rows(lifecycle_rows));
 
         let firmware_body: El = match &self.firmware_updates {
             None => rows(vec![
@@ -793,7 +1085,15 @@ impl UpdatesPane {
             rows(self.help_lines().iter().map(|l| caption(l)).collect()),
         );
 
-        let mut all = vec![status_card, firmware_card, detail, rollback_card, note];
+        let mut all = vec![
+            overview,
+            status_card,
+            firmware_card,
+            detail,
+            lifecycle_card,
+            rollback_card,
+            note,
+        ];
         if let Some(msg) = &self.notice {
             // In front of everything, because it is about the thing the person
             // just tried to do. A failed switch that only warns into the
@@ -900,6 +1200,12 @@ impl Widget for UpdatesPane {
                 FIRMWARE_INSTALL_KEY,
                 automerge::ScalarValue::Boolean(false),
             );
+            if let Some(schedule) = &self.schedule {
+                let _ = state.put(root, SCHEDULE_KEY, schedule.as_str());
+            }
+            if let Some(allow) = self.allow_metered {
+                let _ = state.put(root, METERED_KEY, automerge::ScalarValue::Boolean(allow));
+            }
             self.last_prefs = self.prefs.clone();
             self.needs_seed = false;
         }
@@ -907,10 +1213,20 @@ impl Widget for UpdatesPane {
         // Check for updates → re-query the system + stamp the time + persist.
         if read_bool(state, root, CHECK_KEY) {
             let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
-            self.status = (self.status_provider)();
-            self.prefs.last_checked = (self.clock)();
-            self.last_prefs.last_checked = self.prefs.last_checked.clone();
-            self.persist();
+            match self.control.check_now() {
+                Ok(()) => {
+                    self.status = (self.status_provider)();
+                    self.rollback_target = self.control.rollback_target();
+                    self.details = UpdateDetails::from_system(self.rollback_target.as_deref());
+                    self.prefs.last_checked = (self.clock)();
+                    self.last_prefs.last_checked = self.prefs.last_checked.clone();
+                    self.notice = None;
+                    self.persist();
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Updates could not be checked: {error}"));
+                }
+            }
             self.structure_dirty = true;
         }
 
@@ -1017,6 +1333,43 @@ impl Widget for UpdatesPane {
                     self.prefs.auto = effective;
                     self.last_prefs.auto = effective;
                     let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(effective));
+                }
+            }
+            self.structure_dirty = true;
+        }
+
+        if let Some(current) = self.schedule.clone()
+            && let Some(requested) = read_str(state, root, SCHEDULE_KEY)
+            && requested != current
+            && UPDATE_SCHEDULES.contains(&requested.as_str())
+        {
+            match self.control.set_schedule(&requested) {
+                Ok(()) => {
+                    self.schedule = self.control.schedule().or(Some(requested));
+                    self.notice = None;
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Download schedule could not be changed: {error}"));
+                    let _ = state.put(root, SCHEDULE_KEY, current);
+                }
+            }
+            self.structure_dirty = true;
+        }
+
+        if let Some(current) = self.allow_metered
+            && let Some(requested) = read_bool_opt(state, root, METERED_KEY)
+            && requested != current
+        {
+            match self.control.set_allow_metered(requested) {
+                Ok(()) => {
+                    self.allow_metered = self.control.allow_metered().or(Some(requested));
+                    self.notice = None;
+                }
+                Err(error) => {
+                    self.notice = Some(format!(
+                        "Metered-network policy could not be changed: {error}"
+                    ));
+                    let _ = state.put(root, METERED_KEY, current);
                 }
             }
             self.structure_dirty = true;
@@ -1640,5 +1993,22 @@ mod tests {
             "a rollback deployment bootc describes in a shape we do not know \
              still exists, and hiding it would hide the way back"
         );
+    }
+
+    #[test]
+    fn release_notes_only_accept_https_image_metadata() {
+        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.qos.example/releases/42"}}}}}"#;
+        assert_eq!(
+            parse_bootc_release_notes(json).as_deref(),
+            Some("https://updates.qos.example/releases/42")
+        );
+        let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
+        assert_eq!(parse_bootc_release_notes(unsafe_url), None);
+    }
+
+    #[test]
+    fn journal_history_is_bounded_and_control_free() {
+        let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
+        assert_eq!(history, ["2026-01-01 update complete", "line two"]);
     }
 }
