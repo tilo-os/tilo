@@ -115,6 +115,9 @@ pub struct Notification {
     /// Sending application's display name; rendered as a caption above
     /// the title when present.
     pub app_name: Option<String>,
+    /// Launcher-attributed id. Unlike `app_name`, this is not controlled by
+    /// the notification sender and is the only key policy may use.
+    pub app_id: Option<String>,
     /// Workspace the sending app belongs to, for attribution.
     pub source_workspace: Option<u64>,
     /// `(action_key, action_label)` pairs; activating the toast invokes
@@ -124,6 +127,11 @@ pub struct Notification {
     /// not to be kept uninformed of the machine's own security state.
     /// Shell-only; nothing reachable from D-Bus sets it.
     pub bypass_dnd: bool,
+    /// Whether this notification contributes to the redacted lock-screen
+    /// count. Content is never rendered on the lock screen.
+    pub show_on_lock_screen: bool,
+    /// Hide body text in the live banner while retaining it in local history.
+    pub show_preview: bool,
 }
 
 impl Notification {
@@ -140,9 +148,12 @@ impl Notification {
             dismiss_after: DEFAULT_DISMISS_AFTER,
             dbus_id: None,
             app_name: None,
+            app_id: None,
             source_workspace: None,
             actions: Vec::new(),
             bypass_dnd: false,
+            show_on_lock_screen: true,
+            show_preview: true,
         }
     }
 
@@ -152,6 +163,7 @@ impl Notification {
     /// [`DEFAULT_DISMISS_AFTER`], `0` → [`PERSISTENT_DISMISS`], `> 0` →
     /// that many milliseconds.
     pub fn from_incoming(inc: crate::notifications::IncomingNotification) -> Self {
+        let app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
         let severity = match inc.urgency {
             2 => NotificationSeverity::Error,
             _ => NotificationSeverity::Info,
@@ -179,11 +191,14 @@ impl Notification {
             } else {
                 Some(inc.app_name)
             },
+            app_id,
             source_workspace: inc.caller.as_ref().map(|c| c.workspace_id.0),
             actions: inc.actions,
             // Never from the wire: an app that could ask to pierce
             // Do-Not-Disturb would ask every time.
             bypass_dnd: false,
+            show_on_lock_screen: false,
+            show_preview: true,
         }
     }
 
@@ -384,7 +399,7 @@ impl Widget for NotificationStack {
         }
 
         let now = Instant::now();
-        let (snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
+        let (mut snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
             let ch = self.chrome.borrow();
             (
                 ch.notifications().to_vec(),
@@ -393,6 +408,9 @@ impl Widget for NotificationStack {
                 ch.notification_history_count(),
             )
         };
+        if locked {
+            snapshot.retain(|notification| notification.show_on_lock_screen);
+        }
         // Nothing to paint unless DND is on and unlocked (show its status pill).
         if snapshot.is_empty() && !(dnd && !locked) {
             self.rect = Rect::ZERO;
@@ -516,7 +534,7 @@ impl Widget for NotificationStack {
                 theme,
                 card_rect,
                 &ToastCard::new(&n.title, n.severity.toast_kind())
-                    .body(&n.body)
+                    .body(if n.show_preview { &n.body } else { "" })
                     .caption(n.app_name.as_deref().unwrap_or(""))
                     .alpha(alpha)
                     .closable(true)
