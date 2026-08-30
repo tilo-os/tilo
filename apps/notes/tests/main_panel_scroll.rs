@@ -117,8 +117,7 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.selected_for_test().unwrap();
-    app.main_panel_mut()
-        .load_page(id, "Long page".into(), tall_body());
+    app.main_panel_mut().load_page(id, "Long page", tall_body());
 
     let mut state = ui::State::new();
     // Wide (stays inline) but short so the content overflows.
