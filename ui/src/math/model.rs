@@ -33,10 +33,19 @@ pub enum Node {
     Sqrt { index: Option<Row>, radicand: Row },
     /// A parenthesized group `( body )`.
     Paren { body: Row },
+    /// A group with explicit scalable delimiters. `None` represents TeX's
+    /// invisible `.` delimiter, used by cases and one-sided constructions.
+    Delimited {
+        open: Option<char>,
+        close: Option<char>,
+        body: Row,
+    },
     /// A function call `name( arg )` — `name` is upright (sin, cos, ln, …).
     Func { name: String, arg: Row },
     /// Upright mathematical text, such as a unit or an `<mtext>` label.
     Text(String),
+    /// A close-fitting accent constructed over or under its base.
+    Accent { base: Row, mark: char, over: bool },
     /// A base with optional limits stacked directly below and above it.
     UnderOver {
         base: Row,
@@ -139,7 +148,9 @@ pub fn child_row(node: &Node, slot: Slot) -> Option<&Row> {
         (Node::Sqrt { radicand, .. }, Slot::Radicand) => Some(radicand),
         (Node::Sqrt { index: Some(i), .. }, Slot::Index) => Some(i),
         (Node::Paren { body }, Slot::Body) => Some(body),
+        (Node::Delimited { body, .. }, Slot::Body) => Some(body),
         (Node::Func { arg, .. }, Slot::Arg) => Some(arg),
+        (Node::Accent { base, .. }, Slot::Base) => Some(base),
         (Node::UnderOver { base, .. }, Slot::Base) => Some(base),
         (
             Node::UnderOver {
@@ -171,7 +182,9 @@ pub fn child_row_mut(node: &mut Node, slot: Slot) -> Option<&mut Row> {
         (Node::Sqrt { radicand, .. }, Slot::Radicand) => Some(radicand),
         (Node::Sqrt { index: Some(i), .. }, Slot::Index) => Some(i),
         (Node::Paren { body }, Slot::Body) => Some(body),
+        (Node::Delimited { body, .. }, Slot::Body) => Some(body),
         (Node::Func { arg, .. }, Slot::Arg) => Some(arg),
+        (Node::Accent { base, .. }, Slot::Base) => Some(base),
         (Node::UnderOver { base, .. }, Slot::Base) => Some(base),
         (
             Node::UnderOver {
@@ -202,7 +215,9 @@ pub fn node_slots(node: &Node) -> Vec<Slot> {
         Node::Sqrt { index: Some(_), .. } => vec![Slot::Index, Slot::Radicand],
         Node::Sqrt { index: None, .. } => vec![Slot::Radicand],
         Node::Paren { .. } => vec![Slot::Body],
+        Node::Delimited { .. } => vec![Slot::Body],
         Node::Func { .. } => vec![Slot::Arg],
+        Node::Accent { .. } => vec![Slot::Base],
         Node::UnderOver { under, over, .. } => {
             let mut slots = Vec::new();
             if over.is_some() {
@@ -296,6 +311,15 @@ fn write_row(row: &Row, out: &mut String) {
                 write_row(body, out);
                 out.push(')');
             }
+            Node::Delimited { open, close, body } => {
+                if let Some(open) = open {
+                    out.push(*open);
+                }
+                write_row(body, out);
+                if let Some(close) = close {
+                    out.push(*close);
+                }
+            }
             Node::Func { name, arg } => {
                 out.push_str(name);
                 out.push('(');
@@ -303,6 +327,7 @@ fn write_row(row: &Row, out: &mut String) {
                 out.push(')');
             }
             Node::Text(text) => out.push_str(text),
+            Node::Accent { base, .. } => write_row(base, out),
             Node::UnderOver { base, under, over } => {
                 write_row(base, out);
                 if let Some(under) = under {
