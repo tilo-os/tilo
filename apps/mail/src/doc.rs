@@ -30,9 +30,10 @@ impl MailDoc {
     fn map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(parent, key, ObjType::Map)
-                .expect("put_object map never fails"),
+            // `parent` was just resolved (or is the document root), so this
+            // can't realistically fail — but degrade to the root object
+            // rather than panic if the automerge internals ever surprise us.
+            _ => doc.put_object(parent, key, ObjType::Map).unwrap_or(ROOT),
         }
     }
 
@@ -75,9 +76,8 @@ impl MailDoc {
     }
 
     pub fn get_folder(doc: &AutoCommit) -> Folder {
-        let ui = match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Folder::Inbox,
+        let Ok(Some((Value::Object(ObjType::Map), ui))) = doc.get(&ROOT, "ui") else {
+            return Folder::Inbox;
         };
         Self::read_str(doc, &ui, "folder")
             .and_then(|s| folder_from_key(&s))
@@ -194,16 +194,15 @@ impl MailDoc {
     /// Overlay any persisted flags from the CRDT onto an in-memory mailbox.
     /// The corpus is the source of truth for content; the CRDT wins on flags.
     pub fn apply_flags(doc: &AutoCommit, mb: &mut Mailbox) {
-        let flags = match doc.get(&ROOT, "flags") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return,
+        let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
+            return;
         };
         let ids: Vec<_> = mb.messages.keys().copied().collect();
         for id in ids {
             let key = id.to_string();
-            let entry = match doc.get(&flags, key.as_str()) {
-                Ok(Some((Value::Object(ObjType::Map), e))) => e,
-                _ => continue,
+            let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&flags, key.as_str())
+            else {
+                continue;
             };
             if let Some(m) = mb.get_mut(id) {
                 if let Some(r) = Self::read_bool(doc, &entry, "read") {
@@ -241,9 +240,8 @@ impl MailDoc {
     }
 
     pub fn load_account(doc: &AutoCommit) -> Option<AccountConfig> {
-        let acc = match doc.get(&ROOT, "account") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), acc))) = doc.get(&ROOT, "account") else {
+            return None;
         };
         Some(AccountConfig {
             display_name: Self::read_str(doc, &acc, "display_name").unwrap_or_default(),
@@ -277,9 +275,8 @@ impl MailDoc {
     }
 
     pub fn load_draft(doc: &AutoCommit) -> Draft {
-        let d = match doc.get(&ROOT, "draft") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Draft::default(),
+        let Ok(Some((Value::Object(ObjType::Map), d))) = doc.get(&ROOT, "draft") else {
+            return Draft::default();
         };
         Draft {
             to: Self::read_str(doc, &d, "to").unwrap_or_default(),
@@ -337,9 +334,8 @@ impl MailDoc {
 
     /// Read a message's stored flag entry, if any.
     fn flag_entry_ref(doc: &AutoCommit, id: &str) -> Option<ObjId> {
-        let flags = match doc.get(&ROOT, "flags") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
+            return None;
         };
         match doc.get(&flags, id) {
             Ok(Some((Value::Object(ObjType::Map), e))) => Some(e),
@@ -372,25 +368,25 @@ impl MailDoc {
         let entry = Self::flag_entry(doc, id);
         match doc.get(&entry, "labels") {
             Ok(Some((Value::Object(ObjType::List), list))) => list,
+            // `entry` was just resolved, so this can't realistically fail —
+            // but degrade to the root object rather than panic if the
+            // automerge internals ever surprise us.
             _ => doc
                 .put_object(&entry, "labels", ObjType::List)
-                .expect("put_object list never fails"),
+                .unwrap_or(ROOT),
         }
     }
 
     /// Read a message's labels, in stored order.
     pub fn get_labels(doc: &AutoCommit, id: &str) -> Vec<String> {
-        let flags = match doc.get(&ROOT, "flags") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
+            return Vec::new();
         };
-        let entry = match doc.get(&flags, id) {
-            Ok(Some((Value::Object(ObjType::Map), e))) => e,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&flags, id) else {
+            return Vec::new();
         };
-        let list = match doc.get(&entry, "labels") {
-            Ok(Some((Value::Object(ObjType::List), l))) => l,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&entry, "labels") else {
+            return Vec::new();
         };
         read_str_list(doc, &list)
     }
@@ -457,9 +453,8 @@ impl MailDoc {
     /// List the user-defined local folders as `(id, name)`, sorted by id so the
     /// resource tree (and any UI over it) has a stable order across replicas.
     pub fn list_folders(doc: &AutoCommit) -> Vec<(String, String)> {
-        let folders = match doc.get(&ROOT, "folders") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), folders))) = doc.get(&ROOT, "folders") else {
+            return Vec::new();
         };
         let mut out: Vec<(String, String)> = doc
             .keys(&folders)
