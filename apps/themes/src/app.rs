@@ -1333,16 +1333,6 @@ impl Widget for ThemesApp {
     }
 }
 
-/// Legible on-accent colour for the OS theme (used by the top-bar logo).
-fn ui_on_accent(theme: &Theme) -> vello::peniko::Color {
-    let a = [
-        theme.accent_primary.r(),
-        theme.accent_primary.g(),
-        theme.accent_primary.b(),
-    ];
-    model::color(model::on_color(a))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
