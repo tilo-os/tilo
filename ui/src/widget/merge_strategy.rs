@@ -114,8 +114,7 @@ pub struct Alternative {
 
 pub fn surface_banner(strategy: &MergeStrategy, kind: &ConflictKind) -> bool {
     match (strategy, kind) {
-        (MergeStrategy::Text, _) => false,
-        (MergeStrategy::Set, _) => false,
+        (MergeStrategy::Text | MergeStrategy::Set, _) => false,
         (
             MergeStrategy::LastWriterWins {
                 surface_on_conflict,
@@ -133,12 +132,11 @@ pub fn surface_banner(strategy: &MergeStrategy, kind: &ConflictKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn op(author: &str, summary: &str) -> ConcurrentOp {
         ConcurrentOp {
             author: author.into(),
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(0),
+            timestamp: SystemTime::UNIX_EPOCH,
             summary: summary.into(),
             payload: Arc::from(Vec::<u8>::new()),
         }
@@ -147,9 +145,9 @@ mod tests {
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
             label: label.into(),
-            summary: format!("{} chose {}", author, label),
+            summary: format!("{author} chose {label}"),
             author: author.into(),
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(0),
+            timestamp: SystemTime::UNIX_EPOCH,
             payload: Arc::from(Vec::<u8>::new()),
         }
     }
@@ -164,7 +162,7 @@ mod tests {
         fn classify(&self, _ops: &[ConcurrentOp]) -> ConflictKind {
             self.kind.clone()
         }
-        fn family_name(&self) -> &str {
+        fn family_name(&self) -> &'static str {
             "Stub"
         }
     }
@@ -268,8 +266,8 @@ mod tests {
             kind: ConflictKind::Auto,
         });
         let s = MergeStrategy::Custom(resolver);
-        let printed = format!("{:?}", s);
-        assert!(printed.contains("Stub"), "got: {}", printed);
-        assert!(printed.contains("Custom"), "got: {}", printed);
+        let printed = format!("{s:?}");
+        assert!(printed.contains("Stub"), "got: {printed}");
+        assert!(printed.contains("Custom"), "got: {printed}");
     }
 }
