@@ -18,7 +18,6 @@ jobs:
     runs-on: runner
     container:
       image: code.podesta.ai/qos/qos-builder:latest
-      options: --pull=always
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -43,7 +42,6 @@ jobs:
     runs-on: runner
     container:
       image: code.podesta.ai/qos/qos-builder:latest
-      options: --pull=always
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
