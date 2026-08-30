@@ -941,18 +941,14 @@ fn e2e_maximized_tile_floating_controls() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    // Derive the Maximize2 rect from the pill rect + `TabBar::apply_layout` offsets.
-    let tab_rects = probe_tab_rects();
-    let active_idx = 0usize;
-    let pill = tab_rects[active_idx];
-    // close_w=18, close_inset=4 → close_x0 = pill.x1 - 22
-    // max_w=16, 2 px gap → max_x0 = close_x0 - 18 = pill.x1 - 40
-    let max_rect =
-        vello::kurbo::Rect::new(pill.x1 - 40.0, pill.y0 + 4.0, pill.x1 - 24.0, pill.y1 - 4.0);
-    let max_center = Point::new(
-        (max_rect.x0 + max_rect.x1) / 2.0,
-        (max_rect.y0 + max_rect.y1) / 2.0,
-    );
+    // Hover the active pill so its chip cluster is offered at all.
+    let pill = group
+        .bar_for_tests()
+        .tab_rects()
+        .first()
+        .copied()
+        .expect("a pill")
+        .center();
 
     // CursorMoved populates `last_cursor` + the hover_max_idx cache, then
     // press+release at the same spot.
@@ -977,6 +973,36 @@ fn e2e_maximized_tile_floating_controls() {
             &taffy,
         );
     };
+    pump_ev(
+        &mut group,
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(pill.x, pill.y),
+        },
+    );
+    // The chip cluster slides out on wall time: `advance_reveal` starts the
+    // curve on the layout pass that first sees the hover and returns where it
+    // started, so `max_rects` stay `Rect::ZERO` until it has run, and
+    // `apply_layout` is what places them. Lay out to create the curve, hold it
+    // past the end, lay out again. Reading the rect straight back — or deriving
+    // it from the pill with the chip offsets copied out of `TabBar` — clicks
+    // nothing, which is what this test was doing.
+    group.apply_layout(&taffy, child, Point::ORIGIN);
+    assert!(
+        group
+            .bar_mut_for_tests()
+            .hold_reveal_at(std::time::Duration::from_secs(1)),
+        "hovering the pill started no chip reveal",
+    );
+    group.apply_layout(&taffy, child, Point::ORIGIN);
+    let max_center = group
+        .bar_for_tests()
+        .max_rects()
+        .first()
+        .copied()
+        .filter(|r| r.area() > 0.0)
+        .expect("the active tab offers a Maximize2 chip once its reveal has run")
+        .center();
     pump_ev(
         &mut group,
         WindowEvent::CursorMoved {
