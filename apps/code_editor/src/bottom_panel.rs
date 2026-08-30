@@ -24,6 +24,10 @@ pub const PANEL_HEIGHT: f64 = 160.0;
 /// Search results get a taller dock: a list of file-and-line hits is only
 /// useful if you can see more than a handful at once.
 pub const PANEL_HEIGHT_SEARCH: f64 = 300.0;
+const _: () = assert!(
+    PANEL_HEIGHT_SEARCH > PANEL_HEIGHT,
+    "the search dock must be the taller of the two"
+);
 const TAB_H: f64 = 30.0;
 const ROW_H: f64 = 20.0;
 /// Search rows are taller than problem rows — each carries a path, a line
@@ -205,6 +209,13 @@ impl BottomPanel {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // A fixed column for `path:line` so the previews line up into a
+        // readable second column instead of starting at a different x on every
+        // row. Paths longer than it are trimmed from the *front*: the file name
+        // and line number are the part you need, and the leading directories
+        // are the part you can infer.
+        const LOC_COL: f64 = 300.0;
+
         let c = &theme.tokens.colors;
         self.hit_rects.clear();
 
@@ -245,15 +256,47 @@ impl BottomPanel {
             Some((self.rect.width() - 28.0) as f32),
         );
 
-        // A fixed column for `path:line` so the previews line up into a
-        // readable second column instead of starting at a different x on every
-        // row. Paths longer than it are trimmed from the *front*: the file name
-        // and line number are the part you need, and the leading directories
-        // are the part you can infer.
-        const LOC_COL: f64 = 300.0;
-
-        let first_row_y = self.rect.y0 + TAB_H + 26.0;
         let visible = self.visible_hit_rows();
+        self.draw_search_rows(scene, transform, text_renderer, theme, visible, LOC_COL);
+
+        // A quiet "more below" hint rather than a scrollbar the panel has no
+        // room for. `visible_hit_rows` already reserves this strip, so it never
+        // overprints the last row.
+        let shown = self.search_scroll + self.hit_rects.len();
+        if shown < self.search.rows.len() {
+            let more = format!(
+                "{} more \u{2014} scroll the list",
+                self.search.rows.len() - shown
+            );
+            text_renderer.draw_text(
+                scene,
+                &more,
+                11.0,
+                c.text_dim,
+                transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y1 - 17.0)),
+                None,
+            );
+        }
+    }
+
+    /// Draw one row per visible search hit: the `path:line` location column,
+    /// then the code preview with the matched span tinted. Records each row's
+    /// rect in `hit_rects` for click hit-testing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass over one screenful of rows threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_search_rows(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        visible: usize,
+        loc_col: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let first_row_y = self.rect.y0 + TAB_H + 26.0;
         for (i, row) in self
             .search
             .rows
@@ -283,7 +326,7 @@ impl BottomPanel {
                 text_renderer,
                 &format!("{}:{}", row.rel, row.line),
                 12.0,
-                LOC_COL - 12.0,
+                loc_col - 12.0,
             );
             // Drawn with no wrap width: a wrapped row would spill onto the row
             // below it and the two would overprint.
@@ -296,14 +339,14 @@ impl BottomPanel {
                 None,
             );
 
-            let preview_x = rect.x0 + 8.0 + LOC_COL;
+            let preview_x = rect.x0 + 8.0 + loc_col;
             let (start, len) = row.highlight;
             let chars: Vec<char> = row.preview.chars().collect();
-            let before: String = chars[..start.min(chars.len())].iter().collect();
-            let hit: String = chars[start.min(chars.len())..(start + len).min(chars.len())]
-                .iter()
-                .collect();
-            let after: String = chars[(start + len).min(chars.len())..].iter().collect();
+            let start = start.min(chars.len());
+            let end = (start + len).min(chars.len());
+            let before: String = chars.get(..start).unwrap_or(&[]).iter().collect();
+            let hit: String = chars.get(start..end).unwrap_or(&[]).iter().collect();
+            let after: String = chars.get(end..).unwrap_or(&[]).iter().collect();
 
             let right_edge = rect.x1 - 8.0;
             let mut x = preview_x;
@@ -332,25 +375,6 @@ impl BottomPanel {
                 );
                 x += f64::from(w);
             }
-        }
-
-        // A quiet "more below" hint rather than a scrollbar the panel has no
-        // room for. `visible_hit_rows` already reserves this strip, so it never
-        // overprints the last row.
-        let shown = self.search_scroll + self.hit_rects.len();
-        if shown < self.search.rows.len() {
-            let more = format!(
-                "{} more \u{2014} scroll the list",
-                self.search.rows.len() - shown
-            );
-            text_renderer.draw_text(
-                scene,
-                &more,
-                11.0,
-                c.text_dim,
-                transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y1 - 17.0)),
-                None,
-            );
         }
     }
 
@@ -435,133 +459,19 @@ impl BottomPanel {
     pub fn take_tab_changed(&mut self) -> bool {
         std::mem::take(&mut self.tab_changed)
     }
-}
 
-/// Trim `s` from the **front** until it fits `max_w`, prefixing an ellipsis.
-///
-/// For a path, the informative end is the right one — `…/code_editor/src/app.rs:1673`
-/// still tells you which file and which line, where trimming the tail would
-/// leave `apps/code_edi…`, which tells you nothing.
-fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    if f64::from(tr.measure(s, size, None).0) <= max_w {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    // Binary search the longest suffix that fits, so a long list of rows does
-    // not cost a measure per character per row.
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = usize::midpoint(lo, hi);
-        let candidate: String = std::iter::once('\u{2026}')
-            .chain(chars[mid..].iter().copied())
-            .collect();
-        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    std::iter::once('\u{2026}')
-        .chain(chars[lo..].iter().copied())
-        .collect()
-}
-
-/// Trim `s` from the **back** until it fits `max_w`, appending an ellipsis.
-/// For a code preview the start of the line is the informative end.
-fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    if f64::from(tr.measure(s, size, None).0) <= max_w {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid]
-            .iter()
-            .copied()
-            .chain(std::iter::once('\u{2026}'))
-            .collect();
-        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    chars[..lo]
-        .iter()
-        .copied()
-        .chain(std::iter::once('\u{2026}'))
-        .collect()
-}
-
-impl Widget for BottomPanel {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(self.height() as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
-
-    fn draw(
+    /// Draw the tab strip: one label per tab (Problems carries a count,
+    /// Search a hit count once it has results), the active tab's underline,
+    /// and the baseline separating it from the body. Records each tab's
+    /// clickable rect in `tab_rects`.
+    fn draw_tab_strip(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &self.rect,
-        );
-        // Top divider.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_standard,
-            None,
-            &Line::new(
-                Point::new(self.rect.x0, self.rect.y0),
-                Point::new(self.rect.x1, self.rect.y0),
-            ),
-        );
-
-        // Tab strip.
         self.tab_rects.clear();
         let search_label = if self.search.rows.is_empty() {
             "Search".to_string()
@@ -613,92 +523,246 @@ impl Widget for BottomPanel {
                 Point::new(self.rect.x1, self.rect.y0 + TAB_H),
             ),
         );
+    }
+
+    /// Draw the Problems tab body: the shared zero-state when there is
+    /// nothing to show (distinguishing "not analysed yet" from "analysed and
+    /// clean"), otherwise one row per diagnostic.
+    fn draw_problems(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content_y0: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        if self.problems.is_empty() {
+            // An empty list means two different things, and the panel
+            // must not state the wrong one. While a language server is
+            // still working nothing has been analysed yet; only once it
+            // has answered is "no problems" a finding. Both go through
+            // the shared zero-state so this tab reads like the Search
+            // tab beside it rather than a bare line of dim text.
+            let body = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + TAB_H,
+                self.rect.x1,
+                self.rect.y1,
+            );
+            let (icon, title, message) = match &self.analysis {
+                Some(note) => (
+                    ui::icons::Icon::RotateCw,
+                    note.as_str(),
+                    "Nothing has been analysed yet. Problems appear here as \
+                     the language server reports them.",
+                ),
+                // Scoped to the open file, because that is what was
+                // actually checked — the linter reads the active buffer,
+                // not every file under the root.
+                None => (
+                    ui::icons::Icon::Check,
+                    "No problems in this file",
+                    "Diagnostics from the language server and the built-in \
+                     checks both land here.",
+                ),
+            };
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                body,
+                Some(icon),
+                title,
+                Some(message),
+                None,
+                Point::new(-1.0, -1.0),
+            );
+        } else {
+            for (i, d) in self.problems.iter().enumerate() {
+                let y = content_y0 + i as f64 * ROW_H;
+                if y > self.rect.y1 - ROW_H {
+                    break;
+                }
+                let (glyph, sev_color) = match d.severity {
+                    Severity::Error => ("\u{2716}", c.semantic.danger),
+                    Severity::Warning => ("\u{26A0}", c.semantic.warning),
+                    Severity::Info => ("\u{2139}", c.semantic.info),
+                    Severity::Hint => ("\u{2022}", c.text_dim),
+                };
+                text_renderer.draw_text(
+                    scene,
+                    glyph,
+                    13.0,
+                    sev_color,
+                    transform * Affine::translate((self.rect.x0 + 14.0, y)),
+                    None,
+                );
+                let loc = format!("[Ln {}, Col {}]", d.line, d.col);
+                text_renderer.draw_text(
+                    scene,
+                    &loc,
+                    12.0,
+                    c.text_dim,
+                    transform * Affine::translate((self.rect.x0 + 36.0, y + 0.5)),
+                    None,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    &d.message,
+                    13.0,
+                    c.neutral[8],
+                    transform * Affine::translate((self.rect.x0 + 130.0, y)),
+                    Some((self.rect.width() - 140.0) as f32),
+                );
+            }
+        }
+    }
+}
+
+/// Trim `s` from the **front** until it fits `max_w`, prefixing an ellipsis.
+///
+/// For a path, the informative end is the right one — `…/code_editor/src/app.rs:1673`
+/// still tells you which file and which line, where trimming the tail would
+/// leave `apps/code_edi…`, which tells you nothing.
+fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    if f64::from(tr.measure(s, size, None).0) <= max_w {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    // Binary search the longest suffix that fits, so a long list of rows does
+    // not cost a measure per character per row.
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = usize::midpoint(lo, hi);
+        let candidate: String = std::iter::once('\u{2026}')
+            .chain(chars.get(mid..).unwrap_or(&[]).iter().copied())
+            .collect();
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    std::iter::once('\u{2026}')
+        .chain(chars.get(lo..).unwrap_or(&[]).iter().copied())
+        .collect()
+}
+
+/// Trim `s` from the **back** until it fits `max_w`, appending an ellipsis.
+/// For a code preview the start of the line is the informative end.
+fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    if f64::from(tr.measure(s, size, None).0) <= max_w {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let candidate: String = chars
+            .get(..mid)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .chain(std::iter::once('\u{2026}'))
+            .collect();
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    chars
+        .get(..lo)
+        .unwrap_or(&[])
+        .iter()
+        .copied()
+        .chain(std::iter::once('\u{2026}'))
+        .collect()
+}
+
+impl Widget for BottomPanel {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(self.height() as f32),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
+        )]
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &self.rect,
+        );
+        // Top divider.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &Line::new(
+                Point::new(self.rect.x0, self.rect.y0),
+                Point::new(self.rect.x1, self.rect.y0),
+            ),
+        );
+
+        self.draw_tab_strip(scene, transform, text_renderer, theme);
 
         let content_y0 = self.rect.y0 + TAB_H + 6.0;
         match self.tab {
             PanelTab::Problems => {
-                if self.problems.is_empty() {
-                    // An empty list means two different things, and the panel
-                    // must not state the wrong one. While a language server is
-                    // still working nothing has been analysed yet; only once it
-                    // has answered is "no problems" a finding. Both go through
-                    // the shared zero-state so this tab reads like the Search
-                    // tab beside it rather than a bare line of dim text.
-                    let body = Rect::new(
-                        self.rect.x0,
-                        self.rect.y0 + TAB_H,
-                        self.rect.x1,
-                        self.rect.y1,
-                    );
-                    let (icon, title, message) = match &self.analysis {
-                        Some(note) => (
-                            ui::icons::Icon::RotateCw,
-                            note.as_str(),
-                            "Nothing has been analysed yet. Problems appear here as \
-                             the language server reports them.",
-                        ),
-                        // Scoped to the open file, because that is what was
-                        // actually checked — the linter reads the active buffer,
-                        // not every file under the root.
-                        None => (
-                            ui::icons::Icon::Check,
-                            "No problems in this file",
-                            "Diagnostics from the language server and the built-in \
-                             checks both land here.",
-                        ),
-                    };
-                    EmptyState::paint(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        body,
-                        Some(icon),
-                        title,
-                        Some(message),
-                        None,
-                        Point::new(-1.0, -1.0),
-                    );
-                    let _ = content_y0;
-                } else {
-                    for (i, d) in self.problems.iter().enumerate() {
-                        let y = content_y0 + i as f64 * ROW_H;
-                        if y > self.rect.y1 - ROW_H {
-                            break;
-                        }
-                        let (glyph, sev_color) = match d.severity {
-                            Severity::Error => ("\u{2716}", c.semantic.danger),
-                            Severity::Warning => ("\u{26A0}", c.semantic.warning),
-                            Severity::Info => ("\u{2139}", c.semantic.info),
-                            Severity::Hint => ("\u{2022}", c.text_dim),
-                        };
-                        text_renderer.draw_text(
-                            scene,
-                            glyph,
-                            13.0,
-                            sev_color,
-                            transform * Affine::translate((self.rect.x0 + 14.0, y)),
-                            None,
-                        );
-                        let loc = format!("[Ln {}, Col {}]", d.line, d.col);
-                        text_renderer.draw_text(
-                            scene,
-                            &loc,
-                            12.0,
-                            c.text_dim,
-                            transform * Affine::translate((self.rect.x0 + 36.0, y + 0.5)),
-                            None,
-                        );
-                        text_renderer.draw_text(
-                            scene,
-                            &d.message,
-                            13.0,
-                            c.neutral[8],
-                            transform * Affine::translate((self.rect.x0 + 130.0, y)),
-                            Some((self.rect.width() - 140.0) as f32),
-                        );
-                    }
-                }
+                self.draw_problems(scene, transform, text_renderer, theme, content_y0);
             }
             PanelTab::Search => self.draw_search(scene, transform, text_renderer, theme),
             PanelTab::Terminal => {
@@ -938,7 +1002,6 @@ mod tests {
         assert_eq!(p.height(), PANEL_HEIGHT);
         p.set_tab(PanelTab::Search);
         assert_eq!(p.height(), PANEL_HEIGHT_SEARCH);
-        assert!(PANEL_HEIGHT_SEARCH > PANEL_HEIGHT);
     }
 
     #[test]
