@@ -127,7 +127,7 @@ pub enum NeighbourMsg {
     /// `PeerId`; `ts` is unix-millis.
     Heartbeat { peer: PeerId, ts: u64 },
     /// App-level CRDT incremental — bridges app-side Automerge change blobs from
-    /// the local `QUICK_COLLAB_SOCK` broker across hosts, opaque to the shell.
+    /// the local collaboration service across hosts, opaque to the shell.
     /// Distinct from [`NeighbourMsg::SyncResp`] (shell-side `WorkspaceTree`
     /// changes). The remote-receive path fans this into local apps as
     /// `CollabEvent::CRDTIncremental`, mirroring the broker's local fan-out.
@@ -182,8 +182,8 @@ pub enum NeighbourMsg {
     /// just-typed run inside a shared document).
     ///
     /// Distinct from [`NeighbourMsg::PresenceMoved`] (a bare point, no caret
-    /// semantics): the originating `CollabRequest::Presence` frame rides across
-    /// serialised and untouched.
+    /// semantics). Retained read-only for peers that still send the former
+    /// JSON-encoded `CollabRequest::Presence` frame.
     ///
     /// Deliberately carries no `record_id` — presence fans out at cluster scope
     /// (`CrdtRoute::to_cluster_scope`, everyone in the room), not record scope,
@@ -203,6 +203,16 @@ pub enum NeighbourMsg {
         cluster_id: String,
         /// The originating `CollabRequest::Presence`, serde-encoded, opaque to every hop.
         frame: Vec<u8>,
+    },
+    /// Typed successor to [`Self::AppPresence`]. New peers write only this
+    /// variant; receivers retain the old variant as a read-only migration seam.
+    AppPresenceV2 {
+        peer: PeerId,
+        #[serde(default)]
+        app_id: String,
+        #[serde(default)]
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
     },
     /// App-level CRDT **snapshot** — a document's whole state, for a peer with no
     /// history for it to adopt.

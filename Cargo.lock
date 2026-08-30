@@ -2213,30 +2213,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9589e1effc5cacbea347899645c654158b03b2053d24bb426fd3128ced6e423c"
 
 [[package]]
-name = "collab-bridge"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "capnp",
- "capnp-rpc",
- "clap",
- "collab-types",
- "futures",
- "parking_lot",
- "postcard",
- "runtime-collab",
- "runtime-portal",
- "sd-notify",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "collab-fixtures"
 version = "0.1.0"
 dependencies = [
@@ -15220,7 +15196,6 @@ dependencies = [
  "getrandom 0.4.1",
  "js-sys",
  "serde_core",
- "sha1_smol",
  "wasm-bindgen",
 ]
 

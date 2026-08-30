@@ -27,10 +27,10 @@ struct Cli {
     /// an instruction starts with.
     #[arg(long, default_value = "Claude")]
     name: String,
-    /// The broker socket. Defaults to the session's `collab-json.sock`
-    /// (or `$QUICK_COLLAB_SOCK`).
+    /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
+    /// Normal launched sessions inherit `QOS_SVC_COLLAB_FD` instead.
     #[arg(long)]
-    socket: Option<PathBuf>,
+    endpoint: Option<PathBuf>,
     /// Pause between edits, in milliseconds, so the caret can be watched.
     #[arg(long, default_value_t = 250)]
     pace_ms: u64,
@@ -91,7 +91,8 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let cfg = Config {
-        socket: cli.socket,
+        endpoint: cli.endpoint,
+        socket: None,
         app_id: cli.app,
         cluster: cli.workspace,
         record: cli.record,

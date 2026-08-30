@@ -49,7 +49,6 @@
 "qos-app-mount" = 1   # 0.8 MB
 "qos-catalogue" = 5   # 4.1 MB
 "qos-cli-shim" = 1   # 0.5 MB
-"qos-collab-bridge" = 3   # 2.6 MB
 "qos-collab-link" = 1   # 0.4 MB
 "qos-collab-probe" = 3   # 2.4 MB
 "qos-control" = 1   # 0.5 MB
