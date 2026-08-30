@@ -110,24 +110,30 @@ pub fn content_filter_json(block_remote: bool) -> String {
 /// Minimal standard base64 (RFC 4648) encoder — no dependency for one use.
 fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    /// Map one 6-bit group to its alphabet character. The `& 63` here is what
+    /// bounds the index: it yields `0..=63`, and `TABLE` is exactly 64 bytes,
+    /// so the lookup is total. Any "fallback" character would silently emit
+    /// wrong base64, so the bound is enforced here rather than guessed at.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "`& 63` yields 0..=63 and TABLE is exactly 64 bytes, so this index is total; a fallback character would silently corrupt the encoding"
+    )]
+    fn sym(six_bits: u32) -> char {
+        char::from(TABLE[(six_bits & 63) as usize])
+    }
+
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
+        // `chunks(3)` never yields an empty chunk, so `first()` is always Some.
+        let b0 = u32::from(chunk.first().copied().unwrap_or(0));
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
         let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[(n & 63) as usize] as char
-        } else {
-            '='
-        });
+        out.push(sym(n >> 18));
+        out.push(sym(n >> 12));
+        out.push(if chunk.len() > 1 { sym(n >> 6) } else { '=' });
+        out.push(if chunk.len() > 2 { sym(n) } else { '=' });
     }
     out
 }
