@@ -690,12 +690,13 @@ impl FileExplorerWidget {
     }
 
     /// Single/double click handler retained for tests + the command path.
-    /// A second click within 500 ms on the same row returns its path.
+    /// A second click on the same row within the session's multi-click window
+    /// returns its path.
     pub fn select(&mut self, idx: Option<usize>) -> Option<PathBuf> {
         let now = Instant::now();
         if let (Some(i), Some((pi, pt))) = (idx, self.last_click)
             && i == pi
-            && now.duration_since(pt) < Duration::from_millis(500)
+            && now.duration_since(pt) < ui::gesture::multi_click_interval()
         {
             let disp = self.displayed_entries();
             if let Some(e) = disp.get(i) {

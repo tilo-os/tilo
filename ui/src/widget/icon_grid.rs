@@ -379,7 +379,7 @@ impl Widget for IconGrid {
                     let now = std::time::Instant::now();
                     let is_double = matches!(
                         self.last_click,
-                        Some((pi, t)) if pi == i && now.duration_since(t) < std::time::Duration::from_millis(500)
+                        Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()
                     );
                     if is_double {
                         self.last_click = None;
