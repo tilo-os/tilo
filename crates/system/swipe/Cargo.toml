@@ -7,6 +7,10 @@ publish.workspace = true
 # shim. qOS is AGPL-3.0-or-later, which incorporates GPL-3.0 cleanly.
 license = "AGPL-3.0-or-later"
 
+[package.metadata.cargo-machete]
+# build.rs uses cc to compile the libinput gesture bridge.
+ignored = ["cc"]
+
 [build-dependencies]
 cc = "1"
 

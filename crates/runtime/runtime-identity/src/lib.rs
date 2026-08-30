@@ -593,6 +593,7 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 /// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
     use serde::{Deserialize, Serialize};
+    use serde_bytes as serde_bytes_codec;
 
     use crate::{KeyProtection, SecretReference};
 
@@ -634,7 +635,11 @@ mod ondisk {
         pub threshold: u16,
         pub total_shares: u16,
         pub share_index: u16,
-        #[serde(default, with = "serde_bytes", skip_serializing_if = "Vec::is_empty")]
+        #[serde(
+            default,
+            with = "serde_bytes_codec",
+            skip_serializing_if = "Vec::is_empty"
+        )]
         pub secret_bytes: Vec<u8>,
     }
 }

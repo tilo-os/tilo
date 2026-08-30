@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 # Kept deliberately tiny — this is a systemd notify daemon that watches
 # a single sysfs file. No async runtime, no serde, no clap.
-notify = { workspace = true, features = ["macos_kqueue"] }
 
 [dev-dependencies]
 tempfile.workspace = true
