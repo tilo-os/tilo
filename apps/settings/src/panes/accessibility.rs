@@ -159,19 +159,39 @@ impl AccessibilityPane {
             ]),
         );
 
-        // --- Hearing + screen reader.
-        let hearing_card = card(
-            "Hearing & screen reader",
+        // Capabilities without a compositor/apply path are deliberately rows,
+        // not writable preferences. This keeps the pane useful without
+        // promising assistive technology that the current session cannot run.
+        let advanced_card = card(
+            "More assistive technology",
             rows(vec![
-                setting_row_described(
-                    "Visual alerts",
-                    "Flash the screen instead of playing an alert sound",
-                    Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY),
+                value_row(
+                    "Colour filters",
+                    "Unavailable until output shaders expose filters",
                 ),
-                setting_row_described(
+                value_row(
+                    "Magnification",
+                    "Unavailable until compositor zoom is input-aware",
+                ),
+                value_row(
+                    "Caret and text cursor aids",
+                    "Unavailable until apps expose caret geometry",
+                ),
+                value_row(
+                    "Switch control",
+                    "Unavailable until a secure switch-input service exists",
+                ),
+                value_row(
+                    "Live captions",
+                    "Unavailable until a local captioning service exists",
+                ),
+                value_row(
+                    "Visual alerts",
+                    "Unavailable until shell alerts expose a visual route",
+                ),
+                value_row(
                     "Screen reader",
-                    "Read the interface aloud (AT-SPI)",
-                    Self::toggle("a11y.screen_reader", SCREEN_READER_KEY),
+                    "Unavailable until the AT-SPI reader lifecycle is installed",
                 ),
             ]),
         );
@@ -181,8 +201,9 @@ impl AccessibilityPane {
             rows(vec![caption(
                 "Vision comforts are the same settings the Appearance pane \
                  offers — changing them here or there updates one shared value. \
-                 The pointer, typing, and hearing assists are read by the \
-                 compositor's input and accessibility layer.",
+                 Pointer sizing, sticky keys and slow keys are applied by the \
+                 compositor's input layer. Unsupported capabilities are \
+                 identified explicitly instead of being stored as inert toggles.",
             )]),
         );
 
@@ -190,7 +211,7 @@ impl AccessibilityPane {
             vision_card,
             pointer_card,
             typing_card,
-            hearing_card,
+            advanced_card,
             explainer,
         ])
     }

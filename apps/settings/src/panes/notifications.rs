@@ -30,7 +30,9 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, rows, setting_row_described, status_pill};
+use crate::widgets::{
+    El, caption, card, choice_row, rows, setting_row_described, status_pill, value_row,
+};
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
 pub const BANNERS_KEY: &str = "notifications.show_banners";
@@ -41,6 +43,108 @@ pub const BADGES_KEY: &str = "notifications.show_badges";
 pub const FOCUS_ENABLED_KEY: &str = "notifications.focus.enabled";
 pub const FOCUS_START_KEY: &str = "notifications.focus.start";
 pub const FOCUS_END_KEY: &str = "notifications.focus.end";
+pub const FOCUS_DAYS_KEY: &str = "notifications.focus.days";
+
+const FOCUS_DAYS: &[(&str, u8)] = &[
+    ("Every day", 0),
+    ("Weekdays", 0b0001_1111),
+    ("Weekends", 0b0110_0000),
+];
+
+const MUTE_OPTIONS: &[(&str, i64)] = &[
+    ("Not muted", 0),
+    ("For 1 hour", 60 * 60),
+    ("For 8 hours", 8 * 60 * 60),
+    ("For 24 hours", 24 * 60 * 60),
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InstalledNotificationApp {
+    id: String,
+    name: String,
+}
+
+fn valid_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 160
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+fn installed_notification_apps(
+    existing: &std::collections::BTreeMap<
+        String,
+        settings_store::notification_policy::AppNotificationRule,
+    >,
+) -> Vec<InstalledNotificationApp> {
+    let mut apps = Vec::new();
+    for entry in launcher::registry::list_installed().unwrap_or_default() {
+        let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+            continue;
+        };
+        if manifest.entrypoint.gui_bin().is_none() {
+            continue;
+        }
+        let id = if manifest.package_id.is_empty() {
+            entry.id
+        } else {
+            manifest.package_id
+        };
+        if !valid_app_id(&id) {
+            continue;
+        }
+        let name = manifest
+            .name
+            .unwrap_or_else(|| launcher::registry::display_name_for_package_id(&id));
+        apps.push(InstalledNotificationApp { id, name });
+    }
+    // Preserve access to a rule when an app has just been uninstalled. It can
+    // be reset without trusting the sender-controlled notification app_name.
+    for id in existing.keys().filter(|id| valid_app_id(id)) {
+        if !apps.iter().any(|app| &app.id == id) {
+            apps.push(InstalledNotificationApp {
+                id: id.clone(),
+                name: launcher::registry::display_name_for_package_id(id),
+            });
+        }
+    }
+    apps.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    apps.dedup_by(|a, b| a.id == b.id);
+    apps
+}
+
+fn app_key(id: &str, field: &str) -> String {
+    format!("notifications.app.{id}.{field}")
+}
+
+fn mute_label(deadline: Option<i64>, now: i64) -> &'static str {
+    match deadline.filter(|deadline| *deadline > now) {
+        None => "Not muted",
+        Some(deadline) => {
+            let remaining = deadline - now;
+            if remaining <= 60 * 60 {
+                "For 1 hour"
+            } else if remaining <= 8 * 60 * 60 {
+                "For 8 hours"
+            } else {
+                "For 24 hours"
+            }
+        }
+    }
+}
+
+fn mute_seconds(label: &str) -> Option<i64> {
+    MUTE_OPTIONS
+        .iter()
+        .find_map(|(candidate, seconds)| (*candidate == label).then_some(*seconds))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64)
+}
 
 const FOCUS_TIMES: &[(&str, u16)] = &[
     ("18:00", 18 * 60),
@@ -67,8 +171,17 @@ fn focus_time_minutes(label: &str) -> Option<u16> {
         .find_map(|(candidate, value)| (*candidate == label).then_some(*value))
 }
 
+fn focus_days_label(days: u8) -> &'static str {
+    FOCUS_DAYS
+        .iter()
+        .find_map(|(label, value)| (*value == days).then_some(*label))
+        .unwrap_or("Every day")
+}
+
 pub struct NotificationsPane {
     prefs: NotificationPrefs,
+    apps: Vec<InstalledNotificationApp>,
+    mute_labels: HashMap<String, String>,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -94,8 +207,19 @@ impl NotificationsPane {
     /// Construct from explicit preferences — used by tests and the
     /// deterministic `--shots` render.
     pub fn with_prefs(prefs: NotificationPrefs) -> Self {
+        let apps = installed_notification_apps(&prefs.per_app);
+        let now = unix_now();
+        let mute_labels = apps
+            .iter()
+            .map(|app| {
+                let deadline = prefs.per_app.get(&app.id).and_then(|rule| rule.muted_until);
+                (app.id.clone(), mute_label(deadline, now).to_string())
+            })
+            .collect();
         Self {
             prefs,
+            apps,
+            mute_labels,
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -245,22 +369,20 @@ impl NotificationsPane {
         );
 
         let delivery_card = card(
-            "Sound & lock screen",
+            "Lock screen & shell integration",
             rows(vec![
-                setting_row_described(
-                    "Play sounds",
-                    "An audible cue when a notification arrives",
-                    Self::toggle("notifications.sounds", SOUNDS_KEY),
-                ),
                 setting_row_described(
                     "Show on lock screen",
                     "Show only a redacted count while the session is locked",
                     Self::toggle("notifications.lock_screen", LOCK_SCREEN_KEY),
                 ),
-                setting_row_described(
-                    "Show app badges",
-                    "Allow unread counts on application icons",
-                    Self::toggle("notifications.badges", BADGES_KEY),
+                value_row(
+                    "Notification sounds",
+                    "Unavailable until the shell sound route exists",
+                ),
+                value_row(
+                    "Application badges",
+                    "Unavailable until launchers expose badge state",
                 ),
             ]),
         );
@@ -284,6 +406,19 @@ impl NotificationsPane {
                             .with_placeholder(focus_time_label(self.prefs.focus.start_minute)),
                     ),
                 ),
+                choice_row(
+                    "Days",
+                    Box::new(
+                        Dropdown::new(
+                            FOCUS_DAYS
+                                .iter()
+                                .map(|(label, _)| (*label).to_string())
+                                .collect(),
+                            &Self::scratch_key(FOCUS_DAYS_KEY),
+                        )
+                        .with_placeholder(focus_days_label(self.prefs.focus.weekdays)),
+                    ),
+                ),
                 crate::widgets::choice_row(
                     "Until",
                     Box::new(
@@ -292,10 +427,93 @@ impl NotificationsPane {
                     ),
                 ),
                 caption(
-                    "The schedule follows local time. User-approved priority apps may \n+                     still notify; an app cannot mark itself as priority.",
+                    "The schedule follows local time. User-approved priority apps may \
+                     still notify; an app cannot mark itself as priority.",
                 ),
             ]),
         );
+
+        let mut app_cards = Vec::new();
+        let now = unix_now();
+        for app in &self.apps {
+            let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
+            let banners = rule.banners.unwrap_or(self.prefs.show_banners);
+            let previews = rule.previews.unwrap_or(self.prefs.show_previews);
+            let mute_options = MUTE_OPTIONS
+                .iter()
+                .map(|(label, _)| (*label).to_string())
+                .collect();
+            app_cards.push(card(
+                &app.name,
+                rows(vec![
+                    value_row("Verified application", &app.id),
+                    setting_row_described(
+                        "Allow banners",
+                        "Override the global banner choice for this application",
+                        Box::new(
+                            Toggle::new(
+                                &format!("notifications.app.{}.banners", app.id),
+                                &app_key(&app.id, "banners"),
+                            )
+                            .with_id(&format!("notifications.app.{}.banners", app.id)),
+                        ),
+                    ),
+                    setting_row_described(
+                        "Show previews",
+                        "Allow message contents from this application",
+                        Box::new(
+                            Toggle::new(
+                                &format!("notifications.app.{}.previews", app.id),
+                                &app_key(&app.id, "previews"),
+                            )
+                            .with_id(&format!("notifications.app.{}.previews", app.id)),
+                        ),
+                    ),
+                    setting_row_described(
+                        "Priority during focus",
+                        "Let this verified application pierce scheduled focus",
+                        Box::new(
+                            Toggle::new(
+                                &format!("notifications.app.{}.priority", app.id),
+                                &app_key(&app.id, "priority"),
+                            )
+                            .with_id(&format!("notifications.app.{}.priority", app.id)),
+                        ),
+                    ),
+                    choice_row(
+                        "Mute temporarily",
+                        Box::new(
+                            Dropdown::new(mute_options, &app_key(&app.id, "mute"))
+                                .with_placeholder(mute_label(rule.muted_until, now)),
+                        ),
+                    ),
+                    // These are seeded below; keeping the local values here
+                    // makes the intended inheritance visible in code and tests.
+                    caption(if banners && previews {
+                        "Banners and their contents are currently allowed."
+                    } else if banners {
+                        "Banners are allowed with their contents hidden."
+                    } else {
+                        "Notifications go to history without a banner."
+                    }),
+                ]),
+            ));
+        }
+        let apps_card = if app_cards.is_empty() {
+            card(
+                "Applications",
+                rows(vec![caption(
+                    "Per-application controls appear after a packaged application is installed.",
+                )]),
+            )
+        } else {
+            card(
+                "Applications",
+                rows(vec![caption(
+                    "Rules use verified package identities from the launcher, never the name an application writes into a notification.",
+                )]),
+            )
+        };
 
         let explainer = card(
             "How this applies",
@@ -306,20 +524,30 @@ impl NotificationsPane {
             )]),
         );
 
-        crate::widgets::cards(vec![
+        let mut cards = vec![
             dnd_card,
             focus_card,
             banners_card,
             delivery_card,
+            apps_card,
             explainer,
-        ])
+        ];
+        cards.extend(app_cards);
+        cards.push(card(
+            "Priority contacts",
+            rows(vec![value_row(
+                "Contacts",
+                "Unavailable until a verified Contacts identity source is installed",
+            )]),
+        ));
+        crate::widgets::cards(cards)
     }
 
     /// Persist the current prefs into the shared store, preserving other
     /// sections. Reads fresh so a change here never clobbers another pane's.
     fn persist(&self) {
         let mut p = SystemPrefs::load();
-        p.notifications = self.prefs;
+        p.notifications = self.prefs.clone();
         if let Err(e) = p.save() {
             warn!(target: "qos::settings", op = "notifications_save", error = %e, "failed to persist notification prefs");
         }
@@ -385,6 +613,31 @@ impl Widget for NotificationsPane {
                 FOCUS_END_KEY,
                 focus_time_label(self.prefs.focus.end_minute),
             );
+            seed_text(
+                state,
+                FOCUS_DAYS_KEY,
+                focus_days_label(self.prefs.focus.weekdays),
+            );
+            let now = unix_now();
+            for app in &self.apps {
+                let rule = self.prefs.per_app.get(&app.id).copied().unwrap_or_default();
+                seed(
+                    state,
+                    &app_key(&app.id, "banners"),
+                    rule.banners.unwrap_or(self.prefs.show_banners),
+                );
+                seed(
+                    state,
+                    &app_key(&app.id, "previews"),
+                    rule.previews.unwrap_or(self.prefs.show_previews),
+                );
+                seed(state, &app_key(&app.id, "priority"), rule.priority);
+                let _ = state.put(
+                    root,
+                    app_key(&app.id, "mute"),
+                    mute_label(rule.muted_until, now),
+                );
+            }
             self.needs_seed = false;
         }
 
@@ -395,6 +648,44 @@ impl Widget for NotificationsPane {
         let (v, c) = self.reconcile_bool(state, root, DND_KEY, self.prefs.do_not_disturb);
         self.prefs.do_not_disturb = v;
         changed |= c;
+        let current = focus_days_label(self.prefs.focus.weekdays);
+        let (value, c) = self.reconcile_text(state, root, FOCUS_DAYS_KEY, current);
+        if let Some((_, days)) = FOCUS_DAYS.iter().find(|(label, _)| *label == value) {
+            self.prefs.focus.weekdays = *days;
+        }
+        changed |= c;
+
+        let now = unix_now();
+        for app in &self.apps {
+            let rule = self.prefs.per_app.entry(app.id.clone()).or_default();
+            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "banners"))
+                && rule.banners != Some(value)
+            {
+                rule.banners = Some(value);
+                changed = true;
+            }
+            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "previews"))
+                && rule.previews != Some(value)
+            {
+                rule.previews = Some(value);
+                changed = true;
+            }
+            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "priority"))
+                && rule.priority != value
+            {
+                rule.priority = value;
+                changed = true;
+            }
+            if let Some(label) = Self::read_text(state, root, &app_key(&app.id, "mute"))
+                && let Some(seconds) = mute_seconds(&label)
+                && self.mute_labels.get(&app.id).map(String::as_str) != Some(label.as_str())
+            {
+                let desired = (seconds > 0).then_some(now.saturating_add(seconds));
+                rule.muted_until = desired;
+                self.mute_labels.insert(app.id.clone(), label);
+                changed = true;
+            }
+        }
         let (v, c) = self.reconcile_bool(state, root, BANNERS_KEY, self.prefs.show_banners);
         self.prefs.show_banners = v;
         changed |= c;
