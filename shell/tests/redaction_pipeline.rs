@@ -14,11 +14,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use collab_fixtures::{role_attestation, signed_op, signed_op_encrypted};
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest,
-    RedactedMarker, Role, RoleAttestation, Signature, SignedOp, ValidationError,
-    encode_compaction_payload, encode_redact_payload, generate_keypair, hash_op_prefix,
-    hash_target_op, parse_redact_payload, sign_event, sign_op,
+    ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, CompactionCheckpoint,
+    Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest, RedactedMarker, Role,
+    SignedOp, ValidationError, encode_compaction_payload, encode_redact_payload, generate_keypair,
+    hash_op_prefix, hash_target_op, parse_redact_payload,
 };
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;

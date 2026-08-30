@@ -510,7 +510,7 @@ fn a_horizontal_swipe_and_the_chord_are_one_operation() {
     );
     // …and across a group boundary, so this is not two implementations
     // agreeing inside one tab bar.
-    let mut h = Harness::new();
+    let h = Harness::new();
     assert_ne!(
         by_key.0,
         h.active_window().0,
