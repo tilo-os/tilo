@@ -57,6 +57,30 @@ const CARD_H: f64 = 160.0;
 /// Scrim alpha — matches the command-palette dim treatment.
 const SCRIM_ALPHA: u8 = 153; // ~ 60%
 
+/// A card count is a handful of alternatives plus maybe a merged preview —
+/// always tiny, so the `usize -> f64` conversion used for layout division
+/// cannot lose precision.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "card count is a small UI count, well within f64 precision"
+)]
+fn card_count_f64(n: usize) -> f64 {
+    n as f64
+}
+
+/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
+/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
+/// but composing two f64-based affine transforms cannot meaningfully
+/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
+/// for.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
+}
+
 /// What the user chose in the picker. Forwarded through the
 /// `on_pick` callback so the host knows what to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -114,6 +138,7 @@ impl ConflictPicker {
 
     /// Builder: install the pick callback. Fires for every outcome
     /// listed in [`PickerOutcome`].
+    #[must_use]
     pub fn on_pick<F: FnMut(PickerOutcome) + 'static>(mut self, f: F) -> Self {
         self.on_pick = Some(Box::new(f));
         self
@@ -135,8 +160,8 @@ impl ConflictPicker {
     /// mounted for — defending the invariant is cheap.
     fn alternatives(&self) -> &[Alternative] {
         match &self.kind {
-            ConflictKind::PickOne { alternatives } => alternatives,
-            ConflictKind::MergeOrPick { alternatives, .. } => alternatives,
+            ConflictKind::PickOne { alternatives }
+            | ConflictKind::MergeOrPick { alternatives, .. } => alternatives,
             ConflictKind::Auto => &[],
         }
     }
@@ -168,7 +193,7 @@ impl ConflictPicker {
     pub fn card_rects(&self) -> Vec<Rect> {
         let mut rects = Vec::new();
         let alt_count = self.alternatives().len();
-        let total_cards = alt_count + usize::from(self.has_merged_card());
+        let total_cards = alt_count.saturating_add(usize::from(self.has_merged_card()));
         if total_cards == 0 {
             return rects;
         }
@@ -184,8 +209,8 @@ impl ConflictPicker {
 
         let gap = ROW_GAP;
         let available_w = inner.width();
-        let side_by_side_card_w =
-            (available_w - gap * (total_cards as f64 - 1.0).max(0.0)) / (total_cards as f64);
+        let total_f = card_count_f64(total_cards);
+        let side_by_side_card_w = (available_w - gap * (total_f - 1.0).max(0.0)) / total_f;
 
         if available_w >= NARROW_THRESHOLD && side_by_side_card_w >= MIN_CARD_W {
             let mut x = inner.x0;
@@ -200,9 +225,8 @@ impl ConflictPicker {
             }
         } else {
             // Stacked layout: cap per-card height so the stack still fits the middle band.
-            let stacked_card_h = ((middle_h - gap * (total_cards as f64 - 1.0).max(0.0))
-                / (total_cards as f64))
-                .min(card_h);
+            let stacked_card_h =
+                ((middle_h - gap * (total_f - 1.0).max(0.0)) / total_f).min(card_h);
             let mut y = middle_top;
             for _ in 0..total_cards {
                 rects.push(Rect::new(inner.x0, y, inner.x1, y + stacked_card_h));
@@ -260,118 +284,132 @@ impl ConflictPicker {
         }
         None
     }
+}
 
-    /// Paint one alternative card: title + author + timestamp + pick button.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_card(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        label: &str,
-        author: &str,
-        timestamp_label: &str,
-        summary: &str,
-        button_label: &str,
-        hovered_card: bool,
-        pick_button: Rect,
-    ) {
-        // Hovered cards lift via accent border.
-        let body = RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+/// Geometry + hover state for one card, bundled so `draw_card` doesn't need
+/// three separate parameters for it.
+struct CardChrome {
+    card: Rect,
+    hovered: bool,
+    pick_button: Rect,
+}
+
+/// Text content for one alternative/merged card, bundled so `draw_card`
+/// doesn't need five separate string parameters.
+struct CardContent<'a> {
+    label: &'a str,
+    author: &'a str,
+    timestamp_label: &'a str,
+    summary: &'a str,
+    button_label: &'a str,
+}
+
+/// Paint one alternative card: title + author + timestamp + pick button.
+/// A pure function of its inputs — no `self` needed.
+fn draw_card(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    chrome: &CardChrome,
+    content: &CardContent<'_>,
+) {
+    let card = chrome.card;
+
+    // Hovered cards lift via accent border.
+    let body = RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md));
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &body,
+    );
+    let border = if chrome.hovered {
+        theme.tokens.colors.border_focus
+    } else {
+        theme.tokens.colors.border_standard
+    };
+    let border_stroke_w = if chrome.hovered { 2.0 } else { 1.0 };
+    scene.stroke(
+        &Stroke::new(border_stroke_w),
+        transform,
+        border,
+        None,
+        &body,
+    );
+
+    let inner = Rect::new(
+        card.x0 + 12.0,
+        card.y0 + 10.0,
+        card.x1 - 12.0,
+        card.y1 - 10.0,
+    );
+    let text_size_sm = theme.tokens.typography.scale.sm;
+    let text_size_md = theme.tokens.typography.scale.base;
+
+    text_renderer.draw_text(
+        scene,
+        content.author,
+        text_size_md,
+        theme.tokens.colors.text_primary,
+        translated(transform, inner.x0, inner.y0),
+        None,
+    );
+    let ts_y = inner.y0 + f64::from(text_size_md) + 4.0;
+    text_renderer.draw_text(
+        scene,
+        content.timestamp_label,
+        text_size_sm,
+        theme.tokens.colors.text_dim,
+        translated(transform, inner.x0, ts_y),
+        None,
+    );
+
+    let label_y = ts_y + f64::from(text_size_sm) + 8.0;
+    text_renderer.draw_text(
+        scene,
+        content.label,
+        text_size_md,
+        theme.tokens.colors.text_primary,
+        translated(transform, inner.x0, label_y),
+        None,
+    );
+
+    // Single-line, not wrapped — matches the picker's compact shape.
+    let summary_y = label_y + f64::from(text_size_md) + 6.0;
+    text_renderer.draw_text(
+        scene,
+        content.summary,
+        text_size_sm,
+        theme.tokens.colors.text_dim,
+        translated(transform, inner.x0, summary_y),
+        None,
+    );
+
+    let pick_button = chrome.pick_button;
+    let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.sm));
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.accent[5],
+        None,
+        &btn_shape,
+    );
+    let btn_text_size = text_size_sm;
+    let (bw, bh) = text_renderer.measure(content.button_label, btn_text_size, None);
+    text_renderer.draw_text(
+        scene,
+        content.button_label,
+        btn_text_size,
+        theme.tokens.colors.text_primary,
+        translated(
             transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &body,
-        );
-        let border = if hovered_card {
-            theme.tokens.colors.border_focus
-        } else {
-            theme.tokens.colors.border_standard
-        };
-        let border_stroke_w = if hovered_card { 2.0 } else { 1.0 };
-        scene.stroke(
-            &Stroke::new(border_stroke_w),
-            transform,
-            border,
-            None,
-            &body,
-        );
-
-        let inner = Rect::new(
-            card.x0 + 12.0,
-            card.y0 + 10.0,
-            card.x1 - 12.0,
-            card.y1 - 10.0,
-        );
-        let text_size_sm = theme.tokens.typography.scale.sm;
-        let text_size_md = theme.tokens.typography.scale.base;
-
-        text_renderer.draw_text(
-            scene,
-            author,
-            text_size_md,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((inner.x0, inner.y0)),
-            None,
-        );
-        let ts_y = inner.y0 + f64::from(text_size_md) + 4.0;
-        text_renderer.draw_text(
-            scene,
-            timestamp_label,
-            text_size_sm,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((inner.x0, ts_y)),
-            None,
-        );
-
-        let label_y = ts_y + f64::from(text_size_sm) + 8.0;
-        text_renderer.draw_text(
-            scene,
-            label,
-            text_size_md,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((inner.x0, label_y)),
-            None,
-        );
-
-        // Single-line, not wrapped — matches the picker's compact shape.
-        let summary_y = label_y + f64::from(text_size_md) + 6.0;
-        text_renderer.draw_text(
-            scene,
-            summary,
-            text_size_sm,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((inner.x0, summary_y)),
-            None,
-        );
-
-        let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent[5],
-            None,
-            &btn_shape,
-        );
-        let btn_text_size = text_size_sm;
-        let (bw, bh) = text_renderer.measure(button_label, btn_text_size, None);
-        text_renderer.draw_text(
-            scene,
-            button_label,
-            btn_text_size,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    pick_button.x0 + (pick_button.width() - f64::from(bw)) / 2.0,
-                    pick_button.y0 + (pick_button.height() - f64::from(bh)) / 2.0,
-                )),
-            None,
-        );
-    }
+            pick_button.x0 + (pick_button.width() - f64::from(bw)) / 2.0,
+            pick_button.y0 + (pick_button.height() - f64::from(bh)) / 2.0,
+        ),
+        None,
+    );
 }
 
 impl Widget for ConflictPicker {
@@ -462,118 +500,16 @@ impl Widget for ConflictPicker {
             &title_text,
             title_size,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((title.x0, title.y0 + (title.height() - f64::from(th)) / 2.0)),
+            translated(
+                transform,
+                title.x0,
+                title.y0 + (title.height() - f64::from(th)) / 2.0,
+            ),
             None,
         );
 
-        let cards = self.card_rects();
-        let alt_count = self.alternatives().len();
-        let now = std::time::SystemTime::now();
-        for (i, card) in cards.iter().enumerate() {
-            let hovered = self.hover_alt == Some(i)
-                || (i == alt_count && self.has_merged_card() && self.hover_merged);
-            let Some(pick_btn) = self.pick_button_rect(i) else {
-                continue;
-            };
-            if i < alt_count {
-                let alt = &self.alternatives()[i];
-                let ts_label = crate::widget::history::format_relative_time(alt.timestamp, now);
-                let button_label = format!("Pick {}'s", alt.author);
-                self.draw_card(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    *card,
-                    &alt.label,
-                    &alt.author,
-                    &ts_label,
-                    &alt.summary,
-                    &button_label,
-                    hovered,
-                    pick_btn,
-                );
-            } else {
-                // `draw_card` paints the standard accent pick button; a
-                // success-tinted overlay layers on top so merge reads distinct.
-                let preview = self.merge_preview().unwrap_or("");
-                self.draw_card(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    *card,
-                    "Merged preview",
-                    "auto",
-                    "concatenated",
-                    preview,
-                    "Use merged",
-                    hovered,
-                    pick_btn,
-                );
-                let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.sm));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.semantic.success,
-                    None,
-                    &btn_shape,
-                );
-                let bl = "Use merged";
-                let bsize = theme.tokens.typography.scale.sm;
-                let (bw, bh) = text_renderer.measure(bl, bsize, None);
-                text_renderer.draw_text(
-                    scene,
-                    bl,
-                    bsize,
-                    theme.tokens.colors.text_primary,
-                    transform
-                        * Affine::translate((
-                            pick_btn.x0 + (pick_btn.width() - f64::from(bw)) / 2.0,
-                            pick_btn.y0 + (pick_btn.height() - f64::from(bh)) / 2.0,
-                        )),
-                    None,
-                );
-            }
-        }
-
-        let keep = self.keep_current_rect();
-        let keep_shape = RoundedRect::from_rect(keep, f64::from(theme.tokens.radii.sm));
-        let keep_body = if self.hover_keep {
-            theme.tokens.colors.surface_white_20
-        } else {
-            theme.tokens.colors.surface_white_10
-        };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            keep_body,
-            None,
-            &keep_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_white_20,
-            None,
-            &keep_shape,
-        );
-        let keep_label = "Pick neither (keep current)";
-        let keep_size = theme.tokens.typography.scale.sm;
-        let (kw, kh) = text_renderer.measure(keep_label, keep_size, None);
-        text_renderer.draw_text(
-            scene,
-            keep_label,
-            keep_size,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    keep.x0 + (keep.width() - f64::from(kw)) / 2.0,
-                    keep.y0 + (keep.height() - f64::from(kh)) / 2.0,
-                )),
-            None,
-        );
+        self.draw_cards(scene, transform, text_renderer, theme);
+        self.draw_keep_button(scene, transform, text_renderer, theme);
 
         self.dirty = false;
     }
@@ -620,7 +556,7 @@ impl Widget for ConflictPicker {
             } => {
                 // Buttons sit *inside* the card rect, so a click on a button
                 // is also a click on the card — test buttons first.
-                let total = alt_count + usize::from(self.has_merged_card());
+                let total = alt_count.saturating_add(usize::from(self.has_merged_card()));
                 for i in 0..total {
                     if let Some(btn) = self.pick_button_rect(i)
                         && btn.contains(self.last_cursor)
@@ -706,6 +642,137 @@ impl ConflictPicker {
             cb(outcome);
         }
     }
+
+    /// Paints each alternative/merged card in `card_rects()` order.
+    fn draw_cards(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let cards = self.card_rects();
+        let alt_count = self.alternatives().len();
+        let now = std::time::SystemTime::now();
+        for (i, card) in cards.iter().enumerate() {
+            let hovered = self.hover_alt == Some(i)
+                || (i == alt_count && self.has_merged_card() && self.hover_merged);
+            let Some(pick_btn) = self.pick_button_rect(i) else {
+                continue;
+            };
+            let chrome = CardChrome {
+                card: *card,
+                hovered,
+                pick_button: pick_btn,
+            };
+            if let Some(alt) = self.alternatives().get(i) {
+                let ts_label = crate::widget::history::format_relative_time(alt.timestamp, now);
+                let button_label = format!("Pick {}'s", alt.author);
+                let content = CardContent {
+                    label: &alt.label,
+                    author: &alt.author,
+                    timestamp_label: &ts_label,
+                    summary: &alt.summary,
+                    button_label: &button_label,
+                };
+                draw_card(scene, transform, text_renderer, theme, &chrome, &content);
+            } else {
+                // `draw_card` paints the standard accent pick button; a
+                // success-tinted overlay layers on top so merge reads distinct.
+                let preview = self.merge_preview().unwrap_or("");
+                let content = CardContent {
+                    label: "Merged preview",
+                    author: "auto",
+                    timestamp_label: "concatenated",
+                    summary: preview,
+                    button_label: "Use merged",
+                };
+                draw_card(scene, transform, text_renderer, theme, &chrome, &content);
+                draw_merged_overlay(scene, transform, text_renderer, theme, pick_btn);
+            }
+        }
+    }
+
+    /// Paints the `[Pick neither (keep current)]` button at the bottom.
+    fn draw_keep_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let keep = self.keep_current_rect();
+        let keep_shape = RoundedRect::from_rect(keep, f64::from(theme.tokens.radii.sm));
+        let keep_body = if self.hover_keep {
+            theme.tokens.colors.surface_white_20
+        } else {
+            theme.tokens.colors.surface_white_10
+        };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            keep_body,
+            None,
+            &keep_shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_white_20,
+            None,
+            &keep_shape,
+        );
+        let keep_label = "Pick neither (keep current)";
+        let keep_size = theme.tokens.typography.scale.sm;
+        let (kw, kh) = text_renderer.measure(keep_label, keep_size, None);
+        text_renderer.draw_text(
+            scene,
+            keep_label,
+            keep_size,
+            theme.tokens.colors.text_primary,
+            translated(
+                transform,
+                keep.x0 + (keep.width() - f64::from(kw)) / 2.0,
+                keep.y0 + (keep.height() - f64::from(kh)) / 2.0,
+            ),
+            None,
+        );
+    }
+}
+
+/// Layers the success-tinted `[Use merged]` button on top of the card
+/// `draw_card` just painted, so the merged option reads visually distinct.
+/// A pure function of its inputs — no `self` needed.
+fn draw_merged_overlay(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    pick_btn: Rect,
+) {
+    let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.sm));
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.semantic.success,
+        None,
+        &btn_shape,
+    );
+    let bl = "Use merged";
+    let bsize = theme.tokens.typography.scale.sm;
+    let (bw, bh) = text_renderer.measure(bl, bsize, None);
+    text_renderer.draw_text(
+        scene,
+        bl,
+        bsize,
+        theme.tokens.colors.text_primary,
+        translated(
+            transform,
+            pick_btn.x0 + (pick_btn.width() - f64::from(bw)) / 2.0,
+            pick_btn.y0 + (pick_btn.height() - f64::from(bh)) / 2.0,
+        ),
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -721,9 +788,11 @@ mod tests {
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
             label: label.into(),
-            summary: format!("{} chose {}", author, label),
+            summary: format!("{author} chose {label}"),
             author: author.into(),
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(60),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_mins(1))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
             payload: Arc::from(Vec::<u8>::new()),
         }
     }
