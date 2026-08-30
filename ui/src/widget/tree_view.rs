@@ -81,6 +81,14 @@ pub struct TreeView<T> {
 const DISCLOSURE_WIDTH: f64 = 16.0;
 const ROW_HEIGHT: f64 = 22.0;
 
+/// Widens a UI-scale index/count (row index, depth, row count) to `f64` for
+/// pixel-space arithmetic. Clamped to `u32::MAX` — a tree view never has
+/// anywhere near four billion rows — so unlike a raw `as` cast this can
+/// never silently lose precision.
+fn idx_to_f64(i: usize) -> f64 {
+    f64::from(u32::try_from(i).unwrap_or(u32::MAX))
+}
+
 impl<T> TreeView<T> {
     pub fn new(root: TreeNode<T>) -> Self {
         Self {
@@ -96,6 +104,7 @@ impl<T> TreeView<T> {
         }
     }
 
+    #[must_use]
     pub fn on_select<F: FnMut(NodeId) + 'static>(mut self, f: F) -> Self {
         self.on_select = Some(Box::new(f));
         self
@@ -148,7 +157,7 @@ impl<T> TreeView<T> {
         out.push((node.id, node.label.as_str(), depth));
         if expanded.contains(&node.id) {
             for child in &node.children {
-                Self::collect_visible(child, depth + 1, expanded, out);
+                Self::collect_visible(child, depth.saturating_add(1), expanded, out);
             }
         }
     }
@@ -182,7 +191,11 @@ impl<T: 'static> Widget for TreeView<T> {
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let rows = self.visible_rows().len().max(1);
-        let height = (rows as f64) * ROW_HEIGHT;
+        let height = idx_to_f64(rows) * ROW_HEIGHT;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "row height in logical pixels is far below f32::MAX for any realistic tree size"
+        )]
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::auto(),
@@ -207,7 +220,7 @@ impl<T: 'static> Widget for TreeView<T> {
             .iter()
             .enumerate()
             .map(|(i, (id, _, _))| {
-                let y0 = self.rect.y0 + (i as f64) * ROW_HEIGHT;
+                let y0 = self.rect.y0 + idx_to_f64(i) * ROW_HEIGHT;
                 let y1 = y0 + ROW_HEIGHT;
                 (*id, Rect::new(self.rect.x0, y0, self.rect.x1, y1))
             })
@@ -245,7 +258,7 @@ impl<T: 'static> Widget for TreeView<T> {
         }
 
         for (i, (id, label, depth)) in rows.iter().enumerate() {
-            let y0 = self.rect.y0 + (i as f64) * ROW_HEIGHT;
+            let y0 = self.rect.y0 + idx_to_f64(i) * ROW_HEIGHT;
             let y1 = y0 + ROW_HEIGHT;
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
 
@@ -269,7 +282,7 @@ impl<T: 'static> Widget for TreeView<T> {
                 );
             }
 
-            let depth_px = (*depth as f64) * indent_px;
+            let depth_px = idx_to_f64(*depth) * indent_px;
             let glyph_x = self.rect.x0 + depth_px;
             let label_x = glyph_x + DISCLOSURE_WIDTH;
             let text_y = y0 + (ROW_HEIGHT - f64::from(text_size)) / 2.0;
@@ -280,22 +293,32 @@ impl<T: 'static> Widget for TreeView<T> {
                 } else {
                     "\u{25B6}"
                 };
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+                )]
+                let glyph_xf = transform * Affine::translate((glyph_x, text_y));
                 text_renderer.draw_text(
                     scene,
                     glyph,
                     text_size,
                     tokens.colors.text_dim,
-                    transform * Affine::translate((glyph_x, text_y)),
+                    glyph_xf,
                     None,
                 );
             }
 
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+            )]
+            let label_xf = transform * Affine::translate((label_x, text_y));
             text_renderer.draw_text(
                 scene,
                 label,
                 text_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((label_x, text_y)),
+                label_xf,
                 None,
             );
         }
@@ -338,7 +361,7 @@ impl<T: 'static> Widget for TreeView<T> {
                     if !row_rect.contains(pt) {
                         continue;
                     }
-                    let glyph_x0 = row_rect.x0 + (*depth as f64) * DISCLOSURE_WIDTH;
+                    let glyph_x0 = row_rect.x0 + idx_to_f64(*depth) * DISCLOSURE_WIDTH;
                     let glyph_x1 = glyph_x0 + DISCLOSURE_WIDTH;
                     let is_branch =
                         Self::find_node(&self.root, *id).is_some_and(TreeNode::is_branch);
@@ -388,11 +411,13 @@ impl<T: 'static> Widget for TreeView<T> {
                         return;
                     }
                     let next_idx = match self.focused.and_then(|f| self.visible_index_of(f)) {
-                        Some(i) => (i + 1).min(rows.len() - 1),
+                        Some(i) => i.saturating_add(1).min(rows.len().saturating_sub(1)),
                         None => 0,
                     };
-                    self.focused = Some(rows[next_idx].0);
-                    *handled = true;
+                    if let Some((id, _, _)) = rows.get(next_idx) {
+                        self.focused = Some(*id);
+                        *handled = true;
+                    }
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     let rows = self.visible_rows();
@@ -403,8 +428,10 @@ impl<T: 'static> Widget for TreeView<T> {
                         Some(i) => i.saturating_sub(1),
                         None => 0,
                     };
-                    self.focused = Some(rows[prev_idx].0);
-                    *handled = true;
+                    if let Some((id, _, _)) = rows.get(prev_idx) {
+                        self.focused = Some(*id);
+                        *handled = true;
+                    }
                 }
                 _ => {}
             },
@@ -449,9 +476,11 @@ impl<T: 'static> Widget for TreeView<T> {
             });
         if let Some(sel) = self.selected {
             let rows = self.visible_rows();
-            if let Some(idx) = rows.iter().position(|(id, _, _)| *id == sel) {
-                node = node.with_position(idx + 1, rows.len());
-                node = node.with_level(rows[idx].2 + 1);
+            if let Some((idx, (_, _, depth))) =
+                rows.iter().enumerate().find(|(_, (id, _, _))| *id == sel)
+            {
+                node = node.with_position(idx.saturating_add(1), rows.len());
+                node = node.with_level(depth.saturating_add(1));
             }
         }
         Some(node)
@@ -588,14 +617,14 @@ mod tests {
             0.0,
             0.0,
             200.0,
-            view.visible_rows().len() as f64 * ROW_HEIGHT,
+            idx_to_f64(view.visible_rows().len()) * ROW_HEIGHT,
         );
         view.row_rects = view
             .visible_rows()
             .iter()
             .enumerate()
             .map(|(i, (id, _, _))| {
-                let y0 = view.rect.y0 + (i as f64) * ROW_HEIGHT;
+                let y0 = view.rect.y0 + idx_to_f64(i) * ROW_HEIGHT;
                 let y1 = y0 + ROW_HEIGHT;
                 (*id, Rect::new(view.rect.x0, y0, view.rect.x1, y1))
             })
