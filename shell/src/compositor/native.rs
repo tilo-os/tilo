@@ -1590,38 +1590,11 @@ fn spawn_session_collab_broker(
         return None;
     }
 
-    // The legacy JSON socket `spawn_full` binds unconditionally, but nothing
-    // in a real session dials it (apps use the capnp descriptor), so it goes
-    // beside the service socket rather than at `QUICK_COLLAB_SOCK` — honoured
-    // when set so in-tree tools and legacy tests keep working.
-    let json_path = std::env::var_os("QUICK_COLLAB_SOCK").map_or_else(
-        || launcher::services::services_root().join("collab-json.sock"),
-        std::path::PathBuf::from,
-    );
-
-    match crate::shell::collab_broker::spawn_full(
-        json_path.clone(),
-        Some(capnp_path.clone()),
-        peer_sync.clone(),
-    ) {
+    match crate::shell::collab_broker::spawn_native(capnp_path.clone(), peer_sync.clone()) {
         Ok(handle) => {
-            // `spawn_full` answers for the legacy JSON listener; ask about the capnp
-            // socket (the one apps are handed) separately rather than assume from silence.
-            if handle.capnp_socket().is_none() {
-                tracing::error!(
-                    "collab: the app-facing socket {} did not bind; apps will start \
-                     without collaboration",
-                    capnp_path.display()
-                );
-                chrome
-                    .borrow_mut()
-                    .set_collab_unavailable("The app-facing broker socket could not be bound.");
-                return None;
-            }
             tracing::info!(
-                "collab: broker listening on {} (apps) + {} (legacy) — peer_sync={}",
+                "collab: typed broker listening on {} — peer_sync={}",
                 capnp_path.display(),
-                json_path.display(),
                 peer_sync.is_some()
             );
             chrome.borrow_mut().clear_collab_unavailable();

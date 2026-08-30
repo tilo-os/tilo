@@ -9,14 +9,10 @@
 //!                                      ...with the version-history strip open
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the descriptor the launcher injects — nothing to
-//! configure. Run outside a session, point two instances at one shell:
-//!
-//! ```bash
-//! QUICK_COLLAB_SOCK="$XDG_RUNTIME_DIR/qos/services/collab-json.sock"
-//! QUICK_APP_ID=alice word-processor doc.md &
-//! QUICK_APP_ID=bob   word-processor doc.md
-//! ```
+//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! nothing to configure. A raw process started outside a session has no
+//! collaboration service; the descriptor is inherited, not a socket path an
+//! app can fabricate.
 
 // Thin build only: pull the shared toolkit dylib
 // (`libruntime_dylib.so`) into the link graph. It statically contains

@@ -706,6 +706,15 @@ mod tests {
                 cluster_id: "room".into(),
                 frame: vec![4],
             },
+            NeighbourMsg::AppPresenceV2 {
+                peer: 1,
+                app_id: "app".into(),
+                cluster_id: "room".into(),
+                presence: collab_types::PeerPresence {
+                    key: vec![4],
+                    payload: collab_types::PeerPresencePayload::Arrived,
+                },
+            },
         ] {
             assert!(retention(&live, false).is_none());
         }

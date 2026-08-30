@@ -144,6 +144,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
+        endpoint: None,
         socket: Some(sock),
         app_id: APP.into(),
         cluster: room,

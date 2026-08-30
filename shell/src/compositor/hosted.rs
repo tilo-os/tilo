@@ -341,7 +341,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         if let Some(path) = std::env::var_os("QUICK_COLLAB_SOCK") {
             let socket_path = std::path::PathBuf::from(path);
             // Optional native Cap'n Proto socket alongside the legacy JSON one: apps using the
-            // `runtime-collab` SDK connect directly without the `collab-bridge` translator. Both transports share fanout — an event on one lands on subscribers of the other.
+            // `runtime-collab` SDK clients connect directly to the native broker. Both transports share fanout — an event on one lands on subscribers of the other.
             let capnp_socket_path =
                 std::env::var_os("QUICK_COLLAB_CAPNP_SOCK").map(std::path::PathBuf::from);
             match crate::shell::collab_broker::spawn_full(

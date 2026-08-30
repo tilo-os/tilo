@@ -253,8 +253,8 @@ class Session:
 
     @property
     def broker(self) -> str:
-        """The JSON collaboration broker this session binds."""
-        return os.path.join(self.runtime, "qos", "services", "collab-json.sock")
+        """The typed collaboration broker this session binds."""
+        return os.path.join(self.runtime, "qos", "services", "collab.sock")
 
     def wait_up(self, timeout=90.0) -> bool:
         end = time.time() + timeout
@@ -332,9 +332,8 @@ def launch_word_processor(session: Session, room: str, brief: str,
     """Start the real word processor on `brief` as a client of `session`.
 
     Launched directly rather than through the palette, with the session's
-    Wayland display and JSON broker in its environment — the launch the
-    single-session agent harness uses, whose collaboration is known to
-    work. Both sessions open the *same* record path so the two apps
+    Wayland display and an inherited typed-service fd — the same contract as
+    the real launcher. Both sessions open the *same* record path so the apps
     announce one address and the room can bridge them.
     """
     display_file = os.path.join(session.runtime, "qos-session", "wayland-display")
@@ -350,7 +349,6 @@ def launch_word_processor(session: Session, room: str, brief: str,
     env = dict(session.env)
     env.update({
         "WAYLAND_DISPLAY": display,
-        "QUICK_COLLAB_SOCK": session.broker,
         "QOS_PACKAGE_ID": APP,
         "QOS_WORKSPACE_ID": room,
         "QUICK_APP_ID": session.name,
@@ -364,11 +362,16 @@ def launch_word_processor(session: Session, room: str, brief: str,
     })
     log_path = os.path.join(session.dir, "word-processor.log")
     before = {f.get("surface_id") for f in session.frames()}
+    service = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    service.connect(session.broker)
+    env["QOS_SVC_COLLAB_FD"] = str(service.fileno())
     proc = track(subprocess.Popen(
         [str(WORD_PROCESSOR), brief], env=env,
         stdout=subprocess.DEVNULL, stderr=open(log_path, "w"),
+        pass_fds=(service.fileno(),),
         preexec_fn=die_with_parent(),
     ))
+    service.close()
     end = time.time() + timeout
     while time.time() < end:
         if proc.poll() is not None:
@@ -684,7 +687,7 @@ def main() -> int:
               before_headings == 0, f"{before_headings} heading block(s)")
 
         print("\n[5] the agent joins ada's session and chooses")
-        argv = [str(AGENT), "--socket", ada.broker, "--workspace", room,
+        argv = [str(AGENT), "--endpoint", ada.broker, "--workspace", room,
                 "--record", f"file:{brief}",
                 "--name", "Claude", "--once", "--pace-ms", "600"]
         if args.no_model:

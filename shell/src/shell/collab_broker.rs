@@ -15,7 +15,6 @@
 //! broadcast primitive left in the broker.
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -25,109 +24,16 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use collab_types::{
-    ArtifactId, ChannelState, Ed25519PublicKey, OpClass, OpId, RedactedMarker, SignedOp,
-    ValidationError, parse_redact_payload, validate_inbound_op,
+    ArtifactId, ChannelState, OpClass, RedactedMarker, ValidationError, validate_inbound_op,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 use crate::shell::collab_broker_capnp::CapnpBrokerState;
+pub use crate::shell::collab_core::{
+    AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
+};
 use crate::shell::collab_outbound::{PeerPublisher, Transport};
 use crate::shell::network::ShellNetwork;
-
-/// Per-channel audit-log ring-buffer capacity — enough for debugging
-/// and tests asserting a drop, not a full history.
-const AUDIT_LOG_RING_CAPACITY: usize = 256;
-
-/// One entry in the per-channel audit log.
-#[derive(Clone, Debug)]
-pub struct AuditEntry {
-    /// The envelope that triggered the entry. Only rejections are
-    /// logged today, but the shape allows recording successes too.
-    pub envelope: Box<SignedOp>,
-    /// `None` is a success recorded for tracing; `Some(reason)` is a rejection.
-    pub rejection: Option<ValidationError>,
-    /// Minted on this host; used by the chrome's Activity pane timeline.
-    pub at: std::time::SystemTime,
-}
-
-/// Per-channel audit log, fixed-capacity ring buffer. Keyed by
-/// [`ArtifactId`] rather than channel id, matching the wire and the
-/// broker's v1 channel state.
-#[derive(Default)]
-pub struct AuditLog {
-    pub entries: HashMap<ArtifactId, VecDeque<AuditEntry>>,
-}
-
-impl AuditLog {
-    /// Append `entry`, evicting the oldest if the buffer is at capacity.
-    pub fn record(&mut self, artifact: ArtifactId, entry: AuditEntry) {
-        let buf = self.entries.entry(artifact).or_default();
-        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(entry);
-    }
-
-    /// Read-only view of the entries logged for one artifact.
-    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
-        self.entries
-            .get(&artifact)
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-}
-
-/// One entry in the per-channel redaction-record log.
-///
-/// Separate from the rejection-audit ring buffer — a redaction is a
-/// positive governance event, not a failure — so the compliance surface
-/// can iterate redactions without filtering every dropped envelope.
-#[derive(Clone, Debug)]
-pub struct RedactionRecord {
-    /// The Redact op envelope; verifiable against `redactor_pk` forever.
-    pub redact_envelope: Box<SignedOp>,
-    /// The id of the op that was redacted.
-    pub target_op_id: OpId,
-    /// SHA-256 of the target op's canonical bytes at redaction time.
-    /// Preserved even after the op-log entry is rewritten to the
-    /// redacted marker.
-    pub target_op_hash: [u8; 32],
-    /// Redactor's public key, lifted from the envelope for direct match
-    /// in audit queries.
-    pub redactor_pk: Ed25519PublicKey,
-    /// Free-text justification, capped at
-    /// `collab_types::MAX_REDACTION_REASON_BYTES`.
-    pub reason: String,
-    /// Wall-clock time the redactor recorded in the request payload.
-    pub redacted_at: std::time::SystemTime,
-}
-
-/// Per-artifact redaction-record log. Fixed-capacity ring buffer like
-/// [`AuditLog`], though redactions are rare enough that the cap is
-/// mostly defensive.
-#[derive(Default)]
-pub struct RedactionLog {
-    pub entries: HashMap<ArtifactId, VecDeque<RedactionRecord>>,
-}
-
-impl RedactionLog {
-    /// Append `record`, evicting the oldest if the buffer is at capacity.
-    pub fn record(&mut self, artifact: ArtifactId, record: RedactionRecord) {
-        let buf = self.entries.entry(artifact).or_default();
-        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(record);
-    }
-
-    /// Read-only view of the redaction records for one artifact.
-    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
-        self.entries
-            .get(&artifact)
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-}
 
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
@@ -390,41 +296,6 @@ impl CrdtRoute {
     }
 }
 
-/// Per-artifact channel-state cache. The first touch of an artifact
-/// creates a default `ChannelState` with empty `authorised_signers`, so
-/// every signed op fails validation until a role table is registered —
-/// the secure default for an artifact the broker was never told about.
-///
-/// TODO: wire channel state up from the persisted
-/// `Workspace.collaborators` + governance log so production traffic no
-/// longer needs the bootstrap dance.
-#[derive(Default)]
-pub struct BrokerChannels {
-    /// Per-artifact channel state. v1 keys on artifact id rather than
-    /// channel id because the wire only carries artifact id.
-    pub states: HashMap<ArtifactId, ChannelState>,
-    /// Rejected envelopes (and `OpArrivedRedacted` late-arrivals), for
-    /// operator triage.
-    pub audit: AuditLog,
-    /// Redaction records — a positive governance event, kept separate
-    /// from the rejection audit.
-    pub redactions: RedactionLog,
-}
-
-impl BrokerChannels {
-    /// Look up the [`ChannelState`] for `artifact`, lazily inserting a
-    /// default (empty `authorised_signers`, so every signed op fails
-    /// validation until a test fills it in).
-    pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
-        self.states.entry(artifact).or_default()
-    }
-
-    /// Inject a populated [`ChannelState`], replacing any existing entry.
-    pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
-        self.states.insert(artifact, state);
-    }
-}
-
 /// Shared registry of connected peers: JSON connections, the
 /// process-wide peer-id counter, and an optional [`CapnpBrokerState`]
 /// that layers the same fanout onto capnp's per-subscription queues so
@@ -677,62 +548,6 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
     guard.write_all(&len.to_le_bytes())?;
     guard.write_all(bytes)?;
     Ok(())
-}
-
-/// Apply a validated Redact envelope to the shared channel state.
-/// Hoisted here because both the local-broker `translate` path and the
-/// Iroh drain thread reach it after a Redact validates and has
-/// already been pushed onto the op log; this owns the derived-state
-/// mutation + the redaction-record audit entry.
-pub(crate) fn apply_redaction_from_envelope(
-    envelope: &SignedOp,
-    artifact: ArtifactId,
-    channels: &Arc<Mutex<BrokerChannels>>,
-) {
-    // Re-parses defensively (the validator already ran this) so the
-    // helper works outside the validated path too (drain, future replays).
-    let req = match parse_redact_payload(envelope) {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(
-                artifact = ?artifact,
-                "collab_broker: malformed Redact payload after validation: {err}",
-            );
-            return;
-        }
-    };
-    if let Ok(mut ch) = channels.lock() {
-        let state = ch.state_for(artifact);
-        match state.apply_redaction(&req) {
-            Ok(rewritten) => {
-                tracing::info!(
-                    artifact = ?artifact,
-                    target = ?req.target_op_id,
-                    rewritten,
-                    "collab_broker: applied redaction",
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    artifact = ?artifact,
-                    target = ?req.target_op_id,
-                    "collab_broker: apply_redaction failed: {err}",
-                );
-                return;
-            }
-        }
-        ch.redactions.record(
-            artifact,
-            RedactionRecord {
-                redact_envelope: Box::new(envelope.clone()),
-                target_op_id: req.target_op_id,
-                target_op_hash: req.target_op_hash,
-                redactor_pk: req.redacted_by,
-                reason: req.reason,
-                redacted_at: req.redacted_at,
-            },
-        );
-    }
 }
 
 /// Log-and-drop for a frame whose sender never announced a route.
@@ -1019,9 +834,12 @@ fn reader_loop(
                 // `ShellNetwork` holds that gate plus the gossip size cap.
                 publisher.document_snapshot(route, Transport::Json, data.clone());
             }
-            (Some(route), CollabRequest::Presence { .. }) => {
-                // Forwarded as-is; the receiving broker re-addresses it.
-                publisher.presence(route, Transport::Json, frame.clone());
+            (Some(route), CollabRequest::Presence { key, payload }) => {
+                // Legacy local input is normalized before it reaches peers;
+                // new peer writes never embed a JSON request frame.
+                if let Some(presence) = crate::shell::collab_presence::to_peer(key, payload) {
+                    publisher.presence(route, Transport::Json, presence);
+                }
             }
             (None, CollabRequest::SyncCRDT { .. } | CollabRequest::Presence { .. }) => {
                 tracing::debug!(
@@ -1113,7 +931,7 @@ fn reader_loop(
 /// on `Drop` too, so a crashed shell can restart without a stale-inode
 /// collision.
 pub struct BrokerHandle {
-    socket_path: PathBuf,
+    socket_path: Option<PathBuf>,
     capnp_socket_path: Option<PathBuf>,
     /// `Option` so `Drop` can `take()` and `join()` it.
     listener_thread: Option<JoinHandle<()>>,
@@ -1205,7 +1023,9 @@ impl Drop for BrokerHandle {
     fn drop(&mut self) {
         self.drain_quit.store(true, Ordering::Relaxed);
         self.capnp_quit.store(true, Ordering::Relaxed);
-        let _ = std::fs::remove_file(&self.socket_path); // best-effort
+        if let Some(path) = &self.socket_path {
+            let _ = std::fs::remove_file(path); // best-effort
+        }
         if let Some(p) = &self.capnp_socket_path {
             let _ = std::fs::remove_file(p);
         }
@@ -1228,6 +1048,31 @@ pub fn spawn(socket_path: PathBuf) -> std::io::Result<BrokerHandle> {
     spawn_full(socket_path, None, None)
 }
 
+/// Production app-facing broker: bind only the typed Cap'n Proto service.
+/// The legacy JSON listener is not opened and no compatibility socket inode
+/// is created. Peer sync and in-process subscribers use the same core state.
+pub fn spawn_native(
+    capnp_socket_path: PathBuf,
+    peer_sync: Option<Arc<ShellNetwork>>,
+) -> std::io::Result<BrokerHandle> {
+    let identity = LocalIdentity::from_network(peer_sync.clone());
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    let handle = spawn_inner(
+        None,
+        Some(capnp_socket_path),
+        peer_sync,
+        identity,
+        publisher,
+    )?;
+    if handle.capnp_socket().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "native collaboration service did not bind",
+        ));
+    }
+    Ok(handle)
+}
+
 /// Legacy shim kept for existing hosted-mode callers; new callers that
 /// want the capnp interface should call `spawn_full`.
 pub fn spawn_with_peer_sync(
@@ -1239,8 +1084,8 @@ pub fn spawn_with_peer_sync(
 
 /// Full-featured broker spawn.
 ///
-/// - `socket_path`: legacy JSON socket (`QUICK_COLLAB_SOCK`), bound
-///   unconditionally for the SDK-migration path (bridge + legacy tests).
+/// - `socket_path`: legacy JSON socket (`QUICK_COLLAB_SOCK`), used by
+///   compatibility tests and hosted development tools only.
 /// - `capnp_socket_path`: optional native Cap'n Proto socket
 ///   (`QOS_SVC_COLLAB`). When `Some`, both transports share fanout
 ///   through the same [`PeerTable`], so either side reaches every
@@ -1256,7 +1101,7 @@ pub fn spawn_full(
     // give "does a local edit leave this machine" two different answers.
     let publisher = PeerPublisher::from_network(peer_sync.clone());
     spawn_inner(
-        socket_path,
+        Some(socket_path),
         capnp_socket_path,
         peer_sync,
         identity,
@@ -1275,7 +1120,7 @@ pub fn spawn_full_with_identity(
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::from_network(peer_sync.clone());
     spawn_inner(
-        socket_path,
+        Some(socket_path),
         capnp_socket_path,
         peer_sync,
         identity,
@@ -1292,21 +1137,22 @@ pub fn spawn_with_publisher(
     publisher: Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(None);
-    spawn_inner(socket_path, capnp_socket_path, None, identity, publisher)
+    spawn_inner(
+        Some(socket_path),
+        capnp_socket_path,
+        None,
+        identity,
+        publisher,
+    )
 }
 
 fn spawn_inner(
-    socket_path: PathBuf,
+    socket_path: Option<PathBuf>,
     capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
     identity: Arc<LocalIdentity>,
     publisher: Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
-    // Best-effort unlink of a stale inode from a previous instance; if
-    // bind still fails (e.g. wrong owner), that surfaces below.
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
-
     let table = Arc::new(PeerTable::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // Who is waiting on a cooperative scrollback answer, keyed by
@@ -1316,15 +1162,22 @@ fn spawn_inner(
     let pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let listener_table = Arc::clone(&table);
-    let listener_peer_sync = peer_sync.clone();
-    let listener_identity = Arc::clone(&identity);
-    let listener_publisher = Arc::clone(&publisher);
-    let listener_channels = Arc::clone(&channels);
-    let listener_pending = Arc::clone(&pending_scrollback);
-    let listener_thread = std::thread::Builder::new()
-        .name("qos-collab-broker-listener".into())
-        .spawn(move || {
+    let listener_thread =
+        if let Some(path) = &socket_path {
+            // Best-effort unlink of a stale inode from a previous instance; if
+            // bind still fails (e.g. wrong owner), that surfaces below.
+            let _ = std::fs::remove_file(path);
+            let listener = UnixListener::bind(path)?;
+            let listener_table = Arc::clone(&table);
+            let listener_peer_sync = peer_sync.clone();
+            let listener_identity = Arc::clone(&identity);
+            let listener_publisher = Arc::clone(&publisher);
+            let listener_channels = Arc::clone(&channels);
+            let listener_pending = Arc::clone(&pending_scrollback);
+            Some(
+            std::thread::Builder::new()
+                .name("qos-collab-broker-listener".into())
+                .spawn(move || {
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
@@ -1383,7 +1236,11 @@ fn spawn_inner(
                     }
                 }
             }
-        })?;
+                })?,
+        )
+        } else {
+            None
+        };
 
     // Inbound-drain: when peer-sync is on, drain `ShellNetwork`'s queues
     // every 100ms and fan to local apps — unsigned/signed CRDT deltas,
@@ -1488,9 +1345,24 @@ fn spawn_inner(
                             std::mem::take(&mut *buf)
                         };
                         for entry in drained_presence {
-                            let Ok(CollabRequest::Presence { key, payload }) =
-                                serde_json::from_slice::<CollabRequest>(&entry.frame)
-                            else {
+                            let decoded = match entry.payload {
+                                crate::shell::network::InboundAppPresencePayload::Typed(
+                                    presence,
+                                ) => crate::shell::collab_presence::from_peer(presence),
+                                crate::shell::network::InboundAppPresencePayload::LegacyJson(
+                                    frame,
+                                ) => {
+                                    // Read-only compatibility for peers predating typed
+                                    // presence. No current sender writes this dialect.
+                                    match serde_json::from_slice::<CollabRequest>(&frame) {
+                                        Ok(CollabRequest::Presence { key, payload }) => {
+                                            Some((key, payload))
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                            };
+                            let Some((key, payload)) = decoded else {
                                 continue;
                             };
                             // `Arrived` means the peer has no document
@@ -1730,7 +1602,7 @@ fn spawn_inner(
     Ok(BrokerHandle {
         socket_path,
         capnp_socket_path: effective_capnp_path,
-        listener_thread: Some(listener_thread),
+        listener_thread,
         drain_thread,
         drain_quit,
         capnp_thread,

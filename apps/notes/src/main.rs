@@ -1,14 +1,9 @@
 //! Thin binary entry point. All logic lives in the library.
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the descriptor the launcher injects — nothing to
-//! configure. Run outside a session, point two instances at one shell:
-//!
-//! ```bash
-//! QUICK_COLLAB_SOCK="$XDG_RUNTIME_DIR/qos/services/collab-json.sock"
-//! QUICK_APP_ID=alice notes &
-//! QUICK_APP_ID=bob   notes
-//! ```
+//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! nothing to configure. A raw process outside a session has no collaboration
+//! service; the descriptor is inherited rather than discovered by path.
 
 use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};

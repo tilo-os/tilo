@@ -70,6 +70,7 @@ adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
 # `legacy-broker` feature so the in-tree tests and the shell's broker
 # keep compiling.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
+capnp-rpc.workspace = true
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # On `CollaborationManager` init, load the user's on-disk identity
 # via `runtime-identity::load()` and forward its pubkey bytes to
@@ -280,7 +281,6 @@ serial_test.workspace = true
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
 capnp.workspace = true
-capnp-rpc.workspace = true
 tokio-util.workspace = true
 # The `Backend::Relay` integration test stands up a real in-process
 # workspace host (`qos_relay::Relay`) + two iroh clients and drives two
