@@ -1,6 +1,5 @@
-//! Bluetooth control via `bluetoothctl`.
-
-use crate::process::{run, run_capture};
+//! Compatibility-shaped Bluetooth helpers over the shared BlueZ D-Bus client.
+//! New code should prefer [`crate::bluez`] and object paths directly.
 
 /// One Bluetooth device entry returned by [`list_bt_devices`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,27 +16,34 @@ pub struct BtDeviceInfo {
 
 /// Toggle the Bluetooth controller via `bluetoothctl power on|off`.
 pub fn set_bluetooth(enabled: bool) -> Result<(), String> {
-    let state = if enabled { "on" } else { "off" };
-    run("bluetoothctl", &["power", state])
+    crate::bluez::set_powered(enabled)
 }
 
 /// Connect a paired device by MAC via `bluetoothctl connect <mac>`.
 pub fn bt_connect(mac: &str) -> Result<(), String> {
-    run("bluetoothctl", &["connect", mac])
+    let device = crate::bluez::devices()?
+        .into_iter()
+        .find(|d| d.address.eq_ignore_ascii_case(mac))
+        .ok_or_else(|| format!("Bluetooth device {mac} is not known to BlueZ"))?;
+    crate::bluez::connect(&device.path)
 }
 
 /// Disconnect a device by MAC via `bluetoothctl disconnect <mac>`.
 pub fn bt_disconnect(mac: &str) -> Result<(), String> {
-    run("bluetoothctl", &["disconnect", mac])
+    let device = crate::bluez::devices()?
+        .into_iter()
+        .find(|d| d.address.eq_ignore_ascii_case(mac))
+        .ok_or_else(|| format!("Bluetooth device {mac} is not known to BlueZ"))?;
+    crate::bluez::disconnect(&device.path)
 }
 
 /// Read the Bluetooth controller state by grepping `bluetoothctl show`
 /// for `Powered:`.
 pub fn get_bluetooth() -> Result<bool, String> {
-    let out = run_capture("bluetoothctl", &["show"])?;
-    parse_bluetoothctl_power(&out)
+    crate::bluez::is_powered()
 }
 
+#[cfg(test)]
 fn parse_bluetoothctl_power(stdout: &str) -> Result<bool, String> {
     for line in stdout.lines() {
         let trimmed = line.trim();
@@ -53,23 +59,20 @@ fn parse_bluetoothctl_power(stdout: &str) -> Result<bool, String> {
 /// each MAC we call `bluetoothctl info <mac>` to extract `Connected:`
 /// and `Battery Percentage:`.
 pub fn list_bt_devices() -> Result<Vec<BtDeviceInfo>, String> {
-    let out = run_capture("bluetoothctl", &["devices", "Paired"])?;
-    let mut devices = Vec::new();
-    for (mac, name) in parse_bluetoothctl_devices(&out) {
-        let info_out = run_capture("bluetoothctl", &["info", &mac]).unwrap_or_default();
-        let (connected, battery) = parse_bluetoothctl_info(&info_out);
-        devices.push(BtDeviceInfo {
-            name,
-            mac,
-            battery,
-            connected,
-        });
-    }
-    Ok(devices)
+    Ok(crate::bluez::paired_devices()?
+        .into_iter()
+        .map(|d| BtDeviceInfo {
+            name: d.name,
+            mac: d.address,
+            battery: d.battery.unwrap_or(0),
+            connected: d.connected,
+        })
+        .collect())
 }
 
 /// Parse `bluetoothctl devices Paired` output:
 /// `Device AA:BB:CC:DD:EE:FF Some Name`
+#[cfg(test)]
 fn parse_bluetoothctl_devices(stdout: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in stdout.lines() {
@@ -92,6 +95,7 @@ fn parse_bluetoothctl_devices(stdout: &str) -> Vec<(String, String)> {
 /// Parse the relevant lines of `bluetoothctl info <mac>`. Returns
 /// `(connected, battery)`; battery defaults to `0` when no
 /// `Battery Percentage:` line is present.
+#[cfg(test)]
 fn parse_bluetoothctl_info(stdout: &str) -> (bool, u8) {
     let mut connected = false;
     let mut battery = 0u8;

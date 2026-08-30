@@ -151,6 +151,8 @@ fn audio_demo_pane() -> Box<dyn Widget> {
         is_default: def,
         volume: Some(0.7),
         muted: Some(false),
+        channels: 2,
+        codec: None,
     };
     let stream = |id, serial, app: &str, media: &str, target, playback, vol, mute| AudioStream {
         id,
@@ -184,6 +186,7 @@ fn audio_demo_pane() -> Box<dyn Widget> {
             0.75,
             false,
         )],
+        hardware: vec![],
     };
     // The device pickers read the local device view; give it the same two sinks
     // so the output-device chooser is shown alongside the per-app rows.
