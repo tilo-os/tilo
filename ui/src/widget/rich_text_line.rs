@@ -66,6 +66,19 @@ pub enum LineSignal {
 /// Matches the body baseline the rest of the UI uses for `TextInput`.
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
+/// Geometry shared by every mark segment `draw` paints in one frame, so
+/// `paint_mark_segment` doesn't need a fistful of separate parameters.
+struct MarkDrawCtx<'a> {
+    text: &'a str,
+    xs: &'a [f64],
+    rect: Rect,
+    pad: f64,
+    scroll_x: f64,
+    text_y: f64,
+    line_height: f64,
+    text_size: f32,
+}
+
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
@@ -105,6 +118,7 @@ impl RichTextLine {
     }
 
     /// Dirty flag stays false — this is a programmatic seed.
+    #[must_use]
     pub fn with_text(mut self, s: &str) -> Self {
         self.inner = self.inner.with_initial_value(s);
         self.prev_text = s.to_string();
@@ -113,12 +127,14 @@ impl RichTextLine {
     }
 
     /// For `BlockEditor` heading blocks (H1=28, H2=22, H3=18).
+    #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.font_size = size;
         self.inner.set_font_size(size);
         self
     }
 
+    #[must_use]
     pub fn with_mono(mut self) -> Self {
         self.inner.set_mono(true);
         self
@@ -253,7 +269,8 @@ impl RichTextLine {
         }
         let idx = byte.min(xs.len().saturating_sub(1));
         let pad = self.inner.text_padding_x(theme);
-        self.inner.get_rect().x0 + pad + xs[idx] - self.inner.scroll_x()
+        let x = xs.get(idx).copied().unwrap_or(0.0);
+        self.inner.get_rect().x0 + pad + x - self.inner.scroll_x()
     }
 
     /// So a peer caret on this line is pixel-identical to the line's own focused caret.
@@ -312,6 +329,47 @@ impl RichTextLine {
     #[doc(hidden)]
     pub fn inner(&self) -> &TextInput {
         &self.inner
+    }
+
+    /// Ctrl/Super + b/i/e/u toggles the corresponding mark. Returns `true`
+    /// when `c` matched one of the shortcuts (case-insensitively).
+    fn handle_mark_shortcut(&mut self, c: &str) -> bool {
+        match c.to_lowercase().as_str() {
+            "b" => self.toggle_mark(Mark::Bold),
+            "i" => self.toggle_mark(Mark::Italic),
+            "e" => self.toggle_mark(Mark::Code),
+            "u" => self.toggle_mark(Mark::Underline),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Reconciles `marks`/`pending_marks` against a text edit (diffed
+    /// against `prev_text`, which the caller updates afterward), and emits
+    /// `LinkOpen` when the edit just typed a `[[` at the caret.
+    fn reconcile_marks_after_edit(&mut self, new_text: &str) {
+        let (at, inserted, removed) = diff_splice(&self.prev_text, new_text);
+        marks::shift_after_edit(&mut self.marks, at, inserted, removed);
+
+        // Drain pending marks onto the inserted bytes.
+        if inserted > 0 && !self.pending_marks.is_empty() {
+            let range = at..at.saturating_add(inserted);
+            let pending = std::mem::take(&mut self.pending_marks);
+            for m in pending {
+                marks::add_mark_to_range(&mut self.marks, range.clone(), m);
+            }
+        }
+
+        // `[[` right before the caret emits LinkOpen; brackets are stripped
+        // later by the popover commit path, not here.
+        let caret = self.inner.cursor_pos();
+        if inserted > 0
+            && let Some(prefix) = new_text.as_bytes().get(..caret)
+            && prefix.ends_with(b"[[")
+            && let Some(open_at) = caret.checked_sub(2)
+        {
+            self.signal = Some(LineSignal::LinkOpen { open_at });
+        }
     }
 }
 
@@ -427,125 +485,18 @@ impl Widget for RichTextLine {
             &clip_shape,
         );
 
-        let tokens = &theme.tokens;
+        let ctx = MarkDrawCtx {
+            text: &text,
+            xs,
+            rect,
+            pad,
+            scroll_x,
+            text_y,
+            line_height,
+            text_size,
+        };
         for seg in &segments {
-            if seg.range.start >= text.len() {
-                continue;
-            }
-            let slice = &text[seg.range.start..seg.range.end.min(text.len())];
-            if slice.is_empty() {
-                continue;
-            }
-            let needs_overpaint = seg.bold
-                || seg.italic
-                || seg.code
-                || seg.underline
-                || seg.strikethrough
-                || seg.link.is_some();
-
-            let x_offset = xs.get(seg.range.start).copied().unwrap_or(0.0);
-            let x = rect.x0 + pad + x_offset - scroll_x;
-            let sans_end_x_offset = xs
-                .get(seg.range.end.min(xs.len().saturating_sub(1)))
-                .copied()
-                .unwrap_or(x_offset);
-            let sans_end_x = rect.x0 + pad + sans_end_x_offset - scroll_x;
-
-            if seg.code {
-                // Inline code renders in the document font (`mono = false`
-                // below) so its extent matches the sans layout slot exactly;
-                // a wider monospace measurement would overlap the next chars.
-                let chip_right = sans_end_x;
-                let bg_rect = Rect::new(
-                    x - 2.0,
-                    text_y + 1.0,
-                    chip_right + 2.0,
-                    text_y + line_height - 1.0,
-                );
-                let bg = vello::kurbo::RoundedRect::from_rect(bg_rect, 3.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.surfaces.raised,
-                    None,
-                    &bg,
-                );
-            }
-
-            if seg.link.is_some() {
-                let underline = Rect::new(
-                    x,
-                    text_y + line_height - 2.0,
-                    sans_end_x,
-                    text_y + line_height - 1.0,
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.accent[5],
-                    None,
-                    &underline,
-                );
-            }
-
-            // In text colour, distinct from the accent-coloured link underline above.
-            if seg.underline {
-                let rule = Rect::new(
-                    x,
-                    text_y + line_height - 2.0,
-                    sans_end_x,
-                    text_y + line_height - 1.0,
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.text_primary,
-                    None,
-                    &rule,
-                );
-            }
-
-            if seg.strikethrough {
-                let mid = text_y + line_height * 0.5;
-                let rule = Rect::new(x, mid - 0.5, sans_end_x, mid + 0.5);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.text_primary,
-                    None,
-                    &rule,
-                );
-            }
-
-            if !needs_overpaint {
-                continue;
-            }
-
-            let color = if seg.link.is_some() || seg.code {
-                tokens.colors.accent[5]
-            } else {
-                tokens.colors.text_primary
-            };
-
-            let weight = if seg.bold {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            };
-            let italic = seg.italic;
-            let mono = false;
-
-            text_renderer.draw_text_styled(
-                scene,
-                slice,
-                text_size,
-                color,
-                transform * Affine::translate((x, text_y)),
-                None,
-                weight,
-                italic,
-                mono,
-            );
+            paint_mark_segment(scene, transform, text_renderer, theme, seg, &ctx);
         }
 
         scene.pop_layer();
@@ -581,30 +532,10 @@ impl Widget for RichTextLine {
             // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
             if (modifiers.state().control_key() || modifiers.state().super_key())
                 && let Key::Character(c) = logical_key
+                && self.handle_mark_shortcut(c)
             {
-                match c.to_lowercase().as_str() {
-                    "b" => {
-                        self.toggle_mark(Mark::Bold);
-                        *handled = true;
-                        return;
-                    }
-                    "i" => {
-                        self.toggle_mark(Mark::Italic);
-                        *handled = true;
-                        return;
-                    }
-                    "e" => {
-                        self.toggle_mark(Mark::Code);
-                        *handled = true;
-                        return;
-                    }
-                    "u" => {
-                        self.toggle_mark(Mark::Underline);
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
-                }
+                *handled = true;
+                return;
             }
 
             match logical_key {
@@ -668,33 +599,10 @@ impl Widget for RichTextLine {
         );
 
         // Reconcile marks against any text edit using byte-deltas from the previous snapshot.
-        let new_text = self.inner.value();
+        let new_text = self.inner.value().to_string();
         if new_text != self.prev_text {
-            let (at, inserted, removed) = diff_splice(&self.prev_text, new_text);
-            marks::shift_after_edit(&mut self.marks, at, inserted, removed);
-
-            // Drain pending marks onto the inserted bytes.
-            if inserted > 0 && !self.pending_marks.is_empty() {
-                let range = at..(at + inserted);
-                let pending = std::mem::take(&mut self.pending_marks);
-                for m in pending {
-                    marks::add_mark_to_range(&mut self.marks, range.clone(), m);
-                }
-            }
-
-            // `[[` right before the caret emits LinkOpen; brackets are
-            // stripped later by the popover commit path, not here.
-            if inserted > 0 {
-                let caret = self.inner.cursor_pos();
-                if caret >= 2
-                    && new_text.as_bytes()[caret - 1] == b'['
-                    && new_text.as_bytes()[caret - 2] == b'['
-                {
-                    self.signal = Some(LineSignal::LinkOpen { open_at: caret - 2 });
-                }
-            }
-
-            self.prev_text = new_text.to_string();
+            self.reconcile_marks_after_edit(&new_text);
+            self.prev_text = new_text;
         }
         self.prev_cursor = self.inner.cursor_pos();
     }
@@ -748,6 +656,174 @@ impl Widget for RichTextLine {
     }
 }
 
+/// Paints one mark segment's overpaint (code chip, link/underline/strike
+/// rules, and restyled glyphs) inside the clip layer `draw` already pushed.
+/// A pure function of its inputs — no `self` needed.
+fn paint_mark_segment(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    seg: &MarkSegment,
+    ctx: &MarkDrawCtx<'_>,
+) {
+    if seg.range.start >= ctx.text.len() {
+        return;
+    }
+    // A mark's byte range might not land on a char boundary after an edit
+    // races the mark-shift logic; skip rather than panic.
+    let Some(slice) = ctx
+        .text
+        .get(seg.range.start..seg.range.end.min(ctx.text.len()))
+    else {
+        return;
+    };
+    if slice.is_empty() {
+        return;
+    }
+
+    let x_offset = ctx.xs.get(seg.range.start).copied().unwrap_or(0.0);
+    let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
+    let sans_end_x_offset = ctx
+        .xs
+        .get(seg.range.end.min(ctx.xs.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or(x_offset);
+    let sans_end_x = ctx.rect.x0 + ctx.pad + sans_end_x_offset - ctx.scroll_x;
+
+    paint_segment_decorations(scene, transform, theme, seg, ctx, x, sans_end_x);
+
+    let needs_overpaint = seg.bold
+        || seg.italic
+        || seg.code
+        || seg.underline
+        || seg.strikethrough
+        || seg.link.is_some();
+    if !needs_overpaint {
+        return;
+    }
+
+    let tokens = &theme.tokens;
+    let color = if seg.link.is_some() || seg.code {
+        tokens.colors.accent[5]
+    } else {
+        tokens.colors.text_primary
+    };
+
+    let weight = if seg.bold {
+        TextWeight::Bold
+    } else {
+        TextWeight::Regular
+    };
+    let italic = seg.italic;
+    let mono = false;
+
+    text_renderer.draw_text_styled(
+        scene,
+        slice,
+        ctx.text_size,
+        color,
+        translated(transform, x, ctx.text_y),
+        None,
+        weight,
+        italic,
+        mono,
+    );
+}
+
+/// Draws the code-chip background and the link/underline/strikethrough
+/// rules for one segment — the parts of `paint_mark_segment` that don't
+/// depend on the restyled text run itself.
+fn paint_segment_decorations(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    seg: &MarkSegment,
+    ctx: &MarkDrawCtx<'_>,
+    x: f64,
+    sans_end_x: f64,
+) {
+    let tokens = &theme.tokens;
+
+    if seg.code {
+        // Inline code renders in the document font (`mono = false` in
+        // `paint_mark_segment`) so its extent matches the sans layout slot
+        // exactly; a wider monospace measurement would overlap next chars.
+        let bg_rect = Rect::new(
+            x - 2.0,
+            ctx.text_y + 1.0,
+            sans_end_x + 2.0,
+            ctx.text_y + ctx.line_height - 1.0,
+        );
+        let bg = vello::kurbo::RoundedRect::from_rect(bg_rect, 3.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &bg,
+        );
+    }
+
+    if seg.link.is_some() {
+        let underline = Rect::new(
+            x,
+            ctx.text_y + ctx.line_height - 2.0,
+            sans_end_x,
+            ctx.text_y + ctx.line_height - 1.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.accent[5],
+            None,
+            &underline,
+        );
+    }
+
+    // In text colour, distinct from the accent-coloured link underline above.
+    if seg.underline {
+        let rule = Rect::new(
+            x,
+            ctx.text_y + ctx.line_height - 2.0,
+            sans_end_x,
+            ctx.text_y + ctx.line_height - 1.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.text_primary,
+            None,
+            &rule,
+        );
+    }
+
+    if seg.strikethrough {
+        let mid = ctx.text_y + ctx.line_height * 0.5;
+        let rule = Rect::new(x, mid - 0.5, sans_end_x, mid + 0.5);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.text_primary,
+            None,
+            &rule,
+        );
+    }
+}
+
+/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
+/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
+/// but composing two f64-based affine transforms cannot meaningfully
+/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
+/// for.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
+}
+
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
 /// offsets `pixel_x_for_byte` uses.
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
@@ -762,22 +838,26 @@ fn char_to_byte(text: &str, char_idx: usize) -> usize {
 pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let oa = old.as_bytes();
     let na = new.as_bytes();
-    let max = oa.len().min(na.len());
-    let mut prefix = 0;
-    while prefix < max && oa[prefix] == na[prefix] {
-        prefix += 1;
-    }
-    let mut o_suffix = 0;
-    let mut n_suffix = 0;
-    while o_suffix < oa.len() - prefix
-        && n_suffix < na.len() - prefix
-        && oa[oa.len() - 1 - o_suffix] == na[na.len() - 1 - n_suffix]
-    {
-        o_suffix += 1;
-        n_suffix += 1;
-    }
-    let removed = oa.len() - prefix - o_suffix;
-    let inserted = na.len() - prefix - n_suffix;
+
+    // Longest common prefix.
+    let prefix = oa.iter().zip(na.iter()).take_while(|(o, n)| o == n).count();
+
+    let o_rest = oa.len().saturating_sub(prefix);
+    let n_rest = na.len().saturating_sub(prefix);
+
+    // Longest common suffix within the bytes past the prefix. `zip` already
+    // stops at the shorter of the two (reversed, prefix-skipped) iterators,
+    // matching the original bound of `min(o_rest, n_rest)`.
+    let suffix = oa
+        .iter()
+        .skip(prefix)
+        .rev()
+        .zip(na.iter().skip(prefix).rev())
+        .take_while(|(o, n)| o == n)
+        .count();
+
+    let removed = o_rest.saturating_sub(suffix);
+    let inserted = n_rest.saturating_sub(suffix);
     (prefix, inserted, removed)
 }
 
@@ -849,10 +929,10 @@ mod tests {
     }
 
     fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
-        dispatch_with_mods(line, event, &Modifiers::default());
+        dispatch_with_mods(line, event, Modifiers::default());
     }
 
-    fn dispatch_with_mods(line: &mut RichTextLine, event: &WindowEvent, modifiers: &Modifiers) {
+    fn dispatch_with_mods(line: &mut RichTextLine, event: &WindowEvent, modifiers: Modifiers) {
         let mut state = automerge::AutoCommit::new();
         let root = automerge::ROOT.clone();
         let mut handled = false;
@@ -862,7 +942,7 @@ mod tests {
         line.handle_event(
             event,
             1.0,
-            modifiers,
+            &modifiers,
             &mut state,
             &root,
             &mut handled,
@@ -1043,7 +1123,7 @@ mod tests {
         dispatch(&mut l, &key_press(NamedKey::Enter));
         match l.take_signal() {
             Some(LineSignal::Enter { split_at: 3 }) => {}
-            other => panic!("expected Enter@3, got {:?}", other),
+            other => panic!("expected Enter@3, got {other:?}"),
         }
         assert_eq!(l.value(), "abcdef");
     }
@@ -1055,7 +1135,7 @@ mod tests {
         dispatch(&mut l, &key_press(NamedKey::Enter));
         match l.take_signal() {
             Some(LineSignal::Enter { split_at }) => assert_eq!(split_at, 2),
-            other => panic!("expected Enter@2, got {:?}", other),
+            other => panic!("expected Enter@2, got {other:?}"),
         }
     }
 
@@ -1188,7 +1268,7 @@ mod tests {
         dispatch(&mut l, &char_press("["));
         match l.take_signal() {
             Some(LineSignal::LinkOpen { open_at: 0 }) => {}
-            other => panic!("expected LinkOpen{{open_at:0}}, got {:?}", other),
+            other => panic!("expected LinkOpen{{open_at:0}}, got {other:?}"),
         }
         assert_eq!(l.value(), "[[");
     }
@@ -1206,7 +1286,7 @@ mod tests {
             "mono width must be non-zero for non-empty input"
         );
         assert!(
-            (mono - sans_w as f64).abs() > 0.5,
+            (mono - f64::from(sans_w)).abs() > 0.5,
             "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
              otherwise the chip-width-mismatch bug is undetectable",
         );
