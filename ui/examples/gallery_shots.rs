@@ -33,7 +33,7 @@ use ui::widget::Widget;
 mod gallery_scene;
 
 const WIDTH: u32 = 1200;
-const HEIGHT: u32 = 1940;
+const HEIGHT: u32 = 2300;
 
 fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     let mut state = State::new();
