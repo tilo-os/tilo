@@ -1,0 +1,52 @@
+# Settings, Quick Settings, and Studio ownership
+
+qOS uses progressive disclosure without creating “basic” and “advanced” modes. A control has one domain owner and may have several views of the same state.
+
+## Product boundary
+
+| Surface | Put here | Keep out |
+| --- | --- | --- |
+| Quick Settings | Current status and frequent, immediate, reversible actions: connect, toggle, select an already configured profile | Creation flows, destructive changes, long forms, policy editors |
+| Settings | Canonical everyday configuration, setup, recovery, permissions, health, and a concise explanation of consequences | Full artifact editors, batch operations, dense diagnostics by default |
+| Studio | Create, import, inspect, test, export, and deeply edit an artifact or policy | A second implementation of the ordinary status/toggle controls |
+
+“Studio” describes a capability, not necessarily a separate window. A Studio can be opened from the launcher or as a contextual workspace launched by Settings. Both entry points host the same package and state; Settings never copies its editor.
+
+Do not hide expert capability behind a global “advanced mode.” Prefer a stable information hierarchy with optional details, searchable actions, keyboard operation, copyable diagnostics, import/export, and a contextual **Open … Studio** action.
+
+## Domain examples
+
+### VPN
+
+- Quick Settings shows connection state and connects or disconnects an existing profile.
+- Settings lists profiles and owns the normal connect/disconnect experience.
+- VPN Studio owns importing WireGuard/OpenVPN material, DNS and routing policy, kill-switch rules, and diagnostics.
+- NetworkManager is the runtime source of truth. Every surface calls the same typed network action boundary; none shells out independently or maintains a second connection model.
+
+### Themes
+
+- Settings owns the active preset plus accessibility, text scale, UI scale, and reduced motion.
+- Theme Studio owns authoring, duplication, import/export, token inspection, and preview.
+- The shared `appearance` record carries Settings' canonical active state. Studio's editable artifact is nested under `appearance.studio`, while `appearance.custom_theme` contains the validated, versioned runtime schema. Both writers merge fields they do not own.
+- Built-in Studio themes resolve through the shared `ui::Theme` constructors. Custom themes materialize through `ui::CustomThemeSpec`, the same exact color, shape, spacing, and typography contract consumed by shell chrome and every app.
+
+## Integration contract
+
+The target architecture has four pieces:
+
+1. A domain service owns live state and privileged actions. UI packages receive typed status and submit typed intents.
+2. One versioned persistence schema defines ownership down to the field or nested namespace. Writers perform merge updates and preserve unknown fields for forward compatibility.
+3. The shell provides a versioned `ToolIntent` service. Settings can submit only a compiled enum such as `Vpn { route: Profile, profile: "Work VPN" }`; the shell maps that variant to `dev.qos.vpn`, validates the workspace and context, and launches it. The wire format has no executable, package-id, argv, or permission fields.
+4. A Studio applies an artifact through the same domain service. Settings and Quick Settings update from service state, not from optimistic parallel copies.
+
+Privileged operations remain narrow and auditable: for example, the battery-cap service normalizes vendor sysfs differences, validates a supported battery and bounded threshold, and exposes only that operation through policy-controlled elevation.
+
+## Interaction rules
+
+- Always show the current state before the action.
+- Use plain labels first; add technical identifiers in expandable details.
+- Optimistic controls must roll back and explain failures.
+- Hardware-absent features disappear or state why they are unavailable; never show fabricated devices.
+- Destructive or session-ending actions use a focused confirmation surface with consistent motion, keyboard focus, reduced-motion behavior, and a clear default escape path.
+- Privacy indicators are status, not decoration: identify the device in use and report hardware kill state separately from software permission state.
+- Power-user paths must remain discoverable through search, keyboard navigation, details, logs, and export—not through duplicated controls.
