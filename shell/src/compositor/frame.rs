@@ -16,7 +16,8 @@ use std::time::{Duration, Instant, SystemTime};
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::shell::build_nirios_overlay_host_with_chrome;
@@ -28,6 +29,17 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+
+/// Multipliers are deliberately conservative: the selected Kelvin value is
+/// a comfort target, not a claim that an uncalibrated panel now has reference
+/// colourimetry. Red stays at unity while green/blue fall as warmth rises.
+fn night_light_multiplier(kelvin: u32) -> Color {
+    let warmth =
+        ((6_500_u32.saturating_sub(kelvin.clamp(2_000, 6_500))) as f32 / 4_500.0).clamp(0.0, 1.0);
+    let green = (255.0 - 52.0 * warmth).round() as u8;
+    let blue = (255.0 - 132.0 * warmth).round() as u8;
+    Color::from_rgb8(255, green, blue)
+}
 
 use crate::shell::overlay_host::OutputGeometry;
 
@@ -61,6 +73,8 @@ pub struct FrameBuilder {
     watch_configured_theme: bool,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
+    night_light: bool,
+    night_light_temperature: u32,
     viewport: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
@@ -169,6 +183,8 @@ impl FrameBuilder {
             theme_store_stamp: settings_store::settings_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             last_theme_store_check: Instant::now(),
+            night_light: false,
+            night_light_temperature: 3_700,
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
@@ -382,7 +398,43 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        if self.watch_configured_theme && self.night_light {
+            let (w, h) = self.viewport;
+            let bounds = Rect::new(0.0, 0.0, w, h);
+            // Multiply is a real whole-frame colour transform: unlike an
+            // amber SrcOver veil it reduces short wavelengths without
+            // washing blacks grey.  The native DRM path can later replace
+            // this with a gamma LUT without changing the Settings contract.
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::new(Mix::Multiply, Compose::SrcOver),
+                1.0,
+                Affine::IDENTITY,
+                &bounds,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                night_light_multiplier(self.night_light_temperature),
+                None,
+                &bounds,
+            );
+            scene.pop_layer();
+        }
         scene
+    }
+
+    fn refresh_display_comfort(&mut self) {
+        let settings = settings_store::load();
+        self.night_light =
+            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false);
+        self.night_light_temperature = settings_store::f64_in(
+            &settings,
+            "display",
+            "night_light_temperature",
+            2_000.0..=6_500.0,
+            3_700.0,
+        ) as u32;
     }
 
     fn refresh_configured_theme(&mut self) {
@@ -400,6 +452,7 @@ impl FrameBuilder {
         }
         self.theme_store_stamp = stamp;
         self.theme = Theme::configured();
+        self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
     }
@@ -410,6 +463,7 @@ impl FrameBuilder {
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
         self.theme = Theme::configured();
+        self.refresh_display_comfort();
         self.theme_store_stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         self.rebuild_layout_tree();
@@ -779,6 +833,15 @@ pub fn walk_widget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin() {
+        assert_eq!(
+            night_light_multiplier(6_500),
+            Color::from_rgb8(255, 255, 255)
+        );
+        assert_ne!(night_light_multiplier(2_800), night_light_multiplier(4_500));
+    }
 
     /// Smoke: a fresh builder produces a non-empty Vello scene at 1600x900.
     /// The exact byte-count would change with any rendering tweak, so we

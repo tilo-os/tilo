@@ -6,6 +6,7 @@
 //! paints the bar onto the root scene.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use chrono::Local;
@@ -106,6 +107,8 @@ struct CacheFingerprint {
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32`
     /// volume that would never match frame to frame at full precision.
     status_key: StatusKey,
+    media_key: Vec<(u32, u8, String)>,
+    media_expanded: bool,
 }
 
 /// No calendar source is wired to the shell, so this paints what's
@@ -184,6 +187,10 @@ pub struct TopBarChrome {
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
     tray_pill_rect: Rect,
+    media_indicator_rect: Rect,
+    media_signature: Vec<(u32, u8, String)>,
+    media_started: Option<Instant>,
+    media_expanded: bool,
     /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
     /// Scroll over `center_rect` cycles it, dots jump directly.
@@ -227,6 +234,10 @@ impl TopBarChrome {
             down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            media_indicator_rect: Rect::ZERO,
+            media_signature: Vec::new(),
+            media_started: None,
+            media_expanded: false,
             avatar_stack_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             center_rect: Rect::ZERO,
@@ -270,6 +281,8 @@ impl TopBarChrome {
             center_widget: self.center_widget,
             time_bucket,
             status_key: self.status_key(),
+            media_key: self.media_signature.clone(),
+            media_expanded: self.media_expanded,
         }
     }
 
@@ -630,6 +643,33 @@ impl Widget for TopBarChrome {
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
         self.status = self.live_status();
+        let signature: Vec<(u32, u8, String)> = self
+            .status
+            .media
+            .iter()
+            .map(|use_| {
+                (
+                    use_.client_id,
+                    match use_.kind {
+                        os_actions::MediaKind::Microphone => 0,
+                        os_actions::MediaKind::Camera => 1,
+                    },
+                    use_.label.clone(),
+                )
+            })
+            .collect();
+        if signature != self.media_signature {
+            self.media_signature = signature;
+            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
+        }
+        let media_hovered = self
+            .last_cursor
+            .is_some_and(|p| self.media_indicator_rect.contains(p));
+        self.media_expanded = !self.media_signature.is_empty()
+            && (media_hovered
+                || self
+                    .media_started
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && fp.rect_px.2 > 0 {
             out_scene.append(&self.cached, Some(out_transform));
@@ -1254,6 +1294,104 @@ impl Widget for TopBarChrome {
 
         rx -= tray_w + f64::from(tokens.spacing.s4); // s4 = 16, ≥ 8 px after avatar radius
 
+        // --- Active microphone/camera use ----------------------------
+        // New use is announced as a named pill for four seconds. It then
+        // settles into a quiet dot; hovering that exact dot expands the same
+        // verified app label again. Clicking opens Quick Settings, whose
+        // privacy action can disconnect the active PipeWire clients.
+        if !self.status.media.is_empty() {
+            let mut labels: Vec<&str> =
+                self.status.media.iter().map(|u| u.label.as_str()).collect();
+            labels.sort_unstable();
+            labels.dedup();
+            let has_mic = self
+                .status
+                .media
+                .iter()
+                .any(|u| u.kind == os_actions::MediaKind::Microphone);
+            let has_camera = self
+                .status
+                .media
+                .iter()
+                .any(|u| u.kind == os_actions::MediaKind::Camera);
+            let media_color = colors.semantic.success;
+            let indicator_h = 22.0;
+            if self.media_expanded {
+                let suffix = if labels.len() > 1 {
+                    format!(" +{}", labels.len() - 1)
+                } else {
+                    String::new()
+                };
+                let label = format!("{}{suffix}", labels[0]);
+                let size = tokens.typography.scale.xs;
+                let (label_w, label_h) =
+                    text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+                let icon_count = usize::from(has_mic) + usize::from(has_camera);
+                let width = 16.0 + icon_count as f64 * 15.0 + f64::from(label_w);
+                self.media_indicator_rect = Rect::new(
+                    rx - width,
+                    center_y - indicator_h / 2.0,
+                    rx,
+                    center_y + indicator_h / 2.0,
+                );
+                let rr = RoundedRect::from_rect(
+                    self.media_indicator_rect,
+                    ui::chrome::ChromeRole::Selector.radius(theme, indicator_h),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    media_color.with_alpha_factor(0.18),
+                    None,
+                    &rr,
+                );
+                let mut ix = self.media_indicator_rect.x0 + 7.0;
+                for icon in [
+                    has_mic.then_some(ui::icons::Icon::Mic),
+                    has_camera.then_some(ui::icons::Icon::Camera),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    ui::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::new(ix, center_y - 6.0, ix + 12.0, center_y + 6.0),
+                        icon,
+                        media_color,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                    ix += 15.0;
+                }
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &label,
+                    size,
+                    colors.text_primary,
+                    transform * Affine::translate((ix + 2.0, center_y - f64::from(label_h) / 2.0)),
+                    None,
+                    TextWeight::Semibold,
+                );
+            } else {
+                self.media_indicator_rect = Rect::new(
+                    rx - indicator_h,
+                    center_y - indicator_h / 2.0,
+                    rx,
+                    center_y + indicator_h / 2.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    media_color,
+                    None,
+                    &vello::kurbo::Circle::new(self.media_indicator_rect.center(), 4.5),
+                );
+            }
+            rx = self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3);
+        } else {
+            self.media_indicator_rect = Rect::ZERO;
+        }
+
         // Snapshotted before drawing, so `avatar_stack_rect` can be
         // populated once the drawn circle count (incl. overflow) is known.
         let stack_right_x = rx;
@@ -1480,6 +1618,12 @@ impl Widget for TopBarChrome {
             *handled = true;
             return;
         }
+        if self.media_indicator_rect.contains(p) {
+            state.overlays.quick_settings = true;
+            state.bump();
+            *handled = true;
+            return;
+        }
         if self.avatar_stack_rect.contains(p) {
             state.overlays.collaborators = !state.overlays.collaborators;
             state.bump();
@@ -1522,6 +1666,10 @@ impl Widget for TopBarChrome {
             ),
             ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
             ("topbar_tray_pill".to_string(), self.tray_pill_rect),
+            (
+                "topbar_media_indicator".to_string(),
+                self.media_indicator_rect,
+            ),
             ("topbar_avatar_stack".to_string(), self.avatar_stack_rect),
         ]
     }
@@ -1535,7 +1683,32 @@ impl Widget for TopBarChrome {
         }
         // A status change must reach the screen without waiting for an
         // unrelated event — ancestors only rebuild on a dirty descendant.
-        status_key_of(&self.live_status()) != self.cache_fp.status_key
+        let live = self.live_status();
+        if status_key_of(&live) != self.cache_fp.status_key
+            || live
+                .media
+                .iter()
+                .map(|u| {
+                    (
+                        u.client_id,
+                        match u.kind {
+                            os_actions::MediaKind::Microphone => 0,
+                            os_actions::MediaKind::Camera => 1,
+                        },
+                        u.label.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+                != self.cache_fp.media_key
+        {
+            return true;
+        }
+        if let Some(started) = self.media_started {
+            let elapsed = started.elapsed();
+            return elapsed < Duration::from_secs(4)
+                || (self.cache_fp.media_expanded && elapsed >= Duration::from_secs(4));
+        }
+        false
     }
 
     fn mark_drawn(&mut self) {}
