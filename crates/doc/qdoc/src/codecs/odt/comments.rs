@@ -10,7 +10,7 @@ use quick_xml::reader::Reader;
 
 /// Parse one `<office:annotation>` element into a fresh comment, importing its author/date
 /// and body paragraphs. Returns `(office:name, comment_id)`; `None` name for a point comment.
-pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<String>, String)> {
+pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> (Option<String>, String) {
     let name = annotation_name(raw);
     let (author, date) = annotation_meta(raw);
     let comment_id = doc.insert_comment(&author, &date);
@@ -20,7 +20,7 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
     let mut cur: Option<String> = None;
     let mut cur_len: usize = 0;
     // Depth of `dc:*`/`meta:*` metadata children whose text must not become body content.
-    let mut in_meta = 0i32;
+    let mut in_meta = 0usize;
 
     let open_block = |doc: &mut DocMut,
                       prev: &mut Option<String>,
@@ -37,18 +37,16 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
             && !txt.is_empty()
         {
             doc.splice_comment_text(&comment_id, b, *cur_len, 0, txt);
-            *cur_len += txt.chars().count();
+            *cur_len = cur_len.saturating_add(txt.chars().count());
         }
     };
 
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
-                b"dc:creator" | b"dc:date" | b"meta:date-string" => in_meta += 1,
+                b"dc:creator" | b"dc:date" | b"meta:date-string" => {
+                    in_meta = in_meta.saturating_add(1);
+                }
                 b"text:p" | b"text:h" if in_meta == 0 => {
                     open_block(doc, &mut prev, &mut cur, &mut cur_len);
                 }
@@ -76,15 +74,15 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
             Event::Text(t) if in_meta == 0 && cur.is_some() => {
                 if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
-                    if !txt.is_empty()
-                        && !(txt.chars().all(char::is_whitespace) && txt.contains(['\n', '\r']))
-                    {
+                    if !txt.is_empty() && !super::content::is_layout_whitespace(&txt) {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
                 }
             }
             Event::End(e) => match e.name().as_ref() {
-                b"dc:creator" | b"dc:date" | b"meta:date-string" => in_meta = (in_meta - 1).max(0),
+                b"dc:creator" | b"dc:date" | b"meta:date-string" => {
+                    in_meta = in_meta.saturating_sub(1);
+                }
                 b"text:p" | b"text:h" if in_meta == 0 => cur = None,
                 _ => {}
             },
@@ -92,7 +90,7 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
             _ => {}
         }
     }
-    Some((name, comment_id))
+    (name, comment_id)
 }
 
 /// Read `office:name` from a raw `<office:annotation …>` or `<office:annotation-end …/>` tag.

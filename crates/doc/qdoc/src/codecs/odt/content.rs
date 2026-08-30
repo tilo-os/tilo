@@ -59,7 +59,7 @@ struct FrameState {
 /// newlines around structural list/table/heading elements — such nodes always contain a
 /// newline, unlike genuine inline whitespace). Dropping these keeps list items and
 /// headings tight instead of importing the indentation as blank lines.
-fn is_layout_whitespace(t: &str) -> bool {
+pub(super) fn is_layout_whitespace(t: &str) -> bool {
     !t.is_empty() && t.chars().all(char::is_whitespace) && t.contains(['\n', '\r'])
 }
 
@@ -334,9 +334,8 @@ pub(crate) fn parse_body(
                     *depth -= 1;
                     if *depth == 0 {
                         let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let (Some(b), Some(nid)) =
-                            (block.clone(), super::notes::import_note(&raw, doc))
-                        {
+                        if let Some(b) = block.clone() {
+                            let nid = super::notes::import_note(&raw, doc);
                             note_refs.push((b, *idx, nid));
                         }
                         note = None;
@@ -356,9 +355,8 @@ pub(crate) fn parse_body(
                     *depth -= 1;
                     if *depth == 0 {
                         let raw = s[*start..reader.buffer_position() as usize].to_string();
-                        if let (Some(b), Some((name, cid))) =
-                            (block.clone(), super::comments::import_annotation(&raw, doc))
-                        {
+                        if let Some(b) = block.clone() {
+                            let (name, cid) = super::comments::import_annotation(&raw, doc);
                             match name {
                                 // A ranged comment: stash it until its annotation-end.
                                 Some(n) => {
