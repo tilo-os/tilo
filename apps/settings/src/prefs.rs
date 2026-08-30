@@ -388,6 +388,13 @@ pub struct NotificationPrefs {
     /// screen is the most exposed surface.
     #[serde(default)]
     pub show_on_lock_screen: bool,
+    /// Whether applications may show an unread-count badge.
+    #[serde(default = "default_true")]
+    pub show_badges: bool,
+    /// Scheduled quiet hours. Per-app priority and temporary mute rules live
+    /// beside this record in the shared notification policy.
+    #[serde(default)]
+    pub focus: settings_store::notification_policy::FocusSchedule,
 }
 
 fn default_true() -> bool {
@@ -402,6 +409,8 @@ impl Default for NotificationPrefs {
             show_previews: true,
             play_sounds: true,
             show_on_lock_screen: false,
+            show_badges: true,
+            focus: settings_store::notification_policy::FocusSchedule::default(),
         }
     }
 }

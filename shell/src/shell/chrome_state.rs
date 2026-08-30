@@ -1000,6 +1000,7 @@ impl ChromeState {
 
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
+        use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
@@ -1007,7 +1008,24 @@ impl ChromeState {
             let dbus_id = inc.dbus_id;
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
-            self.push_notification_full(Notification::from_incoming(inc));
+            let verified_app_id = inc.caller.as_ref().map(|caller| caller.app_id.as_str());
+            let now = chrono::Local::now();
+            let policy = settings_store::notification_policy::NotificationPolicy::load();
+            let effective = policy.effective_for(
+                verified_app_id,
+                now.timestamp(),
+                (now.hour() * 60 + now.minute()) as u16,
+                now.weekday().num_days_from_monday() as u8,
+            );
+            let mut notification = Notification::from_incoming(inc);
+            notification.show_preview = effective.previews;
+            notification.show_on_lock_screen = effective.lock_screen;
+            if effective.banners {
+                self.push_notification_full(notification);
+            } else {
+                self.record_history(notification);
+                self.bump();
+            }
         }
         for id in bridge.drain_close_requests() {
             self.close_notification_by_dbus_id(id, CloseReason::Closed);
