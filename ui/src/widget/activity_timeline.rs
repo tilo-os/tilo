@@ -2334,6 +2334,119 @@ impl Widget for ActivityTimeline {
         self.dirty = false;
     }
 
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::Ime(_) if self.naming.is_some() => {
+                self.handle_naming_ime(event, modifiers, handled);
+            }
+            // A name field owns the keyboard while it is up, so a version
+            // called "edits" cannot accidentally re-filter the pane.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.naming.is_some()
+                && !modifiers.state().control_key()
+                && !modifiers.state().super_key() =>
+            {
+                self.handle_naming_key(event, modifiers, handled);
+            }
+            // Author typeahead. Chorded keys are left alone so the host's
+            // own shortcuts still work while the pane has the keyboard.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if !modifiers.state().control_key()
+                && !modifiers.state().super_key()
+                && !modifiers.state().alt_key() =>
+            {
+                self.handle_author_typeahead_key(logical_key, handled);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(position, scale_factor, handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_click(handled, focus_target, node_id, modifiers);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.handle_mouse_wheel(delta, handled);
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "ActivityTimeline"
+    }
+
+    /// The description carries both counts, because "7 items" over a list
+    /// of three collapsed bands would not describe what is on screen.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        let groups = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, VisualRow::Group(_)))
+            .count();
+        let description = if groups == 0 {
+            format!("{} entries", self.visible.len())
+        } else {
+            format!("{} entries in {} groups", self.visible.len(), groups)
+        };
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Activity timeline")
+                .with_description(description),
+        )
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("activity_timeline")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.naming
+            .as_ref()
+            .and_then(|naming| naming.field.ime_cursor_rect())
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+}
+
+impl ActivityTimeline {
     /// The pane's own rounded backdrop, painted only when no host has
     /// already put a surface behind it.
     fn draw_surface_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -2499,70 +2612,6 @@ impl Widget for ActivityTimeline {
         }
 
         scene.pop_layer();
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        match event {
-            WindowEvent::Ime(_) if self.naming.is_some() => {
-                self.handle_naming_ime(event, modifiers, handled);
-            }
-            // A name field owns the keyboard while it is up, so a version
-            // called "edits" cannot accidentally re-filter the pane.
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if self.naming.is_some()
-                && !modifiers.state().control_key()
-                && !modifiers.state().super_key() =>
-            {
-                self.handle_naming_key(event, modifiers, handled);
-            }
-            // Author typeahead. Chorded keys are left alone so the host's
-            // own shortcuts still work while the pane has the keyboard.
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if !modifiers.state().control_key()
-                && !modifiers.state().super_key()
-                && !modifiers.state().alt_key() =>
-            {
-                self.handle_author_typeahead_key(logical_key, handled);
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.handle_left_click(handled, focus_target, node_id, modifiers);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, handled);
-            }
-            _ => {}
-        }
     }
 
     fn handle_naming_ime(
@@ -2832,53 +2881,6 @@ impl Widget for ActivityTimeline {
         }
         self.rebuild_rows();
         *handled = true;
-    }
-
-    fn name(&self) -> &'static str {
-        "ActivityTimeline"
-    }
-
-    /// The description carries both counts, because "7 items" over a list
-    /// of three collapsed bands would not describe what is on screen.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        let groups = self
-            .rows
-            .iter()
-            .filter(|r| matches!(r, VisualRow::Group(_)))
-            .count();
-        let description = if groups == 0 {
-            format!("{} entries", self.visible.len())
-        } else {
-            format!("{} entries in {} groups", self.visible.len(), groups)
-        };
-        Some(
-            AccessNode::new(Role::List)
-                .with_name("Activity timeline")
-                .with_description(description),
-        )
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("activity_timeline")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.naming
-            .as_ref()
-            .and_then(|naming| naming.field.ime_cursor_rect())
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
     }
 }
 
