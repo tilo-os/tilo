@@ -214,6 +214,33 @@ Text::new("Internationalization demonstrates typography.")
     .with_auto_hyphenation("en-US")
 ```
 
+## Book composition
+
+The ebook reader's default **Book** composition goes beyond ordinary widget
+wrapping. It fits each complete paragraph with a Knuth–Plass-style global
+search, adjustable inter-word glue, TeX/Liang hyphenation selected from the
+EPUB language, consecutive-hyphen penalties, line-fitness transitions, and
+small glyph expansion. Opening and closing punctuation can protrude into the
+margin; CJK and Southeast Asian text use Unicode/ICU break opportunities; and
+mixed-direction paragraphs preserve visual BiDi order while retaining logical
+selection offsets. Pagination keeps headings with their following text and
+enforces two-line widow and orphan minima.
+
+Readers can switch the typography popover to **Ragged** composition when they
+prefer natural spacing. That mode deliberately disables automatic hyphenation,
+glyph expansion, justification, and punctuation protrusion. The preference is
+stored with the other reader settings and participates in layout cache
+identity.
+
+The actual 1280×800 serif reading surface is a committed visual regression at
+`apps/ebook/tests/fixtures/typography/serif-reader.png`. After visually
+approving an intentional change, regenerate it through the build container:
+
+```sh
+UPDATE_EBOOK_TYPOGRAPHY_BASELINE=1 cargo test -p ebook \
+  serif_reader_matches_typography_baseline -- --nocapture
+```
+
 Editable shaped text retains caret affinity as well as its UTF-8 document
 offset. `TextPosition { byte, affinity }` represents the two legitimate visual
 positions that can share one logical byte at a mixed-BiDi run boundary (and at

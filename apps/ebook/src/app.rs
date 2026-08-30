@@ -43,8 +43,8 @@ use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::model::{
-    AnnoKind, Annotation, Book, ColorScheme, FontEntry, FontKind, HiColor, Progress, ReadMode,
-    ReadTheme, Settings, default_fonts, default_schemes, now_ms,
+    AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
+    Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_chapter};
 use crate::paint;
@@ -272,6 +272,7 @@ enum Action {
     SetFont(String),
     SetReadTheme(ReadTheme),
     SetMode(ReadMode),
+    SetComposition(CompositionStyle),
     /// Apply/toggle/replace a highlight colour over the current text selection.
     SetColor(HiColor),
     /// Begin typing a numeric value directly (text size / line spacing / a
@@ -1605,6 +1606,9 @@ impl BooksApp {
             }
             Action::SetFont(id) => {
                 self.bump_setting(doc, |s| s.font_id = id);
+            }
+            Action::SetComposition(composition) => {
+                self.bump_setting(doc, |s| s.composition = composition);
             }
             Action::SetReadTheme(t) => self.bump_setting(doc, |s| {
                 s.theme = t;
@@ -5070,6 +5074,7 @@ impl BooksApp {
                 content_h,
                 &self.settings,
                 self.chapter,
+                &book.language,
                 &base_family,
                 font_mult,
                 font_sig,
@@ -5528,7 +5533,9 @@ impl BooksApp {
                     } else {
                         base_family.clone()
                     };
-                    let (w, _) = tr.measure_font(&run.text, b.size, None, weight, run.italic, &fam);
+                    let (w, _) =
+                        tr.measure_font(&run.display_text, b.size, None, weight, run.italic, &fam);
+                    let w = w * l.glyph_scale;
                     let x0 = content_x + indent + f64::from(run.x);
                     let x1 = x0 + f64::from(w);
                     self.sel_runs.push(SelRun {
@@ -5714,8 +5721,15 @@ impl BooksApp {
                         base_family.clone()
                     };
                     if run.mono && !base_mono {
-                        let (cw, _) =
-                            tr.measure_styled(&run.text, b.size, None, weight, run.italic, true);
+                        let (cw, _) = tr.measure_styled(
+                            &run.display_text,
+                            b.size,
+                            None,
+                            weight,
+                            run.italic,
+                            true,
+                        );
+                        let cw = cw * l.glyph_scale;
                         let chip = Rect::new(
                             x - 3.0,
                             ly - 1.0,
@@ -5726,10 +5740,11 @@ impl BooksApp {
                     }
                     tr.draw_text_font(
                         scene,
-                        &run.text,
+                        &run.display_text,
                         b.size,
                         palette.ink,
-                        t * Affine::translate((x, ly)),
+                        t * Affine::translate((x, ly))
+                            * Affine::scale_non_uniform(f64::from(l.glyph_scale), 1.0),
                         None,
                         weight,
                         run.italic,
@@ -6656,12 +6671,22 @@ impl BooksApp {
         let steppers_h = row_h + 10.0 + row_h;
         // Layout row: a "LAYOUT" label + one row of page/scroll/spread pills.
         let layout_h = 16.0 + pill_h;
+        let composition_h = 16.0 + pill_h;
         let type_h =
             16.0 + font_rows as f64 * pill_h + font_rows.saturating_sub(1) as f64 * pill_gap;
         let page_h =
             16.0 + scheme_rows as f64 * pill_h + scheme_rows.saturating_sub(1) as f64 * pill_gap;
-        let panel_h =
-            pad * 2.0 + header_h + steppers_h + 22.0 + layout_h + 22.0 + type_h + 22.0 + page_h;
+        let panel_h = pad * 2.0
+            + header_h
+            + steppers_h
+            + 22.0
+            + layout_h
+            + 22.0
+            + composition_h
+            + 22.0
+            + type_h
+            + 22.0
+            + page_h;
 
         // The "Aa" trigger now lives in the top bar, so the popover drops down
         // from just below it (right-aligned via the shared x-bounds), clamping
@@ -6796,6 +6821,45 @@ impl BooksApp {
                 Some(action),
             );
             sx += w + pill_gap;
+        }
+        y += pill_h + 22.0;
+
+        // Composition — book-quality global fitting or natural ragged lines.
+        tr.draw_text_weighted(
+            scene,
+            "COMPOSITION",
+            10.0,
+            c.text_dim,
+            t * Affine::translate((ix0, y)),
+            None,
+            TextWeight::Semibold,
+        );
+        y += 16.0;
+        let mut sx = ix0;
+        for composition in CompositionStyle::ALL {
+            let label = composition.label();
+            let width =
+                f64::from(tr.measure_weighted(label, 12.5, None, TextWeight::Medium).0) + 24.0;
+            let active = self.settings.composition == composition;
+            let action = if active {
+                Action::Swallow
+            } else {
+                Action::SetComposition(composition)
+            };
+            self.pill(
+                scene,
+                t,
+                tr,
+                theme,
+                sx,
+                y,
+                pill_h,
+                label,
+                12.5,
+                active,
+                Some(action),
+            );
+            sx += width + pill_gap;
         }
         y += pill_h + 22.0;
 
@@ -9719,6 +9783,83 @@ mod interaction_tests {
     }
 
     #[test]
+    fn composition_setting_relayouts_and_persists() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(app.layout.is_some(), "reader starts laid out");
+
+        app.type_popover = true;
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let ragged = find_hit(&app, |action| {
+            matches!(action, Action::SetComposition(CompositionStyle::Ragged))
+        })
+        .expect("settings popover exposes the Ragged composition choice");
+        assert!(click(&mut app, &mut doc, ragged), "choice is clickable");
+
+        assert!(
+            app.layout.is_none(),
+            "composition changes invalidate layout"
+        );
+        assert_eq!(app.settings.composition, CompositionStyle::Ragged);
+        assert_eq!(
+            BooksDoc::read_settings(&doc).composition,
+            CompositionStyle::Ragged,
+            "reader preference persists"
+        );
+    }
+
+    #[test]
+    fn serif_reader_matches_typography_baseline() {
+        use std::path::PathBuf;
+
+        use ui::offscreen::OffscreenRenderer;
+
+        let (width, height) = (1280u32, 800u32);
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let scene = render_scene(&mut app, &mut doc, f64::from(width), f64::from(height));
+        let mut renderer = match OffscreenRenderer::try_new(width, height) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                eprintln!("offscreen: {error} — skipping ebook typography baseline");
+                return;
+            }
+        };
+        let actual = renderer.render_rgba(&scene);
+        let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/typography/serif-reader.png");
+        if std::env::var_os("UPDATE_EBOOK_TYPOGRAPHY_BASELINE").is_some() {
+            if let Some(parent) = baseline.parent() {
+                std::fs::create_dir_all(parent).expect("create ebook typography baseline dir");
+            }
+            image::save_buffer(&baseline, &actual, width, height, image::ColorType::Rgba8)
+                .expect("write ebook typography baseline");
+            eprintln!("updated {}", baseline.display());
+            return;
+        }
+        let expected = image::open(&baseline)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "missing ebook typography baseline {}: {error}; regenerate with \
+                     UPDATE_EBOOK_TYPOGRAPHY_BASELINE=1",
+                    baseline.display()
+                )
+            })
+            .to_rgba8();
+        assert_eq!(
+            expected.dimensions(),
+            (width, height),
+            "ebook typography baseline changed dimensions"
+        );
+        let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+        assert_eq!(
+            differing, 0,
+            "serif reader differs from typography baseline in {differing} pixels"
+        );
+    }
+
+    #[test]
     fn wheel_scrolls_the_library_shelf() {
         let mut app = app_with_sample();
         app.view = View::Library;
@@ -10984,6 +11125,7 @@ mod interaction_tests {
             160.0,
             &Settings::default(),
             0,
+            "en-US",
             &FontChoice::SansSerif,
             1.0,
             0,

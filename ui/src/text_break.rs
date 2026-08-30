@@ -41,6 +41,36 @@ pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBr
     breaks.into_iter().collect::<Vec<_>>().into_iter()
 }
 
+/// UTF-8 byte offsets at which TeX/Liang patterns permit a discretionary
+/// hyphen for `language`. The source text is never modified; callers decide
+/// whether a chosen line break should paint the hyphen glyph.
+pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
+    let Ok(parsed) = language.parse::<unic_langid::LanguageIdentifier>() else {
+        return Vec::new();
+    };
+    let code = parsed.language.as_str().as_bytes();
+    let Some(lang) = (code.len() == 2)
+        .then(|| {
+            hypher::Lang::from_iso([code[0].to_ascii_lowercase(), code[1].to_ascii_lowercase()])
+        })
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    let mut breaks = Vec::new();
+    for range in unicode_word_ranges(text) {
+        let mut source = range.start;
+        let mut syllables = hypher::hyphenate(&text[range.clone()], lang).peekable();
+        while let Some(syllable) = syllables.next() {
+            source += syllable.len();
+            if syllables.peek().is_some() {
+                breaks.push(source);
+            }
+        }
+    }
+    breaks
+}
+
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,5 +306,14 @@ mod tests {
             map.shaped_to_source(map.source_to_shaped(text.len())),
             text.len()
         );
+    }
+
+    #[test]
+    fn public_hyphen_breaks_are_source_offsets() {
+        let text = "typography";
+        let breaks = discretionary_hyphen_breaks(text, "en-US");
+        assert!(!breaks.is_empty());
+        assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
+        assert!(discretionary_hyphen_breaks(text, "und").is_empty());
     }
 }
