@@ -5,5 +5,9 @@
 # 14% of a debug build, LLVM passes 29%, rest is rustc lowering MIR to IR.
 [toolchain]
 channel = "1.97.1"
-components = ["rustfmt", "clippy", "rust-src"]
+# rust-analyzer is a test subject, not an editor convenience: the code
+# editor's language-server suite drives the real binary and fails rather
+# than skips without it. The rustup shim shadows any system package, so it
+# has to come from the toolchain.
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
 profile = "minimal"
