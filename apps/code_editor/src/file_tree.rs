@@ -22,7 +22,7 @@ const INDENT: f64 = 14.0;
 const ICON_PAD: f64 = 10.0;
 
 /// What the user did in the tree, for the app to apply.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeEvent {
     OpenFile(TreeId),
     ToggleFolder(TreeId),

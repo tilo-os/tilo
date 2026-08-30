@@ -2765,6 +2765,36 @@ impl CodeApp {
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
+    /// The palette, when open, owns all keyboard input. Otherwise, while the
+    /// unsaved-close prompt is up, cursor motion still needs tracking so its
+    /// button hit-tests have a position to work with. Returns `true` when the
+    /// event was consumed here.
+    fn handle_palette_and_prompt_cursor(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if self.palette.is_visible()
+            && let WindowEvent::KeyboardInput { .. } = event
+            && self.palette.handle_key(event)
+        {
+            *handled = true;
+            self.drain_child_events(state);
+            return true;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            if self.close_prompt.is_some() {
+                self.close_prompt_hover = self.last_cursor;
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
     /// The unsaved-close prompt is modal: resolve it from a keypress or a
     /// click on one of its buttons. Always consumes the event.
     fn handle_close_prompt(
@@ -3528,25 +3558,8 @@ impl Widget for CodeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // The palette, when open, owns all keyboard input.
-        if self.palette.is_visible()
-            && let WindowEvent::KeyboardInput { .. } = event
-            && self.palette.handle_key(event)
-        {
-            *handled = true;
-            self.drain_child_events(state);
+        if self.handle_palette_and_prompt_cursor(event, scale_factor, state, handled) {
             return;
-        }
-
-        // Track the cursor (MouseInput carries no coords) so the hamburger and
-        // scrim hit-tests below have a position to work with.
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-            if self.close_prompt.is_some() {
-                self.close_prompt_hover = self.last_cursor;
-                *handled = true;
-                return;
-            }
         }
 
         // The unsaved-close prompt is modal: while it is up it owns all input,
