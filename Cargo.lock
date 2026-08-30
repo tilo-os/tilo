@@ -14931,6 +14931,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "tts",
  "unic-langid",
  "unicode-linebreak",
