@@ -105,7 +105,7 @@ fn critique_state_dump() {
     let new_id = uuid::Uuid::new_v4();
     {
         let panel = app.main_panel_mut();
-        panel.load_page(new_id, "New page".into(), String::new());
+        panel.load_page(new_id, "New page", String::new());
     }
     app.tick_for_test();
     render_state(&mut app, &format!("{dir}/04-empty-page.png"), 1280, 800).unwrap();

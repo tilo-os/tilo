@@ -581,8 +581,7 @@ fn multiline_code_block_renders_as_one_contiguous_unit() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     let body = "Intro line.\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n\nAfter.\n";
-    app.main_panel_mut()
-        .load_page(id, "T".into(), body.to_string());
+    app.main_panel_mut().load_page(id, "T", body.to_string());
 
     let mut state = ui::State::new();
     let _ = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
@@ -855,7 +854,7 @@ fn double_click_in_editor_selects_a_word() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     app.main_panel_mut()
-        .load_page(id, "T".into(), "the quick brown fox\n".into());
+        .load_page(id, "T", "the quick brown fox\n".into());
 
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
