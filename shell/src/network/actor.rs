@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_lite::StreamExt;
@@ -22,6 +22,9 @@ use tokio::sync::mpsc;
 use crate::network::protocol::NeighbourMsg;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const PEER_TIMEOUT: Duration = Duration::from_secs(15);
+const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
+const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 pub type WorkspaceId = u64;
@@ -30,7 +33,6 @@ pub type PeerId = EndpointId;
 /// Device certificate chain used to authenticate to a qOS workspace host.
 #[derive(Clone)]
 pub struct HostIdentity {
-    pub user_public_key: [u8; 32],
     pub device_cert: DeviceCert,
     pub device_signing_key: ed25519_dalek::SigningKey,
 }
@@ -65,6 +67,13 @@ pub enum NetEvent {
         peer: PeerId,
     },
     PeerLeft {
+        ws: WorkspaceId,
+        peer: PeerId,
+    },
+    /// An authenticated durable host finished subscribing to this workspace.
+    /// Distinct from a direct peer arrival: the shell uses this edge to seed
+    /// transport-level checkpoints for future first-time/offline devices.
+    HostReady {
         ws: WorkspaceId,
         peer: PeerId,
     },
@@ -161,9 +170,17 @@ async fn run(
     let mut host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime> = HashMap::new();
     let mut connecting_hosts = HashSet::new();
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
+    let mut host_checkpoint = tokio::time::interval(HOST_CHECKPOINT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    eviction.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    host_checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut peers_seen: HashMap<(WorkspaceId, EndpointId), Instant> = HashMap::new();
     let mut recent = HashSet::new();
     let mut recent_order = VecDeque::new();
     heartbeat.tick().await;
+    eviction.tick().await;
+    host_checkpoint.tick().await;
 
     loop {
         tokio::select! {
@@ -213,6 +230,7 @@ async fn run(
                 }
                 Some(NetCmd::LeaveWorkspace { ws }) => {
                     subscribers.remove(&ws);
+                    peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
                     if let Some(topic) = topics.remove(&ws) {
                         topic.pump.abort();
                     }
@@ -238,18 +256,16 @@ async fn run(
                         Err(error) => tracing::warn!(ws, %error, "collaboration message encode failed"),
                     }
                     if let Ok(bytes) = postcard::to_allocvec(&msg) {
-                        let ephemeral = matches!(
-                            msg,
-                            NeighbourMsg::Heartbeat { .. }
-                                | NeighbourMsg::PresenceMoved { .. }
-                                | NeighbourMsg::SurfaceFrame { .. }
-                        );
                         for ((session_ws, _), runtime) in &host_sessions {
                             if *session_ws != ws { continue; }
-                            let result = if ephemeral {
-                                runtime.session.publish_presence(bytes.clone())
-                            } else {
-                                runtime.session.publish_delta(bytes.clone())
+                            let result = match retention(&msg) {
+                                Some((channel, Retention::Checkpoint)) => runtime
+                                    .session
+                                    .publish_checkpoint(channel, bytes.clone()),
+                                Some((channel, Retention::Delta)) => runtime
+                                    .session
+                                    .publish_retained_delta(channel, bytes.clone()),
+                                None => runtime.session.publish_presence(bytes.clone()),
                             };
                             if let Err(error) = result {
                                 tracing::warn!(ws, %error, "workspace host publish failed");
@@ -293,16 +309,27 @@ async fn run(
                 Some(InternalEvent::Topic { ws, event }) => {
                     let Some(tx) = subscribers.get(&ws) else { continue };
                     let event = match event {
-                        GossipEvent::NeighborUp(peer) => Some(NetEvent::PeerJoined { ws, peer }),
-                        GossipEvent::NeighborDown(peer) => Some(NetEvent::PeerLeft { ws, peer }),
+                        GossipEvent::NeighborUp(peer) => {
+                            peers_seen.insert((ws, peer), Instant::now());
+                            Some(NetEvent::PeerJoined { ws, peer })
+                        }
+                        GossipEvent::NeighborDown(peer) => {
+                            peers_seen.remove(&(ws, peer));
+                            Some(NetEvent::PeerLeft { ws, peer })
+                        }
                         GossipEvent::Received(message) => {
+                            let peer = message.delivered_from;
+                            let rediscovered = peers_seen.insert((ws, peer), Instant::now()).is_none();
                             let fingerprint = message_fingerprint(&message.content);
                             if !mark_new_message(ws, fingerprint, &mut recent, &mut recent_order) {
                                 continue;
                             }
                             match postcard::from_bytes::<NeighbourMsg>(&message.content) {
+                                Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
+                                    Some(NetEvent::PeerJoined { ws, peer })
+                                }
                                 Ok(NeighbourMsg::Heartbeat { .. }) => None,
-                                Ok(msg) => Some(NetEvent::Msg { ws, peer: message.delivered_from, msg }),
+                                Ok(msg) => Some(NetEvent::Msg { ws, peer, msg }),
                                 Err(error) => {
                                     tracing::warn!(ws, %error, "invalid collaboration message");
                                     None
@@ -337,7 +364,7 @@ async fn run(
                 }
                 Some(InternalEvent::Host { ws, peer, event }) => {
                     let mapped = match event {
-                        HostEvent::Ready => Some(NetEvent::PeerJoined { ws, peer }),
+                        HostEvent::Ready => Some(NetEvent::HostReady { ws, peer }),
                         HostEvent::Message { author, fingerprint, msg } => {
                             if !mark_new_message(ws, fingerprint, &mut recent, &mut recent_order) {
                                 continue;
@@ -356,6 +383,21 @@ async fn run(
                     }
                 }
                 None => break,
+            },
+            _ = eviction.tick() => {
+                let now = Instant::now();
+                let stale: Vec<_> = peers_seen
+                    .iter()
+                    .filter_map(|(&(ws, peer), seen)| {
+                        (now.duration_since(*seen) > PEER_TIMEOUT).then_some((ws, peer))
+                    })
+                    .collect();
+                for (ws, peer) in stale {
+                    peers_seen.remove(&(ws, peer));
+                    if let Some(tx) = subscribers.get(&ws) {
+                        let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
+                    }
+                }
             },
             _ = heartbeat.tick() => {
                 if let Ok(mut out) = listen_addrs.lock() {
@@ -389,6 +431,13 @@ async fn run(
                     }
                 }
             }
+            _ = host_checkpoint.tick() => {
+                for &(ws, peer) in host_sessions.keys() {
+                    if let Some(tx) = subscribers.get(&ws) {
+                        let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
+                    }
+                }
+            }
         }
     }
 
@@ -399,6 +448,41 @@ async fn run(
         host.pump.abort();
     }
     let _ = router.shutdown().await;
+}
+
+/// Only replayable state is allowed into the host's durable queue. Everything
+/// else is live session traffic; persisting input, presence, media, permission
+/// prompts or request/response control frames would make them execute late.
+#[derive(Clone, Copy)]
+enum Retention {
+    Checkpoint,
+    Delta,
+}
+
+fn retention(msg: &NeighbourMsg) -> Option<([u8; 32], Retention)> {
+    let (route, kind) = match msg {
+        NeighbourMsg::SyncResp { .. } => (b"shell-tree".as_slice(), Retention::Checkpoint),
+        NeighbourMsg::AppCrdtSnapshot {
+            app_id, record_id, ..
+        } => {
+            let route = format!("app\0{app_id}\0{record_id}");
+            return Some((
+                *blake3::hash(route.as_bytes()).as_bytes(),
+                Retention::Checkpoint,
+            ));
+        }
+        NeighbourMsg::AppCrdtIncremental {
+            app_id, record_id, ..
+        }
+        | NeighbourMsg::AppCrdtIncrementalSigned {
+            app_id, record_id, ..
+        } => {
+            let route = format!("app\0{app_id}\0{record_id}");
+            return Some((*blake3::hash(route.as_bytes()).as_bytes(), Retention::Delta));
+        }
+        _ => return None,
+    };
+    Some((*blake3::hash(route).as_bytes(), kind))
 }
 
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
@@ -444,10 +528,9 @@ fn schedule_host_topic(
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            RelayClient::connect(
+            RelayClient::connect_to_pinned_host(
                 endpoint,
                 addr,
-                identity.user_public_key,
                 identity.device_cert,
                 identity.device_signing_key.clone(),
                 RevocationList::new(),
@@ -542,6 +625,46 @@ mod tests {
     use qos_relay::{Relay, RelayConfig, WorkspaceBinding, daemon::RelayIdentity};
     use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
+
+    #[test]
+    fn host_persists_state_but_never_late_session_actions() {
+        assert!(matches!(
+            retention(&NeighbourMsg::SyncResp {
+                changes: vec![vec![1]],
+                room: "room".into(),
+            }),
+            Some((_, Retention::Checkpoint))
+        ));
+        assert!(matches!(
+            retention(&NeighbourMsg::AppCrdtSnapshot {
+                peer: 1,
+                app_id: "app".into(),
+                cluster_id: "room".into(),
+                record_id: "doc".into(),
+                data: vec![2],
+            }),
+            Some((_, Retention::Checkpoint))
+        ));
+        for live in [
+            NeighbourMsg::RemoteInput {
+                peer: 1,
+                surface: 2,
+                event: vec![3],
+            },
+            NeighbourMsg::PermissionGrant {
+                peer: 1,
+                capability: "remote-input".into(),
+            },
+            NeighbourMsg::AppPresence {
+                peer: 1,
+                app_id: "app".into(),
+                cluster_id: "room".into(),
+                frame: vec![4],
+            },
+        ] {
+            assert!(retention(&live).is_none());
+        }
+    }
 
     async fn endpoint() -> (Endpoint, MemoryLookup) {
         let lookup = MemoryLookup::new();
@@ -686,12 +809,10 @@ mod tests {
         let (a, lookup_a) = identified_endpoint(&a_key).await;
         let (b, lookup_b) = identified_endpoint(&b_key).await;
         let identity_a = HostIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
             device_cert: a_cert,
             device_signing_key: a_key,
         };
         let identity_b = HostIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
             device_cert: b_cert,
             device_signing_key: b_key,
         };
@@ -741,7 +862,7 @@ mod tests {
                     .await
                     .unwrap()
                     .unwrap();
-                if matches!(event, NetEvent::PeerJoined { .. }) {
+                if matches!(event, NetEvent::HostReady { .. }) {
                     break;
                 }
             }
