@@ -34,6 +34,7 @@ pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub mod doc_open;
 pub mod editor_app;
+mod file_picker_overlay;
 pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
