@@ -700,12 +700,6 @@ mod tests {
                 peer: 1,
                 capability: "remote-input".into(),
             },
-            NeighbourMsg::AppPresence {
-                peer: 1,
-                app_id: "app".into(),
-                cluster_id: "room".into(),
-                frame: vec![4],
-            },
             NeighbourMsg::AppPresenceV2 {
                 peer: 1,
                 app_id: "app".into(),

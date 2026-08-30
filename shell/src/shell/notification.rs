@@ -115,6 +115,9 @@ pub struct Notification {
     /// Sending application's display name; rendered as a caption above
     /// the title when present.
     pub app_name: Option<String>,
+    /// Launcher-attributed id. Unlike `app_name`, this is not controlled by
+    /// the notification sender and is the only key policy may use.
+    pub app_id: Option<String>,
     /// Workspace the sending app belongs to, for attribution.
     pub source_workspace: Option<u64>,
     /// `(action_key, action_label)` pairs; activating the toast invokes
@@ -124,6 +127,11 @@ pub struct Notification {
     /// not to be kept uninformed of the machine's own security state.
     /// Shell-only; nothing reachable from D-Bus sets it.
     pub bypass_dnd: bool,
+    /// Whether this notification contributes to the redacted lock-screen
+    /// count. Content is never rendered on the lock screen.
+    pub show_on_lock_screen: bool,
+    /// Hide body text in the live banner while retaining it in local history.
+    pub show_preview: bool,
 }
 
 impl Notification {
@@ -140,9 +148,12 @@ impl Notification {
             dismiss_after: DEFAULT_DISMISS_AFTER,
             dbus_id: None,
             app_name: None,
+            app_id: None,
             source_workspace: None,
             actions: Vec::new(),
             bypass_dnd: false,
+            show_on_lock_screen: true,
+            show_preview: true,
         }
     }
 
@@ -152,6 +163,10 @@ impl Notification {
     /// [`DEFAULT_DISMISS_AFTER`], `0` → [`PERSISTENT_DISMISS`], `> 0` →
     /// that many milliseconds.
     pub fn from_incoming(inc: crate::notifications::IncomingNotification) -> Self {
+        let app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
+        let verified_name = app_id.as_ref().map(|id| {
+            crate::shell::launcher::display_name_for_app_id(id).unwrap_or_else(|| id.clone())
+        });
         let severity = match inc.urgency {
             2 => NotificationSeverity::Error,
             _ => NotificationSeverity::Info,
@@ -174,16 +189,17 @@ impl Notification {
             created_at: Instant::now(),
             dismiss_after,
             dbus_id: Some(inc.dbus_id),
-            app_name: if inc.app_name.is_empty() {
-                None
-            } else {
-                Some(inc.app_name)
-            },
+            // `app_name` is sender-controlled in the freedesktop protocol.
+            // Only show the label derived from launcher attribution.
+            app_name: verified_name,
+            app_id,
             source_workspace: inc.caller.as_ref().map(|c| c.workspace_id.0),
             actions: inc.actions,
             // Never from the wire: an app that could ask to pierce
             // Do-Not-Disturb would ask every time.
             bypass_dnd: false,
+            show_on_lock_screen: false,
+            show_preview: true,
         }
     }
 
@@ -384,7 +400,7 @@ impl Widget for NotificationStack {
         }
 
         let now = Instant::now();
-        let (snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
+        let (mut snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
             let ch = self.chrome.borrow();
             (
                 ch.notifications().to_vec(),
@@ -393,6 +409,9 @@ impl Widget for NotificationStack {
                 ch.notification_history_count(),
             )
         };
+        if locked {
+            snapshot.retain(|notification| notification.show_on_lock_screen);
+        }
         // Nothing to paint unless DND is on and unlocked (show its status pill).
         if snapshot.is_empty() && !(dnd && !locked) {
             self.rect = Rect::ZERO;
@@ -516,7 +535,7 @@ impl Widget for NotificationStack {
                 theme,
                 card_rect,
                 &ToastCard::new(&n.title, n.severity.toast_kind())
-                    .body(&n.body)
+                    .body(if n.show_preview { &n.body } else { "" })
                     .caption(n.app_name.as_deref().unwrap_or(""))
                     .alpha(alpha)
                     .closable(true)
@@ -633,7 +652,11 @@ mod tests {
     use crate::shell::state::WorkspaceTree;
 
     fn new_chrome() -> Chrome {
-        ChromeState::new(WorkspaceTree::default())
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome
     }
 
     #[test]
@@ -756,6 +779,8 @@ mod tests {
             expire_timeout: expire,
             urgency,
             caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
+            badge_count: None,
+            contact_endpoint: None,
         }
     }
 
@@ -765,7 +790,7 @@ mod tests {
         assert_eq!(n.title, "New mail");
         assert_eq!(n.body, "secret subject");
         assert_eq!(n.dbus_id, Some(3));
-        assert_eq!(n.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(n.app_name.as_deref(), Some("org.mail"));
         assert_eq!(n.source_workspace, Some(9));
         // Critical urgency → Error severity + persistent dwell.
         assert_eq!(n.severity, NotificationSeverity::Error);
@@ -804,7 +829,28 @@ mod tests {
         let toast = &ch.notifications()[0];
         assert_eq!(toast.dbus_id, Some(11));
         assert_eq!(toast.source_workspace, Some(9));
-        assert_eq!(toast.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(toast.app_name.as_deref(), Some("org.mail"));
+    }
+
+    #[test]
+    fn only_verified_senders_can_update_shell_badges() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+
+        let mut unverified = incoming(21, 1, 5000);
+        unverified.caller = None;
+        unverified.badge_count = Some(88);
+        bridge.push_incoming(unverified);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notification_badge_total(), 0);
+
+        let mut verified = incoming(22, 1, 5000);
+        verified.badge_count = Some(12);
+        bridge.push_incoming(verified);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
+        assert_eq!(chrome.borrow().notification_badge_total(), 12);
     }
 
     #[test]
@@ -948,7 +994,7 @@ mod tests {
         assert_eq!(ch.notification_history().len(), 1);
         let h = &ch.notification_history()[0];
         assert_eq!(h.dbus_id, Some(77));
-        assert_eq!(h.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(h.app_name.as_deref(), Some("org.mail"));
         assert_eq!(h.source_workspace, Some(9));
     }
 

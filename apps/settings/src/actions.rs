@@ -411,24 +411,6 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             b(panes::audio::MUTED_KEY, false),
             "output mute",
         ));
-        sec = sec.with_action(bool_flip_spec(
-            "event_sounds",
-            panes::audio::EVENT_SOUNDS_KEY,
-            b(panes::audio::EVENT_SOUNDS_KEY, d.audio.event_sounds),
-            "system sounds",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "chat_join",
-            panes::audio::CHAT_JOIN_KEY,
-            b(panes::audio::CHAT_JOIN_KEY, d.audio.chat_join),
-            "the join sound",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "chat_leave",
-            panes::audio::CHAT_LEAVE_KEY,
-            b(panes::audio::CHAT_LEAVE_KEY, d.audio.chat_leave),
-            "the leave sound",
-        ));
         sec = sec.with_action(float_prompt_spec(
             "volume",
             "Set output volume",
@@ -625,6 +607,33 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             ),
             "visual alerts",
         ));
+        sec = sec.with_action(bool_flip_spec(
+            "cursor_crosshair",
+            panes::accessibility::CURSOR_CROSSHAIR_KEY,
+            b(
+                panes::accessibility::CURSOR_CROSSHAIR_KEY,
+                d.accessibility.cursor_crosshair,
+            ),
+            "the pointer crosshair",
+        ));
+        sec = sec.with_action(bool_flip_spec(
+            "thick_text_caret",
+            panes::accessibility::THICK_CARET_KEY,
+            b(
+                panes::accessibility::THICK_CARET_KEY,
+                d.accessibility.thick_text_caret,
+            ),
+            "the thicker text cursor",
+        ));
+        sec = sec.with_action(bool_flip_spec(
+            "switch_control",
+            panes::accessibility::SWITCH_CONTROL_KEY,
+            b(
+                panes::accessibility::SWITCH_CONTROL_KEY,
+                d.accessibility.switch_control,
+            ),
+            "switch control",
+        ));
         root = root.with_child(sec);
     }
 
@@ -636,16 +645,6 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             panes::updates::AUTO_KEY,
             b(panes::updates::AUTO_KEY, d.updates.auto),
             "automatic updates",
-        ));
-        let channels = &["Stable", "Testing", "Nightly"];
-        let cur_channel = s(panes::updates::CHANNEL_KEY, &d.updates.channel);
-        sec = sec.with_action(choice_prompt_spec(
-            "channel",
-            "Set update channel",
-            panes::updates::CHANNEL_KEY,
-            "Stable, Testing, Nightly",
-            channels,
-            cur_channel,
         ));
         root = root.with_child(sec);
     }

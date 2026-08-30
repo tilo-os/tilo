@@ -55,11 +55,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::region::RegionSettings;
 
-/// System-event / collaboration sounds, plus the remembered default audio
-/// devices. The sounds are read by the compositor's notification layer when it
-/// decides whether to play a sound; the device preferences record the
-/// output/input the user last chose as the default, so the Sound pane can
-/// surface that a preferred device was selected across sessions.
+/// Remembered default audio devices and persistent transforms. The three
+/// legacy sound booleans remain deserializable for compatibility but are not
+/// exposed as controls: notification sound delivery belongs to Notifications,
+/// and collaboration sounds are not offered until the shell has a real event
+/// sound consumer.
 /// `#[serde(default)]` keeps configs written before these fields existed
 /// loadable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -73,6 +73,18 @@ pub struct AudioPrefs {
     /// Label of the last chosen default source (input device), if any.
     #[serde(default)]
     pub input_device: Option<String>,
+    /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
+    /// `1` right). The compositor session, not this pane, owns actuation.
+    #[serde(default = "default_audio_balance")]
+    pub balance: f32,
+    /// Persistent accessibility mono transform. A compositor-session owner
+    /// keeps the bounded virtual sink alive across Settings navigation.
+    #[serde(default)]
+    pub mono_output: bool,
+}
+
+const fn default_audio_balance() -> f32 {
+    0.5
 }
 
 impl Default for AudioPrefs {
@@ -83,6 +95,8 @@ impl Default for AudioPrefs {
             chat_leave: true,
             output_device: None,
             input_device: None,
+            balance: default_audio_balance(),
+            mono_output: false,
         }
     }
 }
@@ -92,6 +106,10 @@ impl Default for AudioPrefs {
 pub struct DisplayPrefs {
     pub auto_brightness: bool,
     pub night_light: bool,
+    /// Target correlated colour temperature used by the compositor's
+    /// whole-output Night Light transform.
+    #[serde(default = "default_night_light_temperature")]
+    pub night_light_temperature: u32,
     /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
@@ -106,11 +124,16 @@ fn default_display_scale() -> f64 {
     1.0
 }
 
+fn default_night_light_temperature() -> u32 {
+    3_700
+}
+
 impl Default for DisplayPrefs {
     fn default() -> Self {
         Self {
             auto_brightness: false,
             night_light: false,
+            night_light_temperature: default_night_light_temperature(),
             scale: 1.0,
         }
     }
@@ -119,6 +142,7 @@ impl Default for DisplayPrefs {
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
 /// reads at session start.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InputPrefs {
     pub natural_scroll: bool,
     pub tap_to_click: bool,
@@ -128,6 +152,20 @@ pub struct InputPrefs {
     pub key_repeat: f64,
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
+    pub tap_drag: bool,
+    pub disable_while_typing: bool,
+    pub middle_emulation: bool,
+    pub left_handed: bool,
+    /// `adaptive` or `flat`; capability-gated by libinput.
+    pub accel_profile: String,
+    pub touchpad_gestures: bool,
+    /// XKB compose option (`ralt`, `menu`, …), or none.
+    pub compose_key: Option<String>,
+    /// Ordered XKB layouts. `keyboard_layout` remains the active first item
+    /// for backward compatibility with old sessions.
+    pub keyboard_layouts: Vec<String>,
+    /// Stable connector name used to map an absolute pen/tablet.
+    pub pen_output: Option<String>,
 }
 
 impl Default for InputPrefs {
@@ -138,7 +176,46 @@ impl Default for InputPrefs {
             pointer_speed: 0.5,
             key_repeat: 0.5,
             keyboard_layout: "us".to_string(),
+            tap_drag: true,
+            disable_while_typing: true,
+            middle_emulation: true,
+            left_handed: false,
+            accel_profile: "adaptive".into(),
+            touchpad_gestures: true,
+            compose_key: None,
+            keyboard_layouts: vec!["us".into()],
+            pen_output: None,
         }
+    }
+}
+
+impl InputPrefs {
+    /// Reconcile the legacy active layout with the ordered source list using
+    /// the same validation and bounds the compositor enforces.
+    pub fn normalise_keyboard_sources(&mut self) {
+        let mut config = settings_store::hardware::RichInputConfig {
+            pointer_speed: self.pointer_speed,
+            natural_scroll: self.natural_scroll,
+            tap_to_click: self.tap_to_click,
+            tap_drag: self.tap_drag,
+            disable_while_typing: self.disable_while_typing,
+            middle_emulation: self.middle_emulation,
+            left_handed: self.left_handed,
+            accel_profile: if self.accel_profile == "flat" {
+                settings_store::hardware::AccelProfile::Flat
+            } else {
+                settings_store::hardware::AccelProfile::Adaptive
+            },
+            key_repeat: self.key_repeat,
+            keyboard_layout: self.keyboard_layout.clone(),
+            keyboard_layouts: self.keyboard_layouts.clone(),
+            compose_key: self.compose_key.clone(),
+            touchpad_gestures: self.touchpad_gestures,
+            pen_output: self.pen_output.clone(),
+        };
+        config.normalise_sources();
+        self.keyboard_layout = config.keyboard_layout;
+        self.keyboard_layouts = config.keyboard_layouts;
     }
 }
 
@@ -178,6 +255,12 @@ impl PowerActionPref {
 fn default_suspend_minutes() -> u32 {
     15
 }
+fn default_saver_suspend_minutes() -> u32 {
+    10
+}
+fn default_performance_suspend_minutes() -> u32 {
+    30
+}
 fn default_lid_action() -> PowerActionPref {
     PowerActionPref::Suspend
 }
@@ -207,6 +290,15 @@ pub struct PowerPrefs {
     /// Idle minutes before the session suspends; `0` disables idle-suspend.
     #[serde(default = "default_suspend_minutes")]
     pub suspend_minutes: u32,
+    /// Profile-specific idle suspend. The compositor resolves the active
+    /// power-profiles-daemon profile and falls back to `suspend_minutes` for
+    /// legacy settings files.
+    #[serde(default = "default_saver_suspend_minutes")]
+    pub saver_suspend_minutes: u32,
+    #[serde(default = "default_suspend_minutes")]
+    pub balanced_suspend_minutes: u32,
+    #[serde(default = "default_performance_suspend_minutes")]
+    pub performance_suspend_minutes: u32,
     /// Idle minutes before the screen blanks; `0` disables blanking.
     pub blank_minutes: u32,
     /// What to do when the lid closes.
@@ -231,6 +323,9 @@ impl Default for PowerPrefs {
         Self {
             auto_suspend: true,
             suspend_minutes: default_suspend_minutes(),
+            saver_suspend_minutes: default_saver_suspend_minutes(),
+            balanced_suspend_minutes: default_suspend_minutes(),
+            performance_suspend_minutes: default_performance_suspend_minutes(),
             blank_minutes: 10,
             lid_close_action: default_lid_action(),
             power_key_action: default_power_key_action(),
@@ -245,6 +340,8 @@ impl Default for PowerPrefs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpdatePrefs {
     pub auto: bool,
+    /// Legacy serialized field. The actual image reference is managed by
+    /// bootc; Settings never treats this string as an actionable channel.
     pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
     pub last_checked: String,
@@ -349,14 +446,18 @@ impl AppearancePrefs {
 /// dark theme for an unrecognised name so a stray value never leaves the UI
 /// unthemed.
 pub fn theme_by_name(name: &str) -> ui::Theme {
-    ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
+    if name.starts_with("custom:") {
+        ui::Theme::configured()
+    } else {
+        ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
+    }
 }
 
 /// Notification-delivery policy the compositor's notification layer reads
 /// when it decides whether to raise a banner, reveal its contents, sound it,
 /// or mirror it to the lock screen. Every field carries `#[serde(default)]`
 /// so a config written before this section existed still loads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationPrefs {
     /// Master "Do Not Disturb": suppress banners and sounds while set.
     #[serde(default)]
@@ -375,6 +476,20 @@ pub struct NotificationPrefs {
     /// screen is the most exposed surface.
     #[serde(default)]
     pub show_on_lock_screen: bool,
+    /// Whether applications may show an unread-count badge.
+    #[serde(default = "default_true")]
+    pub show_badges: bool,
+    /// Scheduled quiet hours. Per-app priority and temporary mute rules live
+    /// beside this record in the shared notification policy.
+    #[serde(default)]
+    pub focus: settings_store::notification_policy::FocusSchedule,
+    /// Rules keyed by the launcher's verified package id. The compositor
+    /// deliberately never indexes this map with an app-supplied display name.
+    #[serde(default)]
+    pub per_app: std::collections::BTreeMap<
+        String,
+        settings_store::notification_policy::AppNotificationRule,
+    >,
 }
 
 fn default_true() -> bool {
@@ -389,6 +504,9 @@ impl Default for NotificationPrefs {
             show_previews: true,
             play_sounds: true,
             show_on_lock_screen: false,
+            show_badges: true,
+            focus: settings_store::notification_policy::FocusSchedule::default(),
+            per_app: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -424,10 +542,168 @@ pub struct AccessibilityPrefs {
     /// Flash the screen instead of (or alongside) an audible alert.
     #[serde(default)]
     pub visual_alerts: bool,
+    /// Whole-desktop colour transform owned by the compositor.
+    #[serde(default)]
+    pub color_filter: ColorFilter,
+    /// Pointer-following lens magnification. `1` means disabled.
+    #[serde(default = "default_magnifier_zoom")]
+    pub magnifier_zoom: u8,
+    /// Paint full-screen guide lines through the hardware pointer.
+    #[serde(default)]
+    pub cursor_crosshair: bool,
+    /// Make text insertion carets wider in every qOS toolkit application.
+    #[serde(default)]
+    pub thick_text_caret: bool,
+    /// Turn F6/F7 switch signals into standard scan-next/activate actions.
+    #[serde(default)]
+    pub switch_control: bool,
+    /// Which ordinary function-key pair a two-switch device emits.
+    #[serde(default)]
+    pub switch_key_pair: SwitchKeyPair,
+    /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
+    #[serde(default)]
+    pub switch_scan_ms: u16,
+    /// Normalised screen-reader speech rate, where 100 is engine default.
+    #[serde(default = "default_screen_reader_rate")]
+    pub screen_reader_rate: u16,
+    /// Backend-neutral voice/language preset.
+    #[serde(default)]
+    pub screen_reader_voice: ScreenReaderVoice,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorFilter {
+    #[default]
+    None,
+    Grayscale,
+    Inverted,
+    GrayscaleInverted,
+}
+
+impl ColorFilter {
+    pub const OPTIONS: &'static [&'static str] =
+        &["Off", "Grayscale", "Inverted", "Grayscale + inverted"];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "Off",
+            Self::Grayscale => "Grayscale",
+            Self::Inverted => "Inverted",
+            Self::GrayscaleInverted => "Grayscale + inverted",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "Off" => Self::None,
+            "Grayscale" => Self::Grayscale,
+            "Inverted" => Self::Inverted,
+            "Grayscale + inverted" => Self::GrayscaleInverted,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenReaderVoice {
+    #[default]
+    System,
+    EnglishUs,
+    EnglishGb,
+    German,
+    French,
+    Spanish,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwitchKeyPair {
+    #[default]
+    F6F7,
+    F9F10,
+    Digits12,
+}
+
+impl SwitchKeyPair {
+    pub const OPTIONS: &'static [&'static str] = &["F6 / F7", "F9 / F10", "1 / 2"];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::F6F7 => "F6 / F7",
+            Self::F9F10 => "F9 / F10",
+            Self::Digits12 => "1 / 2",
+        }
+    }
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "F6 / F7" => Self::F6F7,
+            "F9 / F10" => Self::F9F10,
+            "1 / 2" => Self::Digits12,
+            _ => return None,
+        })
+    }
+}
+
+impl ScreenReaderVoice {
+    pub const OPTIONS: &'static [&'static str] = &[
+        "System voice",
+        "English (US)",
+        "English (UK)",
+        "German",
+        "French",
+        "Spanish",
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System voice",
+            Self::EnglishUs => "English (US)",
+            Self::EnglishGb => "English (UK)",
+            Self::German => "German",
+            Self::French => "French",
+            Self::Spanish => "Spanish",
+        }
+    }
+
+    pub fn backend_id(self) -> &'static str {
+        match self {
+            Self::System => "",
+            Self::EnglishUs => "en-us",
+            Self::EnglishGb => "en-gb",
+            Self::German => "de",
+            Self::French => "fr",
+            Self::Spanish => "es",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::OPTIONS
+            .iter()
+            .position(|item| *item == label)
+            .map(|i| {
+                [
+                    Self::System,
+                    Self::EnglishUs,
+                    Self::EnglishGb,
+                    Self::German,
+                    Self::French,
+                    Self::Spanish,
+                ][i]
+            })
+    }
 }
 
 fn default_cursor_size() -> u32 {
     24
+}
+
+fn default_magnifier_zoom() -> u8 {
+    1
+}
+
+fn default_screen_reader_rate() -> u16 {
+    100
 }
 
 impl Default for AccessibilityPrefs {
@@ -440,6 +716,15 @@ impl Default for AccessibilityPrefs {
             sticky_keys: false,
             slow_keys: false,
             visual_alerts: false,
+            color_filter: ColorFilter::None,
+            magnifier_zoom: default_magnifier_zoom(),
+            cursor_crosshair: false,
+            thick_text_caret: false,
+            switch_control: false,
+            switch_key_pair: SwitchKeyPair::F6F7,
+            switch_scan_ms: 0,
+            screen_reader_rate: default_screen_reader_rate(),
+            screen_reader_voice: ScreenReaderVoice::System,
         }
     }
 }
@@ -492,7 +777,7 @@ impl SystemPrefs {
     pub fn from_json(text: &str) -> Self {
         let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
         let section = |key: &str| root.get(key).cloned();
-        Self {
+        let mut prefs = Self {
             audio: section("audio")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
@@ -517,12 +802,28 @@ impl SystemPrefs {
             accessibility: section("accessibility")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
+        };
+        // `serde(default)` fills a missing multi-source field with `["us"]`.
+        // For an old document whose only field is `keyboard_layout: "de"`,
+        // that would invent an unwanted second source. Clear the synthetic
+        // list before normalisation when the key genuinely was absent.
+        let has_sources = root
+            .get("input")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|input| {
+                input.contains_key("keyboard_layouts") || input.contains_key("layouts")
+            });
+        if !has_sources {
+            prefs.input.keyboard_layouts.clear();
         }
+        prefs.input.normalise_keyboard_sources();
+        prefs
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
-    /// keys (notably `locale`) survive. Only the four sections this store
-    /// owns are rewritten.
+    /// keys (notably `locale`) survive. The known `appearance` fields are
+    /// merged one level deeper so Theme Studio's nested editable artifact is
+    /// not destroyed when Settings changes text scale or the active preset.
     pub fn to_json_merged(&self, existing: &str) -> String {
         let mut root: serde_json::Value =
             serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
@@ -551,13 +852,21 @@ impl SystemPrefs {
             "updates".into(),
             serde_json::to_value(&self.updates).unwrap_or_default(),
         );
-        obj.insert(
-            "appearance".into(),
-            serde_json::to_value(&self.appearance).unwrap_or_default(),
-        );
+        let appearance = obj
+            .entry("appearance")
+            .or_insert_with(|| serde_json::json!({}));
+        if !appearance.is_object() {
+            *appearance = serde_json::json!({});
+        }
+        let known = serde_json::to_value(&self.appearance).unwrap_or_default();
+        if let (Some(target), Some(fields)) = (appearance.as_object_mut(), known.as_object()) {
+            for (key, value) in fields {
+                target.insert(key.clone(), value.clone());
+            }
+        }
         obj.insert(
             "notifications".into(),
-            serde_json::to_value(self.notifications).unwrap_or_default(),
+            serde_json::to_value(&self.notifications).unwrap_or_default(),
         );
         obj.insert(
             "accessibility".into(),
@@ -669,6 +978,7 @@ mod tests {
         p.display.night_light = true;
         p.input.pointer_speed = 0.9;
         p.input.keyboard_layout = "de".into();
+        p.input.keyboard_layouts = vec!["de".into()];
         p.power.auto_suspend = false;
         p.power.blank_minutes = 30;
         p.updates.auto = false;
@@ -686,6 +996,23 @@ mod tests {
         let json = p.to_json_merged("");
         let back = SystemPrefs::from_json(&json);
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn old_single_keyboard_layout_migrates_without_inventing_us() {
+        let prefs = SystemPrefs::from_json(r#"{"input":{"keyboard_layout":"de"}}"#);
+        assert_eq!(prefs.input.keyboard_layout, "de");
+        assert_eq!(prefs.input.keyboard_layouts, ["de"]);
+    }
+
+    #[test]
+    fn keyboard_source_order_and_active_source_round_trip() {
+        let mut prefs = SystemPrefs::default();
+        prefs.input.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
+        prefs.input.keyboard_layout = "de:nodeadkeys".into();
+        let back = SystemPrefs::from_json(&prefs.to_json_merged(""));
+        assert_eq!(back.input.keyboard_layouts, prefs.input.keyboard_layouts);
+        assert_eq!(back.input.keyboard_layout, prefs.input.keyboard_layout);
     }
 
     #[test]
@@ -839,6 +1166,18 @@ mod tests {
             out.contains("\"currency\": \"EUR\""),
             "locale survived: {out}"
         );
+    }
+
+    #[test]
+    fn merge_preserves_theme_studio_artifact_when_writing_appearance() {
+        let existing = r#"{"appearance":{"theme":"Dark","studio":{"id":"sunset","theme":{"accent":[251,146,60]}}}}"#;
+        let mut p = SystemPrefs::from_json(existing);
+        p.appearance.text_scale = 1.25;
+        let out = p.to_json_merged(existing);
+        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(root["appearance"]["studio"]["id"], "sunset");
+        assert_eq!(root["appearance"]["studio"]["theme"]["accent"][0], 251);
+        assert_eq!(root["appearance"]["text_scale"], 1.25);
     }
 
     #[test]

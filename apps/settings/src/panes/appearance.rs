@@ -139,7 +139,7 @@ impl AppearancePane {
             .collect();
         let theme = Dropdown::new(theme_opts, THEME_KEY)
             .with_id("appearance.theme")
-            .with_placeholder(&self.prefs.theme);
+            .with_placeholder(&self.prefs.resolve_theme().name);
 
         let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
         let size = Dropdown::new(size_opts, TEXT_SIZE_KEY)
@@ -157,6 +157,9 @@ impl AppearancePane {
                 choice_row("Theme", Box::new(theme)),
                 choice_row("UI scale", Box::new(ui_scale)),
                 choice_row("Text size", Box::new(size)),
+                caption(
+                    "These are safe everyday choices. Theme Studio is the advanced editor for custom palettes, typography, spacing, import, and export.",
+                ),
             ]),
         );
 

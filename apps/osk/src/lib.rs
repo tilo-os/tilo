@@ -25,20 +25,19 @@
 //! * The [`OskWidget`] captures pointer drags as a gesture path, decodes
 //!   swipes, and renders a tappable **suggestion bar** above the keys.
 //!
-//! ## Text injection (client half, shipped here)
-//! * [`inject`] — a [`TextInjector`] trait with a [`VirtualKeyboardInjector`]
-//!   (wtype-style `virtual-keyboard-v1`) and a [`NullInjector`] fallback. The
-//!   binary wires the widget's `on_key` callback to the injector so every
-//!   committed [`KeyAction`] is typed into the focused surface. The compositor
-//!   *server* half (the layer-shell role + advertising the protocol) is a
-//!   separate concern.
+//! ## Text injection and session integration
+//! * [`imclient`] is the preferred `input-method-v2` commit path and drives
+//!   focus-based visibility plus content-purpose layouts.
+//! * [`inject`] provides the `virtual-keyboard-v1` client used only for editing
+//!   keys the current winit text-input client cannot consume, plus a standalone
+//!   compatibility fallback for other compositors.
+//! * The qOS compositor exposes both privileged globals only on its
+//!   process-credential-gated OSK socket and floats the stable
+//!   [`KEYBOARD_APP_ID`] surface outside the workspace tile tree.
 //!
-//! ## Explicitly out of scope (left as clean seams)
-//! * **Compositor server half** — the `wlr-layer-shell` surface role and the
-//!   compositor side of `virtual-keyboard-v1` / `input-method-v2`.
-//! * **Neural swipe** — the FUTO `swipe-library` (GPL C++ + `ExecuTorch` `.pte`
-//!   model). Drop a `FutoSwipeModel: SwipeModel` in and the wiring is
-//!   unchanged.
+//! The neural FUTO decoder is used when its runtime libraries and model assets
+//! are present; otherwise the geometric decoder provides the same UI without
+//! pretending neural inference is available.
 //!
 //! See [`widget`] for where text injection and swipe plug in.
 
@@ -64,11 +63,10 @@
 /// rather than an ordinary tiled window. Must stay in step with the
 /// compositor's matching constant.
 ///
-/// Setting this on the actual Wayland surface still needs a way to pass an
-/// app-id through `ui::App` (winit's `WindowAttributesExtWayland::with_name`),
-/// which the toolkit does not expose yet; see the crate-level notes in
-/// `main.rs` for what that takes.
-pub const KEYBOARD_APP_ID: &str = "org.qos.Keyboard";
+/// Stable package/window identity. The compositor only promotes this id to
+/// the keyboard overlay when it also arrived on the private OSK Wayland
+/// socket; the string alone never grants input-method privileges.
+pub const KEYBOARD_APP_ID: &str = "dev.qos.osk";
 
 pub mod dict;
 pub mod futo;

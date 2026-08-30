@@ -3243,6 +3243,8 @@ impl Widget for ContactsApp {
             self.dirty = true;
         }
 
+        crate::priority_contacts::publish_if_changed(&self.store);
+
         self.search.sync(state, path);
         if let Some(form) = &mut self.form {
             for f in &mut form.inputs {

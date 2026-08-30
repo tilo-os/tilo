@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 # One owner for ~/.config/qos/settings.json.
 settings-store = { path = "../../crates/system/settings-store" }
+desktop-policy = { path = "../../crates/system/desktop-policy" }
+launcher = { path = "../../crates/packaging/launcher" }
 # The one capability vocabulary the compositor persists. Depending on this
 # lightweight *types* crate (not the compositor) lets the Permissions pane
 # deserialise the real per-workspace grants the shell writes to
@@ -31,6 +33,12 @@ ui = { path = "../../ui" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+# Public identity summaries + active selector. The secret share never enters
+# Settings state; switching writes only the non-secret active id.
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+runtime-fs = { path = "../../crates/runtime/runtime-fs" }
+qos-bluez = { path = "../../crates/system/qos-bluez" }
+runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
@@ -47,6 +55,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
+zeroize.workspace = true
 tracing-subscriber.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
@@ -54,9 +63,11 @@ tracing-subscriber.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
+quick-xml.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 # The persistence tests read the shared account store + vault back to prove
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }

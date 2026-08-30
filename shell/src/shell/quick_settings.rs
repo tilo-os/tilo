@@ -11,6 +11,10 @@ pub enum QsLevel {
     WifiDetails(String),
     Bluetooth,
     BluetoothDetails(String),
+    /// Configured NetworkManager VPN profiles.
+    Vpn,
+    /// Session-local notification history owned by shell chrome.
+    Notifications,
 }
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
@@ -212,6 +216,15 @@ mod tests {
         );
         assert_eq!(q.wifi_connection_label(true), "Not connected");
         assert_eq!(q.bluetooth_connection_label(true), "Not connected");
+    }
+
+    #[test]
+    fn notification_history_is_a_first_class_drill_in_level() {
+        let mut q = QuickSettings::new();
+        q.push_level(QsLevel::Notifications);
+        assert_eq!(q.current_level(), &QsLevel::Notifications);
+        q.pop_level();
+        assert_eq!(q.current_level(), &QsLevel::Root);
     }
 
     #[test]
