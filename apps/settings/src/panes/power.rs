@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use os_actions::{BatteryInfo, Dispatcher, PowerProfile};
+use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher, PowerProfile};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -136,6 +136,7 @@ fn blank_from_label(label: &str) -> Option<u32> {
 pub struct PowerPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
     battery: BatteryInfo,
+    charge_cap: Option<ChargeCapCapability>,
     profile: PowerProfile,
     last_profile: PowerProfile,
     prefs: PowerPrefs,
@@ -157,6 +158,7 @@ impl PowerPane {
         Self {
             dispatcher: dispatcher_or_real(None),
             battery: BatteryInfo::from_system(),
+            charge_cap: os_actions::charge_capability(),
             profile,
             last_profile: profile,
             prefs: SystemPrefs::load().power,
@@ -175,9 +177,16 @@ impl PowerPane {
         profile: PowerProfile,
         prefs: PowerPrefs,
     ) -> Self {
+        let charge_cap = battery.charge_limit.map(|current| ChargeCapCapability {
+            backend: ChargeCapBackend::PowerSupply,
+            current,
+            choices: vec![60, 70, 80, 90, 100],
+            supports_start_threshold: false,
+        });
         Self {
             dispatcher,
             battery,
+            charge_cap,
             profile,
             last_profile: profile,
             prefs,
@@ -216,24 +225,37 @@ impl PowerPane {
             } else {
                 battery_rows.push(value_row("Battery health", "Not reported by this device"));
             }
-            if let Some(limit) = self.battery.charge_limit {
+            if let Some(capability) = &self.charge_cap {
+                let choices: Vec<String> = capability
+                    .choices
+                    .iter()
+                    .map(|limit| format!("{limit}%"))
+                    .collect();
                 battery_rows.push(choice_row(
                     "Charge cap",
                     Box::new(
-                        Dropdown::new(
-                            ["60%", "70%", "80%", "90%", "100%"]
-                                .into_iter()
-                                .map(str::to_string)
-                                .collect(),
-                            CHARGE_LIMIT_KEY,
-                        )
-                        .with_id("power.charge_limit")
-                        .with_placeholder(&format!("{limit}%")),
+                        Dropdown::new(choices, CHARGE_LIMIT_KEY)
+                            .with_id("power.charge_limit")
+                            .with_placeholder(&format!("{}%", capability.current)),
                     ),
                 ));
-                battery_rows.push(caption(
-                    "A lower cap can reduce long-term battery wear. The privileged service writes only a threshold supported by this battery driver.",
-                ));
+                let detail = match capability.backend {
+                    ChargeCapBackend::ConservationMode => {
+                        "This laptop exposes a discrete conservation mode, so only its real hardware choices are offered."
+                    }
+                    ChargeCapBackend::HuaweiWmi => {
+                        "The platform uses paired start/end thresholds; qOS preserves a safe charging window."
+                    }
+                    ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
+                        "The kernel exposes start and stop thresholds; qOS adjusts the start only when required by a lower cap."
+                    }
+                    ChargeCapBackend::PowerSupply => {
+                        "The kernel exposes a hardware stop threshold. A lower cap can reduce long-term battery wear."
+                    }
+                };
+                battery_rows.push(caption(detail));
+            } else {
+                battery_rows.push(value_row("Charge cap", "Not supported by this hardware"));
             }
             card("Battery", rows(battery_rows))
         } else {
@@ -368,8 +390,8 @@ impl Widget for PowerPane {
             let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
             let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
             let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
-            if let Some(limit) = self.battery.charge_limit {
-                let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{limit}%"));
+            if let Some(capability) = &self.charge_cap {
+                let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{}%", capability.current));
             }
             self.last_prefs = self.prefs;
             self.needs_seed = false;
@@ -389,10 +411,18 @@ impl Widget for PowerPane {
 
         if let Some(label) = read_str(state, root, CHARGE_LIMIT_KEY)
             && let Some(limit) = label.strip_suffix('%').and_then(|s| s.parse::<u32>().ok())
-            && self.battery.charge_limit != Some(limit)
+            && self
+                .charge_cap
+                .as_ref()
+                .is_some_and(|cap| cap.current != limit && cap.choices.contains(&limit))
         {
             match os_actions::set_charge_limit(limit) {
-                Ok(()) => self.battery.charge_limit = Some(limit),
+                Ok(()) => {
+                    self.battery.charge_limit = Some(limit);
+                    if let Some(cap) = &mut self.charge_cap {
+                        cap.current = limit;
+                    }
+                }
                 Err(e) => {
                     warn!(target: "qos::settings", op = "set_charge_limit", error = %e, "battery cap failed")
                 }

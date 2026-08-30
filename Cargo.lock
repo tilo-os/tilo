@@ -12458,6 +12458,7 @@ dependencies = [
  "media",
  "os-actions",
  "qos-actions",
+ "runtime-portal-xdg",
  "serde",
  "serde_json",
  "settings-store",
@@ -12468,6 +12469,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
