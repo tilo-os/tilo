@@ -64,10 +64,6 @@ fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> (Scene, Side
     render_disc_at(theme, tr, 0.0)
 }
 
-/// One display slot, in degrees. Mirrors the widget's own step so the
-/// rotation test can ask for "half a detent" without hardcoding it.
-const SPOKE_STEP_DEG: f32 = 15.0;
-
 fn render_disc_at(
     theme: &Theme,
     tr: &mut TextRenderer,
@@ -356,18 +352,23 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
     };
     let mut tr = TextRenderer::new();
 
-    let mut placed = |deg: f32, name: &str| -> Vec<Rect> {
+    let mut placed = |deg: f32, name: &str| -> (Vec<Rect>, f32) {
         let (scene, disc) = render_disc_at(&Theme::dark(), &mut tr, deg);
         renderer.render_png(
             &scene,
             Color::from_rgb8(0x02, 0x06, 0x14),
             &screenshots_dir().join(format!("wheel-disc-04-{name}.png")),
         );
-        disc.spoke_hit_rects.clone()
+        (disc.spoke_hit_rects.clone(), disc.spoke_gap_deg())
     };
 
-    let rest = placed(0.0, "rest");
-    let half = placed(SPOKE_STEP_DEG / 2.0, "half-detent");
+    // Half a detent, asked of the disc rather than copied. The step is derived
+    // per layout — the band's angular height divided across the sectors that
+    // fit — so a constant here goes stale silently. The 15.0 this test carried
+    // is three detents at the current geometry, which rotated the sector it
+    // meant to tip clean out of the band and read as the disc having lost it.
+    let (rest, detent) = placed(0.0, "rest");
+    let (half, _) = placed(detent / 2.0, "half-detent");
 
     let active = 0usize;
     let rest_box = rest[active];
