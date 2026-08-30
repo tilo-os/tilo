@@ -5,12 +5,13 @@
 //! sliced and returned; otherwise it is fetched from a known peer over
 //! iroh-blobs (bao-verified against the hash), persisted, and returned.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
+use futures_lite::StreamExt;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
@@ -27,6 +28,10 @@ pub struct Hydrator {
     /// Blob hashes with a hydration fetch in flight — inserted for the lifetime
     /// of [`fetch_from`](Hydrator::fetch_from), removed via [`FetchGuard`], so [`sync_state`](Hydrator::sync_state) doesn't race the fetch.
     in_flight: Arc<Mutex<HashSet<Hash>>>,
+    /// Proof of remote durability for blobs this process fetched and verified.
+    /// Locally-authored content is intentionally absent until the sync protocol
+    /// grows an explicit remote acknowledgement.
+    remote_sources: Arc<RwLock<HashMap<Hash, EndpointAddr>>>,
     pub runtime_handle: tokio::runtime::Handle,
 }
 
@@ -49,6 +54,7 @@ impl Hydrator {
             store,
             peers: Arc::new(RwLock::new(Vec::new())),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            remote_sources: Arc::new(RwLock::new(HashMap::new())),
             runtime_handle: tokio::runtime::Handle::current(),
         }
     }
@@ -110,6 +116,70 @@ impl Hydrator {
 
     pub fn known_peers(&self) -> Vec<EndpointAddr> {
         self.peers.read().unwrap().clone()
+    }
+
+    /// Local residency and the exact physical blobs that comprise one file.
+    /// `remotely_durable` is deliberately strict: every present component must
+    /// have been bao-verified from a peer in this process.
+    pub async fn residency(&self, manifest_hash: Hash) -> ContentResidency {
+        let mut result = ContentResidency {
+            remote_only: true,
+            in_flight: self.is_fetching(manifest_hash),
+            ..ContentResidency::default()
+        };
+        let Some(bytes) = self.store.local(manifest_hash).await else {
+            return result;
+        };
+        let Ok(manifest) = Manifest::decode(&bytes) else {
+            return result;
+        };
+        result.remote_only = false;
+        result.hydrated_bytes = bytes.len() as u64;
+        result.blobs.push(manifest_hash);
+        let sources = self.remote_sources.read().unwrap().clone();
+        result.remotely_durable = sources.contains_key(&manifest_hash);
+        result.remote_source = sources.get(&manifest_hash).cloned();
+        for chunk in manifest.chunks {
+            let hash = Hash::from(chunk.hash);
+            result.in_flight |= self.is_fetching(hash);
+            if self.store.has(hash).await {
+                result.hydrated_bytes += u64::from(chunk.len);
+                result.blobs.push(hash);
+                result.remotely_durable &= sources.contains_key(&hash);
+                if result.remote_source.as_ref().map(|p| p.id) != sources.get(&hash).map(|p| p.id) {
+                    result.remote_source = None;
+                }
+            } else {
+                result.remotely_durable = false;
+            }
+        }
+        result
+    }
+
+    /// Revalidate that a peer still serves this exact, content-addressed blob.
+    /// The bytes are discarded; this is the last online check before local GC.
+    pub async fn verify_remote_copy(&self, hash: Hash, peer: EndpointAddr) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let conn = self
+                .endpoint
+                .connect(peer.clone(), iroh_blobs::ALPN)
+                .await?;
+            let mut result = iroh_blobs::get::request::get_blob(conn, hash);
+            while let Some(item) = result.next().await {
+                match item {
+                    iroh_blobs::get::request::GetBlobItem::Done(_) => {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    iroh_blobs::get::request::GetBlobItem::Error(error) => {
+                        return Err(anyhow!(error));
+                    }
+                    iroh_blobs::get::request::GetBlobItem::Item(_) => {}
+                }
+            }
+            Err(anyhow!("remote durability stream ended early"))
+        })
+        .await
+        .map_err(|_| anyhow!("remote durability check timed out"))?
     }
 
     pub async fn read_blob(&self, hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
@@ -175,16 +245,30 @@ impl Hydrator {
         let _guard = self.mark_fetching(hash);
         // Bounded so an unreachable/stalled peer can't hang a read forever.
         tokio::time::timeout(Duration::from_secs(20), async {
-            let conn = self.endpoint.connect(peer, iroh_blobs::ALPN).await?;
+            let conn = self
+                .endpoint
+                .connect(peer.clone(), iroh_blobs::ALPN)
+                .await?;
             let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
                 .bytes_and_stats()
                 .await?;
             self.store.store_fetched(hash, bytes.clone()).await?;
+            self.remote_sources.write().unwrap().insert(hash, peer);
             Ok::<_, anyhow::Error>(bytes)
         })
         .await
         .map_err(|_| anyhow!("hydration from peer timed out"))?
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ContentResidency {
+    pub hydrated_bytes: u64,
+    pub remote_only: bool,
+    pub in_flight: bool,
+    pub remotely_durable: bool,
+    pub blobs: Vec<Hash>,
+    pub remote_source: Option<EndpointAddr>,
 }
 
 fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {

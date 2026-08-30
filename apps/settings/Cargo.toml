@@ -36,6 +36,7 @@ os-actions = { path = "../../crates/system/os-actions" }
 # Public identity summaries + active selector. The secret share never enters
 # Settings state; switching writes only the non-secret active id.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 qos-bluez = { path = "../../crates/system/qos-bluez" }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and

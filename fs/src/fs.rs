@@ -59,7 +59,7 @@ pub struct QuickFS {
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
     sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write buffers (content-addressed on flush/release).
-    write_buffers: Mutex<HashMap<u64, Vec<u8>>>,
+    write_buffers: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     /// Cached serialized form of each document inode, keyed by the doc's heads,
     /// so a multi-chunk read exports once (and getattr's size stays current).
     doc_exports: Mutex<HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>>,
@@ -102,11 +102,17 @@ impl QuickFS {
             heuristics,
             registry,
             sync: None,
-            write_buffers: Mutex::new(HashMap::new()),
+            write_buffers: Arc::new(Mutex::new(HashMap::new())),
             doc_exports: Mutex::new(HashMap::new()),
             enforcement: None,
             thumbs: None,
         }
+    }
+
+    /// Shared dirty-inode view for the storage authority.  The authority only
+    /// observes membership; the FUSE implementation remains the sole writer.
+    pub fn write_buffers_handle(&self) -> Arc<Mutex<HashMap<u64, Vec<u8>>>> {
+        self.write_buffers.clone()
     }
 
     /// The codec key for `name`'s extension if it's a recognized document.
