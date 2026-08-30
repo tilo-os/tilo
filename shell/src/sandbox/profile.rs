@@ -566,7 +566,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_camera_capability_invokes_grant_camera() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_SESSION};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let initial_count = p.binds_rw.len();
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let before_rw = p.binds_rw.len();
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
-        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let grants = vec![Capability::Filesystem {
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_always_scope_disables_isolation() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
@@ -755,7 +755,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_session_scope_does_not_change_isolation() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_SESSION};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn network_allowlist_only_toggles_namespace_isolation_and_reaches_no_host_filter() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_ALWAYS};
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_dev_scan_is_memoised() {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, GRANT_SESSION};
         // Reset both the cache and the counter so other tests can't
         // contaminate our measurement.
         super::clear_scan_memo();

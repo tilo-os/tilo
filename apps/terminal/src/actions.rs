@@ -77,7 +77,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
-    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
     use crossbeam_channel::Receiver;
     use portable_pty::{MasterPty, PtySize};
     use taffy::{NodeId, TaffyTree};

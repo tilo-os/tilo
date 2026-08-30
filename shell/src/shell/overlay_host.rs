@@ -11702,7 +11702,7 @@ mod two_workspace_host_tests {
     /// full-tree slide animation must not get reintroduced by accident.
     #[test]
     fn switching_workspace_animates_nothing() {
-        let (mut h, chrome) = host_with_two_workspaces();
+        let (h, chrome) = host_with_two_workspaces();
         assert!(
             !h.needs_animation_frame(),
             "an idle host must not be asking for frames"
