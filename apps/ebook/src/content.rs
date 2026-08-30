@@ -282,6 +282,7 @@ fn authored(
         title: title.to_string(),
         author: author.to_string(),
         publisher: publisher.to_string(),
+        language: "en-US".to_string(),
         description: String::new(),
         chapters,
         cover_tint: tint,
