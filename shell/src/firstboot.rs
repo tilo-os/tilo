@@ -8,8 +8,8 @@
 //!
 //! On top of the XDG-config bootstrap, this also provisions a
 //! single-device signing identity at `<config>/qos/identity/primary.json`
-//! when none is present — the file `runtime-identity::load` reads inside
-//! sandboxed apps via `QOS_USER_IDENTITY`, encoded by the same
+//! when none is present — protected before provisioning returns and later used
+//! by the launcher through an app-scoped signing broker, encoded by the same
 //! `ui::widget::identity_flow::IdentityRecord` type the interactive ceremony writes.
 //!
 //! See `os/usr/lib/systemd/system/quick-desktop-firstboot.service` and
@@ -24,13 +24,14 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist, sign_device_cert};
+use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::IdentityRecord;
 
 /// File name for the primary single-device identity record. Matches
-/// what `runtime-identity::load()` expects (`QOS_USER_IDENTITY`) and what `DiskIdentityStore` writes via the UI's identity-flow ceremony.
+/// what the runtime identity broker migrates and what `DiskIdentityStore`
+/// writes via the UI's identity-flow ceremony.
 const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 
 /// Process-global entry point. Resolves the user's XDG config dir from
@@ -167,12 +168,17 @@ fn resolve_identity_dir(
 ) -> Option<PathBuf> {
     if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
         let mut p = PathBuf::from(xdg);
-        p.push("qos");
-        p.push("identity");
-        return Some(p);
+        if p.is_absolute() {
+            p.push("qos");
+            p.push("identity");
+            return Some(p);
+        }
     }
     let home = home.filter(|v| !v.is_empty())?;
     let mut p = PathBuf::from(home);
+    if !p.is_absolute() {
+        return None;
+    }
     p.push(".config");
     p.push("qos");
     p.push("identity");
@@ -184,22 +190,15 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Create a fresh single-device identity JSON record at
-/// `<identity_dir>/primary.json` when none exists, `0600`-mode; the
-/// directory itself is `0700` (world-readable dirs leak existence +
-/// atime even when the file itself is locked down).
+/// Create a fresh single-device identity at `<identity_dir>/primary.json`.
+/// The final JSON is public schema-2 metadata; its private share is imported
+/// into Secret Service or the explicitly reported private-file fallback.
 ///
 /// Idempotent: an existing file is returned as [`ProvisionOutcome::Existing`] with no modification.
 pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
-    fs::create_dir_all(identity_dir)?;
-    #[cfg(unix)]
-    {
-        let mut perm = fs::metadata(identity_dir)?.permissions();
-        perm.set_mode(0o700);
-        let _ = fs::set_permissions(identity_dir, perm);
-    }
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
+        protect_identity_record(identity_dir)?;
         return Ok(ProvisionOutcome::Existing);
     }
 
@@ -220,18 +219,18 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
         .to_json_bytes()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // The 0600 is applied to the temp file before the rename, so the record is never readable by anyone else at its final path.
-    atomic_file::write_with_mode(&path, &bytes, 0o600)?;
+    import_primary_identity(identity_dir, &bytes)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
 /// Provision the complete identity chain used by collaboration.
 ///
-/// The personal 1-of-1 signing key remains in `primary.json`, while the same
-/// key is also persisted as the user root that certifies a distinct
-/// per-device key.  That device key is the single transport identity used by
-/// the shell, filesystem synchroniser, and hosted relay.  Existing records
-/// are migrated idempotently; an existing device key is never replaced.
+/// The personal identity remains protected by the runtime identity provider.
+/// It signs the certificate for a distinct per-device key without exporting
+/// its private share into the system identity tree. That device key is the
+/// single transport identity used by the shell, filesystem synchroniser, and
+/// hosted relay. Existing records are migrated idempotently; an existing
+/// device key is never replaced.
 pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -245,15 +244,14 @@ pub fn ensure_collaboration_identity(
     }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
-    let (identity, outcome) = if primary_path.exists() {
-        let bytes = fs::read(&primary_path)?;
-        let record = IdentityRecord::from_json_bytes(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        let identity = record
-            .into_threshold_identity()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        (identity, ProvisionOutcome::Existing)
+    let outcome = if primary_path.exists() {
+        protect_identity_record(identity_dir)?;
+        ProvisionOutcome::Existing
     } else if paths.user_privkey.exists() {
+        // One-time migration for installations created before the brokered
+        // identity store. Import the legacy root, then leave the legacy file
+        // untouched so older system services remain operable until their
+        // administrator explicitly retires it.
         let root = persist::read_signing_key(&paths.user_privkey)
             .map_err(|e| io::Error::other(e.to_string()))?;
         let identity = ThresholdIdentity::from_single_device_seed(&root.to_bytes());
@@ -267,51 +265,36 @@ pub fn ensure_collaboration_identity(
         let bytes = record
             .to_json_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        atomic_file::write_with_mode(&primary_path, &bytes, 0o600)?;
+        import_primary_identity(identity_dir, &bytes)?;
         let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
-        (identity, ProvisionOutcome::Created { pubkey_hex })
+        ProvisionOutcome::Created { pubkey_hex }
     } else {
-        let mut rng = OsRng;
-        let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        let record = IdentityRecord::from_threshold_identity(
-            &identity,
-            "",
-            [128, 128, 128],
-            std::time::SystemTime::now(),
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        let bytes = record
-            .to_json_bytes()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        atomic_file::write_with_mode(&primary_path, &bytes, 0o600)?;
-        let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
-        (identity, ProvisionOutcome::Created { pubkey_hex })
+        ensure_primary_identity(identity_dir)?
     };
 
-    let root_seed = identity.single_device_seed().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "threshold identity cannot be exported as a single-device root",
-        )
-    })?;
-    let root = ed25519_dalek::SigningKey::from_bytes(&root_seed);
+    let signer = runtime_identity::load_from_path(primary_path)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if !signer.is_single_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "threshold identity requires the multi-device certificate ceremony",
+        ));
+    }
     paths.ensure_directories()?;
 
+    let root_public = signer.group_public_key();
+    // Validate, but never create, the pre-broker duplicate private key.
     if paths.user_privkey.exists() {
         let stored = persist::read_signing_key(&paths.user_privkey)
             .map_err(|e| io::Error::other(e.to_string()))?;
-        if stored.verifying_key() != root.verifying_key() {
+        if stored.verifying_key().to_bytes() != root_public {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "primary identity does not match the persisted user root",
             ));
         }
-    } else {
-        persist::write_signing_key(&paths.user_privkey, &root)?;
     }
 
-    let root_public = root.verifying_key().to_bytes();
     if paths.user_pubkey.exists() {
         let stored = persist::read_public_key(&paths.user_pubkey)
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -355,7 +338,13 @@ pub fn ensure_collaboration_identity(
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).map_err(|e| io::Error::other(e.to_string()))?;
+        let digest = qos_user_identity::device_cert_signing_digest(&cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        cert.signature = signer
+            .sign(&digest)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        qos_user_identity::verify_device_cert(&cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
         persist::write_device_cert(&paths.device_cert, &cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
     }
@@ -369,6 +358,31 @@ pub fn collaboration_identity_paths() -> IdentityPaths {
     std::env::var_os("QOS_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
+}
+
+fn import_primary_identity(identity_dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    #[cfg(test)]
+    {
+        let provider = runtime_identity::BrokerFileProvider::new(identity_dir);
+        runtime_identity::import_identity_with_provider(identity_dir, "primary", bytes, &provider)
+    }
+    #[cfg(not(test))]
+    {
+        runtime_identity::import_identity(identity_dir, "primary", bytes)
+    }
+}
+
+fn protect_identity_record(identity_dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        let provider = runtime_identity::BrokerFileProvider::new(identity_dir);
+        runtime_identity::secure_identity_with_provider(identity_dir, "primary", &provider)?;
+    }
+    #[cfg(not(test))]
+    {
+        runtime_identity::secure_identity(identity_dir, "primary")?;
+    }
+    Ok(())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -554,19 +568,16 @@ mod tests {
             ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
             ProvisionOutcome::Created { .. }
         ));
-        let record = IdentityRecord::from_json_bytes(
-            &std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
-        )
-        .unwrap();
-        let root = persist::read_signing_key(&paths.user_privkey).unwrap();
+        let signer = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            .expect("load protected identity");
         let device = persist::read_device_key(&paths.device_privkey).unwrap();
         let cert = persist::read_device_cert(&paths.device_cert).unwrap();
 
-        assert_eq!(
-            record.threshold_identity.group_public_key,
-            root.verifying_key().to_bytes()
+        assert!(
+            !paths.user_privkey.exists(),
+            "new installs must not duplicate the user-root private key"
         );
-        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(cert.user_public_key, signer.group_public_key());
         assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
         qos_user_identity::verify_device_cert(&cert).unwrap();
         assert_eq!(

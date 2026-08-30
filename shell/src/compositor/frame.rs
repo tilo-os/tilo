@@ -11,13 +11,16 @@
 //! builder and their pixel output is byte-identical.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::compositor::foreign::ForeignSurfaceWidget;
 use crate::shell::build_nirios_overlay_host_with_chrome;
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::overlay_host::ShellOverlayHost;
@@ -27,6 +30,70 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+
+/// Multipliers are deliberately conservative: the selected Kelvin value is
+/// a comfort target, not a claim that an uncalibrated panel now has reference
+/// colourimetry. Red stays at unity while green/blue fall as warmth rises.
+fn night_light_multiplier(kelvin: u32) -> Color {
+    let warmth =
+        ((6_500_u32.saturating_sub(kelvin.clamp(2_000, 6_500))) as f32 / 4_500.0).clamp(0.0, 1.0);
+    let green = (255.0 - 52.0 * warmth).round() as u8;
+    let blue = (255.0 - 132.0 * warmth).round() as u8;
+    Color::from_rgb8(255, green, blue)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DesktopColorFilter {
+    #[default]
+    None,
+    Grayscale,
+    Inverted,
+    GrayscaleInverted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VisualAccessibility {
+    color_filter: DesktopColorFilter,
+    magnifier_zoom: u8,
+    cursor_crosshair: bool,
+}
+
+impl Default for VisualAccessibility {
+    fn default() -> Self {
+        Self {
+            color_filter: DesktopColorFilter::None,
+            magnifier_zoom: 1,
+            cursor_crosshair: false,
+        }
+    }
+}
+
+impl VisualAccessibility {
+    fn load() -> Self {
+        let section = settings_store::load_section("accessibility");
+        Self {
+            color_filter: match section
+                .get("color_filter")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("grayscale") => DesktopColorFilter::Grayscale,
+                Some("inverted") => DesktopColorFilter::Inverted,
+                Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
+                _ => DesktopColorFilter::None,
+            },
+            magnifier_zoom: section
+                .get("magnifier_zoom")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(1)
+                .clamp(1, 3),
+            cursor_crosshair: section
+                .get("cursor_crosshair")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
+}
 
 use crate::shell::overlay_host::OutputGeometry;
 
@@ -57,6 +124,12 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     text_renderer: TextRenderer,
     theme: Theme,
+    watch_configured_theme: bool,
+    theme_store_stamp: Option<SystemTime>,
+    last_theme_store_check: Instant,
+    night_light: bool,
+    night_light_temperature: u32,
+    visual_accessibility: VisualAccessibility,
     viewport: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
@@ -69,6 +142,11 @@ pub struct FrameBuilder {
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
     peer_presence: Option<crate::shell::peer_presence::PeerPresence>,
+    /// Compositor-authorised OSK, deliberately outside the workspace/tile
+    /// tree. Its widget only mirrors pixels; protocol trust lives in State.
+    osk_overlay: Option<ForeignSurfaceWidget>,
+    osk_anchor_x: Option<f64>,
+    osk_active: bool,
 }
 
 impl FrameBuilder {
@@ -161,6 +239,13 @@ impl FrameBuilder {
             text_renderer: TextRenderer::new(),
             last_room_epoch: 0,
             theme,
+            watch_configured_theme: false,
+            theme_store_stamp: settings_store::settings_path()
+                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            last_theme_store_check: Instant::now(),
+            night_light: false,
+            night_light_temperature: 3_700,
+            visual_accessibility: VisualAccessibility::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
@@ -172,6 +257,9 @@ impl FrameBuilder {
                 ctx
             },
             peer_presence: None,
+            osk_overlay: None,
+            osk_anchor_x: None,
+            osk_active: false,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -266,6 +354,31 @@ impl FrameBuilder {
             )
             .expect("frame-builder compute_layout");
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+        self.layout_osk_overlay();
+    }
+
+    fn layout_osk_overlay(&mut self) {
+        if self.osk_overlay.is_none() {
+            return;
+        }
+        let outputs = self.effective_outputs();
+        let anchor = self.osk_anchor_x.unwrap_or(0.0);
+        let output = outputs
+            .iter()
+            .find(|o| anchor >= o.x && anchor < o.x + o.width)
+            .or_else(|| outputs.first());
+        let Some(output) = output else { return };
+
+        let margin = 20.0_f64.min(output.width / 20.0);
+        let width = (output.width - margin * 2.0).clamp(1.0, 960.0);
+        let height = (output.height * 0.40)
+            .clamp(220.0, 380.0)
+            .min((output.height - margin * 2.0).max(1.0));
+        let x0 = output.x + (output.width - width) / 2.0;
+        let y0 = (output.height - height - margin).max(0.0);
+        if let Some(keyboard) = self.osk_overlay.as_mut() {
+            keyboard.place_floating(Rect::new(x0, y0, x0 + width, y0 + height));
+        }
     }
 
     /// Run the widget tree's per-frame pump (`sync` then `update`).
@@ -365,6 +478,7 @@ impl FrameBuilder {
     /// Render the current frame into a fresh Vello scene. Caller hands it to
     /// a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        self.refresh_configured_theme();
         let mut scene = Scene::new();
         self.host.draw(
             &mut scene,
@@ -373,7 +487,179 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        if self.osk_active
+            && let Some(keyboard) = self.osk_overlay.as_mut()
+            && keyboard.is_mapped()
+        {
+            keyboard.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            );
+        }
+        if self.watch_configured_theme && self.night_light {
+            let (w, h) = self.viewport;
+            let bounds = Rect::new(0.0, 0.0, w, h);
+            // Multiply is a real whole-frame colour transform: unlike an
+            // amber SrcOver veil it reduces short wavelengths without
+            // washing blacks grey.  The native DRM path can later replace
+            // this with a gamma LUT without changing the Settings contract.
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::new(Mix::Multiply, Compose::SrcOver),
+                1.0,
+                Affine::IDENTITY,
+                &bounds,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                night_light_multiplier(self.night_light_temperature),
+                None,
+                &bounds,
+            );
+            scene.pop_layer();
+        }
+        if self.watch_configured_theme {
+            self.apply_visual_accessibility(&mut scene);
+        }
         scene
+    }
+
+    fn apply_color_filter(&self, scene: &mut Scene, bounds: Rect) {
+        let mut overlay = |mix: Mix, color: Color| {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::new(mix, Compose::SrcOver),
+                1.0,
+                Affine::IDENTITY,
+                &bounds,
+            );
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
+            scene.pop_layer();
+        };
+        if matches!(
+            self.visual_accessibility.color_filter,
+            DesktopColorFilter::Grayscale | DesktopColorFilter::GrayscaleInverted
+        ) {
+            // W3C `color` blend with an achromatic source preserves the
+            // backdrop luminosity while replacing hue/saturation: true
+            // grayscale, not a translucent grey veil.
+            overlay(Mix::Color, Color::WHITE);
+        }
+        if matches!(
+            self.visual_accessibility.color_filter,
+            DesktopColorFilter::Inverted | DesktopColorFilter::GrayscaleInverted
+        ) {
+            // Difference against white is the exact per-channel inverse.
+            overlay(Mix::Difference, Color::WHITE);
+        }
+    }
+
+    fn apply_visual_accessibility(&self, scene: &mut Scene) {
+        let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        self.apply_color_filter(scene, bounds);
+        let pointer = self.host.pointer_position();
+        if self.visual_accessibility.magnifier_zoom > 1
+            && let Some(pointer) = pointer
+        {
+            // A lens deliberately leaves the underlying coordinate space
+            // untouched: its centre is the real hardware pointer and hence
+            // the target under the centre remains exactly clickable.
+            let source = scene.clone();
+            let lens_w = 420.0_f64.min(self.viewport.0 * 0.7);
+            let lens_h = 280.0_f64.min(self.viewport.1 * 0.7);
+            let lens = Rect::from_center_size(pointer, (lens_w, lens_h));
+            let clip = RoundedRect::from_rect(lens, 18.0);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &clip,
+            );
+            let z = f64::from(self.visual_accessibility.magnifier_zoom);
+            let magnify = Affine::translate((pointer.x, pointer.y))
+                * Affine::scale(z)
+                * Affine::translate((-pointer.x, -pointer.y));
+            scene.append(&source, Some(magnify));
+            scene.pop_layer();
+            scene.stroke(
+                &Stroke::new(3.0),
+                Affine::IDENTITY,
+                self.theme.border_focus,
+                None,
+                &clip,
+            );
+        }
+        if self.visual_accessibility.cursor_crosshair
+            && let Some(pointer) = pointer
+        {
+            let color = self.theme.border_focus;
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                color,
+                None,
+                &vello::kurbo::Line::new((0.0, pointer.y), (self.viewport.0, pointer.y)),
+            );
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                color,
+                None,
+                &vello::kurbo::Line::new((pointer.x, 0.0), (pointer.x, self.viewport.1)),
+            );
+        }
+    }
+
+    fn refresh_display_comfort(&mut self) {
+        let settings = settings_store::load();
+        self.night_light =
+            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false);
+        self.night_light_temperature = settings_store::f64_in(
+            &settings,
+            "display",
+            "night_light_temperature",
+            2_000.0..=6_500.0,
+            3_700.0,
+        ) as u32;
+        self.visual_accessibility = VisualAccessibility::load();
+    }
+
+    fn refresh_configured_theme(&mut self) {
+        if !self.watch_configured_theme
+            || std::env::var_os("QOS_SHOTS_THEME").is_some()
+            || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
+        {
+            return;
+        }
+        self.last_theme_store_check = Instant::now();
+        let stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if stamp == self.theme_store_stamp {
+            return;
+        }
+        self.theme_store_stamp = stamp;
+        self.theme = Theme::configured();
+        self.refresh_display_comfort();
+        self.rebuild_layout_tree();
+        self.relayout();
+    }
+
+    /// Enable the session-wide configured theme and live settings watcher.
+    /// Offscreen builders stay deterministic unless the shots override asks
+    /// for a specific palette.
+    pub fn enable_configured_theme(&mut self) {
+        self.watch_configured_theme = true;
+        self.theme = Theme::configured();
+        self.refresh_display_comfort();
+        self.theme_store_stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        self.rebuild_layout_tree();
+        self.relayout();
     }
 
     /// Attach the session's peer-presence relay. Called once the
@@ -463,6 +749,10 @@ impl FrameBuilder {
     /// it can idle instead of burning a core on an unchanged scene.
     pub fn needs_animation_frame(&self) -> bool {
         self.host.needs_animation_frame()
+            || self
+                .osk_overlay
+                .as_ref()
+                .is_some_and(Widget::needs_animation_frame)
     }
 
     /// Whether any tab is still holding a place for an app that hasn't drawn
@@ -488,6 +778,47 @@ impl FrameBuilder {
     /// wayland surface `surface_id`, or `None` if no visible tile hosts it.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
         self.host.foreign_surface_rect(surface_id)
+    }
+
+    /// Install/remove the trusted keyboard mirror and anchor it to the output
+    /// containing the currently focused field.
+    pub fn set_osk_surface(
+        &mut self,
+        surface_id: Option<u64>,
+        focused_surface: Option<u64>,
+        active: bool,
+    ) {
+        let anchor = focused_surface
+            .and_then(|id| self.host.foreign_surface_rect(id))
+            .map(|rect| rect.center().x);
+        self.osk_anchor_x = anchor;
+        self.osk_active = active;
+        match surface_id {
+            Some(id)
+                if self
+                    .osk_overlay
+                    .as_ref()
+                    .map(ForeignSurfaceWidget::surface_id)
+                    != Some(id) =>
+            {
+                self.osk_overlay = Some(ForeignSurfaceWidget::new(
+                    id,
+                    crate::compositor::state::OSK_APP_ID.to_string(),
+                ));
+            }
+            None => self.osk_overlay = None,
+            _ => {}
+        }
+        self.layout_osk_overlay();
+    }
+
+    /// Hit-test the mapped keyboard. An unmapped/hidden surface never steals
+    /// clicks from the application beneath it.
+    pub fn osk_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
+        let keyboard = self.osk_overlay.as_ref()?;
+        let rect = keyboard.get_rect();
+        (self.osk_active && keyboard.is_mapped() && rect.contains(Point::new(point.0, point.1)))
+            .then_some((keyboard.surface_id(), rect))
     }
 
     pub fn theme(&self) -> &Theme {
@@ -628,6 +959,7 @@ impl FrameBuilder {
             ("general", WsTab::General),
             ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
+            ("apps", WsTab::Apps),
         ] {
             put(
                 format!("ws_settings_tab[{key}]"),
@@ -740,6 +1072,15 @@ pub fn walk_widget(
 mod tests {
     use super::*;
 
+    #[test]
+    fn night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin() {
+        assert_eq!(
+            night_light_multiplier(6_500),
+            Color::from_rgb8(255, 255, 255)
+        );
+        assert_ne!(night_light_multiplier(2_800), night_light_multiplier(4_500));
+    }
+
     /// Smoke: a fresh builder produces a non-empty Vello scene at 1600x900.
     /// The exact byte-count would change with any rendering tweak, so we
     /// only assert the scene encoded *something*.
@@ -761,6 +1102,28 @@ mod tests {
         assert!(!fb.chrome().overlays.overview);
         fb.with_chrome(|st| st.overlays.overview = true);
         assert!(fb.chrome().overlays.overview);
+    }
+
+    #[test]
+    fn osk_overlay_is_bottom_anchored_and_active_only() {
+        const SURFACE: u64 = 9_900_701;
+        crate::compositor::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
+        let mut fb = FrameBuilder::new((1600, 900));
+
+        fb.set_osk_surface(Some(SURFACE), None, false);
+        assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
+
+        fb.set_osk_surface(Some(SURFACE), None, true);
+        let (id, rect) = fb
+            .osk_surface_hit((800.0, 700.0))
+            .expect("active keyboard is hit-testable");
+        assert_eq!(id, SURFACE);
+        assert_eq!(rect.width(), 960.0);
+        assert_eq!(rect.y1, 880.0);
+
+        fb.set_osk_surface(Some(SURFACE), None, false);
+        assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
+        crate::compositor::foreign::store().forget(SURFACE);
     }
 
     /// A window from a peer must reach the widget tree, not just the

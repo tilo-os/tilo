@@ -1,0 +1,75 @@
+#!/bin/bash
+set -euo pipefail
+
+case "${1:-}" in
+  5[0-9]|[6-9][0-9]|100) limit="$1" ;;
+  *) echo "charge cap must be an integer from 50 through 100" >&2; exit 2 ;;
+esac
+
+found=0
+targets=()
+starts=()
+for battery in /sys/class/power_supply/*; do
+  [ -d "$battery" ] || continue
+  [ "$(cat "$battery/type" 2>/dev/null || true)" = Battery ] || continue
+
+  # The kernel power-supply ABI is authoritative where present.  Some
+  # drivers reject an end threshold below the existing start threshold, so
+  # lower start first while preserving the user's hysteresis otherwise.
+  for attribute in charge_control_end_threshold charge_stop_threshold; do
+    target="$battery/$attribute"
+    [ -f "$target" ] || continue
+    targets+=("$target")
+    starts+=("$battery/charge_control_start_threshold")
+    break
+  done
+done
+
+# Validate the complete normalized target set before touching any battery.
+# This prevents a read-only auxiliary battery from leaving a half-applied cap.
+if [ "${#targets[@]}" -gt 0 ]; then
+  for target in "${targets[@]}"; do
+    [ -w "$target" ] || { echo "charge-cap control is not writable: $target" >&2; exit 4; }
+  done
+  for start in "${starts[@]}"; do
+    [ ! -f "$start" ] || [ -w "$start" ] || { echo "start threshold is not writable: $start" >&2; exit 4; }
+  done
+  for index in "${!targets[@]}"; do
+    target="${targets[$index]}"
+    start="${starts[$index]}"
+    if [ -f "$start" ]; then
+      current_start="$(cat "$start" 2>/dev/null || printf '0')"
+      if [[ "$current_start" =~ ^[0-9]+$ ]] && [ "$current_start" -ge "$limit" ]; then
+        next_start=$((limit - 5))
+        [ "$next_start" -lt 0 ] && next_start=0
+        printf '%s\n' "$next_start" > "$start"
+      fi
+    fi
+    printf '%s\n' "$limit" > "$target"
+    found=1
+  done
+fi
+
+# Lenovo IdeaPad exposes a deliberately discrete conservation mode rather
+# than pretending to support an arbitrary percentage.
+if [ "$found" -eq 0 ]; then
+  for target in \
+    /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode \
+    /sys/devices/platform/VPC*/conservation_mode; do
+    [ -f "$target" ] || continue
+    if [ "$limit" -le 60 ]; then printf '1\n' > "$target"; else printf '0\n' > "$target"; fi
+    found=1
+    break
+  done
+fi
+
+# Huawei's WMI driver takes a start/end pair.  Keep a ten-point charging
+# window and never advertise values the helper cannot actually set.
+if [ "$found" -eq 0 ] && [ -f /sys/devices/platform/huawei-wmi/charge_control_thresholds ]; then
+  start=$((limit - 10))
+  [ "$start" -lt 40 ] && start=40
+  printf '%s %s\n' "$start" "$limit" > /sys/devices/platform/huawei-wmi/charge_control_thresholds
+  found=1
+fi
+
+[ "$found" -eq 1 ] || { echo "this battery driver exposes no supported charge-cap control" >&2; exit 3; }

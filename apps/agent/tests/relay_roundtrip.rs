@@ -1,18 +1,19 @@
-//! The agent against a real socket: the toolkit's relay broker on a temp
-//! path, a peer that holds the document the way the word processor does
+//! The agent against a real socket: the production Cap'n Proto broker on a
+//! temp path, a peer that holds the document the way the word processor does
 //! (same route, answers `Arrived` with a full snapshot, absorbs incremental
 //! changes), and the agent joining late, reading the instruction out of the
 //! document, and carrying it out — asserted on the peer's replica, never on
 //! the agent's own.
 
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_agent::wire::{read_frame, write_frame};
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use uuid::Uuid;
+
+mod typed_peer;
+use typed_peer::{TypedPeer as UnixStream, recv, send};
 
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
@@ -174,12 +175,7 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
 fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -193,14 +189,13 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
 
     // The peer: what the word processor is on the wire.
     let mut peer = UnixStream::connect(&sock).expect("peer connects");
-    let hello = serde_json::to_vec(&CollabRequest::Hello {
+    let hello = CollabRequest::Hello {
         app_id: APP.into(),
         cluster_id: room,
         record: Some(RECORD.into()),
         handle: Some("quinten".into()),
-    })
-    .unwrap();
-    write_frame(&mut peer, &hello).unwrap();
+    };
+    send(&mut peer, &hello).unwrap();
     let mut replica = seed_document();
     // Let the relay register the peer's Hello before the agent's frames
     // can race it (the relay handles each connection on its own thread).
@@ -208,8 +203,7 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
 
     // The agent, on its own thread, once.
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -242,27 +236,35 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_scribe_presence = false;
     let mut done = false;
-    while Instant::now() < deadline && !done {
-        let Some(frame) = read_frame(&mut peer) else {
+    // Presence and document events use independent typed subscriptions, so
+    // their delivery is intentionally not globally ordered. Keep draining
+    // until both guarantees have been observed instead of treating a fast
+    // document update as permission to stop listening for presence.
+    while Instant::now() < deadline && !(done && saw_scribe_presence) {
+        let Some(event) = recv(&mut peer) else {
             continue;
         };
-        let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
                 payload: PresencePayload::Arrived,
                 ..
             } => {
+                // The typed SDK reports the local participant's initial
+                // presence as well as remote arrivals. Only Scribe's arrival
+                // asks this app peer to offer its document.
+                if user_id == "quinten" {
+                    continue;
+                }
                 assert_eq!(
                     user_id, "Scribe",
                     "the relay names presence by the announced handle"
                 );
                 saw_scribe_presence = true;
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut peer, &snap).unwrap();
+                };
+                send(&mut peer, &snap).unwrap();
             }
             CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -381,12 +383,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
 
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -400,30 +397,28 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     // The file manager: a real document, in this room, that is not the
     // agent's business and never mentions it.
     let mut files_peer = UnixStream::connect(&sock).expect("files connects");
-    write_frame(
+    send(
         &mut files_peer,
-        &serde_json::to_vec(&CollabRequest::Hello {
+        &CollabRequest::Hello {
             app_id: "dev.qos.file-explorer".into(),
             cluster_id: room,
             record: None,
             handle: Some("files".into()),
-        })
-        .unwrap(),
+        },
     )
     .unwrap();
     let mut files_doc = seed_foreign();
 
     // The word processor, holding the page with the instruction on it.
     let mut wp_peer = UnixStream::connect(&sock).expect("word processor connects");
-    write_frame(
+    send(
         &mut wp_peer,
-        &serde_json::to_vec(&CollabRequest::Hello {
+        &CollabRequest::Hello {
             app_id: APP.into(),
             cluster_id: room,
             record: None,
             handle: Some("quinten".into()),
-        })
-        .unwrap(),
+        },
     )
     .unwrap();
     let mut replica = seed_colliding_document();
@@ -431,8 +426,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
 
     // A room, and no record to tell the room's documents apart.
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: None,
@@ -463,19 +457,18 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     let files_thread = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
-            let Some(frame) = read_frame(&mut files_peer) else {
+            let Some(event) = recv(&mut files_peer) else {
                 continue;
             };
-            if let Ok(CollabEvent::RemotePresenceUpdate {
+            if let CollabEvent::RemotePresenceUpdate {
                 payload: PresencePayload::Arrived,
                 ..
-            }) = serde_json::from_slice::<CollabEvent>(&frame)
+            } = event
             {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: files_doc.save(),
-                })
-                .unwrap();
-                write_frame(&mut files_peer, &snap).unwrap();
+                };
+                send(&mut files_peer, &snap).unwrap();
             }
         }
     });
@@ -484,10 +477,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     let mut done = false;
     let mut answered = false;
     while Instant::now() < deadline && !done {
-        let Some(frame) = read_frame(&mut wp_peer) else {
-            continue;
-        };
-        let Ok(event) = serde_json::from_slice::<CollabEvent>(&frame) else {
+        let Some(event) = recv(&mut wp_peer) else {
             continue;
         };
         match event {
@@ -499,11 +489,10 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
                 // Shortly after the file manager, so the agent has already
                 // taken the wrong document by the time this arrives.
                 std::thread::sleep(Duration::from_millis(400));
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut wp_peer, &snap).unwrap();
+                };
+                send(&mut wp_peer, &snap).unwrap();
             }
             // The agent's edits. A delta from the file manager's document
             // would not apply here, so ignore what does not.
@@ -568,12 +557,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
 fn an_unanswered_address_is_reported_rather_than_waited_on() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -584,8 +568,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     }
 
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: Uuid::new_v4(),
         // The shape of the mistake: a room that exists, on a record
@@ -631,12 +614,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
 fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -649,20 +627,18 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     let room = Uuid::new_v4();
 
     let mut peer = UnixStream::connect(&sock).expect("peer connects");
-    let hello = serde_json::to_vec(&CollabRequest::Hello {
+    let hello = CollabRequest::Hello {
         app_id: APP.into(),
         cluster_id: room,
         record: Some(RECORD.into()),
         handle: Some("quinten".into()),
-    })
-    .unwrap();
-    write_frame(&mut peer, &hello).unwrap();
+    };
+    send(&mut peer, &hello).unwrap();
     let mut replica = seed_sequence_document();
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -689,20 +665,18 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
-        let Some(frame) = read_frame(&mut peer) else {
+        let Some(event) = recv(&mut peer) else {
             continue;
         };
-        let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
         match event {
             CollabEvent::RemotePresenceUpdate {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut peer, &snap).unwrap();
+                };
+                send(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
                 replica
@@ -754,12 +728,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
 fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    {
-        let sock = sock.clone();
-        std::thread::spawn(move || {
-            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
-        });
-    }
+    let _broker = typed_peer::spawn(&sock);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -772,20 +741,18 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     let room = Uuid::new_v4();
 
     let mut peer = UnixStream::connect(&sock).expect("peer connects");
-    let hello = serde_json::to_vec(&CollabRequest::Hello {
+    let hello = CollabRequest::Hello {
         app_id: APP.into(),
         cluster_id: room,
         record: Some(RECORD.into()),
         handle: Some("quinten".into()),
-    })
-    .unwrap();
-    write_frame(&mut peer, &hello).unwrap();
+    };
+    send(&mut peer, &hello).unwrap();
     let mut replica = seed_unanswerable_sequence_document();
     std::thread::sleep(Duration::from_millis(100));
 
     let cfg = Config {
-        endpoint: None,
-        socket: Some(sock),
+        endpoint: Some(sock),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -810,20 +777,18 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut done = false;
     while Instant::now() < deadline && !done {
-        let Some(frame) = read_frame(&mut peer) else {
+        let Some(event) = recv(&mut peer) else {
             continue;
         };
-        let event: CollabEvent = serde_json::from_slice(&frame).expect("decode");
         match event {
             CollabEvent::RemotePresenceUpdate {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                let snap = CollabRequest::SyncCRDT {
                     data: replica.save(),
-                })
-                .unwrap();
-                write_frame(&mut peer, &snap).unwrap();
+                };
+                send(&mut peer, &snap).unwrap();
             }
             CollabEvent::CRDTIncremental { data } => {
                 replica

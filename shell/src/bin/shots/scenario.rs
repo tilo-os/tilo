@@ -960,11 +960,14 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         QsLevel::Bluetooth => "bluetooth",
         QsLevel::WifiDetails(_) => "wifi-details",
         QsLevel::BluetoothDetails(_) => "bluetooth-details",
+        QsLevel::Vpn => "vpn",
+        QsLevel::Notifications => "notifications",
     };
     let ws_tab = match st.ws_settings_tab {
         WsTab::General => "general",
         WsTab::Members => "members",
         WsTab::Permissions => "permissions",
+        WsTab::Apps => "apps",
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();
@@ -1205,31 +1208,37 @@ fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
             battery: Some(batt(72, BatteryState::Discharging)),
             link: Some(wifi(4)),
             volume: Some(vol(0.45, false)),
+            media: Vec::new(),
         },
         "charging" => SystemStatus {
             battery: Some(batt(38, BatteryState::Charging)),
             link: Some(wifi(3)),
             volume: Some(vol(0.45, false)),
+            media: Vec::new(),
         },
         "low" => SystemStatus {
             battery: Some(batt(14, BatteryState::Discharging)),
             link: Some(wifi(2)),
             volume: Some(vol(0.20, false)),
+            media: Vec::new(),
         },
         "critical" => SystemStatus {
             battery: Some(batt(3, BatteryState::Discharging)),
             link: Some(wifi(1)),
             volume: Some(vol(0.20, false)),
+            media: Vec::new(),
         },
         "muted" => SystemStatus {
             battery: Some(batt(88, BatteryState::Full)),
             link: Some(wifi(4)),
             volume: Some(vol(0.6, true)),
+            media: Vec::new(),
         },
         "offline" => SystemStatus {
             battery: Some(batt(64, BatteryState::Discharging)),
             link: Some(LinkStatus::offline()),
             volume: Some(vol(0.45, false)),
+            media: Vec::new(),
         },
         "wired" => SystemStatus {
             battery: None,
@@ -1239,6 +1248,7 @@ fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
                 signal: 0,
             }),
             volume: Some(vol(0.75, false)),
+            media: Vec::new(),
         },
         _ => SystemStatus::default(),
     }

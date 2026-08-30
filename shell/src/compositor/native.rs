@@ -86,6 +86,7 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
@@ -236,6 +237,20 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
     // reads the environment has been spawned.
     unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
     Ok((socket, socket_name))
+}
+
+/// Bind the private display used only by the compositor-launched OSK. The
+/// random suffix keeps it out of well-known socket-name guesses; unlike the
+/// clipboard socket it is never exported in the session environment.
+fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
+    let name = format!(
+        "qos-osk-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
+    let path = crate::shell::launcher::runtime_dir().join(socket.socket_name());
+    Ok((socket, path))
 }
 
 /// Per-connection state for the test-control protocol: a buffered reader
@@ -749,6 +764,16 @@ fn keyboard_input_event(key: Key, pressed: bool) -> WindowEvent {
         event: ev,
         is_synthetic: false,
     }
+}
+
+fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
+    keyboard_input_event(
+        Key::Named(match action {
+            SwitchAction::Next => NamedKey::Tab,
+            SwitchAction::Activate => NamedKey::Enter,
+        }),
+        pressed,
+    )
 }
 
 /// Apply a [`SetModifiers`] action by overwriting `ctx.modifiers` — the
@@ -1382,6 +1407,8 @@ fn power_notification_to_incoming(
         expire_timeout: if n.critical { 0 } else { -1 },
         urgency: if n.critical { 2 } else { 1 },
         caller: None,
+        badge_count: None,
+        contact_endpoint: None,
     }
 }
 
@@ -1438,14 +1465,31 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bo
 }
 
 fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
-    if let WindowEvent::KeyboardInput { event, .. } = event
-        && event.state == ElementState::Pressed
-        && modifiers.state().super_key()
-        && let Key::Character(s) = &event.logical_key
-    {
-        return s.eq_ignore_ascii_case("l");
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return false;
+    };
+    if event.state != ElementState::Pressed {
+        return false;
     }
-    false
+    let key = match &event.logical_key {
+        Key::Character(s) => s.as_str(),
+        Key::Named(NamedKey::Tab) => "tab",
+        Key::Named(NamedKey::Escape) => "escape",
+        _ => return false,
+    };
+    let config = settings_store::hardware::ShortcutConfig::load();
+    let Some(chord) = config
+        .bindings
+        .get(&settings_store::hardware::ShortcutAction::Lock)
+    else {
+        return false;
+    };
+    let state = modifiers.state();
+    (chord.modifiers.contains("Super") == state.super_key())
+        && (chord.modifiers.contains("Ctrl") == state.control_key())
+        && (chord.modifiers.contains("Alt") == state.alt_key())
+        && (chord.modifiers.contains("Shift") == state.shift_key())
+        && chord.key.eq_ignore_ascii_case(key)
 }
 
 /// Map a live winit key event to the lock screen's normalised [`LockKey`]
@@ -1559,7 +1603,7 @@ fn load_session_tree(
     (tree.shared(), peer_sync_possible, state_notice)
 }
 
-/// Is something already listening on `path`? `collab_broker::spawn_full`
+/// Is something already listening on `path`? The collaboration broker
 /// unlinks before it binds, so without this check a second compositor on
 /// the same `XDG_RUNTIME_DIR` would steal the socket from the running
 /// session, splitting apps across two unreachable brokers. A successful
@@ -1753,6 +1797,7 @@ pub fn run() -> ! {
     let display_handle = display.handle();
 
     let mut state = State::new(event_loop.handle(), display_handle.clone());
+    spawn_auto_brightness_worker();
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_clipboard(state.selection_store());
@@ -1766,9 +1811,9 @@ pub fn run() -> ! {
     let mut backend: Box<dyn Backend> = match backend_kind {
         BackendKind::Winit => {
             let mut b = WinitBackend::new().expect("init winit backend");
-            // Match the FrameBuilder's internal theme so the host window clears to
-            // chrome bg before the first frame paints; only `Theme::dark()` is in play today.
-            b.set_base_color(ui::theme::Theme::dark().bg_app);
+            // Match the FrameBuilder's configured theme so the host window
+            // clears to chrome background before the first frame paints.
+            b.set_base_color(ui::theme::Theme::configured().bg_app);
             Box::new(b)
         }
         BackendKind::Drm => match DrmBackend::new() {
@@ -1812,6 +1857,7 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    frame_builder.enable_configured_theme();
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
     }
@@ -1878,6 +1924,16 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
+    // Settings can request a small, typed set of contextual tools through a
+    // connected descriptor. The shell owns package resolution and launching;
+    // failure only removes the advanced handoff, never core Settings controls.
+    let tool_service = match crate::shell::tool_intents::spawn() {
+        Ok(service) => Some(service),
+        Err(e) => {
+            tracing::error!(error = %e, "typed tool service unavailable");
+            None
+        }
+    };
 
     // Read the session's own broker for pointer presence and relay it to the
     // room's other hosts; subscribing by room is what makes a cursor crossing
@@ -1941,6 +1997,44 @@ pub fn run() -> ! {
             }
         })
         .expect("insert listening socket source into event loop");
+
+    // A third display is the input-method trust boundary. The OSK package is
+    // sandboxed exactly like any other app, but receives this one socket as
+    // its display; public clients cannot see the input-method/virtual-keyboard
+    // globals at all. The preference controls both accepting connections and
+    // the supervised service process.
+    let mut osk_service = match bind_osk_socket() {
+        Ok((osk_socket, path)) => {
+            let mut service = crate::compositor::osk_service::OskService::new(path.clone());
+            let authorization = service.socket_authorization();
+            if let Err(error) = event_loop.handle().insert_source(
+                osk_socket,
+                move |client_stream, (), state| {
+                    if !authorization.allows(&client_stream) {
+                        tracing::warn!(target: "qos::osk", "rejected connection to private OSK display");
+                        return;
+                    }
+                    if let Err(error) = state
+                        .display_handle
+                        .insert_client(client_stream, ClientState::osk_arc())
+                    {
+                        tracing::warn!(target: "qos::osk", %error, "could not accept OSK Wayland connection");
+                    }
+                },
+            ) {
+                tracing::warn!(target: "qos::osk", %error, "private OSK socket source rejected");
+                None
+            } else {
+                tracing::info!(target: "qos::osk", socket = %path.display(), "private OSK display ready");
+                service.reload_preference();
+                Some(service)
+            }
+        }
+        Err(error) => {
+            tracing::warn!(target: "qos::osk", %error, "private OSK display unavailable");
+            None
+        }
+    };
 
     // A second Wayland socket for clients the session trusts with the
     // clipboard-manager protocols — identical set except
@@ -2022,7 +2116,12 @@ pub fn run() -> ! {
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
     let notif_bridge = crate::notifications::NotificationBridge::new();
-    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
+    let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
+    frame_builder.with_chrome(|st| {
+        st.set_notification_bridge(notif_bridge.clone());
+        st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
+    });
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
     let mut _notif_runtime: Option<tokio::runtime::Runtime> = None;
     let mut _notif_handle: Option<crate::notifications::ServerHandle> = None;
@@ -2037,11 +2136,13 @@ pub fn run() -> ! {
             let res: Result<crate::notifications::ServerHandle, zbus::Error> =
                 rt.block_on(async move {
                     let conn = zbus::ConnectionBuilder::session()?.build().await?;
-                    let service = crate::notifications::NotificationService::new(
+                    let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
                         // v1: a fresh CallerMap. Per-workspace attribution comes once the bridge
                         // accept path populates it (same shape the portal's CallerMap uses); until then unsandboxed callers carry none.
                         crate::portal::CallerMap::new(),
+                        conn.clone(),
+                        priority_contacts,
                     );
                     let handle =
                         crate::notifications::serve_notifications(conn.clone(), service).await?;
@@ -2153,6 +2254,7 @@ pub fn run() -> ! {
     // Pointer/keyboard preferences are read once at startup; this notices a
     // new Settings write so changes take effect this session, not the next.
     let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
+    let mut switch_control = SwitchControlRuntime::new(Instant::now());
     // Redraw gating: painting every tick regardless of change would pin a CPU
     // core at 100%. Repaint only when: a backend event arrived
     // (input/resize/focus/redraw); the widget tree is animating; the chrome
@@ -2228,6 +2330,14 @@ pub fn run() -> ! {
                     }
                 }
                 BackendEvent::Input(wev) => {
+                    // A physical switch still enters through the same trusted
+                    // libinput/winit funnel. Only the configured pair is
+                    // translated, and disabled mode returns `None`, preserving
+                    // the original key exactly.
+                    let translated_switch = switch_control
+                        .translate(&wev, Instant::now())
+                        .map(|(action, pressed)| switch_action_event(action, pressed));
+                    let wev = translated_switch.as_ref().unwrap_or(&wev);
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
@@ -2242,11 +2352,11 @@ pub fn run() -> ! {
                     if session.is_locked() {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
-                        let key = winit_event_to_lock_key(&wev);
+                        let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
-                    } else if is_power_key(&wev) {
+                    } else if is_power_key(wev) {
                         // Hardware power key resolves per the power policy (logind delegates via
                         // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
                         match power_policy.on_power_key() {
@@ -2265,21 +2375,21 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
                         }
-                    } else if let Some(vt) = vt_switch_chord(&wev, &test_control_ctx.modifiers) {
+                    } else if let Some(vt) = vt_switch_chord(wev, &test_control_ctx.modifiers) {
                         // Ahead of every other chord, never offered to a client: leaving the
                         // terminal must work even with a grabbed keyboard, or a client can strand the user.
                         backend.switch_vt(vt);
-                    } else if is_remote_input_kill_switch(&wev, &test_control_ctx.modifiers) {
+                    } else if is_remote_input_kill_switch(wev, &test_control_ctx.modifiers) {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
                         session_changed = true;
-                    } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
+                    } else if is_lock_chord(wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
-                    } else if let Some(mk) = crate::shell::media_keys::classify(&wev) {
+                    } else if let Some(mk) = crate::shell::media_keys::classify(wev) {
                         // Hardware media/brightness keys belong to the machine, not whichever
                         // client holds focus — handled before client routing for that reason.
                         if let Some(osd) = crate::shell::media_keys::apply(
@@ -2293,7 +2403,7 @@ pub fn run() -> ! {
                     } else {
                         // Backends that don't pair a `ModifiersChanged` with every modifier
                         // keystroke would leave the mask stale, which decides chord ownership.
-                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = &wev {
+                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
                             client_input::apply_modifier_key(
                                 &mut test_control_ctx.modifiers,
                                 key_ev,
@@ -2304,13 +2414,13 @@ pub fn run() -> ! {
                         let to_client = client_input::route_input(
                             &mut state,
                             &mut frame_builder,
-                            &wev,
+                            wev,
                             &test_control_ctx.modifiers,
                         );
                         if !to_client {
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             frame_builder.dispatch_event(
-                                &wev,
+                                wev,
                                 &test_control_ctx.modifiers,
                                 &mut test_control_ctx.doc,
                                 &test_control_ctx.root_obj,
@@ -2361,12 +2471,49 @@ pub fn run() -> ! {
             }
         }
 
+        // Automatic scanning is generated by the same session owner, then
+        // offered to the focused Wayland client or shell through the exact
+        // normal Tab press/release route. It never runs on the lock screen.
+        if !session.is_locked()
+            && let Some(action) = switch_control.tick(Instant::now())
+        {
+            for pressed in [true, false] {
+                let event = switch_action_event(action, pressed);
+                let to_client = client_input::route_input(
+                    &mut state,
+                    &mut frame_builder,
+                    &event,
+                    &test_control_ctx.modifiers,
+                );
+                if !to_client {
+                    frame_builder.dispatch_event(
+                        &event,
+                        &test_control_ctx.modifiers,
+                        &mut test_control_ctx.doc,
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
+            }
+            session_changed = true;
+        }
+
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
+            state.reload_keyboard_settings();
             backend.reload_input_settings();
+            let policy = qos_power_mgmt::config::load_policy();
+            session.set_suspend_timeout(policy.idle_suspend);
+            power_bridge.update_policy(policy);
             outputs_dirty = true;
+            if let Some(service) = osk_service.as_mut() {
+                service.reload_preference();
+            }
+        }
+        if let Some(service) = osk_service.as_mut() {
+            service.tick();
         }
 
         // Re-derive everything depending on the output set once, after the whole
@@ -2456,6 +2603,10 @@ pub fn run() -> ! {
                     outputs_dirty = false;
                     session_changed = true;
                 }
+                qos_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                    session.set_suspend_timeout(timeout);
+                    tracing::info!(target: "qos::power", ?timeout, "live idle-suspend timeout updated");
+                }
                 qos_power_mgmt::PowerSignal::Notify(n) => {
                     let inc = power_notification_to_incoming(&notif_bridge, n);
                     notif_bridge.push_incoming(inc);
@@ -2535,6 +2686,11 @@ pub fn run() -> ! {
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
+        frame_builder.set_osk_surface(
+            state.osk_surface,
+            state.client_input.keyboard_focus(),
+            state.text_input_active(),
+        );
 
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &frame_builder);
@@ -2930,7 +3086,39 @@ pub fn run() -> ! {
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
+    drop(tool_service);
     std::process::exit(0)
+}
+
+/// Session-owned ambient-light loop. Settings only records policy; the
+/// compositor owns the display and therefore owns applying that policy after
+/// Settings exits. Missing sensors/backlights simply produce no write.
+fn spawn_auto_brightness_worker() {
+    let _ = std::thread::Builder::new()
+        .name("qos-auto-brightness".into())
+        .spawn(|| {
+            let mut controller = os_actions::AmbientBrightnessController::default();
+            loop {
+                let settings = settings_store::load();
+                let enabled = settings_store::bool_at(
+                    &settings,
+                    "display",
+                    "auto_brightness",
+                )
+                .unwrap_or(false);
+                if enabled {
+                    if let Some(lux) = os_actions::ambient_lux()
+                        && let Some(percent) = controller.update(lux)
+                        && let Err(error) = os_actions::set_brightness(percent)
+                    {
+                        tracing::warn!(target: "qos::display", %error, "automatic brightness write failed");
+                    }
+                } else {
+                    controller.reset();
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2958,9 +3146,6 @@ mod tests {
         // an already-dropped tempdir, and failed to bind a socket in a
         // directory that no longer existed.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-        // Do not let an inherited value pick the legacy socket's home.
-        unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
-
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
         let broker = spawn_session_collab_broker(&chrome, None)
@@ -2999,14 +3184,13 @@ mod tests {
 
     /// A live socket is not taken away from the session that owns it. Two
     /// compositors against one `XDG_RUNTIME_DIR` is what a second login (or
-    /// stray test) produces, and `spawn_full` unlinks before binding — without
+    /// stray test) produces, and the broker unlinks before binding — without
     /// the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
-        unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
@@ -3977,6 +4161,8 @@ mod output_geometry_tests {
                 position: (1600, 0),
                 size: (1920, 1080),
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
             },
         ];
         let geo = output_geometry(&outs);

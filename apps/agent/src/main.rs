@@ -108,7 +108,6 @@ fn main() -> anyhow::Result<()> {
     };
     let cfg = Config {
         endpoint: cli.endpoint,
-        socket: None,
         app_id: cli.app,
         cluster: cli.workspace,
         record: cli.record,

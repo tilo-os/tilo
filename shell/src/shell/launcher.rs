@@ -12,7 +12,7 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
+use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
 
 /// How long an installed-package enumeration is reused before re-reading
 /// the registry. Short enough that an app installed elsewhere shows up
@@ -31,6 +32,72 @@ const APP_CACHE_TTL: Duration = Duration::from_secs(2);
 /// the dynamic loader's complaint, small enough a chatty app can't grow
 /// the shell's memory.
 const STDERR_TAIL_LINES: usize = 12;
+
+/// A launcher process is the stable host-side ancestor of its sandbox,
+/// including the per-app xdg-dbus-proxy. D-Bus sender names are resolved to
+/// PIDs by the bus daemon and then walked back to this table. We retain the
+/// kernel start-time as well as the numeric PID so PID reuse cannot attribute a
+/// later, unrelated process to an exited app.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LaunchedProcess {
+    package_id: String,
+    start_time: u64,
+}
+
+static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm is parenthesised and may contain spaces/parentheses; the final ')'
+    // is the only safe place from which to index the remaining fields.
+    let rest = stat.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // `rest[0]` is field 3 (state), so ppid=field 4 -> 1 and starttime=22 -> 19.
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+fn register_launched_process(pid: u32, package_id: &str) {
+    let Some((_, start_time)) = proc_stat(pid) else {
+        return;
+    };
+    if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
+        map.insert(
+            pid,
+            LaunchedProcess {
+                package_id: package_id.to_string(),
+                start_time,
+            },
+        );
+    }
+}
+
+fn unregister_launched_process(pid: u32) {
+    if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
+        map.remove(&pid);
+    }
+}
+
+/// Resolve a host process (normally xdg-dbus-proxy) to the qOS package
+/// supervising one of its ancestors. The walk is bounded and refuses stale
+/// registry entries. Unknown/direct session-bus callers stay unattributed.
+pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
+    const MAX_ANCESTORS: usize = 32;
+    for _ in 0..MAX_ANCESTORS {
+        let (ppid, start_time) = proc_stat(pid)?;
+        if let Ok(map) = LAUNCHED_PROCESSES.lock()
+            && let Some(known) = map.get(&pid)
+            && known.start_time == start_time
+        {
+            return Some(known.package_id.clone());
+        }
+        if ppid == 0 || ppid == pid {
+            return None;
+        }
+        pid = ppid;
+    }
+    None
+}
 
 /// One installed application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +121,10 @@ pub struct InstalledApp {
     /// "which app owns `.odt`": installing an app is what teaches the
     /// desktop its file types.
     pub opens_extensions: Vec<String>,
+    /// Concrete normalized MIME claims from `[providers].mime`.
+    pub opens_mime_types: Vec<String>,
+    /// Normalized URI schemes from `[providers].schemes`.
+    pub opens_uri_schemes: Vec<String>,
 }
 
 impl InstalledApp {
@@ -62,6 +133,22 @@ impl InstalledApp {
     pub fn opens_extension(&self, ext: &str) -> bool {
         let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
         !want.is_empty() && self.opens_extensions.contains(&want)
+    }
+
+    pub fn opens_mime(&self, mime: &str) -> bool {
+        desktop_policy::ResourceKind::mime(mime).is_ok_and(|resource| {
+            resource
+                .mime_name()
+                .is_some_and(|mime| self.opens_mime_types.iter().any(|claim| claim == mime))
+        })
+    }
+
+    pub fn opens_scheme(&self, scheme: &str) -> bool {
+        desktop_policy::ResourceKind::scheme(scheme).is_ok_and(|resource| {
+            resource
+                .scheme_name()
+                .is_some_and(|scheme| self.opens_uri_schemes.iter().any(|claim| claim == scheme))
+        })
     }
 }
 
@@ -372,6 +459,8 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             has_gui: manifest.entrypoint.gui_bin().is_some()
                 && manifest.kind == launcher::manifest::KIND_APP,
             opens_extensions: manifest.opens_ext.clone(),
+            opens_mime_types: manifest.opens_mime.clone(),
+            opens_uri_schemes: manifest.opens_schemes.clone(),
         });
     }
     Ok(out)
@@ -409,16 +498,82 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps
 }
 
-/// Two packages can claim the same extension; the tie breaks by display
-/// name for a stable-across-boots answer. A user-visible default-app
-/// preference is the real long-term fix; this is the deterministic stand-in.
+/// Two packages can claim the same extension; the shared policy resolver uses
+/// personal/workspace defaults and a deterministic display-name fallback.
 pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
-    let mut candidates: Vec<InstalledApp> = gui_apps()
-        .into_iter()
-        .filter(|a| a.opens_extension(ext))
-        .collect();
-    candidates.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-    candidates.into_iter().next()
+    app_for_extension_with_policy(ext, "", None)
+}
+
+/// Resolve an extension through the shared personal/workspace policy engine.
+/// The returned id is looked up in the same installed-app snapshot used to
+/// build candidates, so policy can never launch an uninstalled or non-claiming
+/// package.
+pub fn app_for_extension_with_policy(
+    ext: &str,
+    user_id: &str,
+    workspace: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Option<InstalledApp> {
+    let resource = desktop_policy::ResourceKind::extension(ext).ok()?;
+    app_for_resource_with_policy(&resource, user_id, workspace)
+}
+
+pub fn app_for_resource_with_policy(
+    resource: &desktop_policy::ResourceKind,
+    user_id: &str,
+    workspace: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Option<InstalledApp> {
+    let apps = gui_apps();
+    let candidates = default_app_candidates_from(&apps);
+    let personal = desktop_policy::PersonalDefaults::load();
+    let selected = desktop_policy::DefaultAppResolver::new(&candidates)
+        .resolve(resource, user_id, &personal, workspace)?;
+    apps.into_iter()
+        .find(|app| app.package_id == selected.package_id)
+}
+
+/// Re-read the installed registry and manifest immediately before launch.
+/// Picker state and the two-second application cache are never authority for
+/// executing a resource handler: an uninstalled app or a claim removed by an
+/// upgrade fails closed here.
+pub fn revalidate_resource_claim(
+    package_id: &str,
+    resource: &desktop_policy::ResourceKind,
+) -> bool {
+    let Ok(apps) = read_installed_apps() else {
+        return false;
+    };
+    let candidates = default_app_candidates_from(&apps);
+    desktop_policy::DefaultAppResolver::new(&candidates)
+        .validate_app(resource, package_id)
+        .is_ok()
+}
+
+pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
+    default_app_candidates_from(&gui_apps())
+}
+
+fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::AppCandidate> {
+    apps.iter()
+        .map(|app| desktop_policy::AppCandidate {
+            package_id: app.package_id.clone(),
+            display_name: app.display_name.clone(),
+            resources: app
+                .opens_extensions
+                .iter()
+                .filter_map(|ext| desktop_policy::ResourceKind::extension(ext).ok())
+                .chain(
+                    app.opens_mime_types
+                        .iter()
+                        .filter_map(|mime| desktop_policy::ResourceKind::mime(mime).ok()),
+                )
+                .chain(
+                    app.opens_uri_schemes
+                        .iter()
+                        .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
+                )
+                .collect(),
+        })
+        .collect()
 }
 
 /// `dev.qos.text-editor` → `Text Editor`, derived from the trailing id
@@ -494,6 +649,28 @@ pub fn build_launch_command(
     render_node: Option<&Path>,
     document: Option<&Path>,
 ) -> LaunchCommand {
+    build_launch_command_for(
+        app,
+        launcher_bin,
+        wayland_socket,
+        room,
+        capabilities_file,
+        render_node,
+        document,
+        None,
+    )
+}
+
+fn build_launch_command_for(
+    app: &InstalledApp,
+    launcher_bin: &Path,
+    wayland_socket: &Path,
+    room: RoomId,
+    capabilities_file: Option<&Path>,
+    render_node: Option<&Path>,
+    document: Option<&Path>,
+    uri: Option<&str>,
+) -> LaunchCommand {
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -520,6 +697,10 @@ pub fn build_launch_command(
     if let Some(path) = document {
         args.push("--open".to_string());
         args.push(path.display().to_string());
+    }
+    if let Some(uri) = uri {
+        args.push("--open-uri".to_string());
+        args.push(uri.to_string());
     }
     // Service sockets are resolved by the launcher against
     // `$XDG_RUNTIME_DIR/qos/services`; a required-but-absent one fails loudly.
@@ -551,6 +732,35 @@ pub fn launch_with_document(
     room: RoomId,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
+    launch_with_context(package_id, room, document, None, None)
+}
+
+/// Launch an installed GUI application with one opaque URI argument. The
+/// resource dispatcher must validate the scheme claim immediately before
+/// calling this; this layer only guarantees the value is not interpreted as a
+/// program or split into additional arguments.
+pub fn launch_with_uri(
+    package_id: &str,
+    room: RoomId,
+    uri: &str,
+) -> Result<InstalledApp, LaunchError> {
+    launch_with_context(package_id, room, None, Some(uri), None)
+}
+
+/// Launch the only package owned by a typed tool intent and pass that exact
+/// context through the trusted launcher. The request format cannot smuggle an
+/// executable, package id, or extra arguments into this path.
+pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
+    launch_with_context(intent.package_id(), room, None, None, Some(intent))
+}
+
+fn launch_with_context(
+    package_id: &str,
+    room: RoomId,
+    document: Option<&Path>,
+    uri: Option<&str>,
+    tool_intent: Option<&ToolIntent>,
+) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|a| a.package_id == package_id)
@@ -581,7 +791,7 @@ pub fn launch_with_document(
         }
     };
 
-    let command = build_launch_command(
+    let mut command = build_launch_command_for(
         &app,
         &launcher_bin,
         &socket,
@@ -589,7 +799,22 @@ pub fn launch_with_document(
         capabilities_file.as_deref(),
         crate::compositor::render_node::resolved(),
         document,
+        uri,
     );
+    if let Some(intent) = tool_intent {
+        // Validation happens at the service boundary too; repeat it here so
+        // this public launcher helper remains safe when called elsewhere.
+        intent
+            .validate()
+            .map_err(|detail| LaunchError::RegistryUnreadable {
+                detail: format!("invalid tool context: {detail}"),
+            })?;
+        let encoded =
+            serde_json::to_string(intent).map_err(|e| LaunchError::RegistryUnreadable {
+                detail: format!("serialising tool context: {e}"),
+            })?;
+        command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
+    }
     remember_launch(&app);
     spawn_detached(app.clone(), command);
     Ok(app)
@@ -614,6 +839,15 @@ pub fn launch_document_in_workspace(
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
     launch_with_document(package_id, workspace.room, document)
+}
+
+pub fn launch_uri_in_workspace(
+    package_id: &str,
+    workspace: &Workspace,
+    uri: &str,
+) -> Result<InstalledApp, LaunchError> {
+    set_workspace_capabilities(workspace.capabilities.clone());
+    launch_with_uri(package_id, workspace.room, uri)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -659,6 +893,7 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
                 return;
             }
         };
+        register_launched_process(child.id(), &app.package_id);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -691,7 +926,9 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
             }
         }
 
+        let launcher_pid = child.id();
         let status = child.wait();
+        unregister_launched_process(launcher_pid);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
             Ok(status) => LaunchEventKind::Failed {
@@ -1030,6 +1267,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/hello"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         };
         let cmd = build_launch_command(
             &app,
@@ -1075,6 +1314,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/hello"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         };
         let cmd = build_launch_command(
             &app,
@@ -1274,6 +1515,8 @@ mod tests {
             payload_root: PathBuf::new(),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         });
         // full package id, trailing component, case-insensitivity
         assert_eq!(
@@ -1304,6 +1547,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/x"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         }
     }
 
@@ -1487,5 +1732,37 @@ mod tests {
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
         assert!(escaped.is_err(), "`..` in a package id must be refused");
         assert!(slashed.is_err(), "`/` in a package id must be refused");
+    }
+
+    #[test]
+    fn dbus_proxy_descendant_resolves_only_while_launcher_identity_is_live() {
+        let parent = std::process::id();
+        register_launched_process(parent, "dev.qos.mail");
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 2"])
+            .spawn()
+            .expect("spawn descendant");
+        assert_eq!(
+            verified_package_for_descendant(child.id()).as_deref(),
+            Some("dev.qos.mail")
+        );
+        unregister_launched_process(parent);
+        assert_eq!(verified_package_for_descendant(child.id()), None);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn stale_start_time_is_never_accepted_as_pid_identity() {
+        let pid = std::process::id();
+        LAUNCHED_PROCESSES.lock().unwrap().insert(
+            pid,
+            LaunchedProcess {
+                package_id: "dev.qos.spoof".into(),
+                start_time: u64::MAX,
+            },
+        );
+        assert_eq!(verified_package_for_descendant(pid), None);
+        unregister_launched_process(pid);
     }
 }

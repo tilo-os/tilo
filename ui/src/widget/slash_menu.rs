@@ -591,6 +591,10 @@ impl Widget for SlashMenu {
             .flatten()
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // The block-type picker is a Menu. Rows are drawn (not child widgets),

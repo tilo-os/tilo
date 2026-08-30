@@ -1,17 +1,17 @@
-//! End-to-end text sync over the real broker + real `CollaborationManager`
+//! End-to-end text sync over typed RPC + real `CollaborationManager`
 //! (the actual send/poll wire path, not the in-memory relay): a late
 //! joiner adopts a full snapshot, then an incremental text edit ("typing")
 //! propagates. This is the transport+CRDT half of "type in one window, see
 //! it in the other" — the App layer drives exactly these calls
 //! (`broadcast_doc_delta` -> `SyncIncremental`; poll -> `load_incremental`).
 
-use std::os::unix::net::UnixListener;
 use std::thread;
 use std::time::Duration;
 
+use crate::support::typed_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
+use ui::collaboration::{CollabEvent, CollabRequest};
 
 fn text_of(doc: &AutoCommit) -> String {
     let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "text") else {
@@ -21,18 +21,10 @@ fn text_of(doc: &AutoCommit) -> String {
 }
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn live_text_edit_propagates_through_broker() {
-    let sock = std::env::temp_dir().join(format!("quick-collab-text-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock).expect("bind broker");
-    thread::spawn(move || ui::collaboration::broker::serve(listener));
-    unsafe {
-        std::env::set_var("QUICK_COLLAB_SOCK", &sock);
-    }
-
-    let mut a = CollaborationManager::new();
-    let mut b = CollaborationManager::new();
+    let broker = TypedBroker::new();
+    let mut a = broker.manager("alice");
+    let mut b = broker.manager("bob");
     thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
@@ -92,5 +84,4 @@ fn live_text_edit_propagates_through_broker() {
 
     drop(a);
     drop(b);
-    let _ = std::fs::remove_file(&sock);
 }

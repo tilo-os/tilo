@@ -22,6 +22,7 @@ Type=simple
 # where systemd-tmpfiles-setup hasn't run yet.
 ExecStartPre=/usr/bin/mkdir -p /var/workspace
 ExecStartPre=/usr/bin/mkdir -p /var/cache/quick-fs
+ExecStartPre=/usr/bin/install -d -m 2770 -o root -g qos-identity /run/qos
 # The capability list the mount enforces. tmpfiles.d seeds it from
 # /usr/share/qos/fs-capabilities.json on first boot; this is the same
 # belt-and-suspenders fallback as the mkdirs above, for the case where
@@ -61,6 +62,7 @@ ExecStartPre=-/usr/bin/cp -n /usr/share/qos/fs-capabilities.json /var/lib/qos/fs
 # /var/lib/qos/fs-capabilities.json actually bites, and so a mount joined
 # from a peer's ticket has somewhere to put a narrower policy.
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
+    --storage-sock /run/qos/fs-storage.sock \
     --acl /var/lib/qos/fs-capabilities.json --principal person:local
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client

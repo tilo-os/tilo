@@ -16,6 +16,9 @@
 //!
 //! ## Dispatcher trait
 //!
+//! Bluetooth is the exception to the CLI wrappers: it uses the persistent
+//! `qos-bluez` D-Bus client because discovery and pairing are connection-bound.
+//!
 //! [`Dispatcher`] is the side-effect interface used by the click handlers. The default
 //! production impl ([`RealDispatcher`]) calls the free functions in the per-domain modules;
 //! tests substitute a recording impl so the click handler can be asserted on without
@@ -23,28 +26,73 @@
 //! `RealQsActions` for source compatibility.
 
 pub mod audio;
+pub mod battery;
 pub mod bluetooth;
 pub mod bluez;
 pub mod display;
+pub mod firmware;
+pub mod modem;
 pub mod network;
 pub mod power;
+pub mod printing;
+pub mod privacy;
 mod process;
+pub mod session;
 pub mod time;
+pub mod tool_intent;
+pub mod users;
 
 pub use audio::{
     VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
     toggle_source_mute,
 };
+pub use battery::{
+    BatteryHistory, BatteryHistoryPoint, BatteryInfo, ChargeCapBackend, ChargeCapCapability,
+    PowerDevice, PowerSupplyKind, charge_capability, load_battery_history, power_devices,
+    set_charge_limit, set_charge_limit_checked,
+};
 pub use bluetooth::{
     BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
 };
-pub use display::{get_brightness, set_brightness};
-pub use network::{
-    LinkKind, LinkStatus, WifiNetworkInfo, WiredInfo, connect_wifi, get_link_status, get_wifi,
-    get_wired, list_wifi_networks, set_wifi,
+pub use display::{
+    AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
+    set_brightness,
 };
-pub use power::{PowerProfile, get_power_profile, set_power_profile};
-pub use time::{get_ntp, now_clock, now_date, set_ntp};
+pub use firmware::{
+    FirmwareEvent, FirmwareHistoryEntry, FirmwareInstallOutcome, FirmwareUpdate,
+    get_firmware_history, get_firmware_updates, refresh_firmware_metadata, start_firmware_install,
+};
+pub use modem::{SimInfo, list_mobile_sims, unlock_mobile_sim, unlock_mobile_sim_on};
+pub use network::{
+    CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectionPolicyPatch,
+    ConnectionProfileSettings, ConnectivityState, EnterpriseEapMethod, EnterpriseWifiConfiguration,
+    HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, IpConfiguration, LinkKind,
+    LinkStatus, MacPolicy, MeteredPolicy, ProxyConfiguration, RadioState, SavedNetworkProfile,
+    VpnConnectionInfo, WifiNetworkInfo, WiredInfo, captive_portal_uri, configure_connection_policy,
+    configure_connection_policy_patch, configure_hotspot, configure_ipv4, connect_enterprise_wifi,
+    connect_wifi, connection_diagnostics, connection_profile_settings, create_mobile_profile,
+    forget_network_profile, get_connectivity, get_link_status, get_radio_state, get_wifi,
+    get_wired, import_vpn_config, inspect_certificate, list_hotspot_clients,
+    list_saved_network_profiles, list_vpn_connections, list_wifi_networks, set_airplane_mode,
+    set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection, set_wifi,
+    set_wired,
+};
+pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
+pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
+pub use privacy::{
+    ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
+    monitor_media_usage, revoke_media_client,
+};
+pub use session::{SessionAction, perform_session_action};
+pub use time::{
+    TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
+    set_timezone, valid_timezone,
+};
+pub use tool_intent::{
+    BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
+    ToolReply, ToolRequest, VpnRoute, open_tool, tool_intent_from_env,
+};
+pub use users::AccountRole;
 
 use std::time::Duration;
 
@@ -59,6 +107,22 @@ pub trait Dispatcher {
     fn set_volume(&self, pct: f32) -> Result<(), String>;
     fn set_wifi(&self, enabled: bool) -> Result<(), String>;
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        let _ = enabled;
+        Err("wired networking is not supported by this dispatcher".into())
+    }
+    fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
+        network::set_airplane_mode(enabled)
+    }
+    fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
+        network::set_hotspot(enabled)
+    }
+    fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
+        network::set_mobile_broadband(enabled)
+    }
+    fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
+        network::set_vpn_connection(name, enabled)
+    }
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String>;
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
     /// Toggle the default audio sink mute state. Default impl delegates to
@@ -90,7 +154,10 @@ impl Dispatcher for RealDispatcher {
         network::set_wifi(enabled)
     }
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        bluetooth::set_bluetooth(enabled)
+        bluez::set_powered(enabled)
+    }
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        network::set_wired(enabled)
     }
     fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
         network::connect_wifi(ssid, password)
@@ -172,6 +239,12 @@ mod dispatcher_tests {
                 .push(format!("set_bluetooth({enabled})"));
             Ok(())
         }
+        fn set_wired(&self, enabled: bool) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("set_wired({enabled})"));
+            Ok(())
+        }
         fn connect_wifi(&self, ssid: &str, _password: Option<&str>) -> Result<(), String> {
             self.calls
                 .borrow_mut()
@@ -197,18 +270,20 @@ mod dispatcher_tests {
         d.set_volume(75.0).unwrap();
         d.set_wifi(false).unwrap();
         d.set_bluetooth(true).unwrap();
+        d.set_wired(true).unwrap();
         d.connect_wifi("MyNet", Some("hunter2")).unwrap();
         d.set_power_profile(PowerProfile::Performance).unwrap();
         d.toggle_mute().unwrap();
 
         let calls = d.calls();
-        assert_eq!(calls.len(), 7);
+        assert_eq!(calls.len(), 8);
         assert_eq!(calls[0], "set_brightness(60.00)");
         assert_eq!(calls[1], "set_volume(75.00)");
         assert_eq!(calls[2], "set_wifi(false)");
         assert_eq!(calls[3], "set_bluetooth(true)");
-        assert_eq!(calls[4], "connect_wifi(MyNet)");
-        assert_eq!(calls[5], "set_power_profile(performance)");
-        assert_eq!(calls[6], "toggle_mute()");
+        assert_eq!(calls[4], "set_wired(true)");
+        assert_eq!(calls[5], "connect_wifi(MyNet)");
+        assert_eq!(calls[6], "set_power_profile(performance)");
+        assert_eq!(calls[7], "toggle_mute()");
     }
 }
