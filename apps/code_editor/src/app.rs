@@ -2325,7 +2325,7 @@ impl CodeApp {
                     let server = self.lsp_server_name();
                     // Folding through the client's table is what keeps the task
                     // label stable: a `report` carries no title, only the token.
-                    let shown = self.lsp.as_mut().and_then(|c| c.note_progress(p));
+                    let shown = self.lsp.as_mut().and_then(|c| c.note_progress(&p));
                     self.lsp_status = match shown {
                         Some(p) => LspStatus::Busy {
                             server,
