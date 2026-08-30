@@ -74,7 +74,7 @@ impl Driver {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a review tool: needs a GPU adapter to render the captures"]
 fn render_expand_to_fullscreen() {
     let dir = shot_dir();
     std::fs::create_dir_all(&dir).expect("shot dir");

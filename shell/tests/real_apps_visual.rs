@@ -75,7 +75,7 @@ impl Driver {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a review tool: needs a GPU adapter and spawns a real shell"]
 fn render_every_boot_tab() {
     let dir = shot_dir();
     std::fs::create_dir_all(&dir).expect("shot dir");
