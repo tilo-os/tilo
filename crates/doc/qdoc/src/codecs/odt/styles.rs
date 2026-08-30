@@ -31,6 +31,10 @@ pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
         .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a font point size from ODF's own bounded style attribute; far below i64::MAX"
+)]
 pub(super) fn parse_pt(v: &str) -> Option<i64> {
     v.trim_end_matches("pt")
         .trim()
@@ -43,9 +47,8 @@ pub(super) fn generic_font(name: &str) -> String {
     let n = name.to_ascii_lowercase();
     if n.contains("mono") || n.contains("courier") || n.contains("consol") {
         "mono".into()
-    } else if n.contains("serif") && !n.contains("sans") {
-        "serif".into()
-    } else if n.contains("times")
+    } else if (n.contains("serif") && !n.contains("sans"))
+        || n.contains("times")
         || n.contains("georgia")
         || n.contains("garamond")
         || n.contains("roman")
@@ -315,7 +318,7 @@ impl StyleRegistry {
             if p.heading_name {
                 return Some(p.name_level.unwrap_or(1).clamp(1, 6));
             }
-            cur = p.parent.clone();
+            cur.clone_from(&p.parent);
         }
         None
     }
@@ -328,7 +331,7 @@ impl StyleRegistry {
             if let Some(a) = &p.align {
                 return Some(a.clone());
             }
-            cur = p.parent.clone();
+            cur.clone_from(&p.parent);
         }
         None
     }
@@ -341,7 +344,7 @@ impl StyleRegistry {
             if let Some(lh) = p.line_height {
                 return Some(lh);
             }
-            cur = p.parent.clone();
+            cur.clone_from(&p.parent);
         }
         None
     }
@@ -353,7 +356,7 @@ impl StyleRegistry {
             let Some(n) = cur else { break };
             let Some(p) = self.para.get(&n) else { break };
             chain.push(p);
-            cur = p.parent.clone();
+            cur.clone_from(&p.parent);
         }
         let mut out: Vec<(String, MarkValue)> = Vec::new();
         for p in chain.iter().rev() {
@@ -381,7 +384,7 @@ impl StyleRegistry {
             let Some(n) = cur else { break };
             let Some(p) = self.para.get(&n) else { break };
             chain.push(p);
-            cur = p.parent.clone();
+            cur.clone_from(&p.parent);
         }
         chain
     }
@@ -447,218 +450,240 @@ fn heading_from_name(name: &str, display: Option<&str>) -> (bool, Option<i64>) {
 /// Parse all `style:style`/`text:list-style` from an ODF xml stream into `reg`. Safe to call
 /// repeatedly (styles.xml then content.xml) — later styles win. `from_named_section` flags
 /// styles as user-facing named even without a display-name (true for `styles.xml`).
+/// A self-closing `<style:style/>` (no properties) has no End event, so register it straight
+/// from its attributes (parent/outline/heading) rather than through the scratch accumulator.
+fn register_self_closing_style(e: &BytesStart, reg: &mut StyleRegistry, from_named_section: bool) {
+    if let (Some(nm), Some(fam)) = (attr_val(e, b"style:name"), attr_val(e, b"style:family"))
+        && fam == "paragraph"
+    {
+        let disp = attr_val(e, b"style:display-name");
+        let (h, l) = heading_from_name(&nm, disp.as_deref());
+        reg.para.insert(
+            nm,
+            ParaStyle {
+                parent: attr_val(e, b"style:parent-style-name"),
+                outline_level: attr_val(e, b"style:default-outline-level")
+                    .and_then(|v| v.parse().ok()),
+                heading_name: h,
+                name_level: l,
+                named: from_named_section || disp.is_some(),
+                display_name: disp,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+/// Per-style-block parse scratch for [`parse_styles`]'s event loop, bundled so it can be split
+/// into named handlers below instead of one 200+-line function.
+#[derive(Default)]
+struct StyleScratch {
+    name: Option<String>,
+    family: Option<String>,
+    parent: Option<String>,
+    outline: Option<i64>,
+    heading_name: bool,
+    name_level: Option<i64>,
+    align: Option<String>,
+    text: Vec<(String, MarkValue)>,
+    display: Option<String>,
+    tf: TextFields,
+    space_before: Option<f64>,
+    space_after: Option<f64>,
+    indent: Option<f64>,
+    line_height: Option<f64>,
+    graphic_wrap: Option<String>,
+
+    list_name: Option<String>,
+    list_numbered: bool,
+    list_num_format: Option<&'static str>,
+    list_num_start: Option<i64>,
+}
+
+impl StyleScratch {
+    fn handle_start_or_empty(&mut self, e: &BytesStart) {
+        match e.name().as_ref() {
+            b"style:style" => {
+                self.name = attr_val(e, b"style:name");
+                self.family = attr_val(e, b"style:family");
+                self.parent = attr_val(e, b"style:parent-style-name");
+                self.outline =
+                    attr_val(e, b"style:default-outline-level").and_then(|v| v.parse().ok());
+                self.display = attr_val(e, b"style:display-name");
+                let (h, l) =
+                    heading_from_name(self.name.as_deref().unwrap_or(""), self.display.as_deref());
+                self.heading_name = h;
+                self.name_level = l;
+                self.align = None;
+                self.text = Vec::new();
+                self.tf = TextFields::default();
+                self.space_before = None;
+                self.space_after = None;
+                self.indent = None;
+                self.line_height = None;
+                self.graphic_wrap = None;
+            }
+            b"style:graphic-properties" => {
+                if let Some(w) = attr_val(e, b"style:wrap") {
+                    self.graphic_wrap = Some(map_odf_wrap(&w).to_string());
+                }
+            }
+            b"style:text-properties" => {
+                self.text.extend(marks_from_text_props(e));
+                let f = text_fields(e);
+                if f.size.is_some() {
+                    self.tf.size = f.size;
+                }
+                if f.bold.is_some() {
+                    self.tf.bold = f.bold;
+                }
+                if f.italic.is_some() {
+                    self.tf.italic = f.italic;
+                }
+                if f.color.is_some() {
+                    self.tf.color = f.color;
+                }
+                if f.font.is_some() {
+                    self.tf.font = f.font;
+                }
+            }
+            b"style:paragraph-properties" => {
+                if let Some(a) = attr_val(e, b"fo:text-align") {
+                    self.align = Some(map_align(&a));
+                }
+                if let Some(v) = attr_val(e, b"fo:margin-top") {
+                    self.space_before = parse_margin_px(&v);
+                }
+                if let Some(v) = attr_val(e, b"fo:margin-bottom") {
+                    self.space_after = parse_margin_px(&v);
+                }
+                if let Some(v) =
+                    attr_val(e, b"fo:margin-left").or_else(|| attr_val(e, b"fo:text-indent"))
+                {
+                    self.indent = parse_margin_px(&v);
+                }
+                if let Some(v) = attr_val(e, b"fo:line-height") {
+                    self.line_height = parse_line_height(&v);
+                }
+            }
+            b"text:list-style" => {
+                self.list_name = attr_val(e, b"style:name");
+                self.list_numbered = false;
+                self.list_num_format = None;
+                self.list_num_start = None;
+            }
+            b"text:list-level-style-number" => {
+                self.list_numbered = true;
+                // Capture level-1 (0-based level 0) format + start; ODF numbers levels from 1, `text:level="1"` is the model's level 0.
+                let is_lvl0 = attr_val(e, b"text:level").is_none_or(|l| l == "1");
+                if is_lvl0 {
+                    if let Some(f) = attr_val(e, b"style:num-format") {
+                        self.list_num_format = Some(map_num_format(&f));
+                    }
+                    if let Some(s) =
+                        attr_val(e, b"text:start-value").and_then(|v| v.parse::<i64>().ok())
+                    {
+                        self.list_num_start = Some(s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_end(
+        &mut self,
+        e: &quick_xml::events::BytesEnd,
+        reg: &mut StyleRegistry,
+        from_named_section: bool,
+    ) {
+        match e.name().as_ref() {
+            b"style:style" => {
+                if let (Some(n), Some(fam)) = (self.name.take(), self.family.take()) {
+                    match fam.as_str() {
+                        "text" => {
+                            if !self.text.is_empty() {
+                                reg.text.insert(n, std::mem::take(&mut self.text));
+                            }
+                        }
+                        "paragraph" => {
+                            reg.para.insert(
+                                n,
+                                ParaStyle {
+                                    parent: self.parent.take(),
+                                    align: self.align.take(),
+                                    outline_level: self.outline.take(),
+                                    heading_name: self.heading_name,
+                                    name_level: self.name_level.take(),
+                                    text: std::mem::take(&mut self.text),
+                                    named: from_named_section || self.display.is_some(),
+                                    display_name: self.display.take(),
+                                    size: self.tf.size.take(),
+                                    bold: self.tf.bold.take(),
+                                    italic: self.tf.italic.take(),
+                                    color: self.tf.color.take(),
+                                    font: self.tf.font.take(),
+                                    space_before: self.space_before.take(),
+                                    space_after: self.space_after.take(),
+                                    indent: self.indent.take(),
+                                    line_height: self.line_height.take(),
+                                },
+                            );
+                        }
+                        "graphic" => {
+                            if let Some(w) = self.graphic_wrap.take() {
+                                reg.graphic_wrap.insert(n, w);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.parent = None;
+                self.outline = None;
+                self.heading_name = false;
+                self.display = None;
+                self.text.clear();
+                self.tf = TextFields::default();
+                self.space_before = None;
+                self.space_after = None;
+                self.indent = None;
+                self.line_height = None;
+                self.graphic_wrap = None;
+            }
+            b"text:list-style" => {
+                if let Some(n) = self.list_name.take() {
+                    reg.list_ordered.insert(n.clone(), self.list_numbered);
+                    reg.list_numbering.insert(
+                        n,
+                        ListNumbering {
+                            num_format: self.list_num_format.take(),
+                            num_start: self.list_num_start.take(),
+                        },
+                    );
+                }
+                self.list_num_format = None;
+                self.list_num_start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_section: bool) {
     let Ok(s) = std::str::from_utf8(xml) else {
         return;
     };
     let mut reader = Reader::from_str(s);
+    let mut scratch = StyleScratch::default();
 
-    let mut name: Option<String> = None;
-    let mut family: Option<String> = None;
-    let mut parent: Option<String> = None;
-    let mut outline: Option<i64> = None;
-    let mut heading_name = false;
-    let mut name_level: Option<i64> = None;
-    let mut align: Option<String> = None;
-    let mut text: Vec<(String, MarkValue)> = Vec::new();
-    let mut display: Option<String> = None;
-    let mut tf = TextFields::default();
-    let mut space_before: Option<f64> = None;
-    let mut space_after: Option<f64> = None;
-    let mut indent: Option<f64> = None;
-    let mut line_height: Option<f64> = None;
-    let mut graphic_wrap: Option<String> = None;
-
-    let mut list_name: Option<String> = None;
-    let mut list_numbered = false;
-    let mut list_num_format: Option<&'static str> = None;
-    let mut list_num_start: Option<i64> = None;
-
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             // A self-closing <style:style/> (no properties) has no End event, so register it straight from its attributes (parent/outline/heading).
             Event::Empty(e) if e.name().as_ref() == b"style:style" => {
-                if let (Some(nm), Some(fam)) =
-                    (attr_val(&e, b"style:name"), attr_val(&e, b"style:family"))
-                    && fam == "paragraph"
-                {
-                    let disp = attr_val(&e, b"style:display-name");
-                    let (h, l) = heading_from_name(&nm, disp.as_deref());
-                    reg.para.insert(
-                        nm,
-                        ParaStyle {
-                            parent: attr_val(&e, b"style:parent-style-name"),
-                            outline_level: attr_val(&e, b"style:default-outline-level")
-                                .and_then(|v| v.parse().ok()),
-                            heading_name: h,
-                            name_level: l,
-                            named: from_named_section || disp.is_some(),
-                            display_name: disp,
-                            ..Default::default()
-                        },
-                    );
-                }
+                register_self_closing_style(&e, reg, from_named_section);
             }
-            Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
-                b"style:style" => {
-                    name = attr_val(&e, b"style:name");
-                    family = attr_val(&e, b"style:family");
-                    parent = attr_val(&e, b"style:parent-style-name");
-                    outline =
-                        attr_val(&e, b"style:default-outline-level").and_then(|v| v.parse().ok());
-                    display = attr_val(&e, b"style:display-name");
-                    let (h, l) =
-                        heading_from_name(name.as_deref().unwrap_or(""), display.as_deref());
-                    heading_name = h;
-                    name_level = l;
-                    align = None;
-                    text = Vec::new();
-                    tf = TextFields::default();
-                    space_before = None;
-                    space_after = None;
-                    indent = None;
-                    line_height = None;
-                    graphic_wrap = None;
-                }
-                b"style:graphic-properties" => {
-                    if let Some(w) = attr_val(&e, b"style:wrap") {
-                        graphic_wrap = Some(map_odf_wrap(&w).to_string());
-                    }
-                }
-                b"style:text-properties" => {
-                    text.extend(marks_from_text_props(&e));
-                    let f = text_fields(&e);
-                    if f.size.is_some() {
-                        tf.size = f.size;
-                    }
-                    if f.bold.is_some() {
-                        tf.bold = f.bold;
-                    }
-                    if f.italic.is_some() {
-                        tf.italic = f.italic;
-                    }
-                    if f.color.is_some() {
-                        tf.color = f.color;
-                    }
-                    if f.font.is_some() {
-                        tf.font = f.font;
-                    }
-                }
-                b"style:paragraph-properties" => {
-                    if let Some(a) = attr_val(&e, b"fo:text-align") {
-                        align = Some(map_align(&a));
-                    }
-                    if let Some(v) = attr_val(&e, b"fo:margin-top") {
-                        space_before = parse_margin_px(&v);
-                    }
-                    if let Some(v) = attr_val(&e, b"fo:margin-bottom") {
-                        space_after = parse_margin_px(&v);
-                    }
-                    if let Some(v) =
-                        attr_val(&e, b"fo:margin-left").or_else(|| attr_val(&e, b"fo:text-indent"))
-                    {
-                        indent = parse_margin_px(&v);
-                    }
-                    if let Some(v) = attr_val(&e, b"fo:line-height") {
-                        line_height = parse_line_height(&v);
-                    }
-                }
-                b"text:list-style" => {
-                    list_name = attr_val(&e, b"style:name");
-                    list_numbered = false;
-                    list_num_format = None;
-                    list_num_start = None;
-                }
-                b"text:list-level-style-number" => {
-                    list_numbered = true;
-                    // Capture level-1 (0-based level 0) format + start; ODF numbers levels from 1, `text:level="1"` is the model's level 0.
-                    let is_lvl0 = attr_val(&e, b"text:level").is_none_or(|l| l == "1");
-                    if is_lvl0 {
-                        if let Some(f) = attr_val(&e, b"style:num-format") {
-                            list_num_format = Some(map_num_format(&f));
-                        }
-                        if let Some(s) =
-                            attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok())
-                        {
-                            list_num_start = Some(s);
-                        }
-                    }
-                }
-                _ => {}
-            },
-            Event::End(e) => match e.name().as_ref() {
-                b"style:style" => {
-                    if let (Some(n), Some(fam)) = (name.take(), family.take()) {
-                        match fam.as_str() {
-                            "text" => {
-                                if !text.is_empty() {
-                                    reg.text.insert(n, std::mem::take(&mut text));
-                                }
-                            }
-                            "paragraph" => {
-                                reg.para.insert(
-                                    n,
-                                    ParaStyle {
-                                        parent: parent.take(),
-                                        align: align.take(),
-                                        outline_level: outline.take(),
-                                        heading_name,
-                                        name_level: name_level.take(),
-                                        text: std::mem::take(&mut text),
-                                        named: from_named_section || display.is_some(),
-                                        display_name: display.take(),
-                                        size: tf.size.take(),
-                                        bold: tf.bold.take(),
-                                        italic: tf.italic.take(),
-                                        color: tf.color.take(),
-                                        font: tf.font.take(),
-                                        space_before: space_before.take(),
-                                        space_after: space_after.take(),
-                                        indent: indent.take(),
-                                        line_height: line_height.take(),
-                                    },
-                                );
-                            }
-                            "graphic" => {
-                                if let Some(w) = graphic_wrap.take() {
-                                    reg.graphic_wrap.insert(n, w);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    parent = None;
-                    outline = None;
-                    heading_name = false;
-                    display = None;
-                    text.clear();
-                    tf = TextFields::default();
-                    space_before = None;
-                    space_after = None;
-                    indent = None;
-                    line_height = None;
-                    graphic_wrap = None;
-                }
-                b"text:list-style" => {
-                    if let Some(n) = list_name.take() {
-                        reg.list_ordered.insert(n.clone(), list_numbered);
-                        reg.list_numbering.insert(
-                            n,
-                            ListNumbering {
-                                num_format: list_num_format.take(),
-                                num_start: list_num_start.take(),
-                            },
-                        );
-                    }
-                    list_num_format = None;
-                    list_num_start = None;
-                }
-                _ => {}
-            },
+            Event::Start(e) | Event::Empty(e) => scratch.handle_start_or_empty(&e),
+            Event::End(e) => scratch.handle_end(&e, reg, from_named_section),
             Event::Eof => break,
             _ => {}
         }
