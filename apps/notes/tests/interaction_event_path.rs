@@ -1373,8 +1373,13 @@ fn slash_command_click_applies_kind_and_strips_the_trigger() {
 
     // Click that row through the real pointer path.
     let (cx, cy) = {
-        let rect = app.main_panel_mut().editor().slash_menu().rect();
-        (rect.center().x, rect.y0 + 14.0)
+        let rect = app
+            .main_panel_mut()
+            .editor()
+            .slash_menu()
+            .row_rect(0)
+            .expect("the sole filtered command has a painted row");
+        (rect.center().x, rect.center().y)
     };
     dispatch(
         &mut app,

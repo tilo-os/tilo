@@ -19,9 +19,10 @@ use std::collections::HashMap;
 
 use accesskit::{
     Action as AkAction, Node as AkNode, NodeId as AkNodeId, Rect as AkRect, Role as AkRole,
-    Toggled, Tree, TreeUpdate,
+    TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled, Tree, TreeUpdate,
 };
 use taffy::NodeId as TaffyNodeId;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::a11y::{AccessNode, Action, Role};
 use crate::widget::Widget;
@@ -30,6 +31,7 @@ use crate::widget::Widget;
 /// from their taffy node id, and structural fallback ids are large offsets
 /// — see [`widget_node_id`].
 pub const ROOT_ID: AkNodeId = AkNodeId(0);
+const TEXT_RUN_ID_BASE: u64 = 1u64 << 62;
 
 /// E.g. [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
 /// [`Role::ToggleButton`] becomes [`AkRole::Button`] carrying `toggled` state.
@@ -143,6 +145,31 @@ fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     }
 }
 
+fn text_run_node_id(parent: AkNodeId) -> AkNodeId {
+    AkNodeId(TEXT_RUN_ID_BASE | parent.0)
+}
+
+fn byte_to_grapheme_index(text: &str, byte: usize) -> usize {
+    let byte = crate::text_selection::grapheme_boundary_at_or_before(text, byte.min(text.len()));
+    text.grapheme_indices(true)
+        .take_while(|(start, _)| *start < byte)
+        .map(|(_, grapheme)| grapheme.len().div_ceil(u8::MAX as usize))
+        .sum()
+}
+
+fn accessible_character_lengths(text: &str) -> Vec<u8> {
+    let mut lengths = Vec::new();
+    for grapheme in text.graphemes(true) {
+        let mut remaining = grapheme.len();
+        while remaining > 0 {
+            let chunk = remaining.min(u8::MAX as usize);
+            lengths.push(chunk as u8);
+            remaining -= chunk;
+        }
+    }
+    lengths
+}
+
 /// `focused` is the taffy id of the focused widget; `focus` falls back to
 /// the synthetic root when nothing (or a stale id) matches — AccessKit
 /// requires `focus` to be a real node. `scale` multiplies rects into
@@ -234,6 +261,35 @@ fn visit(
         // Synthetic children with no backing widget — a table's rows/cells.
         for synth in &access_node.children {
             visit_synthetic(synth, walk_counter, nodes, &mut my_children);
+        }
+        if !access_node.state.protected
+            && let (Some(value), Some(selection)) = (&access_node.value, access_node.text_selection)
+        {
+            let run_id = text_run_node_id(id);
+            let mut run = AkNode::new(AkRole::TextRun);
+            run.set_value(value.clone());
+            run.set_character_lengths(accessible_character_lengths(value));
+            let rect = w.get_rect();
+            if rect.width() > 0.0 || rect.height() > 0.0 {
+                run.set_bounds(AkRect::new(
+                    rect.x0 * scale,
+                    rect.y0 * scale,
+                    rect.x1 * scale,
+                    rect.y1 * scale,
+                ));
+            }
+            ak.set_text_selection(AkTextSelection {
+                anchor: AkTextPosition {
+                    node: run_id,
+                    character_index: byte_to_grapheme_index(value, selection.anchor),
+                },
+                focus: AkTextPosition {
+                    node: run_id,
+                    character_index: byte_to_grapheme_index(value, selection.focus),
+                },
+            });
+            my_children.insert(0, run_id);
+            nodes.push((run_id, run));
         }
         ak.set_children(my_children);
 
@@ -874,6 +930,45 @@ mod tests {
             None,
             "protected value must not leak to the AT"
         );
+    }
+
+    #[test]
+    fn editable_text_exposes_grapheme_run_and_directional_selection() {
+        let family = "👩‍👩‍👧‍👦";
+        let value = format!("a{family}b");
+        let field = TestWidget::new(Some(
+            AccessNode::new(Role::TextInput)
+                .with_value(value.clone())
+                .with_text_selection(1 + family.len(), 1)
+                .with_state(AccessState::new().focusable(true).focused(true)),
+        ));
+        let mut root = TestWidget::new(None).with_child(Box::new(field));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let (field_id, field_node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::TextInput)
+            .unwrap();
+        let (run_id, run) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == AkRole::TextRun)
+            .unwrap();
+
+        assert_eq!(run.value(), Some(value.as_str()));
+        assert_eq!(
+            run.character_lengths(),
+            [1, family.len() as u8, 1].as_slice(),
+            "AccessKit characters match the editor's extended graphemes"
+        );
+        assert_eq!(field_node.children(), &[*run_id]);
+        let selection = field_node.text_selection().unwrap();
+        assert_eq!(selection.anchor.node, *run_id);
+        assert_eq!(selection.anchor.character_index, 2);
+        assert_eq!(selection.focus.node, *run_id);
+        assert_eq!(selection.focus.character_index, 1);
+        assert_ne!(*field_id, *run_id);
     }
 
     #[test]

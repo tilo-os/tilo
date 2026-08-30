@@ -12,7 +12,7 @@
 //! `sync` mirrors it back; a scalar string at the path is also accepted.
 //!
 //! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
-//! highlight; Enter/Space select + close; Esc dismisses; printable characters
+//! highlight; Enter selects + closes; Esc dismisses; printable characters
 //! drive an incremental, case-insensitive substring filter (Backspace edits
 //! it) so hundred-entry lists stay usable without endless scrolling.
 //!
@@ -34,7 +34,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
@@ -61,6 +63,8 @@ pub struct Dropdown {
     highlight: usize,
     /// Incremental substring filter; empty shows every option.
     filter: String,
+    filter_selection: Selection,
+    filter_composition: QueryComposition,
     scroll: f32,
 
     /// One-shot: align `highlight` to the selected option on the next
@@ -91,6 +95,8 @@ impl Dropdown {
             open: false,
             highlight: 0,
             filter: String::new(),
+            filter_selection: Selection::collapsed(0),
+            filter_composition: QueryComposition::new(),
             scroll: 0.0,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
@@ -240,6 +246,8 @@ impl Dropdown {
     fn do_open(&mut self) {
         self.open = true;
         self.filter.clear();
+        self.filter_selection = Selection::collapsed(0);
+        self.filter_composition.clear();
         let filtered = self.filtered();
         self.highlight = self.selected_pos(&filtered);
         self.scroll = 0.0;
@@ -249,6 +257,8 @@ impl Dropdown {
     fn close(&mut self) {
         self.open = false;
         self.filter.clear();
+        self.filter_selection = Selection::collapsed(0);
+        self.filter_composition.clear();
         self.scroll = 0.0;
     }
 
@@ -360,24 +370,47 @@ impl Widget for Dropdown {
         };
         scene.stroke(&Stroke::new(bw), transform, bc, None, &shape);
 
-        let (label, color) = if self.selected.is_empty() {
-            (self.placeholder.as_str(), theme.text_dim)
-        } else {
-            (self.selected.as_str(), theme.text_primary)
-        };
-        if !label.is_empty() {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-            let (_, th) = text_renderer.measure(label, FONT, None);
-            let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
-            text_renderer.draw_text(
+        if self.open {
+            self.filter_composition.draw(
                 scene,
-                label,
-                FONT,
-                color,
-                transform * Affine::translate((self.rect.x0 + PAD_X, ty)),
-                Some((self.rect.width() - PAD_X - CHEVRON_W) as f32),
+                transform,
+                text_renderer,
+                &self.filter,
+                &self.filter_selection,
+                "Type to filter…",
+                Rect::new(
+                    self.rect.x0 + PAD_X,
+                    self.rect.y0,
+                    self.rect.x1 - CHEVRON_W,
+                    self.rect.y1,
+                ),
+                &TextStyle::new(FONT),
+                theme.text_primary,
+                theme.text_dim,
+                theme.accent_primary.with_alpha_factor(0.3),
+                theme.accent_primary,
+                self.is_focused,
             );
-            scene.pop_layer();
+        } else {
+            let (label, color) = if self.selected.is_empty() {
+                (self.placeholder.as_str(), theme.text_dim)
+            } else {
+                (self.selected.as_str(), theme.text_primary)
+            };
+            if !label.is_empty() {
+                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
+                let (_, th) = text_renderer.measure(label, FONT, None);
+                let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    label,
+                    FONT,
+                    color,
+                    transform * Affine::translate((self.rect.x0 + PAD_X, ty)),
+                    Some((self.rect.width() - PAD_X - CHEVRON_W) as f32),
+                );
+                scene.pop_layer();
+            }
         }
 
         let cx = self.rect.x1 - 18.0;
@@ -491,7 +524,7 @@ impl Widget for Dropdown {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &Modifiers,
+        modifiers: &Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -501,6 +534,24 @@ impl Widget for Dropdown {
     ) {
         // Disabled: reject all input — won't open, no selection, no hover.
         if !self.enabled {
+            return;
+        }
+        if self.open
+            && self.is_focused
+            && let WindowEvent::Ime(_) = event
+        {
+            let change = self.filter_composition.handle_event(
+                event,
+                &mut self.filter,
+                &mut self.filter_selection,
+                false,
+                false,
+            );
+            if change == QueryEventChange::Edited {
+                self.highlight = 0;
+                self.scroll = 0.0;
+            }
+            *handled = true;
             return;
         }
         match event {
@@ -574,13 +625,16 @@ impl Widget for Dropdown {
                 event:
                     KeyEvent {
                         logical_key,
-                        text,
+                        text: _,
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
             } if self.is_focused => {
                 if self.open {
+                    let mods = modifiers.state();
+                    let shift = mods.shift_key();
+                    let ctrl = mods.control_key() || mods.super_key();
                     match logical_key {
                         Key::Named(NamedKey::ArrowDown) => {
                             let n = self.filtered().len();
@@ -596,7 +650,7 @@ impl Widget for Dropdown {
                             self.ensure_visible(self.highlight, n);
                             *handled = true;
                         }
-                        Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                        Key::Named(NamedKey::Enter) => {
                             self.select_highlighted(state, root);
                             *handled = true;
                         }
@@ -604,19 +658,19 @@ impl Widget for Dropdown {
                             self.close();
                             *handled = true;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.filter.pop();
-                            self.highlight = 0;
-                            self.scroll = 0.0;
-                            *handled = true;
-                        }
                         _ => {
-                            if let Some(t) = text
-                                && !t.as_str().chars().all(char::is_control)
-                            {
-                                self.filter.push_str(t.as_str());
+                            let change = self.filter_composition.handle_event(
+                                event,
+                                &mut self.filter,
+                                &mut self.filter_selection,
+                                shift,
+                                ctrl,
+                            );
+                            if change == QueryEventChange::Edited {
                                 self.highlight = 0;
                                 self.scroll = 0.0;
+                            }
+                            if change != QueryEventChange::Ignored {
                                 *handled = true;
                             }
                         }
@@ -665,6 +719,11 @@ impl Widget for Dropdown {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.open
+            .then(|| self.filter_composition.ime_cursor_rect())
+            .flatten()
+    }
     fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -680,7 +739,11 @@ impl Widget for Dropdown {
         } else {
             None
         };
-        let value = (!self.selected.is_empty()).then(|| self.selected.clone());
+        let value = if self.open && !self.filter.is_empty() {
+            Some(self.filter.clone())
+        } else {
+            (!self.selected.is_empty()).then(|| self.selected.clone())
+        };
         let mut node = AccessNode::new(Role::ComboBox)
             .with_optional_name(name)
             .with_optional_value(value)
@@ -920,6 +983,26 @@ mod tests {
     }
 
     #[test]
+    fn space_is_part_of_an_open_combobox_query() {
+        let mut dd = Dropdown::new(vec!["New York".into(), "New Delhi".into()], "city");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        dd.set_focus(true);
+        dd.do_open();
+        for (key_value, text) in [
+            (Key::Character("N".into()), Some("N")),
+            (Key::Character("e".into()), Some("e")),
+            (Key::Character("w".into()), Some("w")),
+            (Key::Named(NamedKey::Space), None),
+            (Key::Character("Y".into()), Some("Y")),
+        ] {
+            feed_key(&mut dd, &key(key_value, text), &mut doc, &root);
+        }
+        assert_eq!(dd.filter_query(), "New Y");
+        assert_eq!(dd.visible_count(), 1);
+    }
+
+    #[test]
     fn backspace_edits_the_filter() {
         let mut dd = Dropdown::new(opts(), "tz");
         let (mut doc, root) = doc_with_tz("UTC");
@@ -948,6 +1031,106 @@ mod tests {
         assert_eq!(dd.filter_query(), "a");
         // "a" matches Amsterdam, America, Asia.
         assert_eq!(dd.visible_count(), 3);
+    }
+
+    #[test]
+    fn backspace_deletes_one_extended_grapheme_from_the_filter() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("UTC");
+        dd.sync(&mut doc, &root);
+        dd.set_focus(true);
+        dd.do_open();
+        let cluster = "👩🏽‍💻";
+        feed_key(
+            &mut dd,
+            &key(Key::Character(cluster.into()), Some(cluster)),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(dd.filter_query(), cluster);
+        feed_key(
+            &mut dd,
+            &key(Key::Named(NamedKey::Backspace), None),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(dd.filter_query(), "");
+        assert_eq!(dd.filter_selection, Selection::collapsed(0));
+    }
+
+    #[test]
+    fn typing_replaces_the_selected_filter_range() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("UTC");
+        dd.sync(&mut doc, &root);
+        dd.set_focus(true);
+        dd.do_open();
+        dd.filter = "Europe".into();
+        dd.filter_selection = Selection {
+            anchor: 0,
+            cursor: dd.filter.len(),
+        };
+        feed_key(
+            &mut dd,
+            &key(Key::Character("亜".into()), Some("亜")),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(dd.filter_query(), "亜");
+        assert_eq!(dd.filter_selection, Selection::collapsed("亜".len()));
+    }
+
+    #[test]
+    fn ime_preedit_is_visible_but_filters_only_after_commit() {
+        let mut dd = Dropdown::new(vec!["東京".into(), "London".into()], "city");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        dd.apply_layout_external(Rect::new(10.0, 10.0, 260.0, 50.0));
+        dd.set_focus(true);
+        dd.do_open();
+
+        assert!(feed_key(
+            &mut dd,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "東京".into(),
+                Some(("東".len(), "東".len())),
+            )),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(dd.filter_query(), "");
+        assert_eq!(dd.visible_count(), 2);
+        assert_eq!(
+            Widget::accessibility(&dd).unwrap().value,
+            None,
+            "preedit must stay out of the accessibility value"
+        );
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        Widget::draw(
+            &mut dd,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let candidate = Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
+        assert!(dd.get_rect().contains(candidate.center()));
+
+        assert!(feed_key(
+            &mut dd,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(dd.filter_query(), "東京");
+        assert_eq!(dd.visible_count(), 1);
+        assert_eq!(
+            Widget::accessibility(&dd).unwrap().value.as_deref(),
+            Some("東京")
+        );
     }
 
     #[test]
