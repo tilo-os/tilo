@@ -9,6 +9,15 @@
 //! confinement, and because `pkg` inside a guest and the supervisor outside it
 //! are two halves of one protocol — splitting them would let the halves drift.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

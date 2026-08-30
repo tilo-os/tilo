@@ -6,6 +6,12 @@
 //! Emphasis is deliberately on **denial**: a model only shown to permit
 //! things hasn't been shown to work at all.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability, role_base_applies,

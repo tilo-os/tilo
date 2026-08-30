@@ -14,6 +14,15 @@
 //! None of this needs privilege. The host's root filesystem is never written,
 //! so a wrecked layer cannot affect the next boot.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod diff;
 pub mod idmap;
 pub mod session;

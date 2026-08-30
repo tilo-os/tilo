@@ -28,6 +28,15 @@
 //!   device, and diff enumerations for hotplug. Every media surface plays
 //!   *through* `PipeWire`; this is where the OS routes it.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod audio;
 pub mod audio_runtime;
 pub mod engine;

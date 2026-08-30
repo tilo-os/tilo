@@ -17,6 +17,12 @@
 //! dropped, mis-scoped or widened grant means an app finds its file gone
 //! on restart — or finds the entire filesystem bound in.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 
 use launcher::capabilities::CapabilityPlan;

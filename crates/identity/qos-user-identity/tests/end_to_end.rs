@@ -16,6 +16,12 @@
 //!    verifies the other's cert chains to the same user identity
 //!    — the "matching identities get owner permissions" check.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use qos_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
     WorkspaceDirectory, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,

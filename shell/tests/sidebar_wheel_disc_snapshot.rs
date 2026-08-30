@@ -5,6 +5,12 @@
 //! see "the wheel went invisible under this palette". Soft-skips when no
 //! wgpu adapter is available.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

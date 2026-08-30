@@ -11,6 +11,11 @@
 //! H.264 SPS (0x67).
 
 #![cfg(any(feature = "vaapi", feature = "nvenc"))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use shell::collab::encoder::{Codec, EncoderInit, EncoderKind, FrameInput, build};
 use shell::collab::hdr_metadata::HdrConfig;

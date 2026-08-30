@@ -7,6 +7,12 @@
 //! drive real winit events plus the per-frame harvest hooks
 //! `Widget::update` runs in production.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;

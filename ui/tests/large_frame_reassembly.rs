@@ -2,6 +2,12 @@
 //! reply) does not fit in one socket read, so it arrives split across
 //! reads. The typed RPC transport must reassemble it without truncation.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::thread;
 use std::time::Duration;
 

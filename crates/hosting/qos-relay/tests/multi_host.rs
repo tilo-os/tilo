@@ -26,6 +26,12 @@
 //!       relays does not "leak" a peer's messages onto a relay
 //!       the peer never talks to).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

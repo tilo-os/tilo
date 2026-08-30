@@ -48,6 +48,12 @@
 //! in-process variant (real UDP, shared netns), still exercising the
 //! substream + framing contract end-to-end.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

@@ -14,6 +14,11 @@
 //! cargo test -p shell --features hevc-codec-tests --test hdr_decode_pipeline
 //! ```
 #![cfg(all(feature = "hdr-decode", feature = "hevc-codec-tests"))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::ffi;

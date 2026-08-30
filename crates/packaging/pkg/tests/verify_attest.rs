@@ -12,6 +12,12 @@
 //! The signature covers `(payload_root_hash, publisher_pubkey)`,
 //! which we compute cheaply via one throwaway pack pass.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::fixtures;
 use ed25519_dalek::{Signer, SigningKey};
 use pkg::manifest::{Manifest, TrustAttestation};

@@ -15,6 +15,15 @@
 //! `/usr/lib/qos-runtime/<v>/`, otherwise print the per-user path
 //! (which is where `qos-install runtime install` would write to).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

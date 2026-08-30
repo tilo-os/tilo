@@ -11,6 +11,12 @@
 //! reports, so a reroute to another compositor fails loudly instead of the
 //! suite passing against a session it never touched.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::io::{FromRawFd, OwnedFd};

@@ -3,6 +3,12 @@
 // #[path] pulls them in as modules. nextest still runs each test in its own
 // process, so tests that touch process state stay isolated.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 #[path = "support/mod.rs"]
 mod support;
 

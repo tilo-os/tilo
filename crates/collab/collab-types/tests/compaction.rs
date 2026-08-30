@@ -6,6 +6,12 @@
 //! shape. Live in `tests/` (not unit tests) because they cover the
 //! validator's *public* API.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::SystemTime;
 
 use collab_types::{

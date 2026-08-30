@@ -2,6 +2,15 @@
 //! router, spins up the inotify watcher + epoch ticker, then enters the
 //! Cap'n Proto accept loop on the Unix socket.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use format_host::{
     default_registry_path,
     router::{Router, load_into},

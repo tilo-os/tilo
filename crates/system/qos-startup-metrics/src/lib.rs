@@ -31,6 +31,15 @@
 //! }
 //! ```
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime};

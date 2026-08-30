@@ -23,6 +23,15 @@
 //! names the step, since "collaboration is off" / "no peer connected"
 //! / "nobody typed" would otherwise all look like silence.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::process::ExitCode;
 
 use automerge::transaction::Transactable;

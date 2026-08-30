@@ -13,6 +13,12 @@
 //! asserting only that the label clears its floor against the fill the
 //! widget resolved for itself.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ui::a11y::contrast_ratio;
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;

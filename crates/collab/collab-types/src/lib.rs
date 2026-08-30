@@ -39,6 +39,15 @@
 //! byte order); [`canonical::from_canonical_bytes`] enforces exact-length
 //! input — trailing bytes are an error, not a silent drop.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod canonical;
 pub mod caps;
 pub mod channel;

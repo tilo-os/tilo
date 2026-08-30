@@ -21,6 +21,15 @@
 //! * `QOS_UNLOCK_PAM_SERVICE` — PAM service name (default `login`).
 //! * `QOS_PAM_LIB` — libpam soname to dlopen (default `libpam.so.0`).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 mod pam;
 
 use std::io::{self, BufRead};

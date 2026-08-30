@@ -13,6 +13,12 @@
 //! requires two post-handshake exchanges — the `Ready` that answers a
 //! `Subscribe`, and a `Ping`/`Pong` round trip after it.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

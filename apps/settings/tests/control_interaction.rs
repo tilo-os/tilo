@@ -8,6 +8,12 @@
 //! content screen's back arrow returning to the list, and a per-panel primary
 //! control mutating the document the way its dispatcher hook reads.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use automerge::transaction::Transactable;

@@ -11,6 +11,12 @@
 //! 2, so an in-process test cannot make it fail, and the thing asserted (the
 //! process dies) only a process can show.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};

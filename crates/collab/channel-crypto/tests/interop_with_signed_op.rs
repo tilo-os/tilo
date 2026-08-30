@@ -10,6 +10,12 @@
 //! Automerge-change-application ingestion path (out of scope here —
 //! `channel-crypto` doesn't depend on Automerge).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::SystemTime;
 
 use channel_crypto::{ChannelGroup, MemberKey};

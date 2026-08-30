@@ -32,6 +32,15 @@
 //! - [`fs`] — `fuser::Filesystem` impl.
 //! - [`mount`] — mount / unmount lifecycle handles.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod cache;
 pub mod collection;
 pub mod fs;

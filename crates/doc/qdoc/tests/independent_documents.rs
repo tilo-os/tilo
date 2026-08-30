@@ -13,6 +13,12 @@
 //! These fail against a schema whose containers are minted per replica, and pass
 //! once the schema comes from one genesis every replica already agrees on.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use qdoc::Document;
 
 /// A content-bearing document, built the way an import builds one.

@@ -42,6 +42,15 @@
 //! against an [`ActionTransport`](executor::ActionTransport), falling
 //! back to local execution when no host answers.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod action;
 pub mod door;
 pub mod envelope;

@@ -6,6 +6,11 @@
 //! shovel without a shell process or process-global service-fd variables.
 
 #![allow(refining_impl_trait)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;

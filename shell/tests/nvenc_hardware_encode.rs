@@ -6,6 +6,11 @@
 //! `LD_LIBRARY_PATH` pointed at the ffmpeg libs.
 
 #![cfg(feature = "nvenc")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use shell::collab::encoder::{Codec, EncoderInit, EncoderKind, FrameInput, build, nvenc, probe};
 use shell::collab::flatpak_share::SharedFlatpakSession;

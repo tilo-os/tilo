@@ -10,6 +10,12 @@
 //! resize into a pure cache hit), while a real width change still MUST
 //! re-shape wrapped text so the user never sees stale glyph positions.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};

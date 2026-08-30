@@ -5,6 +5,15 @@
 //! longer than the Win+P overlay is visible. The shell invokes the small JSON
 //! command surface in `shell::shell::projection::SystemProjectionBackend`.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
