@@ -115,6 +115,16 @@ impl InviteMintScreen {
     /// `now` lets tests pin a deterministic timestamp. The
     /// inviter label is taken from the surrounding identity record
     /// — the container reads it from the loaded `IdentityRecord`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no channel has been set via [`Self::set_channel`],
+    /// or if minting/encoding the invite fails.
+    ///
+    /// # Panics
+    ///
+    /// Never panics: the envelope stored just above is always read back
+    /// successfully.
     pub fn mint_now(
         &mut self,
         owner_pubkey: Ed25519PublicKey,
@@ -142,7 +152,11 @@ impl InviteMintScreen {
         self.last_url = Some(url);
         self.error = None;
         self.clipboard_msg = None;
-        Ok(self.last_envelope.as_ref().unwrap())
+        self.last_envelope.as_ref().ok_or_else(|| {
+            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(
+                "invite envelope was not stored after minting".into(),
+            )
+        })
     }
 
     pub fn copy_url_to_clipboard(&mut self) {
@@ -222,6 +236,296 @@ impl InviteMintScreen {
             _ => ScreenOutcome::Stay,
         }
     }
+
+    /// The centered dialog card rect, derived from `self.rect`. Recomputed
+    /// rather than cached so `draw`'s split-out helpers below don't need
+    /// it threaded through as a parameter.
+    fn card_rect(&self) -> Rect {
+        let card_w = 600.0;
+        let card_h = 480.0;
+        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
+        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
+        Rect::new(card_x, card_y, card_x + card_w, card_y + card_h)
+    }
+
+    /// Backdrop, card background/border, and the title + "Expires after"
+    /// labels.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
+    fn draw_frame(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let card = self.card_rect();
+        let backdrop = Color::from_rgba8(0, 0, 0, 180);
+        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
+        let pad = 24.0;
+        let radius = 12.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        let title = if self.channel_name.is_empty() {
+            "Generate invite".to_string()
+        } else {
+            format!("Invite to #{}", self.channel_name)
+        };
+        text_renderer.draw_text(
+            scene,
+            &title,
+            22.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Expires after",
+            13.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((card.x0 + pad, card.y0 + 100.0)),
+            None,
+        );
+    }
+
+    /// The four expiry-preset segments (`self.expiry_rects`), highlighting
+    /// whichever matches `self.expiry`.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
+    fn draw_expiry_options(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        for (i, r) in self.expiry_rects.iter().enumerate() {
+            let label = match i {
+                0 => InviteExpiry::OneHour.label(),
+                1 => InviteExpiry::OneDay.label(),
+                2 => InviteExpiry::OneWeek.label(),
+                _ => InviteExpiry::Never.label(),
+            };
+            let selected = matches!(
+                (self.expiry, i),
+                (InviteExpiry::OneHour, 0)
+                    | (InviteExpiry::OneDay, 1)
+                    | (InviteExpiry::OneWeek, 2)
+                    | (InviteExpiry::Never, 3)
+            );
+            let bg = if selected {
+                theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+            } else {
+                theme.tokens.colors.surfaces.base
+            };
+            let text_color = if selected {
+                Color::from_rgb8(255, 255, 255)
+            } else {
+                theme.tokens.colors.text_primary
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bg,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &RoundedRect::from_rect(*r, 6.0),
+            );
+            let (lw, _) = text_renderer.measure(label, 13.0, None);
+            text_renderer.draw_text(
+                scene,
+                label,
+                13.0,
+                text_color,
+                transform
+                    * Affine::translate((
+                        r.x0 + (r.width() - f64::from(lw)) / 2.0,
+                        r.y0 + (r.height() - 13.0) / 2.0,
+                    )),
+                None,
+            );
+        }
+    }
+
+    /// The "Generate invite" call-to-action button.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
+    fn draw_generate_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            None,
+            &RoundedRect::from_rect(self.generate_rect, 8.0),
+        );
+        let (gw, _) = text_renderer.measure("Generate invite", 13.0, None);
+        text_renderer.draw_text(
+            scene,
+            "Generate invite",
+            13.0,
+            Color::from_rgb8(255, 255, 255),
+            transform
+                * Affine::translate((
+                    self.generate_rect.x0 + (self.generate_rect.width() - f64::from(gw)) / 2.0,
+                    self.generate_rect.y0 + (self.generate_rect.height() - 13.0) / 2.0,
+                )),
+            None,
+        );
+    }
+
+    /// The minted invite URL, shown once `self.last_url` is populated.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
+    fn draw_url_line(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(url) = &self.last_url else {
+            return;
+        };
+        let card = self.card_rect();
+        let pad = 24.0;
+        let text_y = card.y0 + 240.0;
+        text_renderer.draw_text(
+            scene,
+            url,
+            12.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((card.x0 + pad, text_y)),
+            None,
+        );
+    }
+
+    /// The "Copy URL" and "Revoke" footer buttons.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
+    fn draw_copy_and_revoke_buttons(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.copy_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(self.copy_rect, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Copy URL",
+            13.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
+            None,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.revoke_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            Color::from_rgb8(220, 80, 80),
+            None,
+            &RoundedRect::from_rect(self.revoke_rect, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Revoke",
+            13.0,
+            Color::from_rgb8(220, 80, 80),
+            transform * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
+            None,
+        );
+    }
+
+    /// The clipboard-copy confirmation and mint-error messages, stacked
+    /// above the "Copy URL" button.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
+    fn draw_status_messages(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let card = self.card_rect();
+        let pad = 24.0;
+        if let Some(msg) = &self.clipboard_msg {
+            text_renderer.draw_text(
+                scene,
+                msg,
+                12.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((card.x0 + pad, self.copy_rect.y0 - 20.0)),
+                None,
+            );
+        }
+        if let Some(err) = &self.error {
+            text_renderer.draw_text(
+                scene,
+                err,
+                12.0,
+                Color::from_rgb8(220, 80, 80),
+                transform * Affine::translate((card.x0 + pad, self.copy_rect.y0 - 36.0)),
+                None,
+            );
+        }
+    }
 }
 
 impl Widget for InviteMintScreen {
@@ -294,197 +598,12 @@ impl Widget for InviteMintScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        let card_w = 600.0;
-        let card_h = 480.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let pad = 24.0;
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        let title = if self.channel_name.is_empty() {
-            "Generate invite".to_string()
-        } else {
-            format!("Invite to #{}", self.channel_name)
-        };
-        text_renderer.draw_text(
-            scene,
-            &title,
-            22.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Expires after",
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + pad, card.y0 + 100.0)),
-            None,
-        );
-        for (i, r) in self.expiry_rects.iter().enumerate() {
-            let label = match i {
-                0 => InviteExpiry::OneHour.label(),
-                1 => InviteExpiry::OneDay.label(),
-                2 => InviteExpiry::OneWeek.label(),
-                _ => InviteExpiry::Never.label(),
-            };
-            let selected = matches!(
-                (self.expiry, i),
-                (InviteExpiry::OneHour, 0)
-                    | (InviteExpiry::OneDay, 1)
-                    | (InviteExpiry::OneWeek, 2)
-                    | (InviteExpiry::Never, 3)
-            );
-            let bg = if selected {
-                theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-            } else {
-                theme.tokens.colors.surfaces.base
-            };
-            let text_color = if selected {
-                Color::from_rgb8(255, 255, 255)
-            } else {
-                theme.tokens.colors.text_primary
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &RoundedRect::from_rect(*r, 6.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &RoundedRect::from_rect(*r, 6.0),
-            );
-            let (lw, _) = text_renderer.measure(label, 13.0, None);
-            text_renderer.draw_text(
-                scene,
-                label,
-                13.0,
-                text_color,
-                transform
-                    * Affine::translate((
-                        r.x0 + (r.width() - f64::from(lw)) / 2.0,
-                        r.y0 + (r.height() - 13.0) / 2.0,
-                    )),
-                None,
-            );
-        }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            None,
-            &RoundedRect::from_rect(self.generate_rect, 8.0),
-        );
-        let (gw, _) = text_renderer.measure("Generate invite", 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Generate invite",
-            13.0,
-            Color::from_rgb8(255, 255, 255),
-            transform
-                * Affine::translate((
-                    self.generate_rect.x0 + (self.generate_rect.width() - f64::from(gw)) / 2.0,
-                    self.generate_rect.y0 + (self.generate_rect.height() - 13.0) / 2.0,
-                )),
-            None,
-        );
-        if let Some(url) = &self.last_url {
-            let text_y = card.y0 + 240.0;
-            text_renderer.draw_text(
-                scene,
-                url,
-                12.0,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((card.x0 + pad, text_y)),
-                None,
-            );
-        }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Copy URL",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
-            None,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.revoke_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            Color::from_rgb8(220, 80, 80),
-            None,
-            &RoundedRect::from_rect(self.revoke_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Revoke",
-            13.0,
-            Color::from_rgb8(220, 80, 80),
-            transform * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
-            None,
-        );
-        if let Some(msg) = &self.clipboard_msg {
-            text_renderer.draw_text(
-                scene,
-                msg,
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((card.x0 + pad, self.copy_rect.y0 - 20.0)),
-                None,
-            );
-        }
-        if let Some(err) = &self.error {
-            text_renderer.draw_text(
-                scene,
-                err,
-                12.0,
-                Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + pad, self.copy_rect.y0 - 36.0)),
-                None,
-            );
-        }
+        self.draw_frame(scene, transform, text_renderer, theme);
+        self.draw_expiry_options(scene, transform, text_renderer, theme);
+        self.draw_generate_button(scene, transform, text_renderer, theme);
+        self.draw_url_line(scene, transform, text_renderer, theme);
+        self.draw_copy_and_revoke_buttons(scene, transform, text_renderer, theme);
+        self.draw_status_messages(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -575,7 +694,7 @@ mod tests {
         let expires = InviteExpiry::OneHour.resolve(now);
         assert_eq!(
             expires.duration_since(now).unwrap(),
-            Duration::from_secs(3600)
+            Duration::from_hours(1)
         );
     }
 }
