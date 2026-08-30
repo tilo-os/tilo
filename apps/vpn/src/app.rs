@@ -24,7 +24,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EmptyState, ModalDialog, Widget};
+use ui::widget::{EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
 
 use crate::actions::{self, VPN_ACTION_TYPE};
 use crate::config::{self, Backend, CommandPlan};
@@ -1288,20 +1288,11 @@ impl VpnApp {
     }
 
     fn draw_switch(&self, scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
-        let track = if on {
-            theme.tokens.colors.semantic.success
-        } else {
-            theme.tokens.colors.neutral[3]
-        };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), track);
-        let kr = 9.0;
-        let kx = if on { r.x1 - kr - 3.0 } else { r.x0 + kr + 3.0 };
-        scene.fill(
-            Fill::NonZero,
+        Toggle::paint(
+            scene,
             t,
-            Color::WHITE,
-            None,
-            &Circle::new(Point::new(kx, r.center().y), kr),
+            theme,
+            &ToggleFace::new(r, on).on_color(theme.tokens.colors.semantic.success),
         );
     }
 

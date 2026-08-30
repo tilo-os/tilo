@@ -500,7 +500,7 @@ pub type Element = Box<dyn Widget>;
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
 mod checkbox;
-pub use checkbox::Checkbox;
+pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod row;
