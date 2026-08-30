@@ -37,6 +37,8 @@ pub mod fs_capnp {
 
 use capnp_rpc::rpc_twoparty_capnp;
 
+pub mod storage;
+
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
 
 /// Byte cap the server-side `FileHandle` applies to a single `read`; larger
