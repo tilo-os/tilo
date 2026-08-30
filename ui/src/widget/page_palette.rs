@@ -35,6 +35,28 @@ const INPUT_HEIGHT: f64 = 44.0;
 const PADDING: f64 = 12.0;
 const MAX_VISIBLE_ROWS: usize = 10;
 
+/// Narrows a visible-row count/slot index (always `<= MAX_VISIBLE_ROWS`)
+/// to `f64` for layout math. Bounded far below `f64`'s precision limit,
+/// so this never loses precision in practice.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "row counts/slots are bounded to MAX_VISIBLE_ROWS (10)"
+)]
+fn row_f64(v: usize) -> f64 {
+    v as f64
+}
+
+/// Composes `base` with a translation for text placement. Affine
+/// composition is floating-point matrix multiply — it cannot overflow or
+/// panic the way integer arithmetic can.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 pub struct PageJumpPalette {
     items: Vec<PageEntry>,
     visible: Vec<usize>,
@@ -118,7 +140,7 @@ impl PageJumpPalette {
     }
 
     pub fn height(&self) -> f64 {
-        let rows = self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64;
+        let rows = row_f64(self.visible.len().clamp(1, MAX_VISIBLE_ROWS));
         PADDING * 2.0 + INPUT_HEIGHT + PADDING + ROW_HEIGHT * rows
     }
 
@@ -180,22 +202,25 @@ impl PageJumpPalette {
             }
             return change != QueryEventChange::Ignored;
         };
-        let handled = match logical_key {
+        match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 if !self.visible.is_empty() {
-                    self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
+                    self.cursor = self
+                        .cursor
+                        .saturating_add(1)
+                        .min(self.visible.len().saturating_sub(1));
                 }
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                }
+                self.cursor = self.cursor.saturating_sub(1);
                 true
             }
             Key::Named(NamedKey::Enter) => {
                 if let Some(&idx) = self.visible.get(self.cursor) {
-                    self.pending = Some(self.items[idx].clone());
+                    if let Some(entry) = self.items.get(idx) {
+                        self.pending = Some(entry.clone());
+                    }
                 }
                 self.set_visible(false);
                 true
@@ -218,8 +243,7 @@ impl PageJumpPalette {
                 }
                 change != QueryEventChange::Ignored
             }
-        };
-        handled
+        }
     }
 
     pub fn draw_overlay(
@@ -232,24 +256,42 @@ impl PageJumpPalette {
         if !self.visible_flag {
             return;
         }
-        let tokens = &theme.tokens;
         let rect = self.rect();
+        Self::draw_card_chrome(scene, transform, theme, rect);
+        let input_rect = self.draw_input_field(scene, transform, text_renderer, theme, rect);
+        self.draw_result_rows(scene, transform, text_renderer, theme, rect, input_rect);
+    }
+
+    /// The palette card's background fill and border.
+    fn draw_card_chrome(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         let shape = RoundedRect::from_rect(rect, 12.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            theme.tokens.colors.surfaces.raised,
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            theme.tokens.colors.border_standard,
             None,
             &shape,
         );
+    }
 
+    /// The query input box and its composed text. Returns the input's
+    /// `Rect` so the result list can lay out below it.
+    fn draw_input_field(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> Rect {
+        let tokens = &theme.tokens;
         let input_rect = Rect::new(
             rect.x0 + PADDING,
             rect.y0 + PADDING,
@@ -292,7 +334,21 @@ impl PageJumpPalette {
             tokens.colors.accent[5],
             true,
         );
+        input_rect
+    }
 
+    /// Either the "No pages match" placeholder, or the visible-and-windowed
+    /// slice of result rows with the cursor highlight.
+    fn draw_result_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        input_rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
         let list_top = input_rect.y1 + PADDING;
         let row_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
@@ -303,7 +359,7 @@ impl PageJumpPalette {
                 label,
                 row_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((rect.x0 + PADDING + 12.0, y)),
+                translated(transform, rect.x0 + PADDING + 12.0, y),
                 None,
             );
             return;
@@ -317,8 +373,14 @@ impl PageJumpPalette {
             .take(MAX_VISIBLE_ROWS)
             .enumerate()
         {
-            let row = &self.items[idx];
-            let y0 = list_top + slot as f64 * ROW_HEIGHT;
+            // `visible` only ever holds indices produced by `rebuild_visible`
+            // enumerating `self.items`, so this is structurally in range —
+            // checked rather than indexed so that invariant can't silently
+            // regress into a panic.
+            let Some(row) = self.items.get(idx) else {
+                continue;
+            };
+            let y0 = list_top + row_f64(slot) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + PADDING, y0, rect.x1 - PADDING, y0 + ROW_HEIGHT);
             if visible_index == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
@@ -336,7 +398,7 @@ impl PageJumpPalette {
                 &row.title,
                 row_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((row_rect.x0 + 12.0, ty)),
+                translated(transform, row_rect.x0 + 12.0, ty),
                 None,
             );
         }
@@ -423,7 +485,7 @@ impl Widget for PageJumpPalette {
                             selected: position == self.cursor,
                             ..Default::default()
                         })
-                        .with_position(position + 1, count)
+                        .with_position(position.saturating_add(1), count)
                 })
             })
             .collect();
