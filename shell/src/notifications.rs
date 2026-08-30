@@ -459,10 +459,7 @@ mod tests {
     #[test]
     fn parse_urgency_reads_critical_byte() {
         let mut hints: HashMap<String, OwnedValue> = HashMap::new();
-        hints.insert(
-            "urgency".to_string(),
-            OwnedValue::try_from(2u8).expect("byte value"),
-        );
+        hints.insert("urgency".to_string(), OwnedValue::from(2u8));
         assert_eq!(parse_urgency(&hints), 2);
     }
 
@@ -524,7 +521,7 @@ mod tests {
         let body = "All 524 tests passed";
         let actions: Vec<String> = vec!["default".into(), "Open".into()];
         let mut hints: HashMap<String, OwnedValue> = HashMap::new();
-        hints.insert("urgency".into(), OwnedValue::try_from(2u8).unwrap());
+        hints.insert("urgency".into(), OwnedValue::from(2u8));
         let expire_timeout: i32 = -1;
 
         let id: u32 = proxy

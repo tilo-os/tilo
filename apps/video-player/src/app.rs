@@ -107,7 +107,7 @@ impl PlayerApp {
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
         if let Some(path) = open {
-            app.open_path(path)
+            app.open_path(path);
         } else {
             // The demo shot must stay hermetic: pin the deterministic
             // synthesized-frame engine so no real GStreamer pipeline is
@@ -579,7 +579,7 @@ mod tests {
 
     /// A player pinned to the deterministic synthesized backend, so the app's
     /// open/transport wiring is exercised hermetically regardless of build
-    /// features (real GStreamer decode is proven separately by the
+    /// features (real `GStreamer` decode is proven separately by the
     /// `--features decode` integration test with a real generated file).
     fn synth_app() -> PlayerApp {
         let mut app = PlayerApp::new();

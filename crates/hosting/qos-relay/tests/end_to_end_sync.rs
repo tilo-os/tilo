@@ -205,13 +205,11 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .join("pending")
         .join(&b_hex);
     let count = |dir: &std::path::Path| {
-        std::fs::read_dir(dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                    .count()
-            })
-            .unwrap_or(0)
+        std::fs::read_dir(dir).map_or(0, |rd| {
+            rd.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                .count()
+        })
     };
     let mut queued = 0;
     for _ in 0..40 {

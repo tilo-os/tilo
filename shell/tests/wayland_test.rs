@@ -80,7 +80,7 @@ fn test_wayland_handshake_fixed() {
     );
     let mut cmd = container.build_command("./click_test_client", &socket_name);
     cmd.env("WAYLAND_DEBUG", "1");
-    let log_path = format!("/tmp/quick-desktop-app-{}.log", tab_id);
+    let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
     let log_file = std::fs::File::create(&log_path).unwrap();
     cmd.stdout(std::process::Stdio::from(log_file.try_clone().unwrap()));
     cmd.stderr(std::process::Stdio::from(log_file));
@@ -92,7 +92,7 @@ fn test_wayland_handshake_fixed() {
 
     while Instant::now() < timeout {
         while let Ok(event) = rx.try_recv() {
-            println!("DEBUG: Server received event: {:?}", event);
+            println!("DEBUG: Server received event: {event:?}");
             event_received = true;
         }
         if event_received {
@@ -102,7 +102,7 @@ fn test_wayland_handshake_fixed() {
     }
 
     let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
-    println!("DEBUG: client log:\n{}", log_content);
+    println!("DEBUG: client log:\n{log_content}");
 
     let _ = child.kill();
     assert!(

@@ -117,16 +117,13 @@ fn main() {
         .find(|w| w[0] == "--persist")
         .map(|w| PathBuf::from(&w[1]));
 
-    let store: Arc<dyn IdentityStore> = match persist_dir {
-        Some(dir) => {
-            let path = dir.join("identity.json");
-            eprintln!("identity_flow_demo: persisting to {}", path.display());
-            Arc::new(DemoFileStore::at(path).expect("init DemoFileStore"))
-        }
-        None => {
-            eprintln!("identity_flow_demo: in-memory only (no --persist)");
-            Arc::new(MemoryIdentityStore::new())
-        }
+    let store: Arc<dyn IdentityStore> = if let Some(dir) = persist_dir {
+        let path = dir.join("identity.json");
+        eprintln!("identity_flow_demo: persisting to {}", path.display());
+        Arc::new(DemoFileStore::at(path).expect("init DemoFileStore"))
+    } else {
+        eprintln!("identity_flow_demo: in-memory only (no --persist)");
+        Arc::new(MemoryIdentityStore::new())
     };
 
     let mut flow = IdentityFlow::new(store.clone());
@@ -157,7 +154,7 @@ fn main() {
         &owner_sk,
         "Alice",
         Role::Editor,
-        SystemTime::now() + std::time::Duration::from_secs(3600),
+        SystemTime::now() + std::time::Duration::from_hours(1),
     )
     .unwrap();
     flow.invite_accept.set_url(env.to_url().unwrap());

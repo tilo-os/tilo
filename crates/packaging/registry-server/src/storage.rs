@@ -220,7 +220,7 @@ mod tests {
         RegistryEntry {
             package_id: id.into(),
             name: "Test".into(),
-            description: "".into(),
+            description: String::new(),
             categories: vec![],
             icon_url: None,
             source_url: None,

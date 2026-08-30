@@ -3287,7 +3287,7 @@ mod tests {
 
     // snapshot executor coverage
 
-    /// Sanity: `Snapshot` against a fresh FrameBuilder writes a real PNG,
+    /// Sanity: `Snapshot` against a fresh `FrameBuilder` writes a real PNG,
     /// asserting the magic bytes and a non-trivial byte count (a
     /// corrupted/truncated PNG would pass the magic check but be tiny).
     ///
@@ -3414,7 +3414,10 @@ mod tests {
         // sub-object — addressing by string mirrors how the CLI/harness reads them.
         for key in ["overview", "quick_settings", "ws_settings", "collaborators"] {
             assert!(
-                overlays.get(key).and_then(|v| v.as_bool()).is_some(),
+                overlays
+                    .get(key)
+                    .and_then(serde_json::Value::as_bool)
+                    .is_some(),
                 "overlays should carry boolean `{key}`; got {overlays:?}"
             );
         }
@@ -3496,7 +3499,7 @@ mod tests {
         assert!(chrome.is_object(), "chrome should be an object");
     }
 
-    /// Cmd+Tab via test_control opens the overview overlay — proves
+    /// Cmd+Tab via `test_control` opens the overview overlay — proves
     /// modifiers + named-key chords reach the host's chord handler, like `ShellDriver::press_key` in-process.
     #[test]
     fn cmd_tab_chord_via_test_control_opens_overview() {

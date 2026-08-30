@@ -305,7 +305,7 @@ mod tests {
             .borrow_mut()
             .reference(rooms[1], &book, &RecordKind::new("book"));
         index.borrow_mut().seed_observed([ObservedRecord {
-            id: book.clone(),
+            id: book,
             kind: RecordKind::new("book"),
             home: Some(rooms[1]),
             package_id: "dev.qos.ebook".into(),
@@ -411,7 +411,7 @@ mod tests {
         set.checkout(
             &mut state,
             None,
-            &RecordCheckout::new(RecordId::minted(), kind.clone()),
+            &RecordCheckout::new(RecordId::minted(), kind),
         );
         set.checkout(&mut state, None, &from_here);
 

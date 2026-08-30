@@ -1420,7 +1420,7 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.active;
 
-        let week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
+        let week_ago = SystemTime::now() - Duration::from_hours(168);
         let week_ago_secs = week_ago
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -1485,8 +1485,7 @@ mod tests {
         peer.apply_changes(
             tree.export_changes_since(&[])
                 .iter()
-                .map(|b| automerge::Change::try_from(b.as_slice()).unwrap())
-                .collect::<Vec<_>>(),
+                .map(|b| automerge::Change::try_from(b.as_slice()).unwrap()),
         )
         .unwrap();
         {
@@ -1787,12 +1786,12 @@ mod tests {
 
     #[test]
     fn period_windows_are_half_open_and_all_time_is_unbounded() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500000);
         assert!(Period::AllTime.range(now).is_none());
         let (start, end) = Period::Week.range(now).unwrap();
         assert_eq!(
             now.duration_since(start).unwrap(),
-            Duration::from_secs(7 * 24 * 3600)
+            Duration::from_hours(168)
         );
         assert!(
             end > now,
@@ -1968,7 +1967,7 @@ mod tests {
 
         let a = ui::history_groups::read_named_ranges(&mine, &AuthorDirectory::new());
         let b = ui::history_groups::read_named_ranges(&theirs, &AuthorDirectory::new());
-        assert_eq!(a.len(), 1, "one run, one band: {:?}", a);
+        assert_eq!(a.len(), 1, "one run, one band: {a:?}");
         assert_eq!(b.len(), 1);
         assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
         assert!(

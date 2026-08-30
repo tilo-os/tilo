@@ -667,7 +667,7 @@ impl Catalog {
         let mut v: Vec<&Snapshot> = self
             .snapshots
             .iter()
-            .filter(|s| source_id.map_or(true, |id| s.source_id == id))
+            .filter(|s| source_id.is_none_or(|id| s.source_id == id))
             .collect();
         v.sort_by(|a, b| a.day.cmp(&b.day).then(b.time.cmp(&a.time)));
         v

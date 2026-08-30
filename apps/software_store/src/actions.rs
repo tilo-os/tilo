@@ -151,7 +151,7 @@ mod tests {
         let store_keys: BTreeSet<String> = doc.keys(&store).collect();
         let allowed: BTreeSet<String> = ["installed", "installing", "seeded"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert!(
             store_keys.is_subset(&allowed),

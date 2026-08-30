@@ -3195,7 +3195,7 @@ impl BackupsApp {
         self.catalog.snapshots.insert(
             0,
             Snapshot {
-                id: id,
+                id,
                 source_id: job.source,
                 dest_id: dest,
                 day: 0,

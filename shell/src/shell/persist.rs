@@ -364,7 +364,7 @@ mod tests {
             "the room minted on first boot must have been written to disk, \
              so the second boot loads it instead of minting a new one"
         );
-        second_boot.persist_path = Some(path.clone());
+        second_boot.persist_path = Some(path);
         assert!(
             second_boot.adopt_roomless_workspaces().is_empty(),
             "a second boot must find nothing to migrate"
@@ -387,7 +387,8 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
         assert_eq!(
-            raw.get("schema_version").and_then(|v| v.as_u64()),
+            raw.get("schema_version")
+                .and_then(serde_json::Value::as_u64),
             Some(u64::from(STATE_SCHEMA_VERSION)),
             "the writer must stamp the current schema version"
         );

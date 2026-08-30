@@ -154,7 +154,7 @@ mod tests {
         assert!(!al.upsert(PublisherRow {
             pubkey_hex: "aa".repeat(32),
             can_add_new: false,
-            note: "".into(),
+            note: String::new(),
         }));
         assert!(al.upsert(PublisherRow {
             pubkey_hex: "aa".repeat(32),
@@ -172,7 +172,7 @@ mod tests {
         al.upsert(PublisherRow {
             pubkey_hex: "de".repeat(32),
             can_add_new: true,
-            note: "".into(),
+            note: String::new(),
         });
         assert!(al.get(&[0xde; 32]).is_some());
         assert!(al.get(&[0x00; 32]).is_none());
@@ -188,12 +188,12 @@ mod tests {
                 PublisherRow {
                     pubkey_hex: "zzzz".into(),
                     can_add_new: false,
-                    note: "".into(),
+                    note: String::new(),
                 },
                 PublisherRow {
                     pubkey_hex: "11".repeat(32),
                     can_add_new: true,
-                    note: "".into(),
+                    note: String::new(),
                 },
             ],
         };

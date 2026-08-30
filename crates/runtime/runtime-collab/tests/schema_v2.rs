@@ -54,7 +54,7 @@ type SharedCaptures = Rc<RefCell<Captures>>;
 
 // fake presence stream
 
-/// Pre-seeded events; each `read()` pops one, as a (user, key_bytes,
+/// Pre-seeded events; each `read()` pops one, as a (user, `key_bytes`,
 /// payload) triple encoded via the `PresencePayloadKind` helper below.
 #[derive(Clone)]
 struct SeedPresence {
@@ -392,7 +392,7 @@ impl channel_handle::Server for FakeChannel {
         params: channel_handle::SendUnsignedSnapshotParams,
         _results: channel_handle::SendUnsignedSnapshotResults,
     ) -> Promise<(), capnp::Error> {
-        let d = match params.get().and_then(|r| r.get_data()) {
+        let d = match params.get().and_then(runtime_collab::collab_capnp::channel_handle::send_unsigned_snapshot_params::Reader::get_data) {
             Ok(b) => b.to_vec(),
             Err(e) => return Promise::err(e),
         };
@@ -405,7 +405,7 @@ impl channel_handle::Server for FakeChannel {
         params: channel_handle::SendUnsignedIncrementalParams,
         _results: channel_handle::SendUnsignedIncrementalResults,
     ) -> Promise<(), capnp::Error> {
-        let d = match params.get().and_then(|r| r.get_data()) {
+        let d = match params.get().and_then(runtime_collab::collab_capnp::channel_handle::send_unsigned_incremental_params::Reader::get_data) {
             Ok(b) => b.to_vec(),
             Err(e) => return Promise::err(e),
         };

@@ -144,10 +144,10 @@ fn main() {
     }
 
     let timeline = ActivityTimeline::with_entries(entries.clone())
-        .on_revert(|id| eprintln!("revert clicked: {:?}", id));
+        .on_revert(|id| eprintln!("revert clicked: {id:?}"));
     let scrubber = HistoryScrubber::new(entries)
-        .on_preview(|id| eprintln!("preview tick: {:?}", id))
-        .on_restore(|id| eprintln!("restore tick: {:?}", id));
+        .on_preview(|id| eprintln!("preview tick: {id:?}"))
+        .on_restore(|id| eprintln!("restore tick: {id:?}"));
 
     let root_widget: Box<dyn Widget> = Box::new(
         Column::new()

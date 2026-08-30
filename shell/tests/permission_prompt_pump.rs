@@ -100,7 +100,7 @@ impl ui::widget::Widget for StubContent {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
         let n = taffy.new_leaf(Default::default()).unwrap();
-        node_map.insert(n, self as *mut dyn ui::widget::Widget);
+        node_map.insert(n, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         n
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: taffy::NodeId, _origin: Point) {}
@@ -126,7 +126,7 @@ impl ui::widget::Widget for StubContent {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "StubContent"
     }
     fn get_rect(&self) -> Rect {
@@ -433,7 +433,7 @@ fn host_has_no_prompt(host: &ShellOverlayHost) -> bool {
     // The accessor takes `&mut`; cast through a raw pointer to read the
     // discriminant without adding a parallel `&self` accessor. Read-only.
     let host_ptr: *const ShellOverlayHost = host;
-    let host_mut: *mut ShellOverlayHost = host_ptr as *mut _;
+    let host_mut: *mut ShellOverlayHost = host_ptr.cast_mut();
     let p = unsafe { (*host_mut).permission_prompt_mut_for_tests() };
     p.is_none()
 }

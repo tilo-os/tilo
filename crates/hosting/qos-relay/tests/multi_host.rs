@@ -168,13 +168,11 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
     let pending_r1 = relay1.state_root.join("workspaces/3/pending").join(&hex_p2);
     let pending_r2 = relay2.state_root.join("workspaces/3/pending").join(&hex_p2);
     let count = |dir: &std::path::Path| {
-        std::fs::read_dir(dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                    .count()
-            })
-            .unwrap_or(0)
+        std::fs::read_dir(dir).map_or(0, |rd| {
+            rd.flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+                .count()
+        })
     };
     // Wait for the write rather than guessing how long it takes: a fixed sleep
     // is a race that fails on a loaded machine and proves nothing on a fast one.

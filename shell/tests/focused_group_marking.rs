@@ -100,7 +100,7 @@ fn lit(host: &mut ShellOverlayHost, strips: [StripId; 2]) -> Vec<(StripId, Group
         let Some(row) = host.group_row_mut_for_tests(sid) else {
             continue;
         };
-        for g in row.groups.iter() {
+        for g in &row.groups {
             if g.focused() {
                 out.push((sid, g.id));
             }

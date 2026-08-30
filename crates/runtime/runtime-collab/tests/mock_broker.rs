@@ -91,7 +91,10 @@ impl channel_handle::Server for FakeChannel {
         params: channel_handle::SendParams,
         _results: channel_handle::SendResults,
     ) -> Promise<(), capnp::Error> {
-        let op = match params.get().and_then(|r| r.get_op()) {
+        let op = match params
+            .get()
+            .and_then(runtime_collab::collab_capnp::channel_handle::send_params::Reader::get_op)
+        {
             Ok(o) => o.to_vec(),
             Err(e) => return Promise::err(e),
         };
@@ -141,7 +144,7 @@ impl collab_service::Server for FakeBroker {
         };
         let chan = match reader.get_channel_id().and_then(|t| {
             t.to_str()
-                .map(|s| s.to_owned())
+                .map(std::borrow::ToOwned::to_owned)
                 .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
         }) {
             Ok(s) => s,

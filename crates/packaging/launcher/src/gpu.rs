@@ -629,7 +629,7 @@ mod tests {
             .ok()
             .into_iter()
             .flatten()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .find(|p| {
                 p.file_name()

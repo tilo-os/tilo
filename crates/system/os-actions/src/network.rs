@@ -294,8 +294,8 @@ mod tests {
 
     #[test]
     fn parse_nmcli_radio_states() {
-        assert_eq!(parse_nmcli_radio("enabled\n").unwrap(), true);
-        assert_eq!(parse_nmcli_radio("disabled\n").unwrap(), false);
+        assert!(parse_nmcli_radio("enabled\n").unwrap());
+        assert!(!parse_nmcli_radio("disabled\n").unwrap());
         assert!(parse_nmcli_radio("garbled").is_err());
     }
 

@@ -134,7 +134,7 @@ impl GstPlayback {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 
-    /// Build a session directly from a GStreamer pipeline description that
+    /// Build a session directly from a `GStreamer` pipeline description that
     /// contains an `appsink name=tubesink`. Used by the hermetic test harness
     /// (e.g. a `videotestsrc` source) to exercise the sample→RGBA extraction
     /// without a network or a real stream.

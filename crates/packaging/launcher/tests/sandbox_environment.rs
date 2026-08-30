@@ -144,7 +144,7 @@ fn run(payload: &Path, argv: &[&str]) -> String {
         landlock_enforce: false,
         mode: launcher::run::LaunchMode::Cli {
             command: "roomtest".to_string(),
-            passthrough_argv: argv.iter().map(|s| s.to_string()).collect(),
+            passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..RunOptions::default()
     };
@@ -269,7 +269,7 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
     allowed.extend(
         launcher::sandbox::INHERITED_ENV
             .iter()
-            .map(|s| s.to_string()),
+            .map(std::string::ToString::to_string),
     );
 
     let inside = env_names_inside(payload.path());

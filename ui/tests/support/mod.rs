@@ -14,13 +14,13 @@ use ui::widget::{Column, Text};
 /// Each `Peer` exposes `send(req)` and `poll() -> Vec<CollabEvent>`.
 ///
 /// Usage:
-///     let mut relay = MemoryRelay::new();
+///     let mut relay = `MemoryRelay::new()`;
 ///     let alice = relay.attach("alice");
 ///     let bob   = relay.attach("bob");
-///     alice.send(CollabRequest::SyncIncremental { data: vec![1,2,3] });
-///     relay.drain_peer_outbox(&alice);
+///     `alice.send(CollabRequest::SyncIncremental` { data: vec![1,2,3] });
+///     `relay.drain_peer_outbox(&alice)`;
 ///     pump(&mut relay);
-///     let events = bob.poll();
+///     let events = `bob.poll()`;
 pub struct MemoryRelay {
     pending_out: Vec<(String, CollabRequest)>,
     inboxes: Arc<Mutex<HashMap<String, VecDeque<CollabEvent>>>>,

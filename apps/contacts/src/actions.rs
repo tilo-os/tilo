@@ -436,7 +436,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             ContactsDoc::list_contacts(&state.doc).len(),
@@ -580,7 +580,7 @@ mod tests {
         // Rename: prompted spec == upsert builder for the renamed record.
         let edit_spec = contact.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "Grace Hopper");
-        let mut renamed = stored.clone();
+        let mut renamed = stored;
         let (first, last) = split_name("Grace Hopper");
         renamed.first = first;
         renamed.last = last;
@@ -619,7 +619,7 @@ mod tests {
     }
 
     /// The action side and the search side coexist: the same live app exports a
-    /// mutating resource tree AND a working SearchProvider that resolves a real
+    /// mutating resource tree AND a working `SearchProvider` that resolves a real
     /// contact. Adding actions did not break navigation.
     #[test]
     fn search_provider_still_resolves_a_contact() {

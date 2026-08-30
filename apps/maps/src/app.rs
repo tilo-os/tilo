@@ -687,7 +687,7 @@ impl MapsApp {
         // Seed one level below through one level above so both zoom-in
         // (ancestors) and zoom-out (descendants) reuse resident imagery.
         for z in base_z.saturating_sub(1)..=(base_z + 1).min(19) {
-            let zoom = z as f64;
+            let zoom = f64::from(z);
             for (id, _) in TileLayer::visible_tiles(self.model.center, zoom, vc, self.rect) {
                 self.tiles.insert_solid_tile(id);
             }
@@ -6029,7 +6029,11 @@ mod tests {
         );
 
         // Once the quiet period elapses, the next sync flushes exactly once.
-        a.persist_deadline = Some(Instant::now() - std::time::Duration::from_millis(1));
+        a.persist_deadline = Some(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(1))
+                .unwrap(),
+        );
         a.sync(&mut state.doc, &state.root);
         assert!(
             !a.dirty && a.persist_deadline.is_none(),
@@ -7222,7 +7226,7 @@ mod tests {
             .send(NetMsg::EndpointSearch {
                 origin: false,
                 query: "english garden".into(),
-                results: Ok(vec![p.clone()]),
+                results: Ok(vec![p]),
             })
             .unwrap();
         a.drain_net();
@@ -7304,7 +7308,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let dense: Vec<LatLon> = (0..500)
                 .map(|i| {
-                    let f = i as f64 / 499.0;
+                    let f = f64::from(i) / 499.0;
                     LatLon::new(
                         origin.lat + (dest.lat - origin.lat) * f,
                         origin.lon + (dest.lon - origin.lon) * f,
@@ -7913,7 +7917,7 @@ mod tests {
     }
 
     /// Ctrl+V pastes the system clipboard into the focused search field via the
-    /// shared TextInput — the hand-rolled field had no clipboard at all. Primes
+    /// shared `TextInput` — the hand-rolled field had no clipboard at all. Primes
     /// the real clipboard, checks it round-trips, then drives Ctrl+V through the
     /// real event path and asserts the pasted text reached `model.query`.
     #[test]
@@ -8168,8 +8172,7 @@ mod tests {
         let mut a = app_at(1280.0, 720.0);
         let uniq = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let dir =
             std::env::temp_dir().join(format!("qos-maps-cctest-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();

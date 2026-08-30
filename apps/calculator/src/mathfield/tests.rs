@@ -478,7 +478,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
         let mut buf = [0u8; 4];
         let s = chars[k].encode_utf8(&mut buf);
         let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-        cum += w as f64;
+        cum += f64::from(w);
     }
     // Clicking past the last glyph lands at the row end.
     f.on_press_cached(Point::new(origin.x + cum + 0.5, py), false);
@@ -521,7 +521,7 @@ fn caret_gap_x_matches_summed_glyph_advances() {
         let mut buf = [0u8; 4];
         let s = ch.encode_utf8(&mut buf);
         let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-        cum += w as f64;
+        cum += f64::from(w);
     }
 }
 

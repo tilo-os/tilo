@@ -823,9 +823,9 @@ impl DrmRuntime {
         // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
         let keyboard = KeyboardXkb::new();
         if keyboard.is_some() {
-            tracing::info!("DRM backend: xkb keyboard initialised")
+            tracing::info!("DRM backend: xkb keyboard initialised");
         } else {
-            tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled")
+            tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled");
         }
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
@@ -1592,7 +1592,7 @@ mod tests {
         assert!(!m.state().shift_key(), "left shift up -> shift cleared");
     }
 
-    /// End-to-end: an alpha-row keycode yields a `Character` KeyboardInput carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
+    /// End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
     #[test]
     fn xkb_alpha_key_produces_character_input() {
         let Some(mut kbd) = KeyboardXkb::new() else {

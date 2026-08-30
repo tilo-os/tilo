@@ -61,7 +61,7 @@ fn ghost_cursor_rendered_at_remote_position() {
             let (r, g, b, a) = OffscreenRenderer::sample(&rgba, width, x, y);
             // Threshold 16 catches weak AA-edge hits; `as u32` widens
             // before summing so a bright (255,255,255) doesn't overflow u8 add.
-            if r as u32 + g as u32 + b as u32 > 16 && a > 16 {
+            if u32::from(r) + u32::from(g) + u32::from(b) > 16 && a > 16 {
                 hits += 1;
                 if first_hit.is_none() {
                     first_hit = Some((x, y, r, g, b, a));

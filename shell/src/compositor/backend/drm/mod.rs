@@ -621,7 +621,7 @@ mod tests {
             (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
             (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
         ];
-        let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized.clone());
+        let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized);
 
         // Mirror what `refresh_outputs` does: we can't easily build a full `DrmRuntime`, so copy that helper's sort/shape policy here for the test.
         let mut outs: Vec<Output> = dispatch.output_meta.values().cloned().collect();

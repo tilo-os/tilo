@@ -376,7 +376,7 @@ impl SurfaceTracker {
         (path, result)
     }
 
-    /// Test-only: deposit a synthetic capture-path observation without touching the wl_buffer plumbing. Used by the dmabuf-direct integration test.
+    /// Test-only: deposit a synthetic capture-path observation without touching the `wl_buffer` plumbing. Used by the dmabuf-direct integration test.
     #[cfg(test)]
     pub fn note_capture_path_for_test(&mut self, surface_id: SurfaceId, path: CapturePath) {
         self.note_capture_path(surface_id, path);
@@ -404,7 +404,7 @@ impl SurfaceTracker {
 
     /// Test-only injection path: deposit an already-RGBA frame into the per-surface slot as if
     /// [`Self::on_commit`] had run. Behind `#[cfg(test)]` — no production caller should skip the
-    /// wl_buffer pull; keeps the egress side ([`Self::take_latest`]) identical to production.
+    /// `wl_buffer` pull; keeps the egress side ([`Self::take_latest`]) identical to production.
     #[cfg(test)]
     pub(crate) fn deposit_for_test(
         &mut self,

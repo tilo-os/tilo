@@ -26,7 +26,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Seen {
         state: &mut Self,
         _registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -79,8 +79,7 @@ fn advertised_globals() -> Vec<String> {
         let _ = queue.dispatch_pending(&mut seen);
     }
 
-    let out = sink.lock().expect("globals").clone();
-    out
+    sink.lock().expect("globals").clone()
 }
 
 /// Globals a toolkit needs that the compositor advertises from

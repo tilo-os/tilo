@@ -6,8 +6,8 @@
 //! `SearchField` + `SearchResultsView` — the same widgets the "find things"
 //! surface uses — so the pixels match the live Ctrl+K.
 //!
-//! Run:  cargo run -p ui --example ctrl_k_palette
-//! Out:  $CTRLK_PALETTE_OUT (default /tmp/ctrl_k_palette) —
+//! Run:  cargo run -p ui --example `ctrl_k_palette`
+//! Out:  $`CTRLK_PALETTE_OUT` (default /`tmp/ctrl_k_palette`) —
 //!       ctrlk-{dark,light}-browse.png, ctrlk-dark-query.png
 
 use std::path::PathBuf;
@@ -60,7 +60,7 @@ fn open_resource() -> Resource {
 /// A folded-in searchable corpus — stands in for the contacts provider.
 struct Contacts;
 impl SearchProvider for Contacts {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Contacts"
     }
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -97,7 +97,7 @@ fn palette(query: &str, cursor: usize) -> ActionPalette {
 
 fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
     let mut p = palette(query, cursor);
-    let width = WIDTH as f64 - MARGIN * 2.0;
+    let width = f64::from(WIDTH) - MARGIN * 2.0;
     p.layout(theme, Point::new(MARGIN, MARGIN), width);
     let height = (p.rect().y1 + MARGIN).ceil() as u32;
 

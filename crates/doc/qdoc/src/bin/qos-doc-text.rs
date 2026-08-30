@@ -36,7 +36,7 @@ fn main() -> ExitCode {
         match arg.as_str() {
             "--contains" => {
                 if let Some(v) = args.next() {
-                    needle = Some(v)
+                    needle = Some(v);
                 } else {
                     eprintln!("--contains needs a value");
                     return ExitCode::from(2);

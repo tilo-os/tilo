@@ -1,4 +1,4 @@
-//! Renders the `widget_showcase` Column tree to PNG via OffscreenRenderer.
+//! Renders the `widget_showcase` Column tree to PNG via `OffscreenRenderer`.
 //! Lets reviewers (and Claude) inspect the live App layout without opening
 //! a window. Run with:
 //! ```
@@ -61,7 +61,7 @@ impl Widget for LabelTile {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn measure(
@@ -79,10 +79,10 @@ impl Widget for LabelTile {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
     fn draw(
@@ -122,7 +122,7 @@ impl Widget for LabelTile {
         _: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LabelTile"
     }
     fn get_rect(&self) -> Rect {
@@ -351,7 +351,7 @@ fn main() {
     let presence = PresenceCtx::default();
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &out_top);
-    println!("wrote top-of-page snapshot to {}", out_top);
+    println!("wrote top-of-page snapshot to {out_top}");
 
     // ----- Now scroll down 600 px and re-render to verify scrolling --
     // Inject a synthetic MouseWheel event that the Scrollable should
@@ -387,5 +387,5 @@ fn main() {
     let mut scene2 = Scene::new();
     root.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
     renderer.render_png(&scene2, theme.tokens.colors.surfaces.base, out_scrolled);
-    println!("wrote scrolled snapshot to {}", out_scrolled);
+    println!("wrote scrolled snapshot to {out_scrolled}");
 }

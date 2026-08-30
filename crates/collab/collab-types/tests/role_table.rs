@@ -1,5 +1,5 @@
 //! Cross-check `role_permits` against the spec's documented matrix
-//! for every (Role, ArtifactKind, OpClass) triple.
+//! for every (Role, `ArtifactKind`, `OpClass`) triple.
 //!
 //! The matrix has 5 roles × 5 artifact kinds × 8 op classes = 200
 //! entries. Most are derivable from a few rules ("Owner permits

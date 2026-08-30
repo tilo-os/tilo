@@ -350,7 +350,7 @@ mod tests {
         b.splice(&mut doc, &tile, 0..0, "hi");
         // Still inside the debounce window, so the burst stays open.
         assert!(!b.needs_commit());
-        b.last_edit = Some(Instant::now() - COMMIT_DEBOUNCE);
+        b.last_edit = Some(Instant::now().checked_sub(COMMIT_DEBOUNCE).unwrap());
         assert!(b.needs_commit(), "a quiet burst must close");
         b.on_commit();
         assert!(!b.needs_commit());

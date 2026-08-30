@@ -304,11 +304,10 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     // something else looks identical to one that ignored the key.
     let (_, _, selected, entries) = host.palette_snapshot();
     let selected = selected.expect("a row is selected");
-    let selected_label = entries
-        .iter()
-        .find(|(id, _)| *id == selected)
-        .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| panic!("selected row {selected} is not on offer: {entries:#?}"));
+    let selected_label = entries.iter().find(|(id, _)| *id == selected).map_or_else(
+        || panic!("selected row {selected} is not on offer: {entries:#?}"),
+        |(_, label)| label.clone(),
+    );
     assert!(
         selected_label.contains("quarterly-report"),
         "Enter would activate {selected_label:?}, not the document; rows were {entries:#?}"

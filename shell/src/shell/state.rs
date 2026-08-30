@@ -1753,7 +1753,7 @@ impl WorkspaceTree {
         self.room_authority(room) == RoomAuthority::Local
     }
 
-    /// Name the peer `peer_id` (iroh EndpointId) `name` in
+    /// Name the peer `peer_id` (iroh `EndpointId`) `name` in
     /// `room`, as `actor`. Deliberately the **inviter's** act, not the
     /// invitee's — a peer naming itself could claim any name. Refused
     /// unless `actor` may administer `room`. An empty `name` un-names
@@ -5191,7 +5191,7 @@ mod bootstrap_tests {
         let room = tree.active_workspace().unwrap().room;
         let peer = 0x2a_u64;
         let handle = session_handle(peer);
-        assert!(tree.admit_collaborator(ws, Collaborator::new(handle.clone(), handle.clone())));
+        assert!(tree.admit_collaborator(ws, Collaborator::new(handle.clone(), handle)));
 
         assert!(tree.note_peer_present(room, peer, "alice"));
         let roster = &tree.active_workspace().unwrap().collaborators;
@@ -5448,7 +5448,7 @@ mod bootstrap_tests {
 
 #[cfg(test)]
 mod automerge_foundation_tests {
-    //! Tests for the WorkspaceTree ↔ automerge sync surface:
+    //! Tests for the `WorkspaceTree` ↔ automerge sync surface:
     //! `current_heads`, `export_changes_since`, `apply_changes`, and the
     //! mutators (`append_empty_workspace`, …) that write through them.
 
@@ -5692,7 +5692,7 @@ mod automerge_foundation_tests {
     /// counter — `next_id()` reads a global salt a test can't flip
     /// without affecting every test beside it.
     fn salted(salt: u16, counter: u64) -> u64 {
-        ((salt as u64) << PEER_ID_SALT_SHIFT) | counter
+        (u64::from(salt) << PEER_ID_SALT_SHIFT) | counter
     }
 
     /// The claim the whole room-index path exists to make: a record one
@@ -6863,8 +6863,7 @@ mod automerge_foundation_tests {
         );
         assert!(
             target.unwrap().maximized,
-            "maximize flip should propagate; got {:?}",
-            target
+            "maximize flip should propagate; got {target:?}"
         );
     }
 
@@ -7308,10 +7307,10 @@ mod active_group_tests {
         let mut doc_order = Vec::new();
         for i in 0..tree.doc.length(&tabs_id) {
             let (_, t) = tree.doc.get(&tabs_id, i).unwrap().unwrap();
-            if let Some((Value::Scalar(s), _)) = tree.doc.get(&t, "id").unwrap() {
-                if let ScalarValue::Uint(id) = s.as_ref() {
-                    doc_order.push(*id);
-                }
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&t, "id").unwrap()
+                && let ScalarValue::Uint(id) = s.as_ref()
+            {
+                doc_order.push(*id);
             }
         }
         assert_eq!(doc_order, vec![11, 12, 10], "doc mirrors the new tab order");
@@ -7374,10 +7373,10 @@ mod active_group_tests {
         let mut doc_order = Vec::new();
         for i in 0..tree.doc.length(&groups_id) {
             let (_, g) = tree.doc.get(&groups_id, i).unwrap().unwrap();
-            if let Some((Value::Scalar(s), _)) = tree.doc.get(&g, "id").unwrap() {
-                if let ScalarValue::Uint(id) = s.as_ref() {
-                    doc_order.push(*id);
-                }
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&g, "id").unwrap()
+                && let ScalarValue::Uint(id) = s.as_ref()
+            {
+                doc_order.push(*id);
             }
         }
         assert_eq!(
@@ -7689,7 +7688,9 @@ mod capability_tests {
         // Idempotent re-share is also handled.
         ws.share_surface(7, 42);
         assert_eq!(
-            ws.shared_surfaces.get(&7).map(|p| p.len()).unwrap_or(0),
+            ws.shared_surfaces
+                .get(&7)
+                .map_or(0, std::collections::HashSet::len),
             2,
             "re-sharing with an already-recorded peer must be idempotent"
         );
@@ -7794,9 +7795,8 @@ mod next_id_seed_tests {
         assert!(
             allocated > 50,
             "after seeding, next_id() must skip past every persisted \
-             id (max was 50); got {} which would collide with the \
-             existing tree (D-9 regression)",
-            allocated
+             id (max was 50); got {allocated} which would collide with the \
+             existing tree (D-9 regression)"
         );
     }
 
@@ -7814,8 +7814,7 @@ mod next_id_seed_tests {
         let id = next_id();
         assert_eq!(
             id, 1,
-            "salt-0 default must mint the bare counter; got 0x{:016x}",
-            id
+            "salt-0 default must mint the bare counter; got 0x{id:016x}"
         );
         assert_eq!(peer_salt_of(id), 0);
         assert_eq!(counter_of(id), 1);
@@ -7945,10 +7944,9 @@ mod next_id_seed_tests {
         assert_eq!(
             next, 6,
             "seed_next_id_from_self must only consider ids under the \
-             local salt; got counter={} but the only local-salt id had \
+             local salt; got counter={next} but the only local-salt id had \
              counter=5 (remote-salt id counter=1000 is in a disjoint \
-             range and must be ignored)",
-            next
+             range and must be ignored)"
         );
     }
 }

@@ -209,7 +209,7 @@ mod tests {
                     },
                 })
                 .collect();
-            let active = tabs.first().map(|t| t.id).unwrap_or(0);
+            let active = tabs.first().map_or(0, |t| t.id);
             let group = WindowGroup {
                 id: next_id(),
                 tabs,

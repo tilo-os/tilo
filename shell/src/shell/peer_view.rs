@@ -515,7 +515,7 @@ mod tests {
         view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let enc_ref = scene.encoding();
-        let has_image = enc_ref.draw_tags.iter().any(|t| *t == DrawTag::IMAGE);
+        let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
         assert!(
             has_image,
             "PeerView::draw emitted no image into the scene's draw stream"
@@ -533,7 +533,7 @@ mod tests {
         let presence = PresenceCtx::default();
         view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         let enc_ref = scene.encoding();
-        let has_image = enc_ref.draw_tags.iter().any(|t| *t == DrawTag::IMAGE);
+        let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
         assert!(
             !has_image,
             "fresh PeerView with no decoded frame leaked an image draw"

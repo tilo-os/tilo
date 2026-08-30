@@ -961,13 +961,15 @@ mod tests {
                 };
                 leaf == name
             })
-            .map(|(_, r)| *r)
-            .unwrap_or_else(|| {
-                panic!(
-                    "widget `{name}` not found in registry; keys: {:?}",
-                    reg.keys().collect::<Vec<_>>()
-                )
-            })
+            .map_or_else(
+                || {
+                    panic!(
+                        "widget `{name}` not found in registry; keys: {:?}",
+                        reg.keys().collect::<Vec<_>>()
+                    )
+                },
+                |(_, r)| *r,
+            )
     }
 
     /// A group promoted to fullscreen absorbs the whole output (top bar

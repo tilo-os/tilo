@@ -286,7 +286,7 @@ mod network_profile_tests {
             for rule in landlock_ro_paths(shares) {
                 let s = rule.display().to_string();
                 assert!(
-                    argv.iter().any(|a| *a == s),
+                    argv.contains(&s),
                     "landlock names {s} but nothing binds it (shares={shares})"
                 );
             }

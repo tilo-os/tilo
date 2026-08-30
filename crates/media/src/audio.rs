@@ -568,9 +568,9 @@ mod tests {
     use super::*;
 
     /// A faithful, trimmed capture of a real `pw-dump` from a running
-    /// PipeWire 1.6 / WirePlumber host: two sinks (the built-in analog stereo,
+    /// `PipeWire` 1.6 / `WirePlumber` host: two sinks (the built-in analog stereo,
     /// default; and a second "Headphones" device), the default source, and two
-    /// playback streams — LibreWolf following the default sink, and a `pw-play`
+    /// playback streams — `LibreWolf` following the default sink, and a `pw-play`
     /// stream that was moved onto the Headphones sink via `target.object`. The
     /// field shapes (`media.class`, `object.serial`, `Link` props,
     /// `info.params.Props[].channelVolumes`/`mute`, the default metadata) are

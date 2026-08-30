@@ -9,14 +9,14 @@
 //!   - 20 % hover-edge crossings — these mutate hover state on
 //!     exactly one widget per event, so only that widget's cache
 //!     should invalidate.
-//!   -  5 % clicks on a ToggleGroup — mutates `selected`, re-
+//!   -  5 % clicks on a `ToggleGroup` — mutates `selected`, re-
 //!      emits the picker, every other widget hits its cache.
 //!   -  5 % "complex" events (spinner-style animation ticks where
 //!      every animating widget marks itself dirty).
 //!
 //! The bench tallies:
 //!   - "no-op" events that didn't request a redraw (proves Unit 2).
-//!   - draw_to_scene mean cost across redrawing events.
+//!   - `draw_to_scene` mean cost across redrawing events.
 //!   - vello render mean cost.
 //!   - effective throughput Hz = 1 / total mean per event.
 //!
@@ -71,21 +71,21 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                             leak_label(&format!("dash_btnlbl_{row_idx}")),
                             None,
                         ))),
-                ))
+                ));
             }
             1 => {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
                         .push(Box::new(Badge::count((i as u32) * 3))),
-                ))
+                ));
             }
             _ => {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
                         .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
-                ))
+                ));
             }
         }
     }
@@ -213,7 +213,7 @@ fn full_draw(
     // does. Without this the bench's `draw_with_presence` walks
     // see `viewport == None` and skip the culling short-circuit,
     // masking the Item 1 win in the benchmark output.
-    let vp = vello::kurbo::Rect::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let vp = vello::kurbo::Rect::new(0.0, 0.0, f64::from(canvas_w), f64::from(canvas_h));
     let prev_vp = presence.push_viewport(vp);
     root.draw_with_presence(
         scene,
@@ -383,7 +383,7 @@ fn main() {
     dirty_culprits(root.as_ref(), 0, &mut culprits);
     println!("dirty culprits after warmup: {} widgets", culprits.len());
     for (name, d) in culprits.iter().take(8) {
-        println!("  {} (depth {})", name, d);
+        println!("  {name} (depth {d})");
     }
     let (warm_hits, warm_misses) = text_renderer.cache_stats();
     println!(
@@ -424,7 +424,7 @@ fn main() {
     if frozen {
         // Prime the cursor at the frozen position so the first
         // event doesn't trigger a hover-state change.
-        let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
+        let p = (f64::from(canvas_w) - 5.0, f64::from(canvas_h) - 5.0);
         dispatch(
             &mut root,
             &taffy,
@@ -464,7 +464,7 @@ fn main() {
             dispatch(&mut root, &taffy, root_node, &mut doc, &make_wheel(dy));
         } else if frozen {
             // Identical no-op event — see comment above.
-            let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
+            let p = (f64::from(canvas_w) - 5.0, f64::from(canvas_h) - 5.0);
             dispatch(
                 &mut root,
                 &taffy,

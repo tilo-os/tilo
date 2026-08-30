@@ -2425,7 +2425,7 @@ mod tests {
         // Coarse sweep of the whole output (mostly chrome): every one must resolve to nothing on both sides, or the firewall would clear a click on the top bar.
         for gx in 0..80 {
             for gy in 0..45 {
-                probes.push((gx as f64 * 20.0 + 10.0, gy as f64 * 20.0 + 10.0));
+                probes.push((f64::from(gx) * 20.0 + 10.0, f64::from(gy) * 20.0 + 10.0));
             }
         }
 
@@ -2684,7 +2684,7 @@ mod tests {
             toast.body,
         );
         assert!(
-            toast.dismiss_after >= std::time::Duration::from_secs(60),
+            toast.dismiss_after >= std::time::Duration::from_mins(1),
             "a stop that lasts until the host lifts it cannot be confirmed by a \
              toast that slides away in five seconds",
         );

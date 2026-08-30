@@ -1371,7 +1371,7 @@ mod tests {
     fn map_palette_follows_theme() {
         let lum = |c: Color| {
             let c = c.to_rgba8();
-            0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
+            0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
         };
         let dark = MapPalette::from_theme(&Theme::dark());
         assert!(
@@ -1405,7 +1405,7 @@ mod tests {
     fn loading_substrate_matches_land_tone() {
         let lum = |c: Color| {
             let c = c.to_rgba8();
-            0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
+            0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
         };
         for theme in [Theme::dark(), Theme::light()] {
             let p = MapPalette::from_theme(&theme);

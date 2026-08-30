@@ -1,14 +1,14 @@
 //! Offscreen renders of the component gallery in **both** light and dark,
 //! so the showcase can be self-inspected without opening a window. Drives the
-//! real five-pass pipeline (sync → build_layout → compute_layout →
-//! apply_layout → draw) on the same widget tree the interactive `gallery`
+//! real five-pass pipeline (sync → `build_layout` → `compute_layout` →
+//! `apply_layout` → draw) on the same widget tree the interactive `gallery`
 //! example builds.
 //!
-//! Run:  cargo run -p ui --example gallery_shots
-//! Out:  $GALLERY_SHOTS_OUT (default /tmp/gallery_shots) — gallery-dark.png,
+//! Run:  cargo run -p ui --example `gallery_shots`
+//! Out:  $`GALLERY_SHOTS_OUT` (default /`tmp/gallery_shots`) — gallery-dark.png,
 //!       gallery-light.png
 //!
-//! Fractional HiDPI: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
+//! Fractional `HiDPI`: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
 //! to render at that display scale. This reproduces the exact live-window
 //! path — a physical-pixel surface sized `logical × scale`, taffy solved
 //! at the logical size, and the whole scene composited through
@@ -58,10 +58,9 @@ fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
                 height: AvailableSpace::Definite(HEIGHT as f32),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .unwrap();
@@ -74,8 +73,8 @@ fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     root.draw(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
 
     // The offscreen target is sized in PHYSICAL pixels: logical × scale.
-    let phys_w = ((WIDTH as f64) * scale).round() as u32;
-    let phys_h = ((HEIGHT as f64) * scale).round() as u32;
+    let phys_w = (f64::from(WIDTH) * scale).round() as u32;
+    let phys_h = (f64::from(HEIGHT) * scale).round() as u32;
     let mut r = OffscreenRenderer::new(phys_w, phys_h);
     r.render_png(&scene, theme.bg_app, &out);
     println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());

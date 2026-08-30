@@ -973,7 +973,9 @@ mod tests {
     /// documents map to distinct files. The untitled slot is a single fixed path.
     #[test]
     fn recovery_path_is_stable_per_document() {
-        let _guard = RECOVERY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = RECOVERY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_recovery_dir("stable");
         // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
         unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };
@@ -1008,7 +1010,9 @@ mod tests {
     /// filesystem (a temp dir), best-effort throughout.
     #[test]
     fn recovery_write_read_clear_roundtrip() {
-        let _guard = RECOVERY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = RECOVERY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_recovery_dir("rwc");
         // SAFETY: RECOVERY_ENV_LOCK is held for the whole test.
         unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir) };

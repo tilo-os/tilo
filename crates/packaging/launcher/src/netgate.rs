@@ -964,7 +964,7 @@ mod tests {
     use super::*;
 
     fn v(hosts: &[&str]) -> Vec<String> {
-        hosts.iter().map(|h| h.to_string()).collect()
+        hosts.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]
@@ -1217,7 +1217,7 @@ mod tests {
     fn the_first_byte_picks_the_protocol() {
         assert_eq!(detect_protocol(0x05), Protocol::Socks5);
         // Every HTTP method starts with an uppercase letter.
-        for m in [b'C', b'G', b'P', b'H'] {
+        for m in *b"CGPH" {
             assert_eq!(detect_protocol(m), Protocol::HttpConnect);
         }
     }
@@ -1379,8 +1379,7 @@ mod tests {
 
         let suffix = EgressPolicy::new(v(&[".localhost"]));
         let err = connect_upstream(&dest, &suffix)
-            .err()
-            .expect("a suffix grant must not reach this device");
+            .expect_err("a suffix grant must not reach this device");
         assert_eq!(
             err.raw_os_error(),
             Some(libc::ENETUNREACH),

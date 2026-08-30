@@ -1,5 +1,5 @@
 //! Integration tests for the xdg-desktop-portal D-Bus backend: one
-//! round-trip per interface (FileChooser / ScreenCast / Access), plus the
+//! round-trip per interface (`FileChooser` / `ScreenCast` / Access), plus the
 //! "Always-grant skips the prompt" fast path. No real session bus — each
 //! test uses an in-process p2p zbus connection via
 //! `tokio::net::UnixStream::pair()`, so no broker and no real file dialog.
@@ -32,7 +32,7 @@ fn empty_workspace(id: u64, name: &str) -> Workspace {
 }
 
 /// Server + paired client zbus connections, both p2p. The returned ctx
-/// clone shares the underlying GrantStore + PromptQueue, so tests can
+/// clone shares the underlying `GrantStore` + `PromptQueue`, so tests can
 /// poke/inspect them across the wire.
 async fn bring_up_pair(
     grants: GrantStoreHandle,
@@ -867,7 +867,7 @@ fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedF
     )
 }
 
-/// The token minted by PreparePrint is what authorises the Print call.
+/// The token minted by `PreparePrint` is what authorises the Print call.
 #[tokio::test]
 async fn print_round_trips_the_document_to_the_spooler() {
     let spooler = Arc::new(RecordingSpooler::with_destinations(vec![

@@ -73,12 +73,10 @@ fn main() -> ! {
     // everything after it is opaque user args forwarded verbatim —
     // without it clap would try to interpret --help etc. as launcher flags.
     let mut argv: Vec<String> = Vec::with_capacity(6 + passthrough.len());
-    argv.push(
-        launcher
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "qos-launcher".to_string()),
-    );
+    argv.push(launcher.file_name().map_or_else(
+        || "qos-launcher".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    ));
     argv.push("run-installed".to_string());
     argv.push("--package".to_string());
     argv.push(sidecar.package_id);
@@ -93,10 +91,10 @@ fn main() -> ! {
 /// Resolve the sidecar path from the shim's own executable path; public so `install` and tests agree on the layout.
 pub fn sidecar_path_for(exe: &Path) -> PathBuf {
     let mut p = exe.to_path_buf();
-    let name = p
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "qos-cli-shim".to_string());
+    let name = p.file_name().map_or_else(
+        || "qos-cli-shim".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
     p.set_file_name(format!("{name}{SIDECAR_SUFFIX}"));
     p
 }

@@ -300,7 +300,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             BackupsDoc::retention(&state.doc, &ROOT, PolicyField::Daily),

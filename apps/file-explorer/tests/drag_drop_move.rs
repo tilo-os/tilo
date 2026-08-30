@@ -11,7 +11,7 @@ fn folder_center(h: &Harness, name: &str) -> Point {
     let (_p, rect) =
         h.w.debug_folder_targets()
             .into_iter()
-            .find(|(p, _)| p.file_name().map(|n| n == name).unwrap_or(false))
+            .find(|(p, _)| p.file_name().is_some_and(|n| n == name))
             .unwrap_or_else(|| panic!("folder {name} is not a published drop target"));
     rect.center()
 }

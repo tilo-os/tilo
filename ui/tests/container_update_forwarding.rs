@@ -44,7 +44,7 @@ impl Widget for Probe {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -75,7 +75,7 @@ impl Widget for Probe {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Probe"
     }
 

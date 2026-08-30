@@ -1219,7 +1219,7 @@ impl Pane {
         self.html_engine = Some(engine);
     }
 
-    /// The (message, block_remote) currently loaded into the HTML view, if any.
+    /// The (message, `block_remote`) currently loaded into the HTML view, if any.
     #[cfg(test)]
     pub(crate) fn html_loaded_key(&self) -> Option<(MessageId, bool)> {
         self.html_key
@@ -2130,7 +2130,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             sh.borrow_mut().select_message(&mut doc, id);
             sh.borrow_mut().take_intents();
         }
-        let mut p = Pane::new(Role::Reader, sh.clone());
+        let mut p = Pane::new(Role::Reader, sh);
         // Inject a concrete engine we can inspect for the commands the reader sends.
         let te = TestEngine::new();
         p.set_html_engine(te.clone());
@@ -2492,7 +2492,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         assert!(
             !intents
                 .iter()
-                .any(|i| matches!(i, Intent::Settings(Some(0)) | Intent::Settings(None))),
+                .any(|i| matches!(i, Intent::Settings(Some(0) | None))),
             "it must not fall back to the active account or the add-account flow"
         );
     }

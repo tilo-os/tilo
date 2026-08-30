@@ -282,7 +282,7 @@ impl Relay {
     /// as a live subscriber until its own idle timeout, and for that
     /// whole window fans out to a connection nobody reads instead of
     /// queueing for store-and-forward. Deltas in that window are neither
-    /// delivered nor queued. Closing the endpoint sends CONNECTION_CLOSE
+    /// delivered nor queued. Closing the endpoint sends `CONNECTION_CLOSE`
     /// straight away, so peers drop the subscription and queue instead.
     pub async fn shutdown(self) {
         // Stop reconnecting first: the dial loop would otherwise open a

@@ -248,7 +248,9 @@ mod tests {
     static LOCALE_GUARD: StdMutex<()> = StdMutex::new(());
 
     fn lock_locale() -> std::sync::MutexGuard<'static, ()> {
-        LOCALE_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        LOCALE_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]

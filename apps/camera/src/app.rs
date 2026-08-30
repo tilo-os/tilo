@@ -1469,7 +1469,7 @@ impl CameraApp {
                     let need = self
                         .cam_view
                         .as_ref()
-                        .map_or(true, |(w, h, s, _)| (*w, *h, *s) != (vw, vh, seed));
+                        .is_none_or(|(w, h, s, _)| (*w, *h, *s) != (vw, vh, seed));
                     if need {
                         self.cam_view = Some((
                             vw,
@@ -1484,7 +1484,7 @@ impl CameraApp {
                 }
                 Storage::Disk(_) => {
                     let cur_gen = self.frame_gen;
-                    if self.live_view.as_ref().map_or(true, |(g, _)| *g != cur_gen)
+                    if self.live_view.as_ref().is_none_or(|(g, _)| *g != cur_gen)
                         && let Some(fb) = self.latest_frame.clone()
                     {
                         self.live_view = Some((cur_gen, frame_image_cover(fb)));
@@ -2040,7 +2040,7 @@ impl CameraApp {
                 if self
                     .scan_view
                     .as_ref()
-                    .map_or(true, |(w, h, _)| (*w, *h) != (vw, vh))
+                    .is_none_or(|(w, h, _)| (*w, *h) != (vw, vh))
                 {
                     let (buf, scanned) = frame::scanner_frame(4, vw, vh, SCAN_PAYLOAD);
                     self.scan_view = Some((vw, vh, frame_image_fill(buf)));
@@ -2050,7 +2050,7 @@ impl CameraApp {
             }
             Storage::Disk(_) => {
                 let cur_gen = self.frame_gen;
-                if self.live_view.as_ref().map_or(true, |(g, _)| *g != cur_gen)
+                if self.live_view.as_ref().is_none_or(|(g, _)| *g != cur_gen)
                     && let Some(fb) = self.latest_frame.clone()
                 {
                     let luma = frame::luma(&fb);
@@ -3319,6 +3319,33 @@ fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
     out
 }
 
+/// Test-only accessors that let sibling modules (`crate::actions` tests) drive
+/// the *real* affordance path and observe its result, without exposing internal
+/// fields to the rest of the crate. Each helper routes through the same
+/// production code an on-screen control does.
+#[cfg(test)]
+impl CameraApp {
+    /// Select a gallery shot by id, exactly as clicking its card does.
+    pub(crate) fn test_select(&mut self, id: &str) {
+        self.apply(
+            Action::SelectCapture(id.to_string()),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        );
+    }
+
+    /// Fire the favorite affordance on the current selection through the real
+    /// handler (which dispatches the shared action).
+    pub(crate) fn test_toggle_favorite(&mut self, doc: &mut AutoCommit) {
+        self.apply(Action::ToggleFavSelected, doc, &automerge::ROOT);
+    }
+
+    /// The `EncodedAction` the most recent affordance dispatched.
+    pub(crate) fn test_last_dispatched(&self) -> Option<EncodedAction> {
+        self.actions.last_dispatched().cloned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3436,7 +3463,7 @@ mod tests {
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.path().extension().map(|x| x == "jpg").unwrap_or(false))
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jpg"))
             .collect();
         assert_eq!(files.len(), 1, "shutter wrote exactly one JPEG");
         let bytes = std::fs::read(files[0].path()).unwrap();
@@ -3534,7 +3561,7 @@ mod tests {
         let avis: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.path().extension().map(|x| x == "avi").unwrap_or(false))
+            .filter(|e| e.path().extension().is_some_and(|x| x == "avi"))
             .collect();
         assert_eq!(avis.len(), 1, "recording wrote exactly one AVI");
         let bytes = std::fs::read(avis[0].path()).unwrap();
@@ -3854,32 +3881,5 @@ mod tests {
         assert_eq!(app.scans.len(), 1);
         assert_eq!(app.scans[0].raw, payload);
         std::fs::remove_dir_all(&dir).ok();
-    }
-}
-
-/// Test-only accessors that let sibling modules (`crate::actions` tests) drive
-/// the *real* affordance path and observe its result, without exposing internal
-/// fields to the rest of the crate. Each helper routes through the same
-/// production code an on-screen control does.
-#[cfg(test)]
-impl CameraApp {
-    /// Select a gallery shot by id, exactly as clicking its card does.
-    pub(crate) fn test_select(&mut self, id: &str) {
-        self.apply(
-            Action::SelectCapture(id.to_string()),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        );
-    }
-
-    /// Fire the favorite affordance on the current selection through the real
-    /// handler (which dispatches the shared action).
-    pub(crate) fn test_toggle_favorite(&mut self, doc: &mut AutoCommit) {
-        self.apply(Action::ToggleFavSelected, doc, &automerge::ROOT);
-    }
-
-    /// The `EncodedAction` the most recent affordance dispatched.
-    pub(crate) fn test_last_dispatched(&self) -> Option<EncodedAction> {
-        self.actions.last_dispatched().cloned()
     }
 }

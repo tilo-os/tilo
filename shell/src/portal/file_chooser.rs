@@ -397,7 +397,7 @@ mod tests {
             .build()
             .unwrap();
         let (code, results) = rt.block_on(backend.pick_and_grant(
-            FilePickerOptions::new(caller.clone(), "Open file", /*save=*/ false),
+            FilePickerOptions::new(caller, "Open file", /*save=*/ false),
             FsMode::Read,
         ));
         assert_eq!(code, 0);

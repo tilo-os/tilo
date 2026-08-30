@@ -369,9 +369,9 @@ mod tests {
 
         let (r, g, b) = ui::presence::user_color("alice");
         let c = &ctx.remote_cursors[0];
-        assert!((c.color[0] - r as f32 / 255.0).abs() < 1e-3);
-        assert!((c.color[1] - g as f32 / 255.0).abs() < 1e-3);
-        assert!((c.color[2] - b as f32 / 255.0).abs() < 1e-3);
+        assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
+        assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
+        assert!((c.color[2] - f32::from(b) / 255.0).abs() < 1e-3);
     }
 
     #[test]

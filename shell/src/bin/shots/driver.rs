@@ -74,7 +74,7 @@ impl ShellDriver {
         }
     }
 
-    /// Run compute_layout + apply_layout against the current tree. The
+    /// Run `compute_layout` + `apply_layout` against the current tree. The
     /// host's animation state is preserved because we don't rebuild the
     /// taffy tree — only the layout pass re-runs.
     ///
@@ -230,9 +230,9 @@ impl ShellDriver {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        let n = steps.max(1) as f64;
+        let n = f64::from(steps.max(1));
         for s in 1..=steps.max(1) {
-            let t = s as f64 / n;
+            let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
             self.dispatch(WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
@@ -252,8 +252,8 @@ impl ShellDriver {
         self.dispatch(event);
     }
 
-    /// Type a literal string — one Key::Character event per non-control
-    /// character. Triggers the same handle_event path the live binary's
+    /// Type a literal string — one `Key::Character` event per non-control
+    /// character. Triggers the same `handle_event` path the live binary's
     /// keyboard handler does. Caller is expected to have opened an
     /// input target (palette, name editor, etc.) first.
     pub fn type_str(&mut self, s: &str) {
@@ -694,8 +694,7 @@ impl ShellDriver {
                     if peer.apply_changes(base).is_ok() {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0);
+                            .map_or(0, |d| d.as_secs() as i64);
                         const DAY: i64 = 86_400;
                         for (days_ago, title) in
                             [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
@@ -778,52 +777,52 @@ impl ShellDriver {
                 // Backdate `created_at` past the slide-in window: at t=0 a
                 // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
                 // pushes it entirely off-screen-right.
-                let settled_at = Instant::now() - Duration::from_secs(1);
+                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
                 self.with_chrome(|st| {
                     // Severity ramp in one frame; long dismiss windows so
                     // the still-image scene captures the stack visible.
                     st.push_notification_full(
                         Notification::new("Switched to workspace Research", "Active tab: Notes")
                             .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                     st.push_notification_full(
                         Notification::new("Slow network", "Peer sync delayed; retrying")
                             .with_severity(NotificationSeverity::Warning)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                     st.push_notification_full(
                         Notification::new("Permission denied", "Files cannot access /etc/shadow")
                             .with_severity(NotificationSeverity::Error)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                 });
             }
             "notifications-one" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
-                let settled_at = Instant::now() - Duration::from_secs(1);
+                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
                 self.with_chrome(|st| {
                     st.push_notification_full(
                         Notification::new("Build finished", "All 524 tests passed")
                             .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                 });
             }
             "notifications-dnd" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
-                let settled_at = Instant::now() - Duration::from_secs(1);
+                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
                 self.with_chrome(|st| {
                     // One banner posted *before* DND is engaged stays on
                     // screen (DND only gates new posts).
                     st.push_notification_full(
                         Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
                             .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_dismiss_after(Duration::from_mins(1))
                             .with_created_at(settled_at),
                     );
                     // Engage Do-Not-Disturb, then post two more — these are
@@ -847,30 +846,30 @@ impl ShellDriver {
                 use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
                 self.with_chrome(|st| {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.active_workspace_mut() {
-                        if let Some(strip) = ws.strips.first_mut() {
-                            // IDs picked far above the bootstrap range so
-                            // they don't collide with persisted state.
-                            for (gid, tid, label) in
-                                [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
-                            {
-                                let stub_tab = Tab {
-                                    id: tid,
-                                    title: label.to_string(),
-                                    tile: TileContent::Stub {
-                                        kind: shell::shell::state::AppKind::Settings,
-                                        label: label.to_string(),
-                                    },
-                                };
-                                let group = WindowGroup {
-                                    id: gid,
-                                    tabs: vec![stub_tab],
-                                    active_tab: tid,
-                                    width: WindowWidth::Normal,
-                                    maximized: false,
-                                };
-                                strip.window_groups.push(group);
-                            }
+                    if let Some(ws) = tree.active_workspace_mut()
+                        && let Some(strip) = ws.strips.first_mut()
+                    {
+                        // IDs picked far above the bootstrap range so
+                        // they don't collide with persisted state.
+                        for (gid, tid, label) in
+                            [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
+                        {
+                            let stub_tab = Tab {
+                                id: tid,
+                                title: label.to_string(),
+                                tile: TileContent::Stub {
+                                    kind: shell::shell::state::AppKind::Settings,
+                                    label: label.to_string(),
+                                },
+                            };
+                            let group = WindowGroup {
+                                id: gid,
+                                tabs: vec![stub_tab],
+                                active_tab: tid,
+                                width: WindowWidth::Normal,
+                                maximized: false,
+                            };
+                            strip.window_groups.push(group);
                         }
                     }
                     drop(tree);
@@ -910,7 +909,7 @@ impl ShellDriver {
                 // the flag has to land on the live group as well — the
                 // same pair of writes the maximize click performs.
                 if let Some(row) = self.host_mut().group_row_mut_for_tests(strip_id) {
-                    for g in row.groups.iter_mut() {
+                    for g in &mut row.groups {
                         if g.id == group_id {
                             g.maximized = true;
                         }
@@ -932,7 +931,7 @@ impl ShellDriver {
                             .active_workspace_mut()
                             .and_then(|ws| ws.strips.first_mut())
                         {
-                            for g in strip.window_groups.iter_mut() {
+                            for g in &mut strip.window_groups {
                                 g.width = half;
                             }
                             let gid = 9101u64;
@@ -966,11 +965,11 @@ impl ShellDriver {
                 // Widths only reach the widget tree at construction, which
                 // ran before this; halve the live groups too or the scene
                 // renders one full-width window with its sibling off-edge.
-                if let Some(sid) = placed {
-                    if let Some(row) = self.host_mut().group_row_mut_for_tests(sid) {
-                        for g in row.groups.iter_mut() {
-                            g.set_width(half.to_ui());
-                        }
+                if let Some(sid) = placed
+                    && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
+                {
+                    for g in &mut row.groups {
+                        g.set_width(half.to_ui());
                     }
                 }
                 // The pushed group latches its 420 ms arrival fade off the
@@ -1092,15 +1091,15 @@ impl ShellDriver {
             }
             _ => None,
         };
-        if let Some(r) = curated {
-            if r.area() > 0.0 {
-                return Some(r);
-            }
-            // Fall through to the registry — the curated key may have
-            // missed because its prerequisite chrome state isn't set
-            // (overview closed, ws-settings closed). Registry can still
-            // succeed for an opt-in `test_id` regardless.
+        if let Some(r) = curated
+            && r.area() > 0.0
+        {
+            return Some(r);
         }
+        // Fall through to the registry — the curated key may have
+        // missed because its prerequisite chrome state isn't set
+        // (overview closed, ws-settings closed). Registry can still
+        // succeed for an opt-in `test_id` regardless.
         let registry = self.widget_registry();
         registry.get(name).copied().filter(|r| r.area() > 0.0)
     }
@@ -1289,8 +1288,7 @@ mod tests {
         let counts: Vec<usize> = post_strip.1.iter().map(|(_, t)| t.len()).collect();
         assert!(
             counts.contains(&3) && counts.contains(&1),
-            "expected one group with 3 tabs and one with 1 tab; got {:?}",
-            counts,
+            "expected one group with 3 tabs and one with 1 tab; got {counts:?}",
         );
 
         // Both groups must be laid out: a `structure_dirty` that fails to
@@ -1353,7 +1351,7 @@ mod tests {
 
     /// `resolve_named_rect` must fall through to the widget tree when the
     /// hand-curated table misses: `command_palette_input` isn't in that
-    /// table, but the CommandPalette widget opts in via `test_id()`.
+    /// table, but the `CommandPalette` widget opts in via `test_id()`.
     #[test]
     fn resolve_named_rect_falls_back_to_registry() {
         let mut d = ShellDriver::new((1600, 900));
@@ -1450,7 +1448,7 @@ mod tests {
 
         // Well below the tab bar so we don't hit a pill.
         let body_click = Point::new(
-            (files_rect.x0 + files_rect.x1) / 2.0,
+            f64::midpoint(files_rect.x0, files_rect.x1),
             files_rect.y0 + files_rect.height() * 0.6,
         );
         d.click_at(body_click);
@@ -1494,11 +1492,7 @@ mod tests {
                 .group_at_for_tests(strip_id, i)
                 .expect("group laid out post ctrl+k")
                 .get_rect();
-            assert!(
-                r.area() > 0.0,
-                "group[{i}] must still render (rect={:?})",
-                r
-            );
+            assert!(r.area() > 0.0, "group[{i}] must still render (rect={r:?})");
         }
 
         let active_tab = d.chrome().active_tab_id();

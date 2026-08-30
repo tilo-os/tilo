@@ -4793,7 +4793,7 @@ impl ShellOverlayHost {
                 match logical_key {
                     Key::Named(NamedKey::Escape) => close(&self.chrome),
                     Key::Character(s) if super_down && s.eq_ignore_ascii_case("p") => {
-                        close(&self.chrome)
+                        close(&self.chrome);
                     }
                     Key::Named(NamedKey::ArrowUp) => self.projection.move_selection(-1),
                     Key::Named(NamedKey::ArrowDown) => self.projection.move_selection(1),
@@ -4839,10 +4839,10 @@ impl ShellOverlayHost {
                     }
                     Key::Character(s) if matches!(s.as_str(), "1" | "2" | "3") => {
                         let i = s.parse::<usize>().unwrap_or(1) - 1;
-                        if let Some(mode) = ProjectionMode::ALL.get(i) {
-                            if self.projection.selected_device_supports(*mode) {
-                                self.projection.options.mode = *mode;
-                            }
+                        if let Some(mode) = ProjectionMode::ALL.get(i)
+                            && self.projection.selected_device_supports(*mode)
+                        {
+                            self.projection.options.mode = *mode;
                         }
                     }
                     _ => {}
@@ -11297,8 +11297,7 @@ mod overview_panel_tests {
     fn ws_count(h: &ShellOverlayHost) -> usize {
         h.chrome
             .as_ref()
-            .map(|c| c.borrow().tree().workspaces.len())
-            .unwrap_or(0)
+            .map_or(0, |c| c.borrow().tree().workspaces.len())
     }
 
     /// The room you are in is the block at the top, not a row in the
@@ -11569,9 +11568,9 @@ mod overview_transition_tests {
         let span = spans[0];
 
         // Where the strip starts placing groups: past the wheel slot.
-        let leading = sidebar_width_for_viewport(900.0) as f64 + WHEEL_TO_STRIP_GAP_PX;
+        let leading = f64::from(sidebar_width_for_viewport(900.0)) + WHEEL_TO_STRIP_GAP_PX;
         // The widest a group can be, and therefore where the widest one ends.
-        let widest = ui::widget::WIDTH_MAX_PERMILLE as f64 / 1000.0 * span.usable;
+        let widest = f64::from(ui::widget::WIDTH_MAX_PERMILLE) / 1000.0 * span.usable;
         let right_edge = leading + widest;
 
         assert!(
@@ -11671,8 +11670,7 @@ mod overview_transition_tests {
         let t_mid = h.tick_overview_transition(1.0);
         assert!(
             t_mid > 0.0 && t_mid < 1.0,
-            "mid-flight t should be between 0 and 1, got {}",
-            t_mid
+            "mid-flight t should be between 0 and 1, got {t_mid}"
         );
         h.tick_overview_transition(0.0);
         assert!(
@@ -12055,7 +12053,7 @@ mod palette_dispatch_tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome.clone())
+            .with_chrome(chrome)
             .with_peer_sync_enabled(true);
         assert!(h.peer_sync_enabled());
         h.palette_visible = true;
@@ -12072,7 +12070,7 @@ mod palette_dispatch_tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome.clone())
+            .with_chrome(chrome)
             .with_peer_sync_enabled(true);
         h.palette_visible = true;
         assert!(h.dispatch_palette_command("peer.connect"));
@@ -12885,7 +12883,7 @@ mod modal_curve_tests {
         tree.append_empty_workspace("Second");
         tree.append_empty_workspace("Third");
         let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        let mut h = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         // Aim at the first row's centre via the same geometry helper the
@@ -12955,17 +12953,17 @@ mod overlay_event_absorb_tests {
                 ..Default::default()
             };
             let node = taffy.new_leaf(style).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).unwrap();
             self.rect = Rect::new(
-                origin.x + l.location.x as f64,
-                origin.y + l.location.y as f64,
-                origin.x + l.location.x as f64 + l.size.width as f64,
-                origin.y + l.location.y as f64 + l.size.height as f64,
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
             );
         }
 
@@ -13007,7 +13005,7 @@ mod overlay_event_absorb_tests {
             self.log.borrow_mut().push(label.to_string());
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "RecordingContent"
         }
 
@@ -13192,7 +13190,10 @@ mod overlay_event_absorb_tests {
                  cannot be clicked at all: {:?}",
                 rects.len(),
                 kinds.len(),
-                kinds.iter().map(|k| k.label()).collect::<Vec<_>>()
+                kinds
+                    .iter()
+                    .map(super::super::search::ResourceKind::label)
+                    .collect::<Vec<_>>()
             );
 
             let band = h.host.search_banner_rect();
@@ -13283,7 +13284,7 @@ mod overlay_event_absorb_tests {
             h.host
                 .active_kind_filter
                 .iter()
-                .map(|k| k.label())
+                .map(super::super::search::ResourceKind::label)
                 .collect::<Vec<_>>()
         );
         assert!(
@@ -13562,17 +13563,17 @@ mod tests {
                 ..Default::default()
             };
             let node = taffy.new_leaf(style).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).unwrap();
             self.rect = Rect::new(
-                origin.x + l.location.x as f64,
-                origin.y + l.location.y as f64,
-                origin.x + l.location.x as f64 + l.size.width as f64,
-                origin.y + l.location.y as f64 + l.size.height as f64,
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
             );
         }
 
@@ -13600,7 +13601,7 @@ mod tests {
         ) {
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "StubContent"
         }
 
@@ -14597,8 +14598,7 @@ mod tests {
         let members_pill = h.host.ws_settings_tab_pill_rect(WsTab::Members);
         assert!(
             members_pill.area() > 0.0,
-            "Members pill rect must be populated by draw_ws_settings; got {:?}",
-            members_pill
+            "Members pill rect must be populated by draw_ws_settings; got {members_pill:?}"
         );
         let p = members_pill.center();
 
@@ -14630,8 +14630,7 @@ mod tests {
              missing 1-px backdrop blur from concept §4.1; the un-blurred \
              0.20 scrim let the desktop bleed through the modal so the \
              palette / WS-settings surfaces never read as the focused \
-             layer (got {})",
-            MODAL_SCRIM_ALPHA
+             layer (got {MODAL_SCRIM_ALPHA})"
         );
     }
 
@@ -14648,8 +14647,7 @@ mod tests {
             "surface_white_10 must paint at the concept's `bg-white/10` \
              (rgba8(255, 255, 255, 26)) so the active WS-settings tab \
              pill reads as a soft glass-on-glass treatment, not a \
-             heavy black overlay (got {:?})",
-            c
+             heavy black overlay (got {c:?})"
         );
     }
 
@@ -14690,14 +14688,12 @@ mod tests {
             let s = colors.surfaces.scrim.to_rgba8();
             let base = colors.surfaces.base.to_rgba8();
             let luma = |c: &ui::peniko::color::Rgba8| {
-                0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32
+                0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b)
             };
             assert!(
                 luma(&s) < luma(&base),
                 "the {name} theme's scrim must be darker than its base \
-                 surface (scrim {:?} vs base {:?})",
-                s,
-                base
+                 surface (scrim {s:?} vs base {base:?})"
             );
             assert_eq!(
                 s.a, 255,
@@ -14763,8 +14759,7 @@ mod tests {
             "MODAL_SURFACE_ALPHA must stay >= 0.90 so the palette + \
              workspace-settings modal read as opaque chrome; a lower \
              alpha reintroduces the 2026-07-09 legibility complaint \
-             (got {})",
-            MODAL_SURFACE_ALPHA
+             (got {MODAL_SURFACE_ALPHA})"
         );
     }
 }
@@ -15013,7 +15008,7 @@ mod resync_strips_tests {
     }
 
     fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
-        let tab_id = (id as u64) + 1000;
+        let tab_id = id + 1000;
         StateGroup {
             id,
             tabs: vec![Tab {
@@ -15115,10 +15110,7 @@ mod resync_strips_tests {
     fn resync_no_op_when_revision_unchanged() {
         let (tree, strip_id, group_id) = one_group_seed();
         let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
-        let id_before = host
-            .group_at_for_tests(strip_id, 0)
-            .map(|g| g.id)
-            .unwrap_or(0);
+        let id_before = host.group_at_for_tests(strip_id, 0).map_or(0, |g| g.id);
         assert_eq!(id_before, group_id);
         // First tick observes initial revision and caches it.
         let _ = host.take_structure_dirty();

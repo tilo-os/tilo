@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(fw.host_override(Instant::now()), Some(Denial::KillSwitch));
         // Time does not lift it — only the host does.
         assert_eq!(
-            fw.host_override(Instant::now() + Duration::from_secs(3600)),
+            fw.host_override(Instant::now() + Duration::from_hours(1)),
             Some(Denial::KillSwitch),
         );
         fw.clear_kill_switch();

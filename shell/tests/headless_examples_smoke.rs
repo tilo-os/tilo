@@ -1,6 +1,6 @@
 //! CI gate for the `scripts/headless-examples/` Python scripts. Each
 //! advertises a documented, copy-pastable flow (full-loop.py =
-//! spawn+drive+snapshot, library-demo.py = same via the NiriosClient API);
+//! spawn+drive+snapshot, library-demo.py = same via the `NiriosClient` API);
 //! without a gate they bit-rot the next time someone tweaks the wire
 //! format or renames a `test_id`.
 //!

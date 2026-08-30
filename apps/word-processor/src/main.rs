@@ -199,8 +199,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs() as i64);
     let base = now - 5 * 3600;
 
     // Session one: five more sentences, half a minute apart.

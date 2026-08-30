@@ -2034,7 +2034,7 @@ mod tests {
         net.handle_app_crdt_signed_message(
             xaver_handle,
             app.to_string(),
-            cluster.clone(),
+            cluster,
             String::new(),
             collab_fixtures::signed_op(
                 &sk,
@@ -2047,7 +2047,7 @@ mod tests {
             ),
         );
 
-        let events = poll_until(&mut watcher, 2, Duration::from_millis(2000));
+        let events = poll_until(&mut watcher, 2, Duration::from_secs(2));
         let attributions: Vec<String> = events
             .iter()
             .filter_map(|e| match e {
@@ -2150,7 +2150,7 @@ mod tests {
         }
     }
 
-    /// Connect a CollaborationManager to `path` announcing `app_id` in
+    /// Connect a `CollaborationManager` to `path` announcing `app_id` in
     /// `cluster_id` via the env vars `auto_hello_env` reads.
     fn connect_manager_as(path: &PathBuf, app_id: &str, cluster_id: &str) -> CollaborationManager {
         // SAFETY: tests set these env vars serially before each call;
@@ -2343,7 +2343,7 @@ mod tests {
 
         let mut here = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_snapshots_within(&mut on_record, &mut here, Duration::from_millis(2000)),
+            absorb_snapshots_within(&mut on_record, &mut here, Duration::from_secs(2)),
             1,
             "the app on that record receives the snapshot"
         );
@@ -2357,7 +2357,7 @@ mod tests {
         // since a document merged into the wrong record can't be undone.
         let mut elsewhere = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_snapshots_within(&mut on_other, &mut elsewhere, Duration::from_millis(1000)),
+            absorb_snapshots_within(&mut on_other, &mut elsewhere, Duration::from_secs(1)),
             0,
             "the app on a different record receives nothing"
         );
@@ -2461,7 +2461,7 @@ mod tests {
 
         let mut theirs_doc = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_within(&mut on_theirs, &mut theirs_doc, Duration::from_millis(2000)),
+            absorb_within(&mut on_theirs, &mut theirs_doc, Duration::from_secs(2)),
             1,
             "the app on that record receives it"
         );
@@ -2472,7 +2472,7 @@ mod tests {
 
         let mut mine_doc = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_within(&mut on_mine, &mut mine_doc, Duration::from_millis(1000)),
+            absorb_within(&mut on_mine, &mut mine_doc, Duration::from_secs(1)),
             0,
             "the app on a different record receives nothing"
         );
@@ -2565,13 +2565,13 @@ mod tests {
         let _sub = handle.subscribe_rooms(
             vec![TEST_CLUSTER.to_string()],
             Box::new(move |event, route| {
-                if let CollabEvent::RemotePresenceUpdate { payload, .. } = event {
-                    if let ui::collaboration::PresencePayload::Pointer { x, .. } = payload {
-                        sink_heard
-                            .lock()
-                            .unwrap()
-                            .push((route.cluster_id.clone(), format!("{x}")));
-                    }
+                if let CollabEvent::RemotePresenceUpdate { payload, .. } = event
+                    && let ui::collaboration::PresencePayload::Pointer { x, .. } = payload
+                {
+                    sink_heard
+                        .lock()
+                        .unwrap()
+                        .push((route.cluster_id.clone(), format!("{x}")));
                 }
             }),
         );
@@ -2590,7 +2590,7 @@ mod tests {
             payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 1.0 },
         });
         words.send(CollabRequest::Presence {
-            key: key.clone(),
+            key: key,
             payload: ui::collaboration::PresencePayload::Pointer { x: 2.0, y: 2.0 },
         });
         elsewhere.send(CollabRequest::Presence {
@@ -3062,10 +3062,10 @@ mod tests {
 
     /// Read one flag's value out of an argv, or panic naming the flag.
     fn flag_value(argv: &[String], flag: &str) -> String {
-        argv.windows(2)
-            .find(|w| w[0] == flag)
-            .map(|w| w[1].clone())
-            .unwrap_or_else(|| panic!("argv is missing {flag}: {argv:?}"))
+        argv.windows(2).find(|w| w[0] == flag).map_or_else(
+            || panic!("argv is missing {flag}: {argv:?}"),
+            |w| w[1].clone(),
+        )
     }
 
     /// The environment a child opened into `workspace` actually
@@ -3201,7 +3201,7 @@ mod tests {
         let mut second =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "bob");
 
-        wait_for_announced(&handle, 2, Duration::from_millis(2000));
+        wait_for_announced(&handle, 2, Duration::from_secs(2));
         let _ = first.poll();
         let _ = second.poll();
 
@@ -3209,7 +3209,7 @@ mod tests {
             data: b"same-room".to_vec(),
         });
 
-        let received = poll_until(&mut second, 1, Duration::from_millis(1000));
+        let received = poll_until(&mut second, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&received),
             vec![b"same-room".to_vec()],
@@ -3251,7 +3251,7 @@ mod tests {
         let mut other_workspace =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere.room, "carol");
 
-        wait_for_announced(&handle, 3, Duration::from_millis(2000));
+        wait_for_announced(&handle, 3, Duration::from_secs(2));
         let _ = sender.poll();
         let _ = same_workspace.poll();
         let _ = other_workspace.poll();
@@ -3260,7 +3260,7 @@ mod tests {
             data: b"workspace-seven-only".to_vec(),
         });
 
-        let heard = poll_until(&mut same_workspace, 1, Duration::from_millis(1000));
+        let heard = poll_until(&mut same_workspace, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&heard),
             vec![b"workspace-seven-only".to_vec()],
@@ -3268,7 +3268,7 @@ mod tests {
              got {heard:?}"
         );
 
-        let leaked = poll_until(&mut other_workspace, 1, Duration::from_millis(1000));
+        let leaked = poll_until(&mut other_workspace, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&leaked).is_empty(),
             "an app opened in workspace {} must receive no CRDT payload \
@@ -3295,10 +3295,10 @@ mod tests {
         );
         let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace.room);
         let lookup = |key: &str| {
-            env.iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| panic!("sandbox env is missing {key}: {env:?}"))
+            env.iter().find(|(k, _)| k == key).map_or_else(
+                || panic!("sandbox env is missing {key}: {env:?}"),
+                |(_, v)| v.clone(),
+            )
         };
 
         assert_eq!(
@@ -3403,7 +3403,7 @@ mod tests {
 
         // The process dies; a new one loads the same state file.
         let (mut second_run, _) = crate::shell::persist::load_or_default(&state_path);
-        second_run.persist_path = Some(state_path.clone());
+        second_run.persist_path = Some(state_path);
         // Boot-time migration must find nothing to do: re-minting an
         // already-identified workspace is the bug this test catches.
         let minted = second_run.adopt_roomless_workspaces();
@@ -3436,7 +3436,7 @@ mod tests {
             "carol",
         );
 
-        wait_for_announced(&handle, 3, Duration::from_millis(2000));
+        wait_for_announced(&handle, 3, Duration::from_secs(2));
         let _ = before.poll();
         let _ = after.poll();
         let _ = elsewhere.poll();
@@ -3445,7 +3445,7 @@ mod tests {
             data: b"still-the-same-room".to_vec(),
         });
 
-        let heard = poll_until(&mut before, 1, Duration::from_millis(1000));
+        let heard = poll_until(&mut before, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&heard),
             vec![b"still-the-same-room".to_vec()],
@@ -3454,7 +3454,7 @@ mod tests {
              Got {heard:?}"
         );
 
-        let leaked = poll_until(&mut elsewhere, 1, Duration::from_millis(1000));
+        let leaked = poll_until(&mut elsewhere, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&leaked).is_empty(),
             "the other workspace must still be a different room after the \
@@ -3573,9 +3573,9 @@ mod tests {
             "carol",
         );
 
-        wait_for_announced(&host_broker, 1, Duration::from_millis(2000));
-        wait_for_announced(&guest_broker, 2, Duration::from_millis(2000));
-        wait_for_announced(&stranger_broker, 1, Duration::from_millis(2000));
+        wait_for_announced(&host_broker, 1, Duration::from_secs(2));
+        wait_for_announced(&guest_broker, 2, Duration::from_secs(2));
+        wait_for_announced(&stranger_broker, 1, Duration::from_secs(2));
         let _ = host_app.poll();
         let _ = guest_app.poll();
         let _ = guest_before_invite.poll();
@@ -3587,23 +3587,23 @@ mod tests {
         deliver_over_the_wire(&guest_broker, &wire_route, &payload);
         deliver_over_the_wire(&stranger_broker, &wire_route, &payload);
 
-        let guest_heard = poll_until(&mut guest_app, 1, Duration::from_millis(1000));
+        let guest_heard = poll_until(&mut guest_app, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&guest_heard),
-            vec![payload.clone()],
+            vec![payload],
             "an app on a host that accepted the invite must receive the \
              inviter's delta — that is the whole point of the invite \
              carrying the room. Got {guest_heard:?}"
         );
 
-        let stranger_heard = poll_until(&mut stranger_app, 1, Duration::from_millis(1000));
+        let stranger_heard = poll_until(&mut stranger_app, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&stranger_heard).is_empty(),
             "an app on a host that was never invited must receive nothing \
              from the same broadcast frame; it received {:?}",
             crdt_payloads(&stranger_heard),
         );
-        let pre_invite_heard = poll_until(&mut guest_before_invite, 1, Duration::from_millis(1000));
+        let pre_invite_heard = poll_until(&mut guest_before_invite, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&pre_invite_heard).is_empty(),
             "an app the guest opened before accepting the invite is in the \

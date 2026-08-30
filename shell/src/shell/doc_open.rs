@@ -718,7 +718,7 @@ mod tests {
         crate::shell::install_document_opener(&chrome);
 
         let mut explorer = file_explorer::FileExplorerWidget::new();
-        explorer.navigate(files.clone());
+        explorer.navigate(files);
         let idx = explorer
             .displayed_entries()
             .iter()

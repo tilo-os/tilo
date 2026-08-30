@@ -499,7 +499,7 @@ mod tests {
     fn detail_cache_round_trips() {
         let mut caches = Caches::default();
         let app = AppEntry::flathub_stub("a.b.C", "C", "dev", "sum", Category::Graphics);
-        caches.detail.insert("a.b.C".into(), app.clone());
+        caches.detail.insert("a.b.C".into(), app);
         assert!(caches.detail.contains(&"a.b.C".to_string()));
         assert_eq!(caches.detail.get(&"a.b.C".to_string()).unwrap().name, "C");
     }

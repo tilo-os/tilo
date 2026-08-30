@@ -322,7 +322,7 @@ mod tests {
         let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
-            let mut saver = Autosave::spawn(store, Duration::from_secs(600));
+            let mut saver = Autosave::spawn(store, Duration::from_mins(10));
             saver.seed(&mut doc);
             doc.put(&ROOT, "k", "v").unwrap();
             saver.request(&mut doc);

@@ -99,8 +99,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Pre-layout scenario setup (view mode + selection must be set before
         // the tree is built so the composed view captures them).
         match scenario.as_deref() {
-            Some("grid") | Some("thumbnails") | Some("thumbnails-fs") => {
-                widget.set_view_mode(file_explorer::model::ViewMode::Grid)
+            Some("grid" | "thumbnails" | "thumbnails-fs") => {
+                widget.set_view_mode(file_explorer::model::ViewMode::Grid);
             }
             Some("select") => {
                 widget.debug_select(&[7, 8]);
@@ -592,7 +592,7 @@ fn render_shot_to_png(
         Some("menu") => {
             // Right-click context menu + the "New File" template flyout, anchored
             // in the content pane.
-            widget.debug_show_templates_menu(Point::new((w as f64) * 0.45, (h as f64) * 0.34));
+            widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
         }
         Some("reorder") => {
             // Grab a favourite and lift it two rows up — mid-drag.
@@ -627,7 +627,7 @@ fn render_shot_to_png(
             // alongside the accent selection.
             let ev = winit::event::WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new((w as f64) * 0.35, 560.0),
+                position: winit::dpi::PhysicalPosition::new(f64::from(w) * 0.35, 560.0),
             };
             let mut handled = false;
             let mut focus = None;
@@ -651,7 +651,7 @@ fn render_shot_to_png(
     // warm-up draw kicks off generation for the visible cells, then we wait for
     // the pool to settle before the frame we keep — so the shot captures real
     // previews, never the loading placeholders.
-    if matches!(scenario, Some("thumbnails") | Some("thumbnails-fs")) {
+    if matches!(scenario, Some("thumbnails" | "thumbnails-fs")) {
         let mut warm = Scene::new();
         widget.draw_with_presence(
             &mut warm,

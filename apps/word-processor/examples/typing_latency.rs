@@ -143,7 +143,7 @@ fn type_and_time(paragraphs: usize, chars: usize) -> (Vec<u64>, [u64; 6]) {
     );
 
     let n = per_char.len().max(1) as u64;
-    for p in passes.iter_mut() {
+    for p in &mut passes {
         *p /= n;
     }
     (per_char, passes)
@@ -196,7 +196,11 @@ fn report(label: &str, per_char: &[u64]) {
         .collect();
     if !spikes.is_empty() {
         let gaps: Vec<usize> = spikes.windows(2).map(|w| w[1] - w[0]).collect();
-        let shown: Vec<String> = spikes.iter().take(12).map(|i| i.to_string()).collect();
+        let shown: Vec<String> = spikes
+            .iter()
+            .take(12)
+            .map(std::string::ToString::to_string)
+            .collect();
         println!(
             "{:>28}   {} characters cost >4× the median, at #{}{}   gaps: {:?}",
             "",
