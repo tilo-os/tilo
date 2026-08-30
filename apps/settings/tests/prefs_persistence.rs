@@ -280,9 +280,19 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
         "the password must not appear in the plaintext store JSON"
     );
 
-    // Now Remove it via the trash button's key.
+    // Now request removal via the trash button's key. Destructive account
+    // removal is deliberately a two-stage action, so exercise the same
+    // explicit confirmation the UI requires.
     let remove_key = format!("settings.accounts.remove.{id}");
     let _ = doc.put(&root, remove_key.as_str(), true);
+    pane.sync(&mut doc, &root);
+    assert!(
+        !AccountDirectory::load()
+            .views_of(AccountKind::Mail)
+            .is_empty(),
+        "the first action only opens the removal confirmation"
+    );
+    let _ = doc.put(&root, settings::panes::accounts::REMOVE_CONFIRM_KEY, true);
     pane.sync(&mut doc, &root);
 
     // The directory now reports empty for the Email kind — the account is gone

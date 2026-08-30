@@ -652,7 +652,11 @@ mod tests {
     use crate::shell::state::WorkspaceTree;
 
     fn new_chrome() -> Chrome {
-        ChromeState::new(WorkspaceTree::default())
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        chrome
     }
 
     #[test]
@@ -990,7 +994,7 @@ mod tests {
         assert_eq!(ch.notification_history().len(), 1);
         let h = &ch.notification_history()[0];
         assert_eq!(h.dbus_id, Some(77));
-        assert_eq!(h.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(h.app_name.as_deref(), Some("org.mail"));
         assert_eq!(h.source_workspace, Some(9));
     }
 
