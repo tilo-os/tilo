@@ -604,6 +604,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     google-noto-color-emoji-fonts \
     google-noto-sans-symbols-fonts \
     google-noto-sans-symbols-2-fonts \
+    google-noto-sans-math-fonts \
     google-noto-sans-cjk-fonts \
     google-noto-sans-arabic-fonts \
     google-noto-sans-hebrew-fonts \
