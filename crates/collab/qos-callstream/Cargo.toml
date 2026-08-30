@@ -2,6 +2,8 @@
 name = "qos-callstream"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "qOS reusable video-streaming stack: H.264 encode/decode, per-subscriber frame transport substrate, and the throttled screen/camera share composition shared by the compositor's collab surface streaming and the chat call app."
 
 [lib]

@@ -2,6 +2,8 @@
 name = "runtime-fs"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 # qOS runtime — workspace filesystem client. Talks to the launcher's
 # in-process fs proxy over a Unix-socket Cap'n Proto channel passed

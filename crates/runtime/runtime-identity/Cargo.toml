@@ -2,6 +2,8 @@
 name = "runtime-identity"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 # qOS runtime — user-identity signing client and host-side lifecycle store.
 # Packaged apps receive a connected broker descriptor and never a key path;

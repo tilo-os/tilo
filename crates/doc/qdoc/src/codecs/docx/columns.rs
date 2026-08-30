@@ -43,21 +43,15 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:num")
-                    .and_then(|a| {
-                        a.unescape_value()
-                            .ok()
-                            .and_then(|v| v.trim().parse::<u32>().ok())
-                    })
+                    .and_then(|a| crate::codecs::unescape_attr(&a))
+                    .and_then(|v| v.trim().parse::<u32>().ok())
                     .unwrap_or(1);
                 let gap = e
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:space")
-                    .and_then(|a| {
-                        a.unescape_value()
-                            .ok()
-                            .and_then(|v| v.trim().parse::<f64>().ok())
-                    })
+                    .and_then(|a| crate::codecs::unescape_attr(&a))
+                    .and_then(|v| v.trim().parse::<f64>().ok())
                     .map(|twips| (twips / TWIPS_PER_PX * 100.0).round() / 100.0);
                 return Some((num, gap));
             }
