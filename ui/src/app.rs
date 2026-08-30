@@ -230,6 +230,10 @@ pub struct App {
     /// tree each tick for [`crate::widget::Widget::appearance_intent`] and
     /// re-themes live.
     pub appearance_reconcile: bool,
+    /// Shared settings-file watcher for OS-wide theme changes made by Theme
+    /// Studio. Throttled so the render loop does not stat the file per frame.
+    theme_store_stamp: Option<std::time::SystemTime>,
+    last_theme_store_check: Instant,
     modifiers: winit::event::Modifiers,
 
     nav_gestures: crate::gesture::NavGestureRecognizer,
@@ -334,10 +338,29 @@ pub struct App {
 
     /// Wins over the automatic env/package-id/binary-name resolution.
     window_title: Option<String>,
+    /// Wins over `QOS_PACKAGE_ID`/binary-name resolution for the Wayland
+    /// `xdg_toplevel.app_id`. System surfaces use this as a stable identity.
+    window_app_id: Option<String>,
 }
 
 impl App {
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
+        Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
+    }
+
+    /// Construct an app with an explicitly connected collaboration manager.
+    ///
+    /// Launchers normally use [`Self::new`], which discovers the inherited
+    /// runtime service. Headless hosts and integration harnesses already own
+    /// a connected endpoint, so accepting it here avoids process-global
+    /// environment mutation and keeps those callers on the production typed
+    /// transport.
+    pub fn with_collaboration_manager(
+        state: State,
+        root_widget: Box<dyn Widget>,
+        collab_manager: CollaborationManager,
+    ) -> Self {
+        let configured_theme = Theme::configured();
         let mut app = Self {
             state,
             root_widget,
@@ -352,17 +375,20 @@ impl App {
             // Finalised below, once base_theme/a11y/text_scale all exist.
             last_frame_size: None,
             last_layout_px: None,
-            theme: Theme::dark(),
+            theme: configured_theme.clone(),
             debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
             focusable_order: Vec::new(),
             autofocus_first: false,
             autofocus_on_structure_change: false,
             appearance_reconcile: false,
+            theme_store_stamp: settings_store::settings_path()
+                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            last_theme_store_check: Instant::now(),
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
-            collab_manager: CollaborationManager::new(),
+            collab_manager,
             local_author: crate::collaboration::local_user_id(),
             undo_status: crate::undo::UndoStatus::empty(),
             undo_status_rev: None,
@@ -391,8 +417,10 @@ impl App {
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
             // Auto-enable if the shell mirrored QOS_A11Y_* into this sandbox.
-            screen_reader: if Self::screen_reader_env_enabled() {
-                Some(crate::screen_reader::ScreenReader::new())
+            screen_reader: if Self::screen_reader_env_enabled()
+                || Self::persisted_accessibility_bool("screen_reader")
+            {
+                Some(Self::configured_screen_reader())
             } else {
                 None
             },
@@ -400,7 +428,7 @@ impl App {
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,
-            base_theme: Theme::dark(),
+            base_theme: configured_theme,
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
@@ -415,6 +443,7 @@ impl App {
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
+            window_app_id: None,
         };
 
         app.a11y.high_contrast = Self::high_contrast_env_enabled();
@@ -532,6 +561,44 @@ impl App {
             }
         }
         false
+    }
+
+    fn persisted_accessibility_bool(key: &str) -> bool {
+        settings_store::load_section("accessibility")
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    fn configure_screen_reader(reader: &mut crate::screen_reader::ScreenReader) {
+        let section = settings_store::load_section("accessibility");
+        let rate = section
+            .get("screen_reader_rate")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(100)
+            .clamp(50, 200) as f32
+            / 100.0;
+        reader.set_rate(rate);
+        let voice = section
+            .get("screen_reader_voice")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|voice| match voice {
+                "english_us" => Some("en-us"),
+                "english_gb" => Some("en-gb"),
+                "german" => Some("de"),
+                "french" => Some("fr"),
+                "spanish" => Some("es"),
+                _ => None,
+            });
+        if let Some(voice) = voice {
+            reader.set_voice(voice);
+        }
+    }
+
+    fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
+        let mut reader = crate::screen_reader::ScreenReader::new();
+        Self::configure_screen_reader(&mut reader);
+        reader
     }
 
     /// Shared truthy-env-var gate for the low-vision flags: non-empty, not
@@ -662,7 +729,7 @@ impl App {
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         match (enabled, self.screen_reader.is_some()) {
             (true, false) => {
-                self.screen_reader = Some(crate::screen_reader::ScreenReader::new());
+                self.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
             (false, true) => {
@@ -898,6 +965,34 @@ impl App {
             self.structure_dirty = true;
         }
         changed
+    }
+
+    fn reconcile_configured_theme(&mut self) -> bool {
+        if self.last_theme_store_check.elapsed() < Duration::from_millis(750) {
+            return false;
+        }
+        self.last_theme_store_check = Instant::now();
+        let stamp = settings_store::settings_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if stamp == self.theme_store_stamp {
+            return false;
+        }
+        self.theme_store_stamp = stamp;
+        self.base_theme = Theme::configured();
+        // Screen reader is a device/personal setting, not a per-application
+        // opt-in. Every qOS app watches the same file and changes its real
+        // narrator lifecycle when Personal Settings changes it.
+        let configured_reader = Self::persisted_accessibility_bool("screen_reader")
+            || Self::screen_reader_env_enabled();
+        self.set_screen_reader_enabled(configured_reader);
+        if let Some(reader) = self.screen_reader.as_mut() {
+            Self::configure_screen_reader(reader);
+        }
+        self.a11y.screen_reader = self.screen_reader.is_some();
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+        true
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -1732,6 +1827,30 @@ impl App {
         }
     }
 
+    /// The platform IME contract for the focused widget. A field opts in via
+    /// [`Widget::ime_purpose`]; buttons and other focusable controls therefore
+    /// never activate `text-input-v3` accidentally.
+    fn ime_window_state(&self) -> Option<ImeWindowState> {
+        let id = self.focused_node?;
+        let &widget = self.node_map.get(&id)?;
+        let purpose = unsafe { (*widget).ime_purpose() }?;
+        let rect = unsafe { (*widget).ime_cursor_rect() }?;
+        let bounded = |v: f64| {
+            if v.is_finite() {
+                v.max(0.0).min(f64::from(u32::MAX)).round() as u32
+            } else {
+                0
+            }
+        };
+        Some(ImeWindowState {
+            purpose,
+            x: bounded(rect.x0),
+            y: bounded(rect.y0),
+            width: bounded(rect.width()).max(1),
+            height: bounded(rect.height()).max(1),
+        })
+    }
+
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -2312,6 +2431,12 @@ impl App {
         self
     }
 
+    /// Set the stable Wayland application id announced by this window.
+    pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
+        self.window_app_id = Some(app_id.into());
+        self
+    }
+
     /// `None` clears the override and restores automatic resolution.
     pub fn set_window_title(&mut self, title: Option<String>) {
         self.window_title = title;
@@ -2451,8 +2576,7 @@ impl App {
             render: None,
             a11y_adapter: None,
             a11y_proxy,
-            ime_allowed: false,
-            ime_cursor_rect: None,
+            ime_state: None,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
@@ -2567,9 +2691,18 @@ struct AppHandler {
     /// running.
     a11y_adapter: Option<accesskit_winit::Adapter>,
     a11y_proxy: EventLoopProxy<UserEvent>,
-    /// Cached so a steady frame does not issue platform text-input requests.
-    ime_allowed: bool,
-    ime_cursor_rect: Option<vello::kurbo::Rect>,
+    /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
+    /// emitting a protocol commit on every idle loop.
+    ime_state: Option<ImeWindowState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImeWindowState {
+    purpose: winit::window::ImePurpose,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
 }
 
 impl AppHandler {
@@ -2615,6 +2748,30 @@ impl AppHandler {
         // After this, every GPU call happens on the `ui-render` thread.
         self.render = Some(spawn_render_thread(render_cx, surface, renderer));
         Ok(())
+    }
+
+    fn sync_ime(&mut self, window: &Window) {
+        let next = self.app.ime_window_state();
+        if next == self.ime_state {
+            return;
+        }
+        match next {
+            Some(intent) => {
+                // Apply purpose before enabling: winit's Wayland backend
+                // commits the enable immediately, so the first activation
+                // must already carry the right content type. Cursor geometry
+                // follows enable because winit intentionally ignores cursor
+                // updates while IME is disabled.
+                window.set_ime_purpose(intent.purpose);
+                window.set_ime_allowed(true);
+                window.set_ime_cursor_area(
+                    winit::dpi::LogicalPosition::new(intent.x, intent.y),
+                    winit::dpi::LogicalSize::new(intent.width, intent.height),
+                );
+            }
+            None => window.set_ime_allowed(false),
+        }
+        self.ime_state = next;
     }
 }
 
@@ -2746,8 +2903,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
+            let package_id = std::env::var("QOS_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
-                std::env::var("QOS_PACKAGE_ID").ok().as_deref(),
+                self.app.window_app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
                     .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -2834,8 +2992,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let Some(render) = self.render.as_mut() else {
                     return;
                 };
-                let ime_allowed_cache = &mut self.ime_allowed;
-                let ime_rect_cache = &mut self.ime_cursor_rect;
                 let app = &mut self.app;
                 // A `Reconfigured` or `Skipped` previous frame re-requests a
                 // redraw so the user doesn't see a stale image.
@@ -3028,33 +3184,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.theme,
                     &app.presence_ctx,
                 );
-
-                // Text widgets publish the caret rectangle after shaping, so
-                // the platform IME candidate window follows the exact glyph
-                // position (including wrapping, scrolling, and RTL). A
-                // focused non-text control returns `None`, disabling IME.
-                let ime_rect = app.focused_node.and_then(|id| {
-                    app.node_map
-                        .get(&id)
-                        .and_then(|&widget| unsafe { (*widget).ime_cursor_rect() })
-                });
-                let ime_allowed = ime_rect.is_some();
-                if *ime_allowed_cache != ime_allowed {
-                    window.set_ime_allowed(ime_allowed);
-                    *ime_allowed_cache = ime_allowed;
-                }
-                if ime_rect != *ime_rect_cache {
-                    if let Some(rect) = ime_rect {
-                        window.set_ime_cursor_area(
-                            winit::dpi::LogicalPosition::new(rect.x0.max(0.0), rect.y0.max(0.0)),
-                            winit::dpi::LogicalSize::new(
-                                rect.width().max(1.0),
-                                rect.height().max(1.0),
-                            ),
-                        );
-                    }
-                    *ime_rect_cache = ime_rect;
-                }
 
                 if let Some(ap) = app.action_palette.as_mut() {
                     let win_w = f64::from(width) / f64::from(scale_factor);
@@ -3777,6 +3906,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        self.sync_ime(&window);
         let app = &mut self.app;
 
         // Catches a compositor reconfigure that changes `inner_size()`
@@ -3835,7 +3965,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        if app.reconcile_appearance() {
+        // Run both: Settings' open Appearance pane may intentionally override
+        // the file-level base with its richer live accessibility intent.
+        let configured_changed = app.reconcile_configured_theme();
+        let appearance_changed = app.reconcile_appearance();
+        if configured_changed || appearance_changed {
             app.needs_sync = true;
             window.request_redraw();
         }

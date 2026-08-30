@@ -33,10 +33,11 @@
 //! ## Manual verification
 //!
 //! Run the OSK with `--input-method` under the qOS compositor (or any compositor
-//! advertising `zwp_input_method_manager_v2`). Focus a number field: the keyboard
-//! should appear showing the numeric layout. Focus an email field: it switches to
-//! the email layout. Blur the field (focus something non-text): it hides. Typing
-//! on the keyboard inserts characters into the focused field.
+//! advertising `zwp_input_method_manager_v2`). Focus a native qOS text field:
+//! the keyboard should appear; focus a password or terminal field and its layout
+//! changes. A third-party toolkit sending numeric/email content purposes selects
+//! those dedicated layouts too. Blur the field (focus something non-text): it
+//! hides. Typing on the keyboard inserts characters into the focused field.
 
 use crate::layout::InputPurpose;
 
@@ -244,6 +245,10 @@ mod wayland {
         tx: Sender<ImEvent>,
         /// Number of `done` events received — the serial `commit` must carry.
         serial: u32,
+        /// The compositor permits one input method per seat. A second client
+        /// receives `unavailable`; treating that as a working backend would
+        /// leave a permanently hidden, non-functional keyboard.
+        unavailable: bool,
     }
 
     impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -305,9 +310,11 @@ mod wayland {
                     state.serial = state.serial.wrapping_add(1);
                     Some(ImEvent::Done)
                 }
-                // Surrounding-text / change-cause / unavailable carry no auto-show
-                // signal; ignore them. (`unavailable` means another IM already
-                // grabbed the seat — we simply produce no events.)
+                Event::Unavailable => {
+                    state.unavailable = true;
+                    None
+                }
+                // Surrounding-text / change-cause carry no auto-show signal.
                 _ => None,
             };
             if let Some(ev) = decoded {
@@ -334,9 +341,18 @@ mod wayland {
             let (tx, rx) = channel();
             let input_method = manager.get_input_method(&seat, &qh, ());
 
-            let mut state = State { tx, serial: 0 };
+            let mut state = State {
+                tx,
+                serial: 0,
+                unavailable: false,
+            };
             // Flush the get_input_method request.
             queue.roundtrip(&mut state).ok()?;
+            if state.unavailable {
+                input_method.destroy();
+                let _ = queue.flush();
+                return None;
+            }
 
             Some(Self {
                 conn,

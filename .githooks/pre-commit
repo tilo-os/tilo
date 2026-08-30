@@ -12,6 +12,7 @@ note() { printf '  %s\n' "$*" >&2; }
 # Every crate on disk must be a workspace member. 37 apps once dropped out of
 # the build this way and nothing noticed.
 "$root/scripts/check-workspace-complete.sh"
+python3 "$root/tools/check_app_text_contract.py"
 
 staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
 

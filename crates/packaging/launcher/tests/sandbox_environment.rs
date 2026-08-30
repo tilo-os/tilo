@@ -39,6 +39,7 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
         "QOS_USER_IDENTITY",
         "/home/somebody/.config/qos/identity/primary.json",
     ),
+    ("QOS_IDENTITY_BROKER_FD", "42"),
 ];
 
 fn build_fixture(out_dir: &Path) -> PathBuf {
@@ -84,6 +85,8 @@ fn manifest() -> MinimalManifest {
         },
         cli_commands: Vec::new(),
         opens_ext: Vec::new(),
+        opens_mime: Vec::new(),
+        opens_schemes: Vec::new(),
     }
 }
 
@@ -239,6 +242,7 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
         "QOS_APP_DIR".to_string(),
         "QOS_USER_HOME".to_string(),
         "QOS_USER_IDENTITY".to_string(),
+        "QOS_IDENTITY_BROKER_FD".to_string(),
         "QOS_WORKSPACE_ID".to_string(),
         "QOS_WORKSPACE_ROOTS".to_string(),
         "QOS_PARTICIPATION".to_string(),

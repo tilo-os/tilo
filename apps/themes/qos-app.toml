@@ -15,7 +15,7 @@
 
 [package]
 id       = "dev.qos.themes"
-name     = "Themes"
+name     = "Theme Studio"
 category = "System"
 version  = "0.1.0"
 kind     = "app"

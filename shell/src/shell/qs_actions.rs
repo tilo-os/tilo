@@ -6,10 +6,13 @@
 //! churn; new code should import `os_actions::*` directly.
 
 pub use os_actions::{
-    BtDeviceInfo, DEFAULT_TIMEOUT, PowerProfile, WifiNetworkInfo, connect_wifi, get_bluetooth,
-    get_brightness, get_power_profile, get_volume, get_wifi, list_bt_devices, list_wifi_networks,
-    log_get, log_result, set_bluetooth, set_brightness, set_mute, set_power_profile, set_volume,
-    set_wifi, toggle_mute,
+    BatteryInfo, BtDeviceInfo, DEFAULT_TIMEOUT, FirmwareUpdate, PowerProfile, PrivacyStatus,
+    RadioState, VpnConnectionInfo, WifiNetworkInfo, WiredInfo, connect_wifi, get_bluetooth,
+    get_brightness, get_firmware_updates, get_power_profile, get_privacy_status, get_radio_state,
+    get_volume, get_wifi, get_wired, list_bt_devices, list_vpn_connections, list_wifi_networks,
+    log_get, log_result, set_airplane_mode, set_bluetooth, set_brightness, set_hotspot,
+    set_mobile_broadband, set_mute, set_power_profile, set_volume, set_vpn_connection, set_wifi,
+    set_wired, toggle_mute,
 };
 
 // Historical names; `os-actions` itself uses the neutral `Dispatcher`.

@@ -1,6 +1,77 @@
 use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 use crate::tokens::{PaletteSpec, Tokens};
+use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
+
+pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 1;
+
+/// Stable, app-independent representation of a user-authored OS theme.
+/// Theme Studio edits it; the shell and every UI app consume it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CustomThemeSpec {
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub dark_base: bool,
+    pub accent: [u8; 3],
+    pub accent_hover: [u8; 3],
+    pub surface_base: [u8; 3],
+    pub surface_raised: [u8; 3],
+    pub text_primary: [u8; 3],
+    pub text_dim: [u8; 3],
+    pub border: [u8; 3],
+    pub success: [u8; 3],
+    pub warning: [u8; 3],
+    pub danger: [u8; 3],
+    pub info: [u8; 3],
+    pub radius_px: f32,
+    pub spacing_px: f32,
+    pub font: String,
+}
+
+impl CustomThemeSpec {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != CUSTOM_THEME_SCHEMA_VERSION {
+            return Err("unsupported custom theme schema");
+        }
+        if self.id.trim().is_empty() || self.id.len() > 128 || self.id.chars().any(char::is_control)
+        {
+            return Err("invalid custom theme id");
+        }
+        if self.name.trim().is_empty()
+            || self.name.len() > 128
+            || self.name.chars().any(char::is_control)
+        {
+            return Err("invalid custom theme name");
+        }
+        if self.font.trim().is_empty()
+            || self.font.len() > 128
+            || self.font.chars().any(char::is_control)
+        {
+            return Err("invalid custom theme font");
+        }
+        if !self.radius_px.is_finite() || !(0.0..=64.0).contains(&self.radius_px) {
+            return Err("invalid custom theme radius");
+        }
+        if !self.spacing_px.is_finite() || !(2.0..=64.0).contains(&self.spacing_px) {
+            return Err("invalid custom theme spacing");
+        }
+        Ok(())
+    }
+}
+
+fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let channel = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    [
+        channel(a[0], b[0]),
+        channel(a[1], b[1]),
+        channel(a[2], b[2]),
+    ]
+}
+
+fn rgb(value: [u8; 3]) -> Color {
+    Color::from_rgb8(value[0], value[1], value[2])
+}
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -40,6 +111,10 @@ pub struct Theme {
     /// per-output device scale: physical size = logical × `ui_scale` ×
     /// device-scale, text additionally × `text_scale`.
     pub ui_scale: f32,
+    /// Width of an insertion caret in logical pixels. The configured theme
+    /// folds in the accessibility preference once, keeping file I/O out of
+    /// widget draw paths.
+    pub caret_width: f64,
 }
 
 impl Default for Theme {
@@ -113,6 +188,7 @@ impl Theme {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            caret_width: 2.0,
             tokens,
         }
     }
@@ -170,6 +246,48 @@ impl Theme {
         };
         t.colors = crate::tokens::Colors::themed(spec);
         Self::from_tokens(name, t)
+    }
+
+    pub fn from_custom_spec(spec: &CustomThemeSpec) -> Option<Self> {
+        spec.validate().ok()?;
+        let popover = if spec.dark_base {
+            mix_rgb(spec.surface_base, [0, 0, 0], 0.40)
+        } else {
+            [255, 255, 255]
+        };
+        let text_tertiary = mix_rgb(spec.text_dim, spec.surface_base, 0.40);
+        let mut theme = Self::from_palette(
+            &spec.name,
+            PaletteSpec {
+                dark: spec.dark_base,
+                base: rgb(spec.surface_base),
+                raised: rgb(spec.surface_raised),
+                popover: rgb(popover),
+                text: rgb(spec.text_primary),
+                text_dim: rgb(spec.text_dim),
+                text_tertiary: rgb(text_tertiary),
+                border: rgb(spec.border),
+                focus: rgb(spec.accent),
+                accent: rgb(spec.accent),
+                accent_hover: rgb(spec.accent_hover),
+                success: rgb(spec.success),
+                warning: rgb(spec.warning),
+                danger: rgb(spec.danger),
+                info: rgb(spec.info),
+                window_card: None,
+            },
+        );
+        theme.tokens.radii.sm = spec.radius_px * 0.5;
+        theme.tokens.radii.md = spec.radius_px;
+        theme.tokens.radii.lg = spec.radius_px * 1.5;
+        theme.tokens.radii.xl = spec.radius_px * 2.4;
+        theme.tokens.spacing.s2 = (spec.spacing_px * 0.66).max(2.0);
+        theme.tokens.spacing.s3 = spec.spacing_px;
+        theme.tokens.spacing.s4 = spec.spacing_px * 1.33;
+        theme.tokens.typography.sans_family = spec.font.clone();
+        // Rebuild through the central funnel after shape/type edits so every
+        // legacy shortcut and the terminal palette matches the token tree.
+        Some(Self::from_tokens(&spec.name, theme.tokens))
     }
 
     /// Kept verbatim as a preset so nothing from the first design is lost.
@@ -441,32 +559,38 @@ impl Theme {
     }
 
     /// Reads `$XDG_CONFIG_HOME/qos/settings.json` (falling back to
-    /// `~/.config/qos/settings.json`), the file `apps/themes` writes.
+    /// `~/.config/qos/settings.json`), the shared preference Settings and
+    /// Theme Studio update through their respective domain stores.
     /// Unreadable, absent and unrecognised all mean the dark default — a
     /// machine with no preference and one whose settings file is corrupt
     /// both want a desktop that starts.
     pub fn configured() -> Self {
-        match Self::configured_id().as_deref() {
-            Some("light") => Self::light(),
-            Some("high-contrast" | "high_contrast") => Self::high_contrast(),
-            _ => Self::dark(),
-        }
+        let text = settings_store::settings_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        let mut theme = Self::from_settings_json(&text).unwrap_or_else(Self::dark);
+        let thick = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
+            .unwrap_or(false);
+        theme.caret_width = if thick { 4.0 } else { 2.0 };
+        theme
     }
 
-    /// A plain string lookup, not a parse of the whole appearance section:
-    /// `ui` cannot depend on the themes app.
-    fn configured_id() -> Option<String> {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-            })?;
-        let text = std::fs::read_to_string(base.join("qos").join("settings.json")).ok()?;
+    /// Pure parser shared by runtime loading and hermetic tests.
+    pub fn from_settings_json(text: &str) -> Option<Self> {
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-        v.get("appearance")?
-            .get("theme")?
-            .as_str()
-            .map(str::to_string)
+        let appearance = v.get("appearance")?;
+        let active = appearance.get("theme")?.as_str()?;
+        if let Some(id) = active.strip_prefix("custom:") {
+            let spec: CustomThemeSpec =
+                serde_json::from_value(appearance.get("custom_theme")?.clone()).ok()?;
+            if spec.id != id {
+                return None;
+            }
+            return Self::from_custom_spec(&spec);
+        }
+        Self::named(active)
     }
 
     /// Pure black surfaces under pure-white text (WCAG AAA, 21:1 — the
@@ -1168,6 +1292,48 @@ mod tests {
     fn ui_scale_is_clamped_to_a_sane_range() {
         assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
         assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
+    }
+
+    #[test]
+    fn settings_json_materializes_the_exact_custom_theme() {
+        let spec = CustomThemeSpec {
+            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
+            id: "quiet-ocean".into(),
+            name: "Quiet Ocean".into(),
+            dark_base: true,
+            accent: [12, 120, 220],
+            accent_hover: [8, 96, 190],
+            surface_base: [9, 18, 30],
+            surface_raised: [18, 32, 48],
+            text_primary: [238, 244, 250],
+            text_dim: [170, 184, 199],
+            border: [48, 68, 88],
+            success: [50, 190, 110],
+            warning: [230, 170, 50],
+            danger: [225, 75, 80],
+            info: [70, 165, 230],
+            radius_px: 13.0,
+            spacing_px: 17.0,
+            font: "Inter".into(),
+        };
+        let json = serde_json::json!({
+            "appearance": {
+                "theme": "custom:quiet-ocean",
+                "custom_theme": spec,
+            }
+        });
+        let theme = Theme::from_settings_json(&json.to_string()).unwrap();
+        assert_eq!(theme.name, "Quiet Ocean");
+        assert_eq!(rgb(theme.accent_primary), [12, 120, 220]);
+        assert_eq!(theme.tokens.radii.md, 13.0);
+        assert_eq!(theme.tokens.spacing.s3, 17.0);
+        assert_eq!(theme.tokens.typography.sans_family, "Inter");
+    }
+
+    #[test]
+    fn custom_theme_id_mismatch_is_rejected() {
+        let json = r#"{"appearance":{"theme":"custom:wanted","custom_theme":{"schema_version":1,"id":"other","name":"Other","dark_base":true,"accent":[1,2,3],"accent_hover":[1,2,3],"surface_base":[1,2,3],"surface_raised":[1,2,3],"text_primary":[1,2,3],"text_dim":[1,2,3],"border":[1,2,3],"success":[1,2,3],"warning":[1,2,3],"danger":[1,2,3],"info":[1,2,3],"radius_px":8.0,"spacing_px":8.0,"font":"Inter"}}}"#;
+        assert!(Theme::from_settings_json(json).is_none());
     }
 
     #[test]

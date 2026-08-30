@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod offscreen;
+pub mod typed_collab;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

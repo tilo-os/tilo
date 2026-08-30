@@ -7,7 +7,7 @@
 //! is local UI state that must not sync to peers.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -22,6 +22,13 @@ use crate::shell::state::{
     AppId, Capability, GroupId, StripId, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
+
+fn visual_notification_alerts_enabled() -> bool {
+    settings_store::load_section("accessibility")
+        .get("visual_alerts")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
 
 /// One capability request waiting for the user to answer it. Dropping
 /// without answering drops the `reply` sender, which the portal side
@@ -157,6 +164,16 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
+    /// Primary NetworkManager Ethernet interface. `None` means no adapter.
+    pub wired: Option<os_actions::WiredInfo>,
+    /// Read-only kernel battery snapshot for the quick status row.
+    pub battery: os_actions::BatteryInfo,
+    /// `None` when fwupd is unavailable, otherwise the offered update count.
+    pub firmware_updates: Option<usize>,
+    pub radios: os_actions::RadioState,
+    pub vpns: Vec<os_actions::VpnConnectionInfo>,
+    pub privacy: os_actions::PrivacyStatus,
+    pub night_light: bool,
     /// The renderer dispatches on `nav_stack.last()` (always at least
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
@@ -180,6 +197,16 @@ impl Default for QuickSettingsState {
             volume: 0.4,
             wifi: true,
             bluetooth: false,
+            wired: None,
+            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
+                "/nonexistent/qos-power-supply",
+            )),
+            firmware_updates: None,
+            radios: os_actions::RadioState::default(),
+            vpns: Vec::new(),
+            privacy: os_actions::get_privacy_status(),
+            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
+                .unwrap_or(false),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -266,11 +293,22 @@ pub struct ChromeState {
     /// that leaves [`Self::notifications`] lands here, as does
     /// anything [`Self::dnd`] suppressed.
     notification_history: Vec<Notification>,
+    /// Exact unread counts accepted only from launcher-verified senders.
+    /// The top-bar tray consumes the aggregate; a future dock can consume the
+    /// same per-package map without inventing another badge protocol.
+    notification_badges: BTreeMap<String, u32>,
+    notification_sound: Option<media::notification_sound::NotificationSoundPlayer>,
+    priority_contacts: crate::priority_contacts::PriorityContactRegistry,
+    notification_policy: settings_store::notification_policy::NotificationPolicy,
+    notification_policy_checked: Option<std::time::Instant>,
     /// While `true`, fresh notifications go straight to
     /// [`Self::notification_history`] instead of showing as banners.
     /// Independent of [`Self::session_locked`], which suppresses
     /// lock-screen *content* but still shows a count.
     dnd: bool,
+    /// Short, bounded edge flash requested by the visual-alert accessibility
+    /// setting. Local session state only; it is never synced or written back.
+    visual_alert_until: Option<std::time::Instant>,
     /// Mirrored from the compositor's `SessionManager` each frame.
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
@@ -356,7 +394,13 @@ impl ChromeState {
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),
+            notification_badges: BTreeMap::new(),
+            notification_sound: None,
+            priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
+            notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
+            notification_policy_checked: None,
             dnd: false,
+            visual_alert_until: None,
             session_locked: false,
             fullscreen_group: None,
             maximized_group: None,
@@ -768,6 +812,10 @@ impl ChromeState {
             self.bump();
             return id;
         }
+        if visual_notification_alerts_enabled() {
+            self.visual_alert_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(450));
+        }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
         while self.notifications.len() > MAX_NOTIFICATIONS {
@@ -776,6 +824,12 @@ impl ChromeState {
         }
         self.bump();
         id
+    }
+
+    /// Whether shell chrome should paint the accessibility edge flash this
+    /// frame. No timer thread or persistent alert state is needed.
+    pub fn visual_alert_active(&self, now: std::time::Instant) -> bool {
+        self.visual_alert_until.is_some_and(|until| now < until)
     }
 
     /// Every path that removes a toast (and the DND-suppression path)
@@ -927,6 +981,28 @@ impl ChromeState {
         self.notification_history.len()
     }
 
+    pub fn notification_badge_total(&self) -> u32 {
+        self.notification_badges
+            .iter()
+            .filter(|(app_id, _)| {
+                self.notification_policy
+                    .per_app
+                    .get(*app_id)
+                    .and_then(|rule| rule.badges)
+                    .unwrap_or(self.notification_policy.show_badges)
+            })
+            .map(|(_, count)| *count)
+            .fold(0_u32, u32::saturating_add)
+            .min(9_999)
+    }
+
+    pub fn notification_badge_for(&self, verified_app_id: &str) -> u32 {
+        self.notification_badges
+            .get(verified_app_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Clear the history log (the "Clear all" affordance in the
     /// notification centre). Bumps the revision so the surface re-syncs.
     pub fn clear_notification_history(&mut self) {
@@ -967,6 +1043,27 @@ impl ChromeState {
         self.notification_bridge = Some(bridge);
     }
 
+    pub fn set_notification_runtime(
+        &mut self,
+        sound: media::notification_sound::NotificationSoundPlayer,
+        priority_contacts: crate::priority_contacts::PriorityContactRegistry,
+    ) {
+        self.notification_sound = Some(sound);
+        self.priority_contacts = priority_contacts;
+    }
+
+    /// Keep notification unit tests independent of the developer account's
+    /// live policy document. Production always refreshes from the shared
+    /// settings authority in `pump_dbus_notifications`.
+    #[cfg(test)]
+    pub(crate) fn set_notification_policy_for_tests(
+        &mut self,
+        policy: settings_store::notification_policy::NotificationPolicy,
+    ) {
+        self.notification_policy = policy;
+        self.notification_policy_checked = Some(std::time::Instant::now());
+    }
+
     pub fn set_session_locked(&mut self, locked: bool) {
         if self.session_locked != locked {
             self.session_locked = locked;
@@ -980,14 +1077,63 @@ impl ChromeState {
 
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
+        use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
+        let refresh_policy = self
+            .notification_policy_checked
+            .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));
+        if refresh_policy {
+            let policy = settings_store::notification_policy::NotificationPolicy::load();
+            if policy != self.notification_policy {
+                self.notification_policy = policy;
+                self.bump();
+            }
+            self.notification_policy_checked = Some(std::time::Instant::now());
+        }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
-            self.push_notification_full(Notification::from_incoming(inc));
+            let verified_app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
+            let badge_count = inc.badge_count;
+            let verified_priority_contact = verified_app_id.is_some()
+                && inc
+                    .contact_endpoint
+                    .as_deref()
+                    .is_some_and(|endpoint| self.priority_contacts.matches(endpoint));
+            let now = chrono::Local::now();
+            let effective = self.notification_policy.effective_for_context(
+                verified_app_id.as_deref(),
+                verified_priority_contact,
+                now.timestamp(),
+                (now.hour() * 60 + now.minute()) as u16,
+                now.weekday().num_days_from_monday() as u8,
+            );
+            let mut notification = Notification::from_incoming(inc);
+            notification.show_preview = effective.previews;
+            notification.show_on_lock_screen = effective.lock_screen;
+            // Keep the verified producer's latest state even while badge
+            // display is disabled. Visibility is a policy filter below; if we
+            // discarded updates here, re-enabling badges would resurrect a
+            // stale count from before the mute.
+            if let (Some(app_id), Some(count)) = (verified_app_id, badge_count) {
+                if count == 0 {
+                    self.notification_badges.remove(&app_id);
+                } else {
+                    self.notification_badges.insert(app_id, count.min(9_999));
+                }
+            }
+            if effective.sounds {
+                let _ = self.notification_sound.as_ref().map(|sound| sound.play());
+            }
+            if effective.banners {
+                self.push_notification_full(notification);
+            } else {
+                self.record_history(notification);
+                self.bump();
+            }
         }
         for id in bridge.drain_close_requests() {
             self.close_notification_by_dbus_id(id, CloseReason::Closed);
@@ -1003,6 +1149,24 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
+
+#[cfg(test)]
+mod visual_alert_tests {
+    use super::*;
+
+    #[test]
+    fn edge_flash_is_strictly_bounded() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        chrome.borrow_mut().visual_alert_until = Some(now + std::time::Duration::from_millis(450));
+        assert!(chrome.borrow().visual_alert_active(now));
+        assert!(
+            !chrome
+                .borrow()
+                .visual_alert_active(now + std::time::Duration::from_millis(451))
+        );
+    }
+}
 
 #[cfg(test)]
 mod active_tab_tests {

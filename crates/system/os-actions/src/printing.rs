@@ -1,0 +1,513 @@
+//! Typed CUPS/SANE integration shared by Settings and a future Print Centre.
+//!
+//! This is deliberately a narrow vocabulary.  Callers cannot pass command
+//! fragments: queue names and URIs are validated and are always individual
+//! argv entries.  CUPS remains the policy/driver authority; qOS does not grow
+//! a second printer database.
+
+use crate::process::{run, run_capture};
+use std::collections::{BTreeMap, BTreeSet};
+
+const PRINTER_ATTRIBUTES_TEST: &str = "/usr/share/cups/ipptool/get-printer-attributes.test";
+const JOBS_TEST: &str = "/usr/share/cups/ipptool/get-jobs.test";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueState {
+    Ready,
+    Printing,
+    Paused,
+    Offline,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrinterQueue {
+    pub name: String,
+    pub state: QueueState,
+    pub default: bool,
+    pub accepting_jobs: bool,
+    pub reason: Option<String>,
+    /// Live standard IPP attributes. `available == false` means CUPS/the
+    /// device could not be queried; `supplies == None` means it answered but
+    /// did not implement marker attributes.
+    pub telemetry: PrinterTelemetry,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrinterTelemetry {
+    pub available: bool,
+    pub state_reasons: Vec<String>,
+    pub supplies: Option<Vec<PrinterSupply>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrinterSupply {
+    pub name: String,
+    pub color: Option<String>,
+    pub level_percent: Option<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredPrinter {
+    pub uri: String,
+    pub name: String,
+    pub location: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrintJob {
+    pub id: String,
+    pub owner: String,
+    pub size_bytes: u64,
+    pub submitted: String,
+    pub destination: String,
+    pub state: Option<JobState>,
+    pub state_reasons: Vec<String>,
+    pub impressions_completed: Option<u32>,
+    pub impressions_total: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobState {
+    Pending,
+    Held,
+    Processing,
+    Stopped,
+    Canceled,
+    Aborted,
+    Completed,
+    Unknown,
+}
+
+impl PrintJob {
+    pub fn progress_percent(&self) -> Option<u8> {
+        let total = self.impressions_total.filter(|total| *total > 0)?;
+        Some(((self.impressions_completed.unwrap_or(0).min(total) * 100) / total) as u8)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scanner {
+    pub device: String,
+    pub description: String,
+}
+
+pub fn queues() -> Result<Vec<PrinterQueue>, String> {
+    let printers = run_capture("lpstat", &["-p", "-d"])?;
+    let accepting = run_capture("lpstat", &["-a"]).unwrap_or_default();
+    let mut queues = parse_queues(&printers, &accepting);
+    for queue in &mut queues {
+        if let Ok(output) = query_ipp(&queue.name, PRINTER_ATTRIBUTES_TEST) {
+            queue.telemetry = parse_ipp_printer_attributes(&output);
+        }
+    }
+    Ok(queues)
+}
+
+pub fn jobs() -> Result<Vec<PrintJob>, String> {
+    let mut jobs = parse_jobs(&run_capture("lpstat", &["-o"])?);
+    let destinations: BTreeSet<String> = jobs.iter().map(|job| job.destination.clone()).collect();
+    for destination in destinations {
+        let Ok(output) = query_ipp(&destination, JOBS_TEST) else {
+            continue;
+        };
+        let telemetry = parse_ipp_jobs(&output);
+        for job in jobs.iter_mut().filter(|job| job.destination == destination) {
+            let Some(number) = job
+                .id
+                .rsplit_once('-')
+                .and_then(|(_, id)| id.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if let Some(details) = telemetry.get(&number) {
+                job.state = details.state;
+                job.state_reasons = details.state_reasons.clone();
+                job.impressions_completed = details.impressions_completed;
+                job.impressions_total = details.impressions_total;
+            }
+        }
+    }
+    Ok(jobs)
+}
+
+fn query_ipp(queue: &str, test: &str) -> Result<String, String> {
+    let queue = queue_name(queue)?;
+    if !std::path::Path::new(test).is_file() {
+        return Err("standard CUPS IPP query is unavailable".into());
+    }
+    let uri = format!("ipp://localhost/printers/{queue}");
+    run_capture("ipptool", &["-tv", &uri, test])
+}
+
+/// Discover only driverless IPP devices.  `driverless` delegates DNS-SD and
+/// IPP capability probing to cups-filters and therefore avoids a qOS-specific
+/// discovery stack or legacy PPD downloads.
+pub fn discover_driverless() -> Result<Vec<DiscoveredPrinter>, String> {
+    Ok(parse_driverless(&run_capture("driverless", &[])?))
+}
+
+pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
+    validate_uri(uri)?;
+    let name = queue_name(requested_name)?;
+    run(
+        "lpadmin",
+        &["-p", &name, "-E", "-v", uri, "-m", "everywhere"],
+    )
+}
+
+pub fn remove_queue(name: &str) -> Result<(), String> {
+    let name = queue_name(name)?;
+    run("lpadmin", &["-x", &name])
+}
+
+pub fn set_default(name: &str) -> Result<(), String> {
+    let name = queue_name(name)?;
+    run("lpoptions", &["-d", &name])
+}
+
+pub fn set_enabled(name: &str, enabled: bool) -> Result<(), String> {
+    let name = queue_name(name)?;
+    if enabled {
+        run("cupsenable", &[&name])?;
+        run("cupsaccept", &[&name])
+    } else {
+        // Stop accepting before disabling so a paused queue does not keep
+        // accumulating work users believe will print immediately.
+        run("cupsreject", &[&name])?;
+        run("cupsdisable", &[&name])
+    }
+}
+
+pub fn cancel_job(id: &str) -> Result<(), String> {
+    validate_job_id(id)?;
+    run("cancel", &[id])
+}
+
+pub fn retry_job(id: &str) -> Result<(), String> {
+    validate_job_id(id)?;
+    run("lp", &["-i", id, "-H", "restart"])
+}
+
+pub fn scanners() -> Result<Vec<Scanner>, String> {
+    Ok(parse_scanners(&run_capture("scanimage", &["-L"])?))
+}
+
+fn queue_name(raw: &str) -> Result<String, String> {
+    let value = raw.trim().replace(' ', "_");
+    if value.is_empty()
+        || value.len() > 127
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        return Err("printer name may contain letters, numbers, '.', '-' and '_'".into());
+    }
+    Ok(value)
+}
+
+fn validate_uri(uri: &str) -> Result<(), String> {
+    if uri.len() > 2048
+        || uri.bytes().any(|b| b == 0 || b == b'\r' || b == b'\n')
+        || !matches!(uri.split_once(":"), Some(("ipp" | "ipps", rest)) if rest.starts_with("//"))
+    {
+        return Err("only a valid ipp:// or ipps:// printer URI is accepted".into());
+    }
+    Ok(())
+}
+
+fn validate_job_id(id: &str) -> Result<(), String> {
+    if id.len() > 255
+        || !id.rsplit_once('-').is_some_and(|(q, n)| {
+            queue_name(q).is_ok() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+        })
+    {
+        return Err("invalid CUPS job id".into());
+    }
+    Ok(())
+}
+
+pub fn parse_queues(printer_text: &str, accepting_text: &str) -> Vec<PrinterQueue> {
+    let default = printer_text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("system default destination:"))
+        .map(str::trim);
+    let accepting: std::collections::HashMap<&str, bool> = accepting_text
+        .lines()
+        .filter_map(|line| {
+            let (name, tail) = line.trim().split_once(' ')?;
+            Some((name, tail.starts_with("accepting requests")))
+        })
+        .collect();
+    printer_text
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("printer ")?;
+            let (name, tail) = rest.split_once(" is ")?;
+            let name = queue_name(name).ok()?;
+            let lower = tail.to_ascii_lowercase();
+            let state = if lower.contains("printing") {
+                QueueState::Printing
+            } else if lower.contains("disabled") || lower.contains("stopped") {
+                QueueState::Paused
+            } else if lower.contains("idle") {
+                QueueState::Ready
+            } else {
+                QueueState::Offline
+            };
+            let reason = tail
+                .split_once(" - ")
+                .map(|(_, r)| sanitize_text(r.trim().trim_end_matches('.'), 120))
+                .filter(|r| !r.is_empty());
+            Some(PrinterQueue {
+                name: name.clone(),
+                state,
+                default: default == Some(name.as_str()),
+                accepting_jobs: accepting.get(name.as_str()).copied().unwrap_or(true),
+                reason,
+                telemetry: PrinterTelemetry::default(),
+            })
+        })
+        .collect()
+}
+
+pub fn parse_jobs(text: &str) -> Vec<PrintJob> {
+    text.lines()
+        .filter_map(|line| {
+            let mut p = line.split_whitespace();
+            let id = p.next()?;
+            let owner = p.next()?;
+            let size = p.next()?.parse().ok()?;
+            validate_job_id(id).ok()?;
+            Some(PrintJob {
+                destination: id.rsplit_once('-')?.0.to_string(),
+                id: id.to_string(),
+                owner: sanitize_text(owner, 80),
+                size_bytes: size,
+                submitted: sanitize_text(&p.collect::<Vec<_>>().join(" "), 120),
+                state: None,
+                state_reasons: Vec::new(),
+                impressions_completed: None,
+                impressions_total: None,
+            })
+        })
+        .collect()
+}
+
+fn sanitize_text(raw: &str, limit: usize) -> String {
+    raw.chars()
+        .filter(|character| !character.is_control())
+        .take(limit)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn attribute<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let line = line.trim();
+    let prefix = line.split_once(' ').map_or(line, |(head, _)| head);
+    if prefix != name {
+        return None;
+    }
+    line.split_once(" = ").map(|(_, value)| value.trim())
+}
+
+fn values(raw: &str, limit: usize, each: usize) -> Vec<String> {
+    raw.split(',')
+        .map(|value| sanitize_text(value.trim().trim_matches('"'), each))
+        .filter(|value| !value.is_empty())
+        .take(limit)
+        .collect()
+}
+
+pub fn parse_ipp_printer_attributes(text: &str) -> PrinterTelemetry {
+    let mut telemetry = PrinterTelemetry {
+        available: true,
+        ..Default::default()
+    };
+    let mut names = None;
+    let mut colors = Vec::new();
+    let mut levels = Vec::new();
+    for line in text.lines() {
+        if let Some(value) = attribute(line, "printer-state-reasons") {
+            telemetry.state_reasons = values(value, 12, 96)
+                .into_iter()
+                .filter(|reason| reason != "none")
+                .collect();
+        } else if let Some(value) = attribute(line, "marker-names") {
+            names = Some(values(value, 16, 64));
+        } else if let Some(value) = attribute(line, "marker-colors") {
+            colors = values(value, 16, 32);
+        } else if let Some(value) = attribute(line, "marker-levels") {
+            levels = value
+                .split(',')
+                .take(16)
+                .map(|level| {
+                    level
+                        .trim()
+                        .parse::<i16>()
+                        .ok()
+                        .and_then(|level| (0..=100).contains(&level).then_some(level as u8))
+                })
+                .collect();
+        }
+    }
+    telemetry.supplies = names.map(|names| {
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| PrinterSupply {
+                name,
+                color: colors.get(index).cloned(),
+                level_percent: levels.get(index).copied().flatten(),
+            })
+            .collect()
+    });
+    telemetry
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IppJobTelemetry {
+    pub state: Option<JobState>,
+    pub state_reasons: Vec<String>,
+    pub impressions_completed: Option<u32>,
+    pub impressions_total: Option<u32>,
+}
+
+pub fn parse_ipp_jobs(text: &str) -> BTreeMap<u32, IppJobTelemetry> {
+    let mut jobs = BTreeMap::new();
+    let mut current = None;
+    for line in text.lines() {
+        if let Some(value) = attribute(line, "job-id").and_then(|value| value.parse::<u32>().ok()) {
+            current = Some(value);
+            jobs.entry(value).or_insert_with(IppJobTelemetry::default);
+            continue;
+        }
+        let Some(job) = current.and_then(|id| jobs.get_mut(&id)) else {
+            continue;
+        };
+        if let Some(value) = attribute(line, "job-state") {
+            let value = value
+                .split_whitespace()
+                .next()
+                .unwrap_or(value)
+                .trim_matches('"')
+                .to_ascii_lowercase();
+            job.state = Some(match value.as_str() {
+                "pending" | "3" => JobState::Pending,
+                "pending-held" | "held" | "4" => JobState::Held,
+                "processing" | "5" => JobState::Processing,
+                "processing-stopped" | "stopped" | "6" => JobState::Stopped,
+                "canceled" | "7" => JobState::Canceled,
+                "aborted" | "8" => JobState::Aborted,
+                "completed" | "9" => JobState::Completed,
+                _ => JobState::Unknown,
+            });
+        } else if let Some(value) = attribute(line, "job-state-reasons") {
+            job.state_reasons = values(value, 12, 96)
+                .into_iter()
+                .filter(|reason| reason != "none")
+                .collect();
+        } else if let Some(value) = attribute(line, "job-impressions-completed") {
+            job.impressions_completed = value.parse().ok();
+        } else if let Some(value) = attribute(line, "job-impressions") {
+            job.impressions_total = value.parse().ok();
+        }
+    }
+    jobs
+}
+
+pub fn parse_driverless(text: &str) -> Vec<DiscoveredPrinter> {
+    text.lines()
+        .filter_map(|line| {
+            // cups-filters prints: URI "make model" "location"
+            let line = line.trim();
+            let split = line.find(char::is_whitespace)?;
+            let uri = line[..split].trim();
+            validate_uri(uri).ok()?;
+            let quoted: Vec<&str> = line[split..].split('"').collect();
+            let name = quoted
+                .get(1)
+                .map(|s| sanitize_text(s, 100))
+                .filter(|s| !s.is_empty())?;
+            let location = quoted
+                .get(3)
+                .map(|s| sanitize_text(s, 100))
+                .filter(|s| !s.is_empty());
+            Some(DiscoveredPrinter {
+                uri: uri.to_string(),
+                name,
+                location,
+            })
+        })
+        .collect()
+}
+
+pub fn parse_scanners(text: &str) -> Vec<Scanner> {
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("device `")?;
+            let (device, description) = rest.split_once("' is a ")?;
+            Some(Scanner {
+                device: sanitize_text(device, 160),
+                description: sanitize_text(description, 120),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_queue_health_and_accepting_state() {
+        let q = parse_queues(
+            "printer Office is printing Office-8. enabled since now\nprinter Lab is disabled since now - media-empty\nsystem default destination: Office\n",
+            "Office accepting requests since now\nLab not accepting requests since now\n",
+        );
+        assert_eq!(q.len(), 2);
+        assert!(q[0].default && q[0].accepting_jobs);
+        assert_eq!(q[1].state, QueueState::Paused);
+        assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
+        assert!(!q[1].accepting_jobs);
+    }
+
+    #[test]
+    fn parses_driverless_and_scanners() {
+        let d = parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
+        assert_eq!(d[0].name, "Acme Laser 4");
+        assert_eq!(d[0].location.as_deref(), Some("Copy room"));
+        let s = parse_scanners("device `airscan:e0:Office' is a Acme network scanner\n");
+        assert_eq!(s[0].device, "airscan:e0:Office");
+    }
+
+    #[test]
+    fn validates_all_external_identifiers() {
+        assert!(validate_uri("ipps://printer.local/ipp/print").is_ok());
+        assert!(validate_uri("file:///etc/shadow").is_err());
+        assert!(validate_job_id("Office-42").is_ok());
+        assert!(validate_job_id("Office;shutdown-42").is_err());
+        assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
+    }
+
+    #[test]
+    fn parses_bounded_ipp_supplies_and_job_progress() {
+        let telemetry = parse_ipp_printer_attributes(
+            " marker-names (1setOf nameWithoutLanguage) = \"Black Toner\",\"Cyan\u{1b} Toner\"\n marker-colors (1setOf nameWithoutLanguage) = black,cyan\n marker-levels (1setOf integer) = 83,-1\n printer-state-reasons (1setOf keyword) = none,media-low\n",
+        );
+        assert!(telemetry.available);
+        let supplies = telemetry.supplies.unwrap();
+        assert_eq!(supplies[0].level_percent, Some(83));
+        assert_eq!(supplies[1].level_percent, None);
+        assert!(!supplies[1].name.contains('\u{1b}'));
+        assert_eq!(telemetry.state_reasons, ["media-low"]);
+
+        let jobs = parse_ipp_jobs(
+            " job-id (integer) = 42\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
+        );
+        assert_eq!(jobs[&42].state, Some(JobState::Processing));
+        assert_eq!(jobs[&42].impressions_completed, Some(3));
+        assert_eq!(jobs[&42].impressions_total, Some(12));
+    }
+}

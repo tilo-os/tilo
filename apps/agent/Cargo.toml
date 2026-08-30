@@ -52,6 +52,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
+shell = { path = "../../shell", default-features = false }
 
 [lints]
 workspace = true
