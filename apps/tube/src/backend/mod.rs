@@ -31,13 +31,11 @@
 //! uploads across subscribed channels), [`YtBackend::trending`], and
 //! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
 
-pub mod mp4;
 pub mod offline;
 pub mod potoken;
 /// Fully-rangeable stream resolution through public Invidious `local=true`
 /// proxies — the reliable, seekable playback URL for the media engine.
 pub mod proxy;
-pub mod stream;
 
 #[cfg(feature = "live")]
 pub mod live;
@@ -46,11 +44,6 @@ pub mod live;
 /// behind `live` alongside the rustypipe fallback.
 #[cfg(feature = "live")]
 pub mod ytdlp;
-
-/// GStreamer decode/playback (VP9 / AV1 / H.264 + audio, adaptive). Gated
-/// behind `media`.
-#[cfg(feature = "media")]
-pub mod gst_playback;
 
 use crate::model::{Channel, Comment, Playlist, Video};
 
@@ -111,53 +104,11 @@ impl std::error::Error for BackendError {}
 
 pub type BackendOutcome = Result<BackendResult, BackendError>;
 
-/// A resolved, directly-playable video stream: enough of a real googlevideo
-/// media URL (plus its container shape) to download and decode from.
-///
-/// Produced by [`YtBackend::resolve_video_stream`]; consumed by
-/// [`crate::backend::stream::fetch_h264`]. Kept toolkit-free so it can cross the
-/// worker boundary.
-#[derive(Clone, Debug)]
-pub struct StreamHandle {
-    /// Direct media URL (signature/nsig already applied by the backend).
-    pub url: String,
-    /// User-Agent the media request must carry. googlevideo validates the UA
-    /// against the client that minted the URL (iOS/TV), returning 403 on a
-    /// mismatch, so the backend records the exact UA to replay here.
-    pub user_agent: String,
-    /// `YouTube` format id (itag) — e.g. 160 = 144p H.264, 18 = 360p muxed.
-    pub itag: u32,
-    /// Full MIME string, e.g. `video/mp4; codecs="avc1.4d400c"`.
-    pub mime: String,
-    /// True when the stream is H.264 (avc1) — the only codec Tube can decode.
-    pub is_avc: bool,
-    /// True when the container is MP4 (ISO-BMFF).
-    pub is_mp4: bool,
-    /// True for an adaptive, video-only DASH stream (safe to walk its `mdat` as
-    /// a pure run of video NAL units). False for a progressive/muxed stream.
-    pub adaptive: bool,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u8,
-    /// `YouTube` quality label, e.g. "144p".
-    pub quality: String,
-    /// Total content length in bytes, if the backend reported one.
-    pub content_length: Option<u64>,
-    /// DASH init-segment byte range (`ftyp`+`moov`), if present.
-    pub init_range: Option<(u64, u64)>,
-    /// DASH index (`sidx`) byte range, if present. The first media fragment
-    /// begins just after `index_range.1`.
-    pub index_range: Option<(u64, u64)>,
-}
-
 /// A resolved, directly-playable media URL for the `GStreamer` decode path.
 ///
-/// Unlike [`StreamHandle`] (a byte-range H.264 stream for the openh264 demux
-/// path), this is a whole playable URL handed straight to `GStreamer`'s
-/// `uridecodebin`, which negotiates the demuxer + decoder itself — so it works
-/// for VP9 / AV1 / H.264 and, when the format is muxed, audio too. Produced by
-/// [`YtBackend::resolve_playback_source`]; consumed by
-/// [`crate::backend::gst_playback`].
+/// This whole playable URL is handed to the shared [`media::MediaEngine`],
+/// which negotiates the container and codec and routes audio through the same
+/// playback backend as the system video player and editor preview.
 #[derive(Clone, Debug)]
 pub struct PlaybackSource {
     /// Directly-playable media URL (progressive muxed when available, else the
@@ -225,17 +176,6 @@ pub trait YtBackend: Send + Sync {
     /// genuinely "popular" rather than arbitrary.
     fn popular_search(&self, query: &str) -> BackendOutcome {
         self.search(query)
-    }
-
-    /// Resolve a real, directly-playable video stream for `id`.
-    ///
-    /// The default errors — only a backend that can reach `YouTube`'s player
-    /// endpoint (the live one) can produce a stream. The UI degrades to a poster
-    /// when this fails.
-    fn resolve_video_stream(&self, _id: &str) -> Result<StreamHandle, BackendError> {
-        Err(BackendError(
-            "this backend cannot resolve video streams".into(),
-        ))
     }
 
     /// Resolve a whole directly-playable media URL for `id`, for the `GStreamer`

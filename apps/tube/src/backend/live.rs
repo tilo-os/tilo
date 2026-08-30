@@ -35,13 +35,12 @@
 use rustypipe::client::RustyPipe;
 use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{
-    ChannelItem, Comment as RpComment, PlaylistItem, Verification, VideoCodec, VideoFormat,
-    VideoItem, VideoPlayer as RpVideoPlayer, VideoStream, YouTubeItem,
+    ChannelItem, Comment as RpComment, PlaylistItem, Verification, VideoItem, YouTubeItem,
 };
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
 
 use crate::backend::potoken::{NullPoToken, PoTokenProvider};
-use crate::backend::{BackendError, BackendOutcome, BackendResult, StreamHandle, YtBackend};
+use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
 use crate::model::{Channel, Comment, Playlist, Video};
 
 /// A rustypipe search split into Tube's three result kinds. Used to enrich the
@@ -324,32 +323,6 @@ fn videos_from_items(items: impl IntoIterator<Item = YouTubeItem>) -> Vec<Video>
         .collect()
 }
 
-/// Pick the smallest H.264-in-MP4 stream we can actually decode, preferring an
-/// adaptive video-only DASH stream (its `mdat` fragments are a pure run of video
-/// NAL units) over a progressive/muxed one. Returns the stream and whether it is
-/// adaptive. Skips DRM-protected tracks — those cannot be decoded here.
-fn pick_avc_mp4(player: &RpVideoPlayer) -> Option<(&VideoStream, bool)> {
-    let decodable = |s: &VideoStream| {
-        s.codec == VideoCodec::Avc1 && s.format == VideoFormat::Mp4 && s.drm_systems.is_empty()
-    };
-    let area = |s: &VideoStream| u64::from(s.width) * u64::from(s.height);
-
-    if let Some(s) = player
-        .video_only_streams
-        .iter()
-        .filter(|s| decodable(s) && s.init_range.is_some() && s.index_range.is_some())
-        .min_by_key(|s| area(s))
-    {
-        return Some((s, true));
-    }
-    player
-        .video_streams
-        .iter()
-        .filter(|s| decodable(s))
-        .min_by_key(|s| area(s))
-        .map(|s| (s, false))
-}
-
 impl YtBackend for RustyPipeBackend {
     fn name(&self) -> &str {
         self.potoken_desc
@@ -476,49 +449,6 @@ impl YtBackend for RustyPipeBackend {
             .block(async { q.search_filter::<YouTubeItem, _>(query, &filter).await })
             .map_err(|e| BackendError(format!("popular_search {query:?}: {e}")))?;
         Ok(BackendResult::Videos(videos_from_items(res.items.items)))
-    }
-
-    fn resolve_video_stream(&self, id: &str) -> Result<StreamHandle, BackendError> {
-        // `player()` tries the iOS then TV clients (neither needs a PoToken), so
-        // this resolves real, directly-playable stream URLs without BotGuard.
-        let q = self.rp.query();
-        let player = self
-            .block(async { q.player(id).await })
-            .map_err(|e| BackendError(format!("player {id}: {e}")))?;
-        let (s, adaptive) = pick_avc_mp4(&player).ok_or_else(|| {
-            BackendError(format!(
-                "no decodable H.264/MP4 stream for {id} (client={:?}; {} video-only + {} muxed \
-                 streams — likely VP9/AV1-only or DRM)",
-                player.client_type,
-                player.video_only_streams.len(),
-                player.video_streams.len()
-            ))
-        })?;
-        // googlevideo checks the media request's UA against the client that
-        // resolved the URL — replay the exact one rustypipe used.
-        let user_agent = self.rp.query().user_agent(player.client_type).into_owned();
-        Ok(StreamHandle {
-            url: s.url.clone(),
-            user_agent,
-            itag: s.itag,
-            mime: s.mime.clone(),
-            is_avc: true,
-            is_mp4: true,
-            adaptive,
-            width: s.width,
-            height: s.height,
-            fps: s.fps,
-            quality: s.quality.clone(),
-            content_length: s.size,
-            init_range: s
-                .init_range
-                .as_ref()
-                .map(|r| (u64::from(r.start), u64::from(r.end))),
-            index_range: s
-                .index_range
-                .as_ref()
-                .map(|r| (u64::from(r.start), u64::from(r.end))),
-        })
     }
 }
 

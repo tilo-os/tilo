@@ -22,7 +22,6 @@ pub mod backend;
 pub mod contrast;
 pub mod images;
 pub mod model;
-pub mod playback;
 pub mod recommend;
 pub mod sample;
 pub mod screens;
