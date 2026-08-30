@@ -38,6 +38,7 @@ use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::TextInput;
 
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
@@ -66,7 +67,9 @@ pub struct HexView {
 
     // --- search state (per-peer; not in the shared doc) ---
     overlay: Overlay,
-    search_query: String,
+    /// Shared local text field: owns caret, selection, clipboard, IME and
+    /// accessibility while the byte-search policy remains app-owned.
+    search_input: TextInput,
     search_kind: SearchKind,
     /// Cached match offsets for the current query, recomputed on demand.
     matches: Vec<usize>,
@@ -74,7 +77,8 @@ pub struct HexView {
     match_idx: Option<usize>,
 
     // --- goto state ---
-    goto_query: String,
+    /// Shared local text field for decimal / hexadecimal offsets.
+    goto_input: TextInput,
 
     /// Whether the user has seeded the doc yet (so the first sync writes
     /// the model in rather than reading an empty document back out).
@@ -132,11 +136,19 @@ impl HexView {
             rect: Rect::ZERO,
             dirty: true,
             overlay: Overlay::None,
-            search_query: String::new(),
+            search_input: TextInput::local()
+                .with_id("hex.search")
+                .with_placeholder("search…")
+                .with_plain_chrome()
+                .with_mono(),
             search_kind: SearchKind::Hex,
             matches: Vec::new(),
             match_idx: None,
-            goto_query: String::new(),
+            goto_input: TextInput::local()
+                .with_id("hex.goto")
+                .with_placeholder("0x… or decimal")
+                .with_plain_chrome()
+                .with_mono(),
             seeded: false,
             visible_rows: 1,
             last_mouse: Point::ZERO,
@@ -415,7 +427,7 @@ impl HexView {
 
     /// Recompute match offsets from the current query + kind.
     fn recompute_matches(&mut self) {
-        self.matches = match search::needle(&self.search_query, self.search_kind) {
+        self.matches = match search::needle(self.search_input.value(), self.search_kind) {
             Some(n) => search::find_all(self.model.bytes(), &n),
             None => Vec::new(),
         };
@@ -429,7 +441,7 @@ impl HexView {
     }
 
     fn jump_to_match(&mut self, forward: bool) {
-        let Some(n) = search::needle(&self.search_query, self.search_kind) else {
+        let Some(n) = search::needle(self.search_input.value(), self.search_kind) else {
             return;
         };
         let cur = self.model.cursor();
@@ -450,7 +462,7 @@ impl HexView {
     }
 
     fn commit_goto(&mut self) {
-        let q = self.goto_query.trim();
+        let q = self.goto_input.value().trim();
         // Accept "0x.." hex or plain decimal.
         let parsed = if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
             usize::from_str_radix(hex, 16).ok()
@@ -467,7 +479,8 @@ impl HexView {
                 .scroll_into_view(off / self.model.bytes_per_row(), self.visible_rows);
         }
         self.overlay = Overlay::None;
-        self.goto_query.clear();
+        self.goto_input.set_text("");
+        self.goto_input.set_focus(false);
     }
 
     // --- geometry helpers ----------------------------------------------
@@ -759,7 +772,7 @@ impl HexView {
                 let is_cursor = off == cursor;
                 let is_match = self.matches.iter().any(|&mh| {
                     // Highlight cells inside any match span.
-                    if let Some(n) = search::needle(&self.search_query, self.search_kind) {
+                    if let Some(n) = search::needle(self.search_input.value(), self.search_kind) {
                         off >= mh && off < mh + n.len()
                     } else {
                         false
@@ -1161,7 +1174,7 @@ impl HexView {
     }
 
     fn draw_search_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1189,7 +1202,6 @@ impl HexView {
         );
 
         let pad = 14.0;
-        let size = tokens.typography.scale.base;
         // Kind toggle chip.
         let kind = self.search_kind.label();
         let chip_w = 48.0;
@@ -1217,34 +1229,11 @@ impl HexView {
             TextWeight::Bold,
         );
 
-        // Query text + caret.
-        let qx = x0 + pad + chip_w + 12.0;
-        let qy = y0 + (h - f64::from(size)) / 2.0;
-        let display = if self.search_query.is_empty() {
-            "search…".to_string()
-        } else {
-            self.search_query.clone()
-        };
-        let qcolor = if self.search_query.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        tr.draw_text_styled(
-            scene,
-            &display,
-            size,
-            qcolor,
-            t * Affine::translate((qx, qy)),
-            None,
-            TextWeight::Regular,
-            false,
-            self.search_kind == SearchKind::Hex,
-        );
-
-        // Match counter.
+        // Match counter. It stays app-owned because it describes byte-search
+        // policy, while the shared field owns all text-editing behaviour.
+        let query_empty = self.search_input.value().is_empty();
         let count = if self.matches.is_empty() {
-            if self.search_query.is_empty() {
+            if query_empty {
                 String::new()
             } else {
                 "no matches".to_string()
@@ -1253,8 +1242,28 @@ impl HexView {
             let pos = self.match_idx.map_or(0, |i| i + 1);
             format!("{}/{}", pos, self.matches.len())
         };
+        let count_w = if count.is_empty() {
+            0.0
+        } else {
+            f64::from(tr.measure(&count, tokens.typography.scale.sm, None).0)
+        };
+
+        // The shared field supplies selection, word/caret navigation,
+        // clipboard, context-menu and IME support inside the existing overlay.
+        let qx = x0 + pad + chip_w + 12.0;
+        let qright = x0 + w
+            - pad
+            - if count.is_empty() {
+                0.0
+            } else {
+                count_w + 16.0
+            };
+        self.search_input
+            .apply_layout_external(Rect::new(qx, y0 + 8.0, qright, y0 + h - 8.0));
+        let presence = PresenceCtx::empty();
+        self.search_input.draw(scene, t, tr, theme, &presence);
+
         if !count.is_empty() {
-            let (cw, _) = tr.measure(&count, tokens.typography.scale.sm, None);
             let ccolor = if self.matches.is_empty() {
                 tokens.colors.semantic.danger
             } else {
@@ -1266,7 +1275,7 @@ impl HexView {
                 tokens.typography.scale.sm,
                 ccolor,
                 t * Affine::translate((
-                    x0 + w - pad - f64::from(cw),
+                    x0 + w - pad - count_w,
                     y0 + (h - f64::from(tokens.typography.scale.sm)) / 2.0,
                 )),
                 None,
@@ -1275,7 +1284,7 @@ impl HexView {
     }
 
     fn draw_goto_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1312,106 +1321,110 @@ impl HexView {
             None,
             TextWeight::Bold,
         );
-        let size = tokens.typography.scale.base;
-        let display = if self.goto_query.is_empty() {
-            "0x… or decimal".to_string()
-        } else {
-            self.goto_query.clone()
-        };
-        let color = if self.goto_query.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        tr.draw_text_styled(
-            scene,
-            &display,
-            size,
-            color,
-            t * Affine::translate((x0 + pad, y0 + 26.0)),
-            None,
-            TextWeight::Regular,
-            false,
-            true,
-        );
+        self.goto_input.apply_layout_external(Rect::new(
+            x0 + pad,
+            y0 + 19.0,
+            x0 + w - pad,
+            y0 + h - 3.0,
+        ));
+        let presence = PresenceCtx::empty();
+        self.goto_input.draw(scene, t, tr, theme, &presence);
     }
 
     // --- keyboard ------------------------------------------------------
 
-    /// Handle a key while an overlay (search / goto) is open. Returns true
-    /// if consumed. `doc` is needed because committing a goto may move the
-    /// cursor which we persist.
-    fn handle_overlay_key(
+    /// Route an event into the active shared field, keeping only byte-search
+    /// policy (kind cycling / match navigation / offset commit) in this app.
+    fn handle_overlay_event(
         &mut self,
-        key: &Key,
-        ctrl: bool,
-        shift: bool,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
         doc: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) -> bool {
-        match self.overlay {
-            Overlay::Search => match key {
-                Key::Named(NamedKey::Escape) => {
+        let shift = modifiers.state().shift_key();
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+        {
+            match (self.overlay, &ke.logical_key) {
+                (Overlay::Search, Key::Named(NamedKey::Escape)) => {
+                    self.search_input.set_focus(false);
                     self.overlay = Overlay::None;
                     self.dirty = true;
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Enter) => {
+                (Overlay::Search, Key::Named(NamedKey::Enter)) => {
                     self.jump_to_match(!shift);
                     self.persist(doc);
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.search_query.pop();
-                    self.recompute_matches();
-                    self.dirty = true;
-                    true
-                }
-                Key::Named(NamedKey::Tab) => {
+                (Overlay::Search, Key::Named(NamedKey::Tab)) => {
                     self.search_kind = self.search_kind.toggle();
+                    self.search_input
+                        .set_mono(self.search_kind == SearchKind::Hex);
                     self.recompute_matches();
                     self.dirty = true;
-                    true
+                    return true;
                 }
-                Key::Character(c) if !ctrl => {
-                    self.search_query.push_str(c.as_str());
-                    self.recompute_matches();
-                    self.dirty = true;
-                    true
-                }
-                Key::Named(NamedKey::Space) if !ctrl => {
-                    self.search_query.push(' ');
-                    self.recompute_matches();
-                    self.dirty = true;
-                    true
-                }
-                _ => false,
-            },
-            Overlay::Goto => match key {
-                Key::Named(NamedKey::Escape) => {
+                (Overlay::Goto, Key::Named(NamedKey::Escape)) => {
+                    self.goto_input.set_text("");
+                    self.goto_input.set_focus(false);
                     self.overlay = Overlay::None;
-                    self.goto_query.clear();
                     self.dirty = true;
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Enter) => {
+                (Overlay::Goto, Key::Named(NamedKey::Enter)) => {
                     self.commit_goto();
                     self.persist(doc);
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.goto_query.pop();
-                    self.dirty = true;
-                    true
-                }
-                Key::Character(c) if !ctrl => {
-                    self.goto_query.push_str(c.as_str());
-                    self.dirty = true;
-                    true
-                }
-                _ => false,
-            },
-            Overlay::None => false,
+                _ => {}
+            }
         }
+
+        let mut field_handled = false;
+        let changed = match self.overlay {
+            Overlay::Search => {
+                self.search_input.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    doc,
+                    path,
+                    &mut field_handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+                self.search_input.take_dirty().is_some()
+            }
+            Overlay::Goto => {
+                self.goto_input.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    doc,
+                    path,
+                    &mut field_handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+                self.goto_input.take_dirty().is_some()
+            }
+            Overlay::None => false,
+        };
+        if changed {
+            if self.overlay == Overlay::Search {
+                self.recompute_matches();
+            }
+            self.dirty = true;
+        }
+        field_handled || changed
     }
 }
 
@@ -1583,6 +1596,27 @@ impl Widget for HexView {
         let ctrl = modifiers.state().control_key();
         let shift = modifiers.state().shift_key();
 
+        if self.overlay != Overlay::None {
+            if self.handle_overlay_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                _path,
+                _focus_target,
+                _node_id,
+                _taffy,
+            ) {
+                *handled = true;
+                return;
+            }
+            // An open prompt captures keys even when the field deliberately
+            // ignores the chord, so grid editing never fires behind it.
+            if matches!(event, WindowEvent::KeyboardInput { .. }) {
+                return;
+            }
+        }
+
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1636,14 +1670,6 @@ impl Widget for HexView {
                     return;
                 }
 
-                // Overlay capture takes priority.
-                if self.overlay != Overlay::None {
-                    if self.handle_overlay_key(key, ctrl, shift, state) {
-                        *handled = true;
-                    }
-                    return;
-                }
-
                 // Global chords.
                 if ctrl && let Key::Character(c) = key {
                     match c.as_str() {
@@ -1659,6 +1685,9 @@ impl Widget for HexView {
                         }
                         "f" | "F" => {
                             self.overlay = Overlay::Search;
+                            self.search_input.set_focus(true);
+                            self.search_input
+                                .set_cursor_pos(self.search_input.value().len());
                             self.recompute_matches();
                             self.dirty = true;
                             *handled = true;
@@ -1666,6 +1695,9 @@ impl Widget for HexView {
                         }
                         "g" | "G" => {
                             self.overlay = Overlay::Goto;
+                            self.goto_input.set_focus(true);
+                            self.goto_input
+                                .set_cursor_pos(self.goto_input.value().len());
                             self.dirty = true;
                             *handled = true;
                             return;
@@ -1763,6 +1795,38 @@ impl Widget for HexView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        match self.overlay {
+            Overlay::Search => self.search_input.ime_cursor_rect(),
+            Overlay::Goto => self.goto_input.ime_cursor_rect(),
+            Overlay::None => None,
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        match self.overlay {
+            Overlay::Search => self.search_input.ime_purpose(),
+            Overlay::Goto => self.goto_input.ime_purpose(),
+            Overlay::None => None,
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        match self.overlay {
+            Overlay::Search => self.search_input.cursor_shape(point),
+            Overlay::Goto => self.goto_input.cursor_shape(point),
+            Overlay::None => None,
+        }
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        match self.overlay {
+            Overlay::Search => self.search_input.accessibility(),
+            Overlay::Goto => self.goto_input.accessibility(),
+            Overlay::None => None,
+        }
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1935,5 +1999,42 @@ fn ascii_glyph(b: u8) -> String {
         (b as char).to_string()
     } else {
         "·".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_search_field_still_drives_byte_match_policy() {
+        let mut view = HexView::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
+        view.search_input.set_text("de ad");
+        view.recompute_matches();
+
+        assert_eq!(view.search_input.value(), "de ad");
+        assert_eq!(view.matches, vec![0, 3]);
+        assert_eq!(view.match_idx, Some(0));
+
+        view.search_kind = SearchKind::Text;
+        view.search_input.set_text("Þ");
+        view.recompute_matches();
+        assert!(view.matches.is_empty());
+    }
+
+    #[test]
+    fn shared_goto_field_keeps_hex_and_decimal_offset_parsing() {
+        let mut view = HexView::new(vec![0; 64], "bytes.bin");
+
+        view.overlay = Overlay::Goto;
+        view.goto_input.set_text("0x1f");
+        view.commit_goto();
+        assert_eq!(view.model.cursor(), 31);
+        assert!(view.goto_input.value().is_empty());
+
+        view.overlay = Overlay::Goto;
+        view.goto_input.set_text("12");
+        view.commit_goto();
+        assert_eq!(view.model.cursor(), 12);
     }
 }
