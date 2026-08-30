@@ -170,10 +170,49 @@ pub fn extension_for_mime(mime: &str) -> &'static str {
     }
 }
 
+/// Where a dropped payload is written so the app can open it.
+///
+/// `$XDG_RUNTIME_DIR` first, which is the conventional answer and the
+/// one the receiving app is most likely to recognise. It is not a
+/// reliable answer inside a sandbox, though: the variable is set, but
+/// the directory it names may be one the sandbox synthesised in order to
+/// mount a socket into, with nothing writable about it. A drop that
+/// lands there silently produces no file and the app is handed nothing,
+/// which looks exactly like a drag that was never accepted.
+///
+/// So each candidate is *probed* rather than assumed, ending at the app's
+/// own directory, which a qOS app always has and always owns.
 fn spool_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+    let candidates = [
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_empty() {
+            continue;
+        }
+        let dir = PathBuf::from(candidate);
+        if is_writable(&dir) {
+            return dir;
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// Whether a file can actually be created in `dir`, asked by creating one.
+///
+/// The permission bits are not the whole story — a read-only mount says
+/// nothing about them — so the question is put to the filesystem.
+fn is_writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(format!(".winit-dnd-probe-{}", std::process::id()));
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        },
+        Err(_) => false,
+    }
 }
 
 impl WinitState {
