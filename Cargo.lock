@@ -3422,6 +3422,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ui",
+ "unicode-bidi",
  "uuid",
  "vello",
  "winit",

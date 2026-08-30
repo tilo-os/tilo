@@ -5531,6 +5531,7 @@ impl BooksApp {
                     };
                     let (w, _) =
                         tr.measure_font(&run.display_text, b.size, None, weight, run.italic, &fam);
+                    let w = w * l.glyph_scale;
                     let x0 = content_x + indent + f64::from(run.x);
                     let x1 = x0 + f64::from(w);
                     self.sel_runs.push(SelRun {
@@ -5724,6 +5725,7 @@ impl BooksApp {
                             run.italic,
                             true,
                         );
+                        let cw = cw * l.glyph_scale;
                         let chip = Rect::new(
                             x - 3.0,
                             ly - 1.0,
@@ -5737,7 +5739,8 @@ impl BooksApp {
                         &run.display_text,
                         b.size,
                         palette.ink,
-                        t * Affine::translate((x, ly)),
+                        t * Affine::translate((x, ly))
+                            * Affine::scale_non_uniform(f64::from(l.glyph_scale), 1.0),
                         None,
                         weight,
                         run.italic,
