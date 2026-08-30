@@ -1,4 +1,4 @@
-//! `WorkspaceSettings` — the modal opened from the `TopBar`'s
+//! `WorkspaceSettings` — the contextual lens opened from the `TopBar`'s
 //! workspace-name button, with General / Members / Privacy & Security /
 //! Apps & Files tabs.
 //!
@@ -63,7 +63,7 @@ const NAV_ROW_GAP: f64 = 4.0;
 /// reserves room for the identity badge + caption.
 const NAV_ROWS_TOP: f64 = 120.0;
 
-/// Tab selector for the `WorkspaceSettings` modal.
+/// Tab selector for the shell-owned `WorkspaceSettings` lens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WsTab {
     /// Workspace identity, invite link, collaborators.
@@ -89,6 +89,17 @@ impl WsTab {
         }
     }
 
+    /// Short labels for the same destinations when the lens promotes to a
+    /// narrow-screen sheet. This is responsive copy, not a second nav model.
+    pub fn compact_label(&self) -> &'static str {
+        match self {
+            WsTab::General => "General",
+            WsTab::Members => "People",
+            WsTab::Permissions => "Privacy",
+            WsTab::Apps => "Apps",
+        }
+    }
+
     /// Iteration order for the sidebar nav and tab strip. Every tab is
     /// always reachable — a host must reach Permissions before any
     /// grant exists.
@@ -108,7 +119,7 @@ pub fn invite_link(ws: &Workspace) -> String {
     format!("quickdesktop://invite/{}", u64::from(ws.id))
 }
 
-/// The `WorkspaceSettings` modal state.
+/// The `WorkspaceSettings` lens state.
 #[derive(Debug)]
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
@@ -2478,6 +2489,14 @@ mod tab_tests {
                 WsTab::Permissions,
                 WsTab::Apps
             ]
+        );
+    }
+
+    #[test]
+    fn compact_labels_keep_every_destination_distinct() {
+        assert_eq!(
+            WsTab::all().map(|tab| tab.compact_label()),
+            ["General", "People", "Privacy", "Apps"]
         );
     }
 

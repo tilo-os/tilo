@@ -4,14 +4,20 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use os_actions::{TOOL_PROTOCOL_VERSION, ToolReply, ToolRequest};
+use os_actions::{TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest};
+
+use crate::shell::chrome_state::Chrome;
+use crate::shell::workspace_settings::WsTab;
 
 pub const TOOL_SERVICE: &str = "tools";
 const MAX_WIRE_BYTES: u64 = 4 * 1024;
+const MAX_PENDING_WORKSPACE_ROUTES: usize = 16;
 
 type Handler = Arc<dyn Fn(ToolRequest) -> Result<(), String> + Send + Sync>;
 
@@ -19,6 +25,12 @@ pub struct ToolServiceHandle {
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     path: PathBuf,
+    workspace_requests: Arc<Mutex<Vec<WorkspaceRequest>>>,
+}
+
+struct WorkspaceRequest {
+    request: ToolRequest,
+    reply: mpsc::SyncSender<Result<(), String>>,
 }
 
 impl Drop for ToolServiceHandle {
@@ -42,20 +54,41 @@ impl Drop for ToolServiceHandle {
 pub fn spawn() -> std::io::Result<ToolServiceHandle> {
     launcher::services::ensure_services_root()?;
     let path = launcher::services::socket_for(TOOL_SERVICE);
+    let workspace_requests = Arc::new(Mutex::new(Vec::new()));
+    let pending = Arc::clone(&workspace_requests);
     spawn_at(
         path,
-        Arc::new(|request| {
+        Arc::new(move |request| {
             let room = crate::shell::state::RoomId::parse(&request.workspace_id)
                 .ok_or_else(|| "invalid workspace identity".to_string())?;
             request.intent.validate()?;
+            if matches!(&request.intent, ToolIntent::WorkspaceSettings { .. }) {
+                let (reply, result) = mpsc::sync_channel(1);
+                let mut routes = pending
+                    .lock()
+                    .map_err(|_| "workspace route queue is unavailable".to_string())?;
+                if routes.len() >= MAX_PENDING_WORKSPACE_ROUTES {
+                    return Err("too many workspace routes are pending".into());
+                }
+                routes.push(WorkspaceRequest { request, reply });
+                drop(routes);
+                return result
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| "the shell did not accept the workspace route".to_string())?;
+            }
             crate::shell::launcher::launch_tool_intent(&request.intent, room)
                 .map(|_| ())
                 .map_err(|e| e.user_message())
         }),
+        workspace_requests,
     )
 }
 
-fn spawn_at(path: PathBuf, handler: Handler) -> std::io::Result<ToolServiceHandle> {
+fn spawn_at(
+    path: PathBuf,
+    handler: Handler,
+    workspace_requests: Arc<Mutex<Vec<WorkspaceRequest>>>,
+) -> std::io::Result<ToolServiceHandle> {
     if path.exists() {
         if UnixStream::connect(&path).is_ok() {
             return Err(std::io::Error::new(
@@ -94,7 +127,50 @@ fn spawn_at(path: PathBuf, handler: Handler) -> std::io::Result<ToolServiceHandl
         shutdown,
         thread: Some(thread),
         path,
+        workspace_requests,
     })
+}
+
+impl ToolServiceHandle {
+    /// Apply queued workspace routes on the compositor thread, where the
+    /// non-`Send` chrome model lives. A request is accepted only for the
+    /// workspace currently containing the caller; it never switches context
+    /// behind the person's back.
+    pub fn pump_workspace_settings(&self, chrome: &Chrome) {
+        let requests = self
+            .workspace_requests
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default();
+        for pending in requests {
+            let result = apply_workspace_settings(chrome, &pending.request);
+            let _ = pending.reply.send(result);
+        }
+    }
+}
+
+fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<(), String> {
+    let ToolIntent::WorkspaceSettings { route } = &request.intent else {
+        return Err("not a workspace settings route".into());
+    };
+    let mut state = chrome.borrow_mut();
+    let active_room = state
+        .tree()
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
+        .ok_or_else(|| "there is no active workspace".to_string())?;
+    if active_room != request.workspace_id {
+        return Err("Personal Settings is attached to a different workspace".into());
+    }
+    let tab = match route {
+        os_actions::WorkspaceSettingsRoute::General => WsTab::General,
+        os_actions::WorkspaceSettingsRoute::Members => WsTab::Members,
+        os_actions::WorkspaceSettingsRoute::PrivacySecurity => WsTab::Permissions,
+        os_actions::WorkspaceSettingsRoute::AppsFiles => WsTab::Apps,
+    };
+    state.open_workspace_settings(tab);
+    state.bump();
+    Ok(())
 }
 
 fn serve_client(stream: UnixStream, handler: &Handler) {
@@ -153,8 +229,7 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use os_actions::{ToolIntent, VpnRoute};
-    use std::sync::Mutex;
+    use os_actions::{ToolIntent, VpnRoute, WorkspaceSettingsRoute};
 
     #[test]
     fn service_accepts_only_versioned_typed_requests() {
@@ -168,6 +243,7 @@ mod tests {
                 record.lock().unwrap().push(r.intent);
                 Ok(())
             }),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .unwrap();
 
@@ -190,5 +266,51 @@ mod tests {
                 .accepted
         );
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn workspace_route_opens_exact_tab_for_active_room() {
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        );
+        let room = chrome
+            .borrow()
+            .tree()
+            .active_workspace()
+            .unwrap()
+            .room
+            .to_string();
+        let request = ToolRequest {
+            protocol: TOOL_PROTOCOL_VERSION,
+            workspace_id: room,
+            intent: ToolIntent::WorkspaceSettings {
+                route: WorkspaceSettingsRoute::PrivacySecurity,
+            },
+        };
+
+        apply_workspace_settings(&chrome, &request).unwrap();
+
+        let state = chrome.borrow();
+        assert!(state.overlays.ws_settings);
+        assert_eq!(state.ws_settings_tab, WsTab::Permissions);
+    }
+
+    #[test]
+    fn workspace_route_cannot_switch_or_target_another_room() {
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        );
+        let request = ToolRequest {
+            protocol: TOOL_PROTOCOL_VERSION,
+            workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
+            intent: ToolIntent::WorkspaceSettings {
+                route: WorkspaceSettingsRoute::Members,
+            },
+        };
+
+        assert!(apply_workspace_settings(&chrome, &request).is_err());
+        let state = chrome.borrow();
+        assert!(!state.overlays.ws_settings);
+        assert_eq!(state.ws_settings_tab, WsTab::General);
     }
 }

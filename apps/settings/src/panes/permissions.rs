@@ -24,7 +24,7 @@ use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject,
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
-use ui::widget::{Row, Spacer, Text, Widget};
+use ui::widget::{Button, Row, Spacer, Text, Widget};
 use vello::peniko::Color;
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
@@ -389,18 +389,33 @@ fn device_security_card() -> El {
 fn workspace_grants_intro_card() -> El {
     card(
         "Workspace privacy grants",
-        rows(vec![Box::new(
-            Text::new(
-                "Apps run sandboxed to the workspace they launch in. When an app \
+        rows(vec![
+            Box::new(
+                Text::new(
+                    "Apps run sandboxed to the workspace they launch in. When an app \
                  reaches beyond it — a file, the camera or microphone, screen \
                  sharing, or the network — the compositor asks you, and an \
                  approval is recorded as a capability the sandbox enforces. This
                  personal overview is intentionally read-only: change a grant in
                  the named workspace's Settings, where its owner and your role are
                  visible.",
-            )
-            .with_size(12.0),
-        )]),
+                )
+                .with_size(12.0),
+            ),
+            Box::new(
+                Button::new(
+                    "open-workspace-privacy",
+                    "Open current workspace controls",
+                    None,
+                )
+                .with_size(248.0, 40.0)
+                .on_click(|| {
+                    let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                    });
+                }),
+            ),
+        ]),
     )
 }
 
@@ -472,7 +487,7 @@ fn enforcement_card() -> El {
             "These grants are enforced by the compositor (file access, \
              collaboration, devices) and by the FUSE mount, not by this panel. \
              This is a read-only view of the list they apply; revoke a grant in \
-                     Workspace Settings for the workspace that owns it.",
+             Workspace Settings for the workspace that owns it.",
         )]),
     )
 }
@@ -547,13 +562,13 @@ mod tests {
     }
 
     #[test]
-    fn is_read_only_with_no_dead_buttons() {
-        // Populated or empty, the pane carries no controls that would look live
-        // but change nothing — it never writes state.json.
+    fn is_read_only_except_for_one_live_context_route() {
+        // The pane still cannot mutate state.json. Its only button asks the
+        // shell to reveal the active workspace's authoritative controls.
         for json in [None, Some(sample_state().as_str())] {
             let mut pane = build_view(json);
             build_layout_of(&mut pane);
-            assert_eq!(count_named(pane.as_ref(), "Button"), 0, "no dead buttons");
+            assert_eq!(count_named(pane.as_ref(), "Button"), 1);
         }
     }
 
