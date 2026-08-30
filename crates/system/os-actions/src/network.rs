@@ -553,59 +553,76 @@ pub struct ConnectionPolicy {
     pub proxy: ProxyConfiguration,
 }
 
-pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Result<(), String> {
+/// Editable values read from a NetworkManager connection profile. `None`
+/// means NetworkManager returned a value this UI does not understand; callers
+/// must leave that property alone rather than replacing it with a default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionProfileSettings {
+    pub metered: Option<MeteredPolicy>,
+    pub mac: Option<MacPolicy>,
+    pub proxy: Option<ProxyConfiguration>,
+    pub ipv4: Option<IpConfiguration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionPolicyPatch {
+    pub metered: Option<MeteredPolicy>,
+    pub mac: Option<MacPolicy>,
+    pub proxy: Option<ProxyConfiguration>,
+}
+
+pub fn configure_connection_policy_patch(
+    uuid: &str,
+    patch: &ConnectionPolicyPatch,
+) -> Result<(), String> {
     validate_uuid(uuid)?;
-    if let Some(url) = policy.proxy.automatic_url.as_deref()
-        && !(url.starts_with("https://") || url.starts_with("http://"))
+    if let Some(url) = patch
+        .proxy
+        .as_ref()
+        .and_then(|p| p.automatic_url.as_deref())
+        && (url.len() > 2048 || !(url.starts_with("https://") || url.starts_with("http://")))
     {
-        return Err("automatic proxy URL must use HTTP or HTTPS".into());
+        return Err("automatic proxy URL must use HTTP or HTTPS and be at most 2048 bytes".into());
     }
-    let metered = match policy.metered {
-        MeteredPolicy::Automatic => "unknown",
-        MeteredPolicy::Metered => "yes",
-        MeteredPolicy::Unmetered => "no",
-    };
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "modify",
-            "uuid",
-            uuid,
-            "connection.metered",
-            metered,
-        ],
-    )?;
-    let proxy_method = if policy.proxy.automatic_url.is_some() {
-        "auto"
-    } else {
-        "none"
-    };
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "modify",
-            "uuid",
-            uuid,
-            "proxy.method",
-            proxy_method,
-            "proxy.pac-url",
-            policy.proxy.automatic_url.as_deref().unwrap_or(""),
-            "proxy.browser-only",
-            if policy.proxy.browser_only {
-                "yes"
-            } else {
-                "no"
-            },
-        ],
-    )?;
-    if let Some(mac) = policy.mac {
-        let value = match mac {
-            MacPolicy::Permanent => "permanent",
-            MacPolicy::Random => "random",
-            MacPolicy::Stable => "stable-ssid",
-        };
+    if let Some(value) = patch.metered {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "connection.metered",
+                match value {
+                    MeteredPolicy::Automatic => "unknown",
+                    MeteredPolicy::Metered => "yes",
+                    MeteredPolicy::Unmetered => "no",
+                },
+            ],
+        )?;
+    }
+    if let Some(proxy) = &patch.proxy {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "proxy.method",
+                if proxy.automatic_url.is_some() {
+                    "auto"
+                } else {
+                    "none"
+                },
+                "proxy.pac-url",
+                proxy.automatic_url.as_deref().unwrap_or(""),
+                "proxy.browser-only",
+                if proxy.browser_only { "yes" } else { "no" },
+            ],
+        )?;
+    }
+    if let Some(mac) = patch.mac {
         run(
             "nmcli",
             &[
@@ -614,11 +631,26 @@ pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Res
                 "uuid",
                 uuid,
                 "802-11-wireless.cloned-mac-address",
-                value,
+                match mac {
+                    MacPolicy::Permanent => "permanent",
+                    MacPolicy::Random => "random",
+                    MacPolicy::Stable => "stable-ssid",
+                },
             ],
         )?;
     }
     Ok(())
+}
+
+pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Result<(), String> {
+    configure_connection_policy_patch(
+        uuid,
+        &ConnectionPolicyPatch {
+            metered: Some(policy.metered),
+            mac: policy.mac,
+            proxy: Some(policy.proxy.clone()),
+        },
+    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -826,7 +858,9 @@ fn valid_ip_token(value: &str) -> bool {
 /// means "use DHCP-provided DNS".
 pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String> {
     validate_uuid(uuid)?;
-    if config.addresses.iter().any(|v| !valid_ip_token(v))
+    if config.addresses.len() > 16
+        || config.dns.len() > 16
+        || config.addresses.iter().any(|v| !valid_ip_token(v))
         || config
             .gateway
             .as_deref()
@@ -860,6 +894,109 @@ pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String
             if config.dns.is_empty() { "no" } else { "yes" },
         ],
     )
+}
+
+/// Read the properties Settings can safely edit from a profile. The typed
+/// `nmcli` property view is NetworkManager's standard client surface and keeps
+/// this crate independent of vendor files and connection serialization.
+pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettings, String> {
+    validate_uuid(uuid)?;
+    let out = run_capture(
+        "nmcli",
+        &[
+            "-t",
+            "--escape",
+            "yes",
+            "-f",
+            "connection.metered,802-11-wireless.cloned-mac-address,proxy.method,proxy.pac-url,proxy.browser-only,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns",
+            "connection",
+            "show",
+            "uuid",
+            uuid,
+        ],
+    )?;
+    parse_connection_profile_settings(&out)
+}
+
+fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSettings, String> {
+    if out.len() > 32 * 1024 {
+        return Err("NetworkManager profile response is unexpectedly large".into());
+    }
+    let mut values = std::collections::HashMap::new();
+    for line in out.lines() {
+        if line.len() > 4096 {
+            return Err("NetworkManager profile property is too large".into());
+        }
+        let fields = split_terse(line);
+        if fields.len() >= 2 {
+            values.insert(fields[0].clone(), fields[1..].join(":"));
+        }
+    }
+    let value = |key: &str| values.get(key).map(String::as_str).unwrap_or("").trim();
+    let metered = match value("connection.metered") {
+        "unknown" => Some(MeteredPolicy::Automatic),
+        "yes" | "true" | "1" => Some(MeteredPolicy::Metered),
+        "no" | "false" | "0" => Some(MeteredPolicy::Unmetered),
+        _ => None,
+    };
+    let mac = match value("802-11-wireless.cloned-mac-address") {
+        "stable" | "stable-ssid" => Some(MacPolicy::Stable),
+        "random" => Some(MacPolicy::Random),
+        "permanent" | "preserve" => Some(MacPolicy::Permanent),
+        _ => None,
+    };
+    let proxy = match value("proxy.method") {
+        "none" => Some(ProxyConfiguration {
+            automatic_url: None,
+            browser_only: matches!(value("proxy.browser-only"), "yes" | "true" | "1"),
+        }),
+        "auto" => {
+            let url = value("proxy.pac-url");
+            ((url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 2048).then(
+                || ProxyConfiguration {
+                    automatic_url: Some(url.to_string()),
+                    browser_only: matches!(value("proxy.browser-only"), "yes" | "true" | "1"),
+                },
+            )
+        }
+        _ => None,
+    };
+    let ipv4 = match value("ipv4.method") {
+        "auto" | "manual" => {
+            let list = |raw: &str| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .take(17)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            };
+            let addresses = list(value("ipv4.addresses"));
+            let dns = list(value("ipv4.dns"));
+            if addresses.len() > 16
+                || dns.len() > 16
+                || addresses.iter().chain(&dns).any(|v| !valid_ip_token(v))
+            {
+                None
+            } else {
+                let gateway = value("ipv4.gateway");
+                let gateway = (!gateway.is_empty() && gateway != "--").then(|| gateway.to_string());
+                Some(IpConfiguration {
+                    automatic: value("ipv4.method") == "auto",
+                    addresses,
+                    gateway,
+                    dns,
+                })
+            }
+        }
+        _ => None,
+    };
+    Ok(ConnectionProfileSettings {
+        metered,
+        mac,
+        proxy,
+        ipv4,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1318,6 +1455,41 @@ pub fn connect_enterprise_wifi(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_editable_networkmanager_profile_values() {
+        let parsed = parse_connection_profile_settings(concat!(
+            "connection.metered:yes\n",
+            "802-11-wireless.cloned-mac-address:stable-ssid\n",
+            "proxy.method:auto\n",
+            "proxy.pac-url:https\\://proxy.example/pac\n",
+            "proxy.browser-only:yes\n",
+            "ipv4.method:manual\n",
+            "ipv4.addresses:192.0.2.10/24\n",
+            "ipv4.gateway:192.0.2.1\n",
+            "ipv4.dns:1.1.1.1,9.9.9.9\n",
+        ))
+        .unwrap();
+        assert_eq!(parsed.metered, Some(MeteredPolicy::Metered));
+        assert_eq!(parsed.mac, Some(MacPolicy::Stable));
+        assert_eq!(
+            parsed.proxy.unwrap().automatic_url.as_deref(),
+            Some("https://proxy.example/pac")
+        );
+        assert_eq!(parsed.ipv4.unwrap().addresses, ["192.0.2.10/24"]);
+    }
+
+    #[test]
+    fn preserves_unrecognized_profile_properties() {
+        let parsed = parse_connection_profile_settings(concat!(
+            "connection.metered:vendor-value\n",
+            "802-11-wireless.cloned-mac-address:02\\:00\\:00\\:00\\:00\\:01\n",
+            "proxy.method:manual\n",
+            "ipv4.method:shared\n",
+        ))
+        .unwrap();
+        assert_eq!(parsed, ConnectionProfileSettings::default());
+    }
 
     #[test]
     fn parse_nmcli_radio_states() {

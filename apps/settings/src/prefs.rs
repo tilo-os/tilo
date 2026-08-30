@@ -55,11 +55,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::region::RegionSettings;
 
-/// System-event / collaboration sounds, plus the remembered default audio
-/// devices. The sounds are read by the compositor's notification layer when it
-/// decides whether to play a sound; the device preferences record the
-/// output/input the user last chose as the default, so the Sound pane can
-/// surface that a preferred device was selected across sessions.
+/// Remembered default audio devices and persistent transforms. The three
+/// legacy sound booleans remain deserializable for compatibility but are not
+/// exposed as controls: notification sound delivery belongs to Notifications,
+/// and collaboration sounds are not offered until the shell has a real event
+/// sound consumer.
 /// `#[serde(default)]` keeps configs written before these fields existed
 /// loadable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -189,6 +189,36 @@ impl Default for InputPrefs {
     }
 }
 
+impl InputPrefs {
+    /// Reconcile the legacy active layout with the ordered source list using
+    /// the same validation and bounds the compositor enforces.
+    pub fn normalise_keyboard_sources(&mut self) {
+        let mut config = settings_store::hardware::RichInputConfig {
+            pointer_speed: self.pointer_speed,
+            natural_scroll: self.natural_scroll,
+            tap_to_click: self.tap_to_click,
+            tap_drag: self.tap_drag,
+            disable_while_typing: self.disable_while_typing,
+            middle_emulation: self.middle_emulation,
+            left_handed: self.left_handed,
+            accel_profile: if self.accel_profile == "flat" {
+                settings_store::hardware::AccelProfile::Flat
+            } else {
+                settings_store::hardware::AccelProfile::Adaptive
+            },
+            key_repeat: self.key_repeat,
+            keyboard_layout: self.keyboard_layout.clone(),
+            keyboard_layouts: self.keyboard_layouts.clone(),
+            compose_key: self.compose_key.clone(),
+            touchpad_gestures: self.touchpad_gestures,
+            pen_output: self.pen_output.clone(),
+        };
+        config.normalise_sources();
+        self.keyboard_layout = config.keyboard_layout;
+        self.keyboard_layouts = config.keyboard_layouts;
+    }
+}
+
 /// A configurable response to a power event (lid close, power key, critical
 /// battery). Serialises to the lowercase labels the compositor's power policy
 /// parses (`"suspend"` / `"lock"` / `"ignore"`) — the on-disk JSON is the
@@ -310,6 +340,8 @@ impl Default for PowerPrefs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpdatePrefs {
     pub auto: bool,
+    /// Legacy serialized field. The actual image reference is managed by
+    /// bootc; Settings never treats this string as an actionable channel.
     pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
     pub last_checked: String,
@@ -745,7 +777,7 @@ impl SystemPrefs {
     pub fn from_json(text: &str) -> Self {
         let root: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
         let section = |key: &str| root.get(key).cloned();
-        Self {
+        let mut prefs = Self {
             audio: section("audio")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
@@ -770,7 +802,22 @@ impl SystemPrefs {
             accessibility: section("accessibility")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
+        };
+        // `serde(default)` fills a missing multi-source field with `["us"]`.
+        // For an old document whose only field is `keyboard_layout: "de"`,
+        // that would invent an unwanted second source. Clear the synthetic
+        // list before normalisation when the key genuinely was absent.
+        let has_sources = root
+            .get("input")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|input| {
+                input.contains_key("keyboard_layouts") || input.contains_key("layouts")
+            });
+        if !has_sources {
+            prefs.input.keyboard_layouts.clear();
         }
+        prefs.input.normalise_keyboard_sources();
+        prefs
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
@@ -931,6 +978,7 @@ mod tests {
         p.display.night_light = true;
         p.input.pointer_speed = 0.9;
         p.input.keyboard_layout = "de".into();
+        p.input.keyboard_layouts = vec!["de".into()];
         p.power.auto_suspend = false;
         p.power.blank_minutes = 30;
         p.updates.auto = false;
@@ -948,6 +996,23 @@ mod tests {
         let json = p.to_json_merged("");
         let back = SystemPrefs::from_json(&json);
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn old_single_keyboard_layout_migrates_without_inventing_us() {
+        let prefs = SystemPrefs::from_json(r#"{"input":{"keyboard_layout":"de"}}"#);
+        assert_eq!(prefs.input.keyboard_layout, "de");
+        assert_eq!(prefs.input.keyboard_layouts, ["de"]);
+    }
+
+    #[test]
+    fn keyboard_source_order_and_active_source_round_trip() {
+        let mut prefs = SystemPrefs::default();
+        prefs.input.keyboard_layouts = vec!["us".into(), "de:nodeadkeys".into()];
+        prefs.input.keyboard_layout = "de:nodeadkeys".into();
+        let back = SystemPrefs::from_json(&prefs.to_json_merged(""));
+        assert_eq!(back.input.keyboard_layouts, prefs.input.keyboard_layouts);
+        assert_eq!(back.input.keyboard_layout, prefs.input.keyboard_layout);
     }
 
     #[test]

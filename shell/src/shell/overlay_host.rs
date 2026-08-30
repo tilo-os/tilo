@@ -6900,6 +6900,16 @@ impl Widget for ShellOverlayHost {
                                 return;
                             }
                         }
+                    } else if matches!(
+                        current_level,
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    ) && self.qs_notification_clear_rect().contains(p)
+                    {
+                        if let Some(chrome) = self.chrome.clone() {
+                            chrome.borrow_mut().clear_notification_history();
+                        }
+                        *handled = true;
+                        return;
                     }
                     *handled = true;
                     return;
@@ -6940,7 +6950,7 @@ impl Widget for ShellOverlayHost {
                     // Each tile closes the popover; the action fires
                     // after the chrome borrow drops.
                     let mut action_hit: Option<usize> = None;
-                    for i in 0..3 {
+                    for i in 0..4 {
                         let tile = self.quick_settings_action_geometry(i);
                         if tile.contains(p) {
                             action_hit = Some(i);
@@ -6988,6 +6998,14 @@ impl Widget for ShellOverlayHost {
                                         );
                                     }
                                 }
+                            }
+                            2 => {
+                                st.quick_settings.push_level(
+                                    crate::shell::quick_settings::QsLevel::Notifications,
+                                );
+                                st.bump();
+                                *handled = true;
+                                return;
                             }
                             _ => {
                                 self.power_menu_open = true;
@@ -9988,12 +10006,16 @@ impl ShellOverlayHost {
                 self.draw_qs_vpn_list(scene, transform, text_renderer, theme, &qs);
                 return;
             }
+            crate::shell::quick_settings::QsLevel::Notifications => {
+                self.draw_qs_notification_history(scene, transform, text_renderer, theme);
+                return;
+            }
             crate::shell::quick_settings::QsLevel::Root => {}
         }
 
-        // Section 1: Action row (Settings / Camera / Power).
+        // Section 1: Action row (Settings / Privacy / Notifications / Power).
         let white_10 = colors.text_primary.with_alpha_factor(0.10);
-        for i in 0..3 {
+        for i in 0..4 {
             let tile = self.quick_settings_action_geometry(i);
             // Control role: 12px — the radius scale deliberately omits
             // 16, so a literal 16 here would match nothing else on screen.
@@ -10003,14 +10025,14 @@ impl ShellOverlayHost {
             );
             // Power tile's red wash must expose its r/g/b signature so
             // the concept-parity spec test detects it.
-            let bg = if i == 2 {
+            let bg = if i == 3 {
                 colors.semantic.danger.with_alpha_factor(0.20)
             } else {
                 white_10
             };
             scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
 
-            let glyph_color = if i == 2 {
+            let glyph_color = if i == 3 {
                 colors.semantic.danger
             } else {
                 colors.text_primary
@@ -10024,6 +10046,7 @@ impl ShellOverlayHost {
             let glyph = match i {
                 0 => ui::icons::Icon::Settings2,
                 1 => ui::icons::Icon::Camera,
+                2 => ui::icons::Icon::Bell,
                 _ => ui::icons::Icon::Power,
             };
             ui::icons::draw_icon(
@@ -10072,6 +10095,7 @@ impl ShellOverlayHost {
                 0 => "Settings",
                 1 if !qs.privacy.active_media.is_empty() => "Stop access",
                 1 => "Privacy",
+                2 => "History",
                 _ => "Power",
             };
             let (label_w, _) = text_renderer.measure_weighted(
@@ -10900,6 +10924,111 @@ impl ShellOverlayHost {
             transform * Affine::translate((tx, ty)),
             None,
         );
+    }
+
+    fn qs_notification_clear_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
+    }
+
+    /// Render the shell-owned, bounded session history. History deliberately
+    /// lives in chrome rather than Settings: Settings owns delivery policy,
+    /// while the shell is the only authority that actually received and
+    /// retired these notifications.
+    fn draw_qs_notification_history(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Notifications");
+        let rect = self.quick_settings_rect();
+        let colors = &theme.tokens.colors;
+        let history = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow().notification_history().to_vec())
+            .unwrap_or_default();
+        if history.is_empty() {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "No recent notifications",
+            );
+            return;
+        }
+
+        let clear = self.qs_notification_clear_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &RoundedRect::from_rect(clear, 10.0),
+        );
+        let (clear_w, clear_h) =
+            text_renderer.measure("Clear", theme.tokens.typography.scale.xs, None);
+        text_renderer.draw_text(
+            scene,
+            "Clear",
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    clear.center().x - f64::from(clear_w) / 2.0,
+                    clear.center().y - f64::from(clear_h) / 2.0,
+                )),
+            None,
+        );
+
+        let row_h = 70.0;
+        let max_rows = ((rect.height() - 64.0) / row_h).floor().max(1.0) as usize;
+        for (index, notification) in history.iter().rev().take(max_rows).enumerate() {
+            let y0 = rect.y0 + 54.0 + index as f64 * row_h;
+            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + row_h - 6.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[2].with_alpha_factor(0.62),
+                None,
+                &RoundedRect::from_rect(row, 12.0),
+            );
+            let source = notification
+                .app_name
+                .as_deref()
+                .or(notification.app_id.as_deref())
+                .unwrap_or("System");
+            text_renderer.draw_text(
+                scene,
+                source,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 7.0)),
+                Some((row.width() - 24.0) as f32),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &notification.title,
+                theme.tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 24.0)),
+                Some((row.width() - 24.0) as f32),
+                TextWeight::Semibold,
+            );
+            if notification.show_preview && !notification.body.is_empty() {
+                text_renderer.draw_text(
+                    scene,
+                    &notification.body,
+                    theme.tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform * Affine::translate((row.x0 + 12.0, row.y0 + 44.0)),
+                    Some((row.width() - 24.0) as f32),
+                );
+            }
+        }
     }
 
     /// Hit rect for the back-chevron in the drill-in header. Click here
@@ -11894,14 +12023,14 @@ impl ShellOverlayHost {
         Rect::new(x0, y0, x0 + card_w, y0 + grid_h)
     }
 
-    /// Action-row tile rect for the i-th tile (0 = Settings, 1 = Camera,
-    /// 2 = Power). The row sits at the top of the popover.
+    /// Action-row tile rect for the i-th tile (Settings, Privacy,
+    /// Notifications, Power). The row sits at the top of the popover.
     pub(crate) fn quick_settings_action_geometry(&self, i: usize) -> Rect {
         let r = self.quick_settings_rect();
         let row_y = r.y0 + 16.0;
         let row_h = 56.0;
         let inner_w = r.width() - 32.0;
-        let tile_w = (inner_w - 16.0) / 3.0; // 8 px gap × 2.
+        let tile_w = (inner_w - 24.0) / 4.0; // 8 px gap × 3.
         let x0 = r.x0 + 16.0 + i as f64 * (tile_w + 8.0);
         Rect::new(x0, row_y, x0 + tile_w, row_y + row_h)
     }

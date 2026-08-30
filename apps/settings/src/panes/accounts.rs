@@ -1,27 +1,22 @@
-//! External Accounts pane — the integration hub and editor for the shared
-//! account stores ([`crate::accounts`]) that Mail, Calendar, and the file
-//! apps consume.
+//! External Accounts pane — one inventory over the canonical account stores
+//! that installed clients consume.
 //!
 //! ## What's wired
 //!
-//! - **Remove** (the trash button on any real account) loads the owning
-//!   store, drops the account, and persists — a real, complete mutation of
-//!   the on-disk file Mail/Calendar/Files read.
+//! - **Remove** loads the owning store, drops the account, and persists it.
 //! - **Add email account** opens an inline form; **Save** builds an
 //!   [`AccountConfig`] (auto-configuring IMAP/SMTP from the address) and
 //!   appends it to [`MailStore`], persisting the same JSON Mail loads.
 //!
 //! ## Live vs. sample
 //!
-//! On launch the pane loads the real stores. When every store is empty (a
-//! fresh install, or `--shots` on CI) it renders
-//! [`crate::accounts::sample_directory`] as a read-only illustration — the
-//! sample rows omit the Remove button, and adding a real account replaces
-//! the illustration with the live directory.
+//! Production loads only real stores and renders an honest empty state.
+//! Screenshot and widget tests may inject [`crate::accounts::sample_directory`]
+//! explicitly; those rows are labelled examples and omit mutation controls.
 //!
 //! Adding CalDAV/WebDAV/Nextcloud accounts and editing existing ones need
-//! their own forms and a credential flow; those are follow-ups tracked in
-//! the growth ledger rather than shipped as buttons that don't act.
+//! their own forms and authorization flows. They are intentionally not
+//! shipped as buttons that do not act.
 
 use std::collections::HashMap;
 
@@ -29,7 +24,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
+use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -67,14 +62,11 @@ fn reauth_key(id: &str) -> String {
     format!("settings.accounts.reauth.{id}")
 }
 
-fn service_key(id: &str, service: &str) -> String {
-    format!("settings.accounts.service.{id}.{service}")
-}
-
 /// External accounts pane.
 pub struct AccountsPane {
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
+    vault: accounts::SecretVault,
     /// Whether `dir` is the illustrative sample (the real stores are empty).
     is_sample: bool,
     form_open: bool,
@@ -104,6 +96,7 @@ impl AccountsPane {
         Self {
             dir: AccountDirectory::load(),
             sync_statuses: accounts::AccountSyncStatusStore::load(),
+            vault: accounts::SecretVault::open(),
             is_sample: false,
             form_open: false,
             reauth_id: None,
@@ -122,6 +115,7 @@ impl AccountsPane {
         Self {
             dir,
             sync_statuses: accounts::AccountSyncStatusStore::default(),
+            vault: accounts::SecretVault::open(),
             is_sample,
             form_open: false,
             reauth_id: None,
@@ -151,13 +145,17 @@ impl AccountsPane {
         let mut intro: Vec<El> = Vec::new();
         intro.push(Box::new(
             Text::new(
-                "Accounts you add here are shared across the system. \
-                 Mail reads your email accounts, Calendar reads your \
-                 CalDAV calendars, and the file apps mount your WebDAV \
-                 and Nextcloud shares.",
+                "Accounts are listed once and consumed by compatible installed apps. \
+                 Email accounts can be added here today; calendar and file accounts \
+                 appear here when provisioned by their owning app.",
             )
             .with_size(12.0),
         ));
+        if self.vault.custody() == accounts::SecretCustody::LocalFile {
+            intro.push(caption(
+                "The desktop Secret Service is unavailable, so this session uses an owner-only local vault key. Install or unlock a Secret Service for stronger key custody.",
+            ));
+        }
         if self.is_sample {
             // Be honest that the visible rows are an illustration, not real
             // connected accounts — the store is empty until you add one.
@@ -305,13 +303,18 @@ impl AccountsPane {
         if !self.is_sample {
             let rk = remove_key(&view.id);
             let remove_id = format!("settings.accounts.remove.{}", view.id);
-            top = top
-                .push(hgap(8.0))
-                .push(icon_button(
+            if self
+                .vault
+                .get(&accounts::AccountId::from(view.id.clone()))
+                .is_some_and(|secret| !secret.password.is_empty())
+            {
+                top = top.push(hgap(8.0)).push(icon_button(
                     &format!("settings.accounts.reauth.{}", view.id),
                     "\u{f0425}",
                     &reauth_key(&view.id),
-                ))
+                ));
+            }
+            top = top
                 .push(hgap(10.0))
                 .push(icon_button(&remove_id, "\u{f01b4}", &rk));
         }
@@ -344,46 +347,6 @@ impl AccountsPane {
                     .with_size(11.0)
                     .with_color(ui::Theme::dark().text_dim),
             ));
-            if view.kind == AccountKind::Nextcloud
-                && self
-                    .dir
-                    .nextcloud
-                    .accounts
-                    .iter()
-                    .any(|account| account.id == view.id)
-            {
-                column = column
-                    .push(setting_row(
-                        "Mail",
-                        Box::new(
-                            Toggle::new(
-                                &format!("accounts.service.{}.mail", view.id),
-                                &service_key(&view.id, "mail"),
-                            )
-                            .with_id(&format!("accounts.service.{}.mail", view.id)),
-                        ),
-                    ))
-                    .push(setting_row(
-                        "Calendars",
-                        Box::new(
-                            Toggle::new(
-                                &format!("accounts.service.{}.calendar", view.id),
-                                &service_key(&view.id, "calendar"),
-                            )
-                            .with_id(&format!("accounts.service.{}.calendar", view.id)),
-                        ),
-                    ))
-                    .push(setting_row(
-                        "Files",
-                        Box::new(
-                            Toggle::new(
-                                &format!("accounts.service.{}.files", view.id),
-                                &service_key(&view.id, "files"),
-                            )
-                            .with_id(&format!("accounts.service.{}.files", view.id)),
-                        ),
-                    ));
-            }
         }
         Box::new(column)
     }
@@ -448,12 +411,12 @@ impl AccountsPane {
             .with_placeholder("New password or app password")
             .with_font_size(13.0);
         card(
-            "Sign in again",
+            "Replace saved password",
             rows(vec![
                 value_row("Account", id),
                 setting_row("Credential", Box::new(password)),
                 caption(
-                    "The replacement is sealed in the account vault. OAuth accounts must be reauthorized by the owning application until a shared OAuth broker is available.",
+                    "This replaces an existing password or app password in the OS account vault. OAuth authorization remains with the owning application.",
                 ),
                 Box::new(
                     Row::new()
@@ -480,6 +443,7 @@ impl AccountsPane {
     fn reload(&mut self) {
         self.dir = AccountDirectory::load();
         self.sync_statuses = accounts::AccountSyncStatusStore::load();
+        self.vault = accounts::SecretVault::open();
     }
 
     /// Persist a new mail account from the form fields. Returns whether an
@@ -644,6 +608,13 @@ impl Widget for AccountsPane {
             .flat_map(|kind| self.dir.views_of(kind))
             .collect();
             for view in views {
+                let has_password = self
+                    .vault
+                    .get(&accounts::AccountId::from(view.id.clone()))
+                    .is_some_and(|secret| !secret.password.is_empty());
+                if !has_password {
+                    continue;
+                }
                 let key = reauth_key(&view.id);
                 if read_bool(state, root, &key) {
                     let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
@@ -681,41 +652,6 @@ impl Widget for AccountsPane {
                 }
                 crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
                 self.structure_dirty = true;
-            }
-        }
-
-        // Nextcloud is the currently installed multi-service account type.
-        // Its existing use_* fields are consumed by Mail, Calendar and Files,
-        // so these are real granular controls rather than parallel prefs.
-        if !self.is_sample {
-            let mut nextcloud = NextcloudStore::load();
-            let mut changed = false;
-            for account in &mut nextcloud.accounts {
-                for (service, field) in [
-                    ("mail", &mut account.use_mail),
-                    ("calendar", &mut account.use_calendar),
-                    ("files", &mut account.use_files),
-                ] {
-                    let key = service_key(&account.id, service);
-                    if state.get(root, &key).ok().flatten().is_none() {
-                        let _ = state.put(root, &key, automerge::ScalarValue::Boolean(*field));
-                    }
-                    if let Ok(Some((Value::Scalar(value), _))) = state.get(root, &key)
-                        && let automerge::ScalarValue::Boolean(enabled) = value.as_ref()
-                        && *enabled != *field
-                    {
-                        *field = *enabled;
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
-                if let Err(error) = nextcloud.save() {
-                    warn!(target: "qos::settings", op = "account_services_save", %error, "failed to persist account service controls");
-                } else {
-                    self.reload();
-                    self.structure_dirty = true;
-                }
             }
         }
 
@@ -971,13 +907,13 @@ mod tests {
 
     #[test]
     fn real_directory_renders_remove_buttons() {
-        // Treated as real: each account gets Reauthenticate and Remove actions,
-        // plus the one Add action.
+        // Without stored passwords, real rows offer removal but do not invent
+        // a reauthentication action.
         let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
         let mut pane = AccountsPane::from_dir(dir, false);
         lay_out(&mut pane);
-        // 1 Add + 4 Reauthenticate + 4 Remove.
-        assert_eq!(count_named(&pane, "Button"), 9);
+        // 1 Add + 4 Remove.
+        assert_eq!(count_named(&pane, "Button"), 5);
     }
 
     #[test]

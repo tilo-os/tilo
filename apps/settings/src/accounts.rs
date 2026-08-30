@@ -4,10 +4,10 @@
 //!
 //! # Why Settings owns these
 //!
-//! Account *management* in qOS lives in one place: this app's External
-//! Accounts panel. Adding an IMAP mailbox, a `CalDAV` calendar, a `WebDAV`
-//! share, or a Nextcloud sign-in all happen here. The individual apps only
-//! *consume* the resulting lists.
+//! Account inventory in qOS is presented in one place: this app's External
+//! Accounts panel. Email accounts can currently be added there. Other account
+//! types are listed when an owning application provisions their canonical
+//! record; Settings does not duplicate those applications' authorization UI.
 //!
 //! # Where email + `CalDAV` live: the shared `accounts` crate
 //!
@@ -34,8 +34,8 @@
 //!
 //! | Store | Path | Consumed by |
 //! |-------|------|-------------|
-//! | [`DavStore`] (files) | `~/.config/qos/files/accounts.json` | file apps |
-//! | [`NextcloudStore`] | `~/.config/qos/nextcloud/accounts.json` | Mail + Calendar + files |
+//! | [`DavStore`] (files) | `~/.config/qos/files/accounts.json` | reserved file-client contract |
+//! | [`NextcloudStore`] | `~/.config/qos/nextcloud/accounts.json` | reserved integration contract |
 //!
 //! # Credentials are never serialised
 //!

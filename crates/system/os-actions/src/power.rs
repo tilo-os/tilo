@@ -45,6 +45,40 @@ pub fn get_power_profile() -> Result<PowerProfile, String> {
         .ok_or_else(|| format!("powerprofilesctl get unexpected: {out:?}"))
 }
 
+/// Return only the profiles the running power-profiles daemon advertises.
+///
+/// `powerprofilesctl list` is deliberately treated as the capability source;
+/// callers must not offer a profile merely because it is part of the protocol.
+pub fn available_power_profiles() -> Result<Vec<PowerProfile>, String> {
+    let out = run_capture("powerprofilesctl", &["list"])?;
+    parse_available_profiles(&out)
+}
+
+fn parse_available_profiles(out: &str) -> Result<Vec<PowerProfile>, String> {
+    let mut profiles = Vec::new();
+    for line in out.lines() {
+        let candidate = line
+            .trim()
+            .strip_prefix('*')
+            .unwrap_or(line.trim())
+            .trim()
+            .strip_suffix(':')
+            .unwrap_or("");
+        if let Some(profile) = PowerProfile::from_cli(candidate)
+            && !profiles.contains(&profile)
+        {
+            profiles.push(profile);
+        }
+    }
+    if profiles.is_empty() {
+        Err(format!(
+            "powerprofilesctl list did not advertise a supported profile: {out:?}"
+        ))
+    } else {
+        Ok(profiles)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +97,29 @@ mod tests {
             Some(PowerProfile::Performance)
         );
         assert_eq!(PowerProfile::from_cli("garbled"), None);
+    }
+
+    #[test]
+    fn parses_only_advertised_power_profiles() {
+        let output = r#"  performance:
+    Driver: platform_profile
+* balanced:
+    Driver: platform_profile
+  power-saver:
+    Driver: platform_profile
+"#;
+        assert_eq!(
+            parse_available_profiles(output).unwrap(),
+            vec![
+                PowerProfile::Performance,
+                PowerProfile::Balanced,
+                PowerProfile::Saver
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_or_unknown_capability_output() {
+        assert!(parse_available_profiles("Driver: placeholder\n").is_err());
     }
 }

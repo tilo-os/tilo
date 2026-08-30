@@ -13,12 +13,24 @@ use crate::process::{run, run_capture};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirmwareUpdate {
+    /// fwupd's stable device identifier, used to scope installation to the
+    /// exact inventory shown to the person approving the transaction.
+    pub device_id: Option<String>,
     pub device: String,
     pub current_version: Option<String>,
     pub new_version: Option<String>,
     pub description: Option<String>,
     pub urgency: Option<String>,
     pub problems: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirmwareHistoryEntry {
+    pub device: String,
+    pub from_version: Option<String>,
+    pub to_version: Option<String>,
+    pub state: String,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +58,13 @@ pub fn refresh_firmware_metadata() -> Result<(), String> {
     run("fwupdmgr", &["refresh"])
 }
 
+/// Read fwupd's own transaction history. This is authoritative lifecycle
+/// state, not a qOS-maintained success counter.
+pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
+    let json = run_capture("fwupdmgr", &["get-history", "--json"])?;
+    parse_history(&json)
+}
+
 /// Start a long-running fwupd transaction without blocking the compositor or
 /// Settings event loop. fwupd remains the verifier and policy authority; qOS
 /// only reports its lifecycle and never passes force/downgrade flags.
@@ -61,17 +80,43 @@ pub fn start_firmware_install(
             "connect power or charge the system battery above 20% before updating firmware".into(),
         );
     }
-    let total = updates.len();
+    let device_ids: Vec<String> = updates
+        .iter()
+        .map(|update| {
+            update
+                .device_id
+                .clone()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| format!("fwupd did not identify {}", update.device))
+        })
+        .collect::<Result<_, _>>()?;
+    let total = device_ids.len();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("qos-fwupd".into())
         .spawn(move || {
             let _ = tx.send(FirmwareEvent::Started { total });
-            let result = run_fwupd_transaction(|event| {
-                let _ = tx.send(event);
-            });
+            let mut needs_reboot = false;
+            let result = device_ids
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, device_id)| {
+                    run_fwupd_transaction(device_id, |event| {
+                        let event = match event {
+                            FirmwareEvent::Progress { percent, message } => {
+                                FirmwareEvent::Progress {
+                                    percent: (((index * 100) + usize::from(percent)) / total) as u8,
+                                    message,
+                                }
+                            }
+                            other => other,
+                        };
+                        let _ = tx.send(event);
+                    })
+                    .map(|reboot| needs_reboot |= reboot)
+                });
             match result {
-                Ok(needs_reboot) => {
+                Ok(()) => {
                     let _ = tx.send(FirmwareEvent::Completed(FirmwareInstallOutcome {
                         installed: total,
                         needs_reboot,
@@ -86,9 +131,12 @@ pub fn start_firmware_install(
     Ok(rx)
 }
 
-fn run_fwupd_transaction(mut emit: impl FnMut(FirmwareEvent)) -> Result<bool, String> {
+fn run_fwupd_transaction(
+    device_id: &str,
+    mut emit: impl FnMut(FirmwareEvent),
+) -> Result<bool, String> {
     let mut child = Command::new("fwupdmgr")
-        .args(["update", "-y", "--no-reboot-check"])
+        .args(["update", device_id, "-y", "--no-reboot-check"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -238,6 +286,7 @@ fn collect_devices(value: &serde_json::Value, out: &mut Vec<FirmwareUpdate>) {
                     })
                     .unwrap_or_default();
                 out.push(FirmwareUpdate {
+                    device_id: string("DeviceId").or_else(|| string("device_id")),
                     device: string("Name")
                         .or_else(|| string("name"))
                         .unwrap_or_else(|| "Firmware device".into()),
@@ -256,6 +305,46 @@ fn collect_devices(value: &serde_json::Value, out: &mut Vec<FirmwareUpdate>) {
     }
 }
 
+fn parse_history(json: &str) -> Result<Vec<FirmwareHistoryEntry>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid fwupd history json: {e}"))?;
+    let mut history = Vec::new();
+    collect_history(&root, &mut history);
+    Ok(history)
+}
+
+fn collect_history(value: &serde_json::Value, out: &mut Vec<FirmwareHistoryEntry>) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_history(value, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let string = |keys: &[&str]| {
+                keys.iter().find_map(|key| {
+                    map.get(*key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+            };
+            if let Some(state) = string(&["UpdateState", "update_state"]) {
+                out.push(FirmwareHistoryEntry {
+                    device: string(&["Name", "name"]).unwrap_or_else(|| "Firmware device".into()),
+                    from_version: string(&["VersionOld", "version_old"]),
+                    to_version: string(&["Version", "version"]),
+                    state,
+                    error: string(&["UpdateError", "update_error"]),
+                });
+            }
+            for child in map.values() {
+                collect_history(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,13 +352,25 @@ mod tests {
     #[test]
     fn parses_fwupd_devices_and_releases() {
         let updates = parse_updates(
-            r#"{"Devices":[{"Name":"System Firmware","Version":"1.0","Releases":[{"Version":"1.2","Flags":4}]}]}"#,
+            r#"{"Devices":[{"DeviceId":"device-1","Name":"System Firmware","Version":"1.0","Releases":[{"Version":"1.2","Flags":4}]}]}"#,
         )
         .unwrap();
         assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].device_id.as_deref(), Some("device-1"));
         assert_eq!(updates[0].device, "System Firmware");
         assert_eq!(updates[0].new_version.as_deref(), Some("1.2"));
         assert!(updates[0].problems.is_empty());
+    }
+
+    #[test]
+    fn parses_fwupd_transaction_history() {
+        let history = parse_history(
+            r#"{"Devices":[{"Name":"System Firmware","VersionOld":"1.0","Version":"1.2","UpdateState":"success"},{"Name":"Dock","Version":"3","UpdateState":"failed","UpdateError":"cable removed"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].from_version.as_deref(), Some("1.0"));
+        assert_eq!(history[1].error.as_deref(), Some("cable removed"));
     }
 
     #[test]

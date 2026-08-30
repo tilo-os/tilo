@@ -47,6 +47,7 @@ pub mod accounts;
 pub mod actions;
 pub mod categories;
 pub mod dispatcher;
+pub(crate) mod input_sources;
 pub mod panes;
 pub mod prefs;
 pub mod region;

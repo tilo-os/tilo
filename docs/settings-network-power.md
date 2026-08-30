@@ -13,6 +13,11 @@ SIM, or hardware-capability database.
   behind **Advanced** and write NetworkManager connection settings. qOS offers
   PAC URLs because that is NetworkManager's portable per-connection proxy
   contract; it does not invent a parallel manual-proxy service.
+- Advanced Wi-Fi and LAN editors identify profiles by UUID and seed every
+  control from NetworkManager before editing. Applying policy sends only
+  changed properties. Unknown MAC, proxy, or IP methods are left untouched,
+  and multiple saved profiles get an explicit selector rather than silently
+  editing the first one.
 - Enterprise Wi-Fi supports PEAP, TTLS and EAP-TLS. A valid CA is mandatory;
   EAP-TLS additionally requires a client certificate and private key. qOS
   inspects subject, expiry and SHA-256 fingerprint with the platform OpenSSL
