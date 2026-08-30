@@ -554,6 +554,10 @@ mod tests {
             panic!("matrix remains a table");
         };
         assert_eq!((rows.len(), rows[0].len()), (2, 2));
+        assert_eq!(rows[0][0], vec![MathNode::Char('a')]);
+        assert_eq!(rows[0][1], vec![MathNode::Char('b')]);
+        assert_eq!(rows[1][0], vec![MathNode::Char('c')]);
+        assert_eq!(rows[1][1], vec![MathNode::Char('d')]);
     }
 
     #[test]
