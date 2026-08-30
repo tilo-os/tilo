@@ -174,6 +174,30 @@ impl ToggleFace {
     }
 }
 
+/// Build the accessibility node shared by retained toggles and
+/// context-specific toggle controls that own a different mutation channel.
+pub fn toggle_accessibility(
+    on: bool,
+    focused: bool,
+    enabled: bool,
+    accessible_name: Option<&str>,
+) -> crate::a11y::AccessNode {
+    use crate::a11y::{AccessNode, AccessState, Role};
+    AccessNode::new(Role::Switch)
+        .with_optional_name(
+            accessible_name
+                .map(|name| crate::i18n!(name))
+                .filter(|name| !name.is_empty()),
+        )
+        .with_state(AccessState {
+            focusable: enabled,
+            focused,
+            disabled: !enabled,
+            checked: Some(on),
+            ..Default::default()
+        })
+}
+
 impl Toggle {
     /// Paints a themed switch inside `face.rect`, matching the retained
     /// [`Toggle`]'s look. Callers keep their own hit-testing; only the
@@ -430,23 +454,12 @@ impl Widget for Toggle {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let name = self
-            .accessible_name
-            .as_ref()
-            .map(|n| crate::i18n!(n))
-            .filter(|n| !n.is_empty());
-        Some(
-            AccessNode::new(Role::Switch)
-                .with_optional_name(name)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    checked: Some(self.is_checked),
-                    ..Default::default()
-                }),
-        )
+        Some(toggle_accessibility(
+            self.is_checked,
+            self.is_focused(),
+            self.is_enabled(),
+            self.accessible_name.as_deref(),
+        ))
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
