@@ -29,7 +29,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout, Widget,
+    Button, ButtonFace, ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout,
+    Widget,
 };
 
 use crate::actions::{
@@ -4697,29 +4698,9 @@ fn draw_button(
     label: &str,
     primary: bool,
 ) {
-    let c = &theme.tokens.colors;
-    let bg = if primary { c.accent[5] } else { c.neutral[3] };
-    fill_rrect(scene, tf, bg, rect, 7.0);
-    if !primary {
-        stroke_rrect(scene, tf, c.border_standard, rect, 7.0, 1.0);
-    }
-    let col = if primary {
-        Color::WHITE
-    } else {
-        c.text_primary
-    };
-    let (lw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
-    text_w(
-        scene,
-        tr,
-        tf,
-        label,
-        13.0,
-        col,
-        rect.center().x - f64::from(lw) / 2.0,
-        rect.center().y - 8.0,
-        TextWeight::Medium,
-    );
+    let face = ButtonFace::new(rect, label).radius(7.0).text_size(13.0);
+    let face = if primary { face.primary() } else { face };
+    Button::paint(scene, tf, tr, theme, &face);
 }
 
 /// Draw an inspector slider track + fill + knob for a 0..1 value.
