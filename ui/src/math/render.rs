@@ -70,28 +70,33 @@ fn draw_box(
             );
         }
         BoxKind::Paren { open, size } => {
-            let glyph = if *open { "(" } else { ")" };
-            let natural_height = f64::from(*size) * 1.25;
-            let scale = (math_box.h / natural_height).clamp(1.0, 3.0);
-            let position = Point::new(
-                origin_x + math_box.x,
-                origin_y + math_box.y + math_box.baseline,
+            // Construct tall parentheses in their final geometry. Stretching
+            // an ordinary font glyph around its baseline put the two sides at
+            // different optical heights and produced the malformed matrix
+            // fences this path replaces.
+            let left = origin_x + math_box.x;
+            let top = origin_y + math_box.y;
+            let width = math_box.w;
+            let height = math_box.h;
+            let middle = top + height * 0.5;
+            let outer_x = if *open { left + width * 0.84 } else { left + width * 0.16 };
+            let inner_x = if *open { left + width * 0.20 } else { left + width * 0.80 };
+            let mut path = BezPath::new();
+            path.move_to(Point::new(outer_x, top));
+            path.curve_to(
+                Point::new(inner_x, top + height * 0.16),
+                Point::new(inner_x, middle - height * 0.13),
+                Point::new(inner_x, middle),
             );
-            let glyph_transform = transform
-                * Affine::translate((position.x, position.y))
-                * Affine::scale_non_uniform(1.0, scale)
-                * Affine::translate((0.0, -f64::from(*size)));
-            text_renderer.draw_text_font(
-                scene,
-                glyph,
-                *size,
-                color,
-                glyph_transform,
-                None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::Named(UI_MATH_FAMILY.into()),
+            path.curve_to(
+                Point::new(inner_x, middle + height * 0.13),
+                Point::new(inner_x, top + height * 0.84),
+                Point::new(outer_x, top + height),
             );
+            let stroke = Stroke::new((f64::from(*size) * 0.065).max(1.25))
+                .with_caps(Cap::Round)
+                .with_join(Join::Round);
+            scene.stroke(&stroke, transform, color, None, &path);
         }
         BoxKind::FracBar => {
             let y = origin_y + math_box.y + math_box.h * 0.5;

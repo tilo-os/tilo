@@ -25,7 +25,10 @@ pub enum BoxKind {
     /// The `√` sign + its overbar; `over_w` is the radicand span the bar
     /// must cover, starting at the box's right edge.
     SqrtSign { over_w: f64, size: f32 },
-    /// A parenthesis glyph stretched to `height`.
+    /// A vector parenthesis constructed to exactly span this box. It is not
+    /// a vertically-scaled font glyph: scaling a normal `(` distorts its
+    /// stroke and, more importantly, makes its optical centre depend on the
+    /// font glyph's baseline rather than on the enclosed expression.
     Paren { open: bool, size: f32 },
 }
 
@@ -96,6 +99,14 @@ fn metrics(size: f32) -> (f64, f64) {
     let ascent = lh * 0.78;
     let descent = lh - ascent;
     (ascent, descent)
+}
+
+fn delimiter_width(size: f32) -> f64 {
+    (f64::from(size) * 0.34).max(6.0)
+}
+
+fn delimiter_padding(size: f32) -> f64 {
+    (f64::from(size) * 0.10).max(1.5)
 }
 
 fn measure_glyph(tr: &mut TextRenderer, ch: char, size: f32) -> f64 {
@@ -225,6 +236,8 @@ fn layout_row(row: &Row, steps: &[(usize, Slot)], tr: &mut TextRenderer, size: f
         }
         for mut g in nf.gaps {
             g.x += pen;
+            g.top += dy;
+            g.bottom += dy;
             gaps.push(g);
         }
         pen += nf.width;
@@ -458,12 +471,12 @@ fn layout_node(
             let (ascent, descent) = metrics(size);
             let arg_steps = child_steps(steps, idx, Slot::Arg);
             let inner = layout_row(arg, &arg_steps, tr, size);
-            let body_h = inner.height();
             let paren_size = size;
-            let open = measure_glyph(tr, '(', paren_size);
-            let close = measure_glyph(tr, ')', paren_size);
-            let row_ascent = ascent.max(inner.ascent);
-            let row_descent = descent.max(inner.descent);
+            let open = delimiter_width(paren_size);
+            let close = open;
+            let delimiter_pad = delimiter_padding(paren_size);
+            let row_ascent = ascent.max(inner.ascent + delimiter_pad);
+            let row_descent = descent.max(inner.descent + delimiter_pad);
             let total_ascent = row_ascent;
             // The function name is the SAME font size as its argument; sit its
             // box so its baseline lands on the row baseline (`total_ascent`),
@@ -485,10 +498,10 @@ fn layout_node(
             let mut pen = name_w;
             boxes.push(Box2d {
                 x: pen,
-                y: total_ascent - row_ascent,
+                y: 0.0,
                 w: open,
-                h: body_h.max(ascent + descent),
-                baseline: row_ascent,
+                h: row_ascent + row_descent,
+                baseline: total_ascent,
                 kind: BoxKind::Paren {
                     open: true,
                     size: paren_size,
@@ -510,10 +523,10 @@ fn layout_node(
             pen += inner.width;
             boxes.push(Box2d {
                 x: pen,
-                y: total_ascent - row_ascent,
+                y: 0.0,
                 w: close,
-                h: body_h.max(ascent + descent),
-                baseline: row_ascent,
+                h: row_ascent + row_descent,
+                baseline: total_ascent,
                 kind: BoxKind::Paren {
                     open: false,
                     size: paren_size,
@@ -532,11 +545,12 @@ fn layout_node(
             let (gascent, gdescent) = metrics(size);
             let body_steps = child_steps(steps, idx, Slot::Body);
             let inner = layout_row(body, &body_steps, tr, size);
-            let row_ascent = gascent.max(inner.ascent);
-            let row_descent = gdescent.max(inner.descent);
-            let body_h = (row_ascent + row_descent).max(line_h(size));
-            let open = measure_glyph(tr, '(', size);
-            let close = measure_glyph(tr, ')', size);
+            let padding = delimiter_padding(size);
+            let row_ascent = gascent.max(inner.ascent + padding);
+            let row_descent = gdescent.max(inner.descent + padding);
+            let body_h = row_ascent + row_descent;
+            let open = delimiter_width(size);
+            let close = open;
             let mut boxes = Vec::new();
             let mut gaps = Vec::new();
             let mut pen = 0.0;
@@ -952,6 +966,86 @@ mod layout_tests {
             })
             .count();
         assert!(cells >= 8, "each matrix cell exposes insertion geometry");
+
+        let delimiters: Vec<_> = laid
+            .boxes
+            .iter()
+            .filter(|math_box| matches!(math_box.kind, BoxKind::Paren { .. }))
+            .collect();
+        assert_eq!(delimiters.len(), 2);
+        assert!((delimiters[0].y - delimiters[1].y).abs() < 0.01);
+        assert!((delimiters[0].h - delimiters[1].h).abs() < 0.01);
+
+        let content_top = laid
+            .boxes
+            .iter()
+            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+            .map(|math_box| math_box.y)
+            .fold(f64::INFINITY, f64::min);
+        let content_bottom = laid
+            .boxes
+            .iter()
+            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+            .map(|math_box| math_box.y + math_box.h)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(delimiters[0].y < content_top);
+        assert!(delimiters[0].y + delimiters[0].h > content_bottom);
+    }
+
+    #[test]
+    fn matrix_rows_share_baselines_and_remain_in_source_order() {
+        let mut tr = TextRenderer::new();
+        let row = vec![Node::Paren {
+            body: vec![Node::Table {
+                rows: vec![
+                    vec![vec![Node::Char('a')], vec![Node::Char('b')]],
+                    vec![vec![Node::Char('c')], vec![Node::Char('d')]],
+                    vec![vec![Node::Char('e')], vec![Node::Char('f')]],
+                ],
+            }],
+        }];
+        let laid = layout(&row, &mut tr, 22.0);
+        let baselines: Vec<_> = laid
+            .boxes
+            .iter()
+            .filter_map(|math_box| match math_box.kind {
+                BoxKind::Glyph { ch, .. } if ch.is_alphabetic() => {
+                    Some(math_box.y + math_box.baseline)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(baselines.len(), 6);
+        for pair in baselines.chunks_exact(2) {
+            assert!((pair[0] - pair[1]).abs() < 0.01);
+        }
+        assert!(baselines[0] < baselines[2]);
+        assert!(baselines[2] < baselines[4]);
+
+        let parens: Vec<_> = laid
+            .boxes
+            .iter()
+            .filter(|math_box| matches!(math_box.kind, BoxKind::Paren { .. }))
+            .collect();
+        assert_eq!(parens.len(), 2);
+        let delimiter_center = parens[0].y + parens[0].h * 0.5;
+        let matrix_top = laid
+            .boxes
+            .iter()
+            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+            .map(|math_box| math_box.y)
+            .fold(f64::INFINITY, f64::min);
+        let matrix_bottom = laid
+            .boxes
+            .iter()
+            .filter(|math_box| !matches!(math_box.kind, BoxKind::Paren { .. }))
+            .map(|math_box| math_box.y + math_box.h)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let matrix_center = (matrix_top + matrix_bottom) * 0.5;
+        assert!(
+            (delimiter_center - matrix_center).abs() < f64::from(22.0 * 0.2),
+            "delimiter and matrix must share an optical centre"
+        );
     }
 }
 
