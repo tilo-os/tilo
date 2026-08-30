@@ -402,6 +402,46 @@ pub enum ReadMode {
     TwoUp,
 }
 
+/// Paragraph-composition policy used by the reader. `Book` enables the full
+/// typesetting pipeline; `Ragged` keeps natural spacing and disables automatic
+/// hyphenation/micro-expansion for readers who prefer an uneven right edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositionStyle {
+    #[default]
+    Book,
+    Ragged,
+}
+
+impl CompositionStyle {
+    pub const ALL: [Self; 2] = [Self::Book, Self::Ragged];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Book => "Book",
+            Self::Ragged => "Ragged",
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Book => "book",
+            Self::Ragged => "ragged",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "ragged" => Self::Ragged,
+            _ => Self::Book,
+        }
+    }
+
+    pub const fn justified(self) -> bool {
+        matches!(self, Self::Book)
+    }
+}
+
 impl ReadMode {
     pub const ALL: [ReadMode; 3] = [ReadMode::Paged, ReadMode::Continuous, ReadMode::TwoUp];
 
@@ -811,6 +851,8 @@ pub struct Settings {
     /// How the page is laid out (single page / continuous scroll / two-up
     /// spread). A reading preference, shared across the library like the tint.
     pub mode: ReadMode,
+    /// Paragraph fitting policy. Defaults to book-quality composition.
+    pub composition: CompositionStyle,
 }
 
 impl Default for Settings {
@@ -825,6 +867,7 @@ impl Default for Settings {
             theme: ReadTheme::Sepia,
             scheme_id: String::new(),
             mode: ReadMode::Paged,
+            composition: CompositionStyle::Book,
         }
     }
 }
@@ -1046,6 +1089,20 @@ mod tests {
             ..Default::default()
         };
         assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn composition_style_has_stable_storage_names() {
+        assert_eq!(CompositionStyle::Book.as_str(), "book");
+        assert_eq!(
+            CompositionStyle::from_str("ragged"),
+            CompositionStyle::Ragged
+        );
+        assert_eq!(
+            CompositionStyle::from_str("unknown"),
+            CompositionStyle::Book,
+            "unknown persisted values retain the book-quality default"
+        );
     }
 
     #[test]
