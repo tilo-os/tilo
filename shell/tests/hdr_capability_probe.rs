@@ -7,7 +7,11 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "a test that unwraps is stating an invariant"
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
 )]
 
 use shell::shell::hdr_display::{DisplayCapabilities, preferred_hdr_swapchain_format};
