@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+state_dir=/var/lib/qos
+state_file=$state_dir/update-policy
+dropin_dir=/etc/systemd/system/bootc-fetch-apply-updates.timer.d
+dropin=$dropin_dir/50-qos-schedule.conf
+
+schedule=system
+metered=avoid
+if [ -r "$state_file" ]; then
+    while IFS='=' read -r key value; do
+        case "$key:$value" in
+            schedule:system|schedule:daily|schedule:weekly) schedule=$value ;;
+            metered:allow|metered:avoid) metered=$value ;;
+        esac
+    done < "$state_file"
+fi
+
+case "${1-}" in
+    schedule-system) schedule=system ;;
+    schedule-daily) schedule=daily ;;
+    schedule-weekly) schedule=weekly ;;
+    metered-allow) metered=allow ;;
+    metered-avoid) metered=avoid ;;
+    *) echo "unsupported update-policy action" >&2; exit 2 ;;
+esac
+
+install -d -m 0755 "$state_dir"
+tmp=$(mktemp "$state_dir/.update-policy.XXXXXX")
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+printf 'schedule=%s\nmetered=%s\n' "$schedule" "$metered" > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$state_file"
+trap - EXIT HUP INT TERM
+
+case "$schedule" in
+    system)
+        rm -f "$dropin"
+        ;;
+    daily|weekly)
+        install -d -m 0755 "$dropin_dir"
+        timer_tmp=$(mktemp "$dropin_dir/.qos-schedule.XXXXXX")
+        trap 'rm -f "$timer_tmp"' EXIT HUP INT TERM
+        {
+            printf '[Timer]\nOnBootSec=\nOnUnitActiveSec=\nOnUnitInactiveSec=\nOnCalendar=\n'
+            if [ "$schedule" = daily ]; then
+                printf 'OnCalendar=daily\n'
+            else
+                printf 'OnCalendar=weekly\n'
+            fi
+            printf 'RandomizedDelaySec=2h\nPersistent=true\n'
+        } > "$timer_tmp"
+        chmod 0644 "$timer_tmp"
+        mv -f "$timer_tmp" "$dropin"
+        trap - EXIT HUP INT TERM
+        ;;
+esac
+
+systemctl daemon-reload
+systemctl try-restart bootc-fetch-apply-updates.timer

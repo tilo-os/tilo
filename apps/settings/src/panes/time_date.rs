@@ -29,22 +29,50 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Toggle, Widget};
+use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{RegionSettings, TimeStyle};
-use crate::widgets::{caption, card, rows, setting_row, value_row};
+use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
 
 pub const AUTO_TIME_KEY: &str = "time.auto";
 pub const H24_KEY: &str = "time.h24";
+pub const TIMEZONE_KEY: &str = "time.timezone";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeZonePoint {
+    pub id: String,
+    pub region: String,
+    pub city: String,
+}
+
+/// A map-friendly model over IANA ids. The UI is currently a searchable
+/// dropdown; a future visual map consumes these same region/city points and
+/// therefore cannot diverge from timedated's accepted values.
+pub fn timezone_map(zones: &[String]) -> Vec<TimeZonePoint> {
+    zones
+        .iter()
+        .filter_map(|id| {
+            let (region, city) = id.split_once('/')?;
+            Some(TimeZonePoint {
+                id: id.clone(),
+                region: region.replace('_', " "),
+                city: city.replace('_', " ").replace('/', " · "),
+            })
+        })
+        .collect()
+}
 
 /// Side-effect interface for the automatic-time (NTP) toggle. Production
 /// forwards to `os_actions::set_ntp` (`timedatectl set-ntp`); tests inject a
 /// recorder so the "auto → set-ntp" path is asserted without shelling out.
 pub trait NtpControl: Send + Sync {
     fn set_ntp(&self, enabled: bool) -> Result<(), String>;
+    fn set_timezone(&self, timezone: &str) -> Result<(), String> {
+        os_actions::set_timezone(timezone)
+    }
 }
 
 /// Production impl — `timedatectl set-ntp`.
@@ -98,10 +126,14 @@ pub struct TimeDatePane {
     ntp: Arc<dyn NtpControl>,
     persist_format: FormatSink,
     timezone: String,
+    timezones: Vec<String>,
+    sync_status: os_actions::TimeSyncStatus,
     h24: bool,
     initial_auto: bool,
     last_auto: bool,
     last_h24: bool,
+    last_timezone: String,
+    notice: Option<String>,
     needs_seed: bool,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
@@ -116,20 +148,34 @@ impl Default for TimeDatePane {
 
 impl TimeDatePane {
     pub fn new() -> Self {
-        let initial_auto = os_actions::get_ntp().unwrap_or(true);
+        let sync_status = os_actions::get_time_sync_status();
+        let initial_auto = sync_status
+            .ntp_enabled
+            .or_else(|| os_actions::get_ntp().ok())
+            .unwrap_or(true);
         // The clock format is the same system-wide preference Region & Formats
         // owns (`locale.time_format`), so the two panes agree and the choice
         // survives a restart. Reading it here — rather than defaulting to 24h —
         // makes the toggle rest on the user's actual setting.
         let h24 = matches!(RegionSettings::load().locale.time_format, TimeStyle::H24);
+        let timezone = sync_status.timezone.clone().unwrap_or_else(timezone);
+        let mut timezones = os_actions::list_timezones().unwrap_or_default();
+        if !timezones.iter().any(|candidate| candidate == &timezone) {
+            timezones.push(timezone.clone());
+            timezones.sort();
+        }
         Self {
             ntp: Arc::new(RealNtp),
             persist_format: Arc::new(persist_time_format),
-            timezone: timezone(),
+            timezone: timezone.clone(),
+            timezones,
+            sync_status,
             h24,
             initial_auto,
             last_auto: initial_auto,
             last_h24: h24,
+            last_timezone: timezone,
+            notice: None,
             needs_seed: true,
             structure_dirty: false,
             composed: None,
@@ -141,14 +187,24 @@ impl TimeDatePane {
     /// clock format starts at 24-hour and persists through a no-op sink, so the
     /// hermetic unit tests neither read the host's locale nor write to disk.
     pub fn with_ntp(ntp: Arc<dyn NtpControl>, initial_auto: bool) -> Self {
+        let timezone = timezone();
         Self {
             ntp,
             persist_format: Arc::new(|_| {}),
-            timezone: timezone(),
+            timezone: timezone.clone(),
+            timezones: vec![timezone.clone()],
+            sync_status: os_actions::TimeSyncStatus {
+                timezone: Some(timezone.clone()),
+                ntp_enabled: Some(initial_auto),
+                synchronized: None,
+                source: None,
+            },
             h24: true,
             initial_auto,
             last_auto: initial_auto,
             last_h24: true,
+            last_timezone: timezone,
+            notice: None,
             needs_seed: true,
             structure_dirty: false,
             composed: None,
@@ -171,7 +227,14 @@ impl TimeDatePane {
                     "24-hour clock",
                     Box::new(Toggle::new("settings.time.h24", H24_KEY).with_id("time.h24")),
                 ),
-                value_row("Time zone", &self.timezone),
+                choice_row(
+                    "Time zone",
+                    Box::new(
+                        Dropdown::new(self.timezones.clone(), TIMEZONE_KEY)
+                            .with_id("time.timezone")
+                            .with_placeholder(&self.timezone),
+                    ),
+                ),
                 value_row("Current time", &now),
                 value_row("Current date", &today),
             ]),
@@ -188,7 +251,36 @@ impl TimeDatePane {
             ]),
         );
 
-        crate::widgets::cards(vec![clock, formats])
+        let source = card(
+            "Automatic time source",
+            rows(vec![
+                value_row(
+                    "Synchronization",
+                    match self.sync_status.synchronized {
+                        Some(true) => "Synchronized",
+                        Some(false) if self.initial_auto => "Waiting for synchronization",
+                        Some(false) => "Automatic time is disabled",
+                        None => "Not reported by the time service",
+                    },
+                ),
+                value_row(
+                    "Source",
+                    self.sync_status
+                        .source
+                        .as_deref()
+                        .unwrap_or("Not reported by the active NTP provider"),
+                ),
+                caption(
+                    "Time zones come from the installed IANA tzdata database. The selector and map model use the same identifiers accepted by timedated.",
+                ),
+            ]),
+        );
+
+        let mut cards = vec![clock, source, formats];
+        if let Some(notice) = &self.notice {
+            cards.insert(0, card("That did not work", rows(vec![caption(notice)])));
+        }
+        crate::widgets::cards(cards)
     }
 }
 
@@ -209,7 +301,32 @@ impl Widget for TimeDatePane {
             if state.get(root, H24_KEY).ok().flatten().is_none() {
                 let _ = state.put(root, H24_KEY, automerge::ScalarValue::Boolean(self.h24));
             }
+            if state.get(root, TIMEZONE_KEY).ok().flatten().is_none() {
+                let _ = state.put(root, TIMEZONE_KEY, self.timezone.as_str());
+            }
             self.needs_seed = false;
+        }
+
+        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, TIMEZONE_KEY)
+            && let automerge::ScalarValue::Str(value) = s.as_ref()
+            && value.as_str() != self.last_timezone
+            && self.timezones.iter().any(|zone| zone == value.as_str())
+        {
+            match self.ntp.set_timezone(value.as_str()) {
+                Ok(()) => {
+                    self.timezone = value.to_string();
+                    self.last_timezone = value.to_string();
+                    self.sync_status.timezone = Some(value.to_string());
+                    self.notice = None;
+                    self.structure_dirty = true;
+                }
+                Err(error) => {
+                    warn!(target: "qos::settings", op = "set_timezone", error = %error, "time-zone change failed");
+                    let _ = state.put(root, TIMEZONE_KEY, self.last_timezone.as_str());
+                    self.notice = Some(format!("The time zone could not be changed: {error}"));
+                    self.structure_dirty = true;
+                }
+            }
         }
 
         // Automatic-time toggle → timedatectl set-ntp.
@@ -217,10 +334,21 @@ impl Widget for TimeDatePane {
             && let automerge::ScalarValue::Boolean(b) = s.as_ref()
             && *b != self.last_auto
         {
-            self.last_auto = *b;
-            if let Err(e) = self.ntp.set_ntp(*b) {
-                warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
+            let previous = self.last_auto;
+            match self.ntp.set_ntp(*b) {
+                Ok(()) => {
+                    self.last_auto = *b;
+                    self.initial_auto = *b;
+                    self.sync_status.ntp_enabled = Some(*b);
+                    self.notice = None;
+                }
+                Err(e) => {
+                    warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
+                    let _ = state.put(root, AUTO_TIME_KEY, previous);
+                    self.notice = Some(format!("Automatic time could not be changed: {e}"));
+                }
             }
+            self.structure_dirty = true;
         }
 
         // 24-hour preference → re-render the live clock AND persist to the
