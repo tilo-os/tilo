@@ -387,7 +387,6 @@ pub struct AudioPane {
     advanced: bool,
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
-    mono_session: Option<Box<dyn BoundedSession>>,
     mic_session: Option<Box<dyn MicrophoneMeterSession>>,
     mic_level: f32,
     structure_dirty: bool,
@@ -503,12 +502,11 @@ impl AudioPane {
             last_device_profile: HashMap::new(),
             runtime,
             runtime_caps,
-            balance: 0.5,
-            mono_enabled: false,
+            balance: prefs.balance.clamp(0.0, 1.0),
+            mono_enabled: prefs.mono_output,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
-            mono_session: None,
             mic_session: None,
             mic_level: 0.0,
             structure_dirty: false,
@@ -566,7 +564,6 @@ impl AudioPane {
             advanced: false,
             runtime_notice: None,
             channel_test: None,
-            mono_session: None,
             mic_session: None,
             mic_level: 0.0,
             structure_dirty: false,
@@ -670,7 +667,7 @@ impl AudioPane {
                 "Mono audio",
                 Box::new(Toggle::new("settings.audio.mono", MONO_KEY).with_id("audio.mono")),
             ));
-            output_rows.push(caption("Combines left and right while this Sound pane is open. The temporary PipeWire route is removed on exit."));
+            output_rows.push(caption("Combines left and right across this desktop session. The session restores the physical output when you turn it off."));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
             output_rows.push(Box::new(
@@ -1023,15 +1020,10 @@ impl AudioPane {
         self.last_stream_sink.retain(|id, _| present.contains(id));
         self.last_stream_vol.retain(|id, _| present.contains(id));
         self.last_stream_mute.retain(|id, _| present.contains(id));
-        // A diagnostic process or virtual mono route is bound to the old node
-        // name. Tear it down before adopting a changed hardware graph.
+        // Pane-owned diagnostics are bound to the old node name. Persistent
+        // mono is owned by the compositor session and handles hot-plug there.
         self.channel_test = None;
         self.mic_session = None;
-        if self.mono_session.take().is_some() {
-            self.mono_enabled = false;
-            self.runtime_notice =
-                Some("Audio hardware changed; the temporary mono route was removed.".into());
-        }
         // Refresh the sink/source pickers from the same enumeration so a new
         // headset is selectable, keeping the current default marker.
         self.devices = devices_from_graph(&fresh);
@@ -1089,8 +1081,12 @@ impl Widget for AudioPane {
                 automerge::ScalarValue::F64(f64::from(self.initial_volume)),
             );
             let _ = state.put(root, MUTED_KEY, automerge::ScalarValue::Boolean(false));
-            let _ = state.put(root, BALANCE_KEY, automerge::ScalarValue::F64(0.5));
-            let _ = state.put(root, MONO_KEY, false);
+            let _ = state.put(
+                root,
+                BALANCE_KEY,
+                automerge::ScalarValue::F64(f64::from(self.initial_prefs.balance.clamp(0.0, 1.0))),
+            );
+            let _ = state.put(root, MONO_KEY, self.initial_prefs.mono_output);
             for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
                 let _ = state.put(root, key, false);
             }
@@ -1163,51 +1159,25 @@ impl Widget for AudioPane {
         }
         if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
             && (value - self.balance).abs() > 0.001
-            && let Some(sink) = self.graph.default_sink().filter(|sink| sink.channels == 2)
-            && self.runtime_caps.balance
         {
-            match self.runtime.set_balance(
-                &sink.name,
-                sink.volume.unwrap_or(self.last_volume),
-                value * 2.0 - 1.0,
-            ) {
-                Ok(()) => self.balance = value,
-                Err(error) => {
-                    self.runtime_notice = Some(format!("Could not change balance: {error}"));
-                    let _ = state.put(root, BALANCE_KEY, f64::from(self.balance));
-                    self.structure_dirty = true;
-                }
+            self.balance = value.clamp(0.0, 1.0);
+            if self.persist_prefs {
+                let balance = self.balance;
+                Self::persist_audio(|prefs| prefs.balance = balance);
             }
         }
         if let Some(enabled) = read_bool(state, root, MONO_KEY)
             && enabled != self.mono_enabled
         {
-            if enabled {
-                let result = self
-                    .graph
-                    .default_sink()
-                    .filter(|sink| sink.channels == 2)
-                    .ok_or_else(|| "Mono output requires a stereo PipeWire sink".to_string())
-                    .and_then(|sink| self.runtime.start_mono(&sink.name));
-                match result {
-                    Ok(session) => {
-                        self.mono_session = Some(session);
-                        self.mono_enabled = true;
-                        self.runtime_notice =
-                            Some("Mono output is active for this Sound session.".into());
-                    }
-                    Err(error) => {
-                        self.runtime_notice =
-                            Some(format!("Could not enable mono output: {error}"));
-                        let _ = state.put(root, MONO_KEY, false);
-                    }
-                }
-            } else {
-                self.mono_session = None;
-                self.mono_enabled = false;
-                self.runtime_notice =
-                    Some("Mono output stopped and the previous output was restored.".into());
+            self.mono_enabled = enabled;
+            if self.persist_prefs {
+                Self::persist_audio(|prefs| prefs.mono_output = enabled);
             }
+            self.runtime_notice = Some(if enabled {
+                "Mono output is active for this desktop session.".into()
+            } else {
+                "Mono output is off; the physical output is restored.".into()
+            });
             self.structure_dirty = true;
         }
         if read_bool(state, root, ADVANCED_KEY) == Some(true) {
@@ -1895,7 +1865,7 @@ Video
     }
 
     #[test]
-    fn runtime_controls_are_real_actions_and_sessions_drop_with_pane() {
+    fn diagnostics_are_bounded_while_persistent_transforms_have_no_pane_owner() {
         let drops = Arc::new(AtomicUsize::new(0));
         let runtime = Arc::new(RecordingRuntime {
             calls: Mutex::new(vec![]),
@@ -1927,19 +1897,14 @@ Video
         pane.sync(&mut doc, &root);
         assert_eq!(
             runtime.calls.lock().unwrap().as_slice(),
-            [
-                "balance(alsa_speakers,0.80,0.50)",
-                "mono(alsa_speakers)",
-                "test(alsa_speakers,true)",
-                "meter(alsa_input.mic)",
-            ]
+            ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
         );
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         drop(pane);
         assert_eq!(
             drops.load(Ordering::SeqCst),
-            3,
-            "mono, tone and mic owners all tear down on navigation"
+            2,
+            "only bounded tone and mic diagnostics belong to this pane"
         );
     }
 
@@ -2149,6 +2114,34 @@ Video
             saved.as_deref(),
             Some("HDMI / DisplayPort"),
             "default sink preference persisted"
+        );
+    }
+
+    #[test]
+    fn balance_and_mono_persist_without_settings_owning_the_transform() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new("audio-session-policy");
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Mutex::new(Vec::new()),
+            drops: Arc::new(AtomicUsize::new(0)),
+        });
+        let disp = Arc::new(RecordingDispatcher::default());
+        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+            .with_graph(graph_two_sinks_one_stream(), Arc::new(NoopGraphControl))
+            .with_runtime(runtime.clone());
+        pane.persist_prefs = true;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, BALANCE_KEY, 0.8);
+        let _ = doc.put(&root, MONO_KEY, true);
+        pane.sync(&mut doc, &root);
+
+        let saved = SystemPrefs::load().audio;
+        assert!((saved.balance - 0.8).abs() < 0.001);
+        assert!(saved.mono_output);
+        assert!(
+            runtime.calls.lock().unwrap().is_empty(),
+            "the compositor session, not Settings, actuates persistent transforms"
         );
     }
 }
