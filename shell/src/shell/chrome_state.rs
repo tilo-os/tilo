@@ -348,7 +348,7 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             osd: None,
             ws_settings_tab: WsTab::default(),
-            ws_grant_draft: Default::default(),
+            ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
             revision: 0,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
@@ -596,7 +596,7 @@ impl ChromeState {
         let strip = ws.strips.iter().find(|s| s.id == strip_id)?;
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
-        Some(match &tab.tile {
+        let app_id = match &tab.tile {
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
             TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
@@ -605,7 +605,9 @@ impl ChromeState {
             TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
                 kind.app_id()
             }
-        })
+        };
+        drop(tree);
+        Some(app_id)
     }
 
     /// Called directly by the wheel-disc's "+" slot to create and
@@ -655,10 +657,12 @@ impl ChromeState {
         let tab = group.tabs.iter().find(|t| t.id == group.active_tab)?;
         // Opaque return type so callers can't stash a borrow into
         // `tree` past this scope — clone the fields they need instead.
-        Some(crate::shell::state::TabRef {
+        let tab_ref = crate::shell::state::TabRef {
             id: tab.id,
             title: tab.title.clone(),
-        })
+        };
+        drop(tree);
+        Some(tab_ref)
     }
 
     /// Strips of the active workspace, and which one has focus.
@@ -678,6 +682,7 @@ impl ChromeState {
             .get(&ws.id)
             .and_then(|sid| ws.strips.iter().position(|s| s.id == *sid))
             .unwrap_or(0);
+        drop(tree);
         (count, focused)
     }
 
@@ -698,6 +703,7 @@ impl ChromeState {
                 return false;
             }
             tree.active_strip.insert(ws_id, sid);
+            drop(tree);
             (true, name)
         };
         let _ = name;
@@ -714,7 +720,13 @@ impl ChromeState {
         if count == 0 {
             return false;
         }
-        let next = (focused as i64 + i64::from(dir.signum())).clamp(0, count as i64 - 1) as usize;
+        // Step by one strip in `dir`'s direction, saturating at both
+        // ends rather than round-tripping through a signed cast.
+        let next = match dir.signum() {
+            -1 => focused.saturating_sub(1),
+            1 => focused.saturating_add(1).min(count.saturating_sub(1)),
+            _ => focused,
+        };
         self.focus_strip_index(next)
     }
 
@@ -1157,6 +1169,7 @@ mod active_tab_tests {
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
         let grants = ws.app_grants_snapshot();
+        drop(guard);
         let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
             panic!(
                 "grant must be keyed by the foreign client's real app-id; \
@@ -1196,6 +1209,7 @@ mod active_tab_tests {
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
         let grants = ws.app_grants_snapshot();
+        drop(guard);
         assert!(
             grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
@@ -1215,10 +1229,11 @@ mod active_tab_tests {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().expect("a workspace");
             let base = ws.strips.len();
-            for n in 0..3 {
-                let id = StripId(9000 + n as u64);
+            for n in 0..3u64 {
+                let id = StripId(9000 + n);
                 ws.strips.push(Strip::new(id, format!("Extra {n}")));
             }
+            drop(tree);
             assert!(base + 3 >= 4, "fixture needs at least four strips");
         }
         st.bump();
@@ -1259,10 +1274,11 @@ mod active_tab_tests {
         {
             let mut tree = st.tree_mut();
             let ws = tree.active_workspace_mut().expect("a workspace");
-            for n in 0..3 {
+            for n in 0..3u64 {
                 ws.strips
-                    .push(Strip::new(StripId(9100 + n as u64), format!("S{n}")));
+                    .push(Strip::new(StripId(9100 + n), format!("S{n}")));
             }
+            drop(tree);
         }
         let (count, _) = st.strip_focus();
         for i in 0..count {
