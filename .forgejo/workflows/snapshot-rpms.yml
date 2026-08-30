@@ -7,11 +7,6 @@ name: Snapshot frozen RPM repo
 # os/rpms-snapshot.env (a normal PR/commit) and the OS build picks it up.
 on:
   workflow_dispatch:
-  # One-shot production validation for the projection stack. The path filter
-  # means the snapshot pin commit below cannot recursively trigger this job.
-  push:
-    branches: ["codex/projection-overlay-production"]
-    paths: ["os/Containerfile", ".forgejo/workflows/snapshot-rpms.yml"]
 
 concurrency:
   group: snapshot-rpms-${{ github.ref }}
