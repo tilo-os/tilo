@@ -171,6 +171,7 @@ base64.workspace = true
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
 openh264.workspace = true
+qos-projector = { path = "../crates/system/projector" }
 # Hardware H.264 encode (VA-API / NVENC) via libavcodec. Opt-in behind
 # the `vaapi` / `nvenc` features. `default-features = false` +
 # `features = ["codec", "software-scaling"]` pulls only libavcodec +

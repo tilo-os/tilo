@@ -125,6 +125,7 @@ default-members = [
     "crates/session/qos-unlock-helper",
     "crates/session/qos-power",
     "crates/system/qos-startup-metrics",
+    "crates/system/projector",
     "crates/session/installer",
 ]
 members = [
@@ -235,6 +236,7 @@ members = [
     "crates/session/qos-unlock-helper",
     "crates/session/qos-power",
     "crates/system/qos-startup-metrics",
+    "crates/system/projector",
     "crates/session/installer",
     # Opt-in dynamic build of the runtime SDK. A member (shares lockfile
     # + target dir + crate SVHs) but excluded from default-members above,
@@ -447,6 +449,10 @@ gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
+# Sender-side discovery and transports for FCast and Google Cast. Disable the
+# mobile FFI/logging defaults: qos-projector is a native Rust broker.
+fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
+mdns-sd = "=0.20.3"
 
 # ---------------------------------------------------------------------------
 # Desktop and platform integration
