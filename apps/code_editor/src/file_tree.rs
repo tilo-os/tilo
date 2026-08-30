@@ -113,11 +113,6 @@ impl FileTree {
         self.rect = rect;
     }
 
-    /// The tree's current rect (the overlay position, in narrow mode).
-    pub fn rect(&self) -> Rect {
-        self.rect
-    }
-
     pub fn take_events(&mut self) -> Vec<TreeEvent> {
         std::mem::take(&mut self.pending)
     }

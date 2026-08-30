@@ -79,10 +79,15 @@ impl std::fmt::Display for LoadError {
 pub enum SaveError {
     Io(io::Error),
     /// The file changed on disk since the buffer was read. Carries the stamp
-    /// found there now, so the caller can adopt it after an explicit overwrite.
-    Conflict(Stamp),
+    /// found there now so the caller can adopt it after an explicit overwrite —
+    /// which no caller does yet; the one match on this arm discards it and
+    /// re-stamps by reading the file again.
+    Conflict(#[allow(dead_code)] Stamp),
     /// The buffer has never been given a path (an unsaved scratch file), so
-    /// there is nowhere to write it without asking the user first.
+    /// there is nowhere to write it without asking the user first. Nothing
+    /// raises this yet — the save path is only reached once a buffer has a
+    /// path — so it is the error a Save As flow would return.
+    #[allow(dead_code)]
     NoPath,
 }
 

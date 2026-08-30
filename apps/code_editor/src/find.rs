@@ -224,10 +224,6 @@ impl FindBar {
         self.replace.value()
     }
 
-    pub fn is_replace_open(&self) -> bool {
-        self.replace_open
-    }
-
     /// Push the recount in: how many matches there are and which one the caret
     /// is on.
     pub fn set_match_state(&mut self, total: usize, current: Option<usize>) {
@@ -236,10 +232,6 @@ impl FindBar {
             self.current = current;
             self.needs_redraw = true;
         }
-    }
-
-    pub fn match_total(&self) -> usize {
-        self.total
     }
 
     /// Drain the actions the bar produced this frame.

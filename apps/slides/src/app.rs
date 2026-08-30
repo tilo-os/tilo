@@ -1014,15 +1014,6 @@ impl SlidesApp {
             .dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, &action);
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
-    /// covenant test: a control and its Ctrl+K entry must build the identical
-    /// action.
-    #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
     /// title and each slide (with its elements). Derived entirely from the
     /// in-memory deck mirror, which the shared document already holds.

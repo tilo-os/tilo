@@ -2135,11 +2135,6 @@ impl TerminalWidget {
         }
     }
 
-    /// The open menu's action-row labels in order (empty when closed).
-    #[cfg(test)]
-    fn context_menu_labels(&self) -> Vec<String> {
-        self.context_menu.items().iter().filter_map(|i| i.label().map(str::to_owned)).collect()
-    }
 
     /// Walk the selected cells across grid rows and return the joined
     /// text, with trailing whitespace stripped from each row (standard
