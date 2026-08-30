@@ -113,6 +113,7 @@ impl ShellDriver {
     }
     /// The palette's current query — what a scenario typed, read back
     /// through the same accessor the overlay uses.
+    #[cfg(test)]
     pub fn palette_query(&self) -> &str {
         self.fb.host().palette_query()
     }

@@ -323,12 +323,6 @@ impl SurfaceTracker {
         self.latest_dmabufs.remove(&surface_id)
     }
 
-    /// Non-draining borrow of the most-recent DMABUF for `surface_id`. Test helper — production drains unconditionally via [`Self::take_latest_dmabuf`] every tick.
-    #[cfg(test)]
-    pub(crate) fn peek_latest_dmabuf(&self, surface_id: SurfaceId) -> Option<&Dmabuf> {
-        self.latest_dmabufs.get(&surface_id)
-    }
-
     /// Record the capture path for the current commit of `surface_id`, called after the commit hook decides DMABUF vs. SHM; bumps the per-path counter the integration test reads.
     pub fn note_capture_path(&mut self, surface_id: SurfaceId, path: CapturePath) {
         self.last_capture_path.insert(surface_id, path);
