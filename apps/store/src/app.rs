@@ -103,6 +103,7 @@ pub struct StoreApp {
     /// needs to execute (download / install / run / pin / remove).
     /// Drained by the host each frame via [`take_pending_actions`].
     pending_actions: Vec<(String, ActionKind)>,
+    pending_refresh: bool,
     /// Segment index the source-filter `ToggleGroup` last committed.
     /// The `on_change` closure is `'static` and can't borrow `self`,
     /// so it parks the click here; `sync` reads it back and flips
@@ -146,6 +147,7 @@ impl StoreApp {
             rect: Rect::ZERO,
             root: None,
             pending_actions: Vec::new(),
+            pending_refresh: false,
             filter_click: Rc::new(Cell::new(None)),
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
@@ -159,6 +161,13 @@ impl StoreApp {
     /// fresh catalog + status back.
     pub fn take_pending_actions(&mut self) -> Vec<(String, ActionKind)> {
         std::mem::take(&mut self.pending_actions)
+    }
+
+    /// Consume the edge produced by the refresh affordance. The host sends
+    /// it to the same serialized worker as mutations, so refreshes cannot
+    /// race an install/remove or fan out into duplicate network work.
+    pub fn take_refresh_requested(&mut self) -> bool {
+        std::mem::take(&mut self.pending_refresh)
     }
 
     /// Replace the item feed. Idempotent — the widget re-derives its
@@ -529,6 +538,7 @@ impl StoreApp {
         // Refresh.
         if take_bool_edge(state, path, REFRESH_KEY) {
             self.status_line = "Refreshing…".to_string();
+            self.pending_refresh = true;
             any = true;
         }
         any
@@ -779,6 +789,7 @@ mod tests {
             icon_url: None,
             homepage_url: None,
             source_url: None,
+            install_ref_path: None,
             source,
             versions: vec![StoreItemVersion {
                 version: "1".into(),
@@ -951,5 +962,25 @@ mod tests {
             .collect();
         assert!(names.contains(&"Notes"));
         assert!(!names.contains(&"Chess"), "qOS filter hides Flatpak items");
+    }
+
+    #[test]
+    fn refresh_click_is_forwarded_once_to_the_backend_worker() {
+        use automerge::transaction::Transactable;
+
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, REFRESH_KEY, true).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.take_refresh_requested());
+        assert!(
+            !app.take_refresh_requested(),
+            "refresh is an edge, not a level"
+        );
+        assert!(matches!(
+            doc.get(automerge::ROOT, REFRESH_KEY),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), ScalarValue::Boolean(false))
+        ));
     }
 }

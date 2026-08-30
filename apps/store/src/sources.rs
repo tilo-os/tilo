@@ -50,6 +50,7 @@ pub fn qos_to_store_item(
         icon_url: entry.icon_url.clone(),
         homepage_url: entry.homepage.clone(),
         source_url: entry.source_url.clone(),
+        install_ref_path: None,
         source: StoreSource::Qos {
             registry_name: registry_name.to_string(),
         },
@@ -95,6 +96,7 @@ pub fn flathub_placeholder_to_item(
         icon_url: None,
         homepage_url: None,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Flathub,
         versions: vec![StoreItemVersion {
             version: String::new(),
@@ -149,6 +151,7 @@ pub fn flathub_record_to_item(
         icon_url: r.icon.clone(),
         homepage_url,
         source_url: None,
+        install_ref_path: None,
         source: StoreSource::Flathub,
         versions: vec![StoreItemVersion {
             version: latest,

@@ -3,19 +3,12 @@
 //! Two modes:
 //!
 //!   * default — build a [`store::StoreApp`], hand it to `ui::App`, run
-//!     the live event loop. On startup we spawn a small worker thread
-//!     that refreshes the item list from configured registries + Flathub
-//!     and streams snapshots back via an `mpsc` channel; the app widget
-//!     drains that channel each frame from inside `sync`.
+//!     the live event loop. One serialized worker owns catalogue refreshes
+//!     and package mutations; the app drains its snapshots inside `sync`.
 //!   * `--shots <PATH>` — render one offscreen frame to `<PATH>` and exit.
 
-use std::sync::mpsc;
-use std::time::Duration;
-
-use store::config::{RegistryConfig, load_registries};
-use store::model::ActionKind;
-use store::sources::{flathub_placeholder_to_item, merge, qos_to_store_item};
-use store::{StoreApp, StoreItem};
+use store::worker::{Request, StoreWorker};
+use store::{FlatpakRef, StoreApp};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -37,16 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Channel is unbounded because refreshes are minutes-apart —
-    // there's no backpressure to worry about.
-    let (tx, rx) = mpsc::channel::<Snapshot>();
-    // Actions the UI dispatches to the worker (download / install /
-    // run / pin / remove) — kept off the UI thread.
-    let (action_tx, action_rx) = mpsc::channel::<(StoreItem, ActionKind)>();
-    spawn_refresh_worker(tx.clone());
-    spawn_action_worker(tx, action_rx);
+    // Opening a reference only stages a regular Store card. Installation is
+    // still gated on the card's explicit Install action; file association is
+    // never permission to mutate the host by itself.
+    let opened_ref = store::flatpakref::path_from_args(&args)
+        .map(|path| FlatpakRef::from_path(&path))
+        .transpose()?
+        .flatten();
 
-    let widget = LiveStore::new(rx, action_tx);
+    let widget = LiveStore::new(StoreWorker::spawn(opened_ref));
     // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
@@ -60,26 +52,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// One refresh snapshot the worker sends over the wire.
-struct Snapshot {
-    items: Vec<StoreItem>,
-    status_line: String,
-}
-
 /// The Widget the main event loop owns. Wraps a `StoreApp` and
 /// drains snapshots from the worker inside `sync`.
 struct LiveStore {
     inner: StoreApp,
-    rx: mpsc::Receiver<Snapshot>,
-    action_tx: mpsc::Sender<(StoreItem, ActionKind)>,
+    worker: StoreWorker,
 }
 
 impl LiveStore {
-    fn new(rx: mpsc::Receiver<Snapshot>, action_tx: mpsc::Sender<(StoreItem, ActionKind)>) -> Self {
+    fn new(worker: StoreWorker) -> Self {
         Self {
             inner: StoreApp::new(),
-            rx,
-            action_tx,
+            worker,
         }
     }
 }
@@ -87,7 +71,7 @@ impl LiveStore {
 impl ui::widget::Widget for LiveStore {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         // Drain any snapshots the worker produced since last frame.
-        while let Ok(snap) = self.rx.try_recv() {
+        while let Some(snap) = self.worker.try_snapshot() {
             self.inner.set_items(snap.items);
             self.inner.set_status_line(snap.status_line);
         }
@@ -97,8 +81,11 @@ impl ui::widget::Widget for LiveStore {
         self.inner.sync(state, path);
         for (id, action) in self.inner.take_pending_actions() {
             if let Some(item) = self.inner.items().iter().find(|i| i.id == id).cloned() {
-                let _ = self.action_tx.send((item, action));
+                self.worker.request(Request::Act(item, action));
             }
+        }
+        if self.inner.take_refresh_requested() {
+            self.worker.request(Request::Refresh);
         }
     }
     fn build_layout(
@@ -199,106 +186,6 @@ impl ui::widget::Widget for LiveStore {
     fn needs_animation_frame(&self) -> bool {
         self.inner.needs_animation_frame()
     }
-}
-
-/// Spawn the background refresh thread. The initial snapshot is
-/// pushed immediately so first-render shows *something* real (or an
-/// empty state) rather than a blank surface while the network
-/// round-trip finishes.
-fn spawn_refresh_worker(tx: mpsc::Sender<Snapshot>) {
-    std::thread::spawn(move || {
-        loop {
-            let items = collect_items();
-            let status = if items.is_empty() {
-                "No apps yet. Check your registries.toml + network.".to_string()
-            } else {
-                format!("Loaded {} apps.", items.len())
-            };
-            if tx
-                .send(Snapshot {
-                    items,
-                    status_line: status,
-                })
-                .is_err()
-            {
-                // UI thread is gone; wind down.
-                break;
-            }
-            // Refresh every 15 minutes.
-            std::thread::sleep(Duration::from_mins(15));
-        }
-    });
-}
-
-/// Spawn the action-execution thread. Each `(item, action)` the UI
-/// dispatches is run to completion here — downloading a `.qpkg`,
-/// handing it to `qos-install`, launching it, or toggling the pin —
-/// then the catalog is re-collected so the card's installed/pinned
-/// state + ranking update, and a fresh snapshot is streamed back.
-fn spawn_action_worker(tx: mpsc::Sender<Snapshot>, rx: mpsc::Receiver<(StoreItem, ActionKind)>) {
-    std::thread::spawn(move || {
-        let staging = store::actions::qpkg_staging_dir()
-            .unwrap_or_else(|| std::env::temp_dir().join("qos-store-staged"));
-        let _ = std::fs::create_dir_all(&staging);
-        while let Ok((item, action)) = rx.recv() {
-            let outcome = store::actions::execute(&item, action, &staging);
-            // Reflect the new install/pin state and re-rank.
-            let items = collect_items();
-            if tx
-                .send(Snapshot {
-                    items,
-                    status_line: outcome.status_line,
-                })
-                .is_err()
-            {
-                break; // UI gone.
-            }
-        }
-    });
-}
-
-/// Fetch and merge — pure sequential; runs off the UI thread.
-fn collect_items() -> Vec<StoreItem> {
-    let registries = load_registries().registries;
-    let installed_qos = store::installed::load_installed();
-    let installed_flat = store::flathub_client::installed_flatpaks();
-
-    let mut qos_items: Vec<StoreItem> = Vec::new();
-    for reg in registries.iter().filter(|r| r.enabled) {
-        match store::registry_client::fetch_entries(reg) {
-            Ok(entries) => {
-                for v in entries {
-                    qos_items.push(qos_to_store_item(&v, &reg.name, &installed_qos));
-                }
-            }
-            Err(e) => {
-                tracing::warn!("registry {} refresh failed: {e}", reg.name);
-            }
-        }
-    }
-
-    let flathub_items = match store::flathub_client::fetch_popular(200) {
-        Ok(popular) => popular
-            .iter()
-            .map(|p| flathub_placeholder_to_item(p, &installed_flat))
-            .collect(),
-        Err(e) => {
-            tracing::warn!("flathub refresh failed: {e}");
-            Vec::new()
-        }
-    };
-
-    let _ = registries_summary(&registries);
-    merge(qos_items, flathub_items)
-}
-
-fn registries_summary(registries: &[RegistryConfig]) -> String {
-    let enabled = registries.iter().filter(|r| r.enabled).count();
-    format!(
-        "configured registries: {} total / {} enabled",
-        registries.len(),
-        enabled
-    )
 }
 
 /// Read `--name value` or `--name=value` out of `args`.
