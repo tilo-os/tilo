@@ -17,7 +17,7 @@
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --release --example widget_perf_bench
+//! cargo run -p ui --release --example ui-perf -- widget_perf_bench
 //! ```
 //! Iterations override: `QUICK_UI_PERF_ITERS=50`.
 
@@ -238,7 +238,7 @@ struct Phases {
     render_us: u128,
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     I18nManager::add_resource(
         "en-US",

@@ -14,8 +14,8 @@
 //! At 1.5× the text and strokes are rasterised at 1.5× the pixels from the same
 //! vector outlines — crisp, not a blurry upscale of the 1.0× raster.
 //!
-//! Run:  cargo run -p ui --example `fractional_scale_shots`
-//! Out:  $`FRAC_SCALE_SHOTS_OUT` (default /`tmp/frac_scale_shots`)
+//! Run:  cargo run -p ui --example ui-shots -- fractional_scale_shots
+//! Out:  $FRAC_SCALE_SHOTS_OUT (default /tmp/frac_scale_shots)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,8 +32,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+use super::gallery_scene;
 
 /// Logical canvas size — fixed across shots; only the physical buffer grows
 /// with the device scale.
@@ -67,9 +66,10 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: P
                 height: AvailableSpace::Definite(LOGICAL_H as f32),
             },
             |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, &mut tr)
-                })
+                node_map
+                    .get(&node_id)
+                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                    .unwrap_or(Size::ZERO)
             },
         )
         .unwrap();
@@ -98,7 +98,7 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: P
     );
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("FRAC_SCALE_SHOTS_OUT")
         .unwrap_or_else(|_| "/tmp/frac_scale_shots".to_string());

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
+autoexamples = false
 
 [features]
 # Keep the legacy JSON-over-Unix-socket broker path compiled in
@@ -292,13 +293,21 @@ qos-user-identity = { path = "../crates/identity/qos-user-identity" }
 iroh.workspace = true
 iroh-base.workspace = true
 
-# Runtime probe for the DMA-BUF zero-copy import (needs the WPE engine).
 [[example]]
-name = "wpe_dmabuf_probe"
-required-features = ["webview-wpe"]
+name = "ui-lab"
+path = "examples/ui_lab.rs"
 
 [[example]]
-name = "wpe_scroll_repro"
+name = "ui-shots"
+path = "examples/ui_shots.rs"
+
+[[example]]
+name = "ui-perf"
+path = "examples/ui_perf.rs"
+
+[[example]]
+name = "ui-wpe"
+path = "examples/ui_wpe.rs"
 required-features = ["webview-wpe"]
 
 [[test]]

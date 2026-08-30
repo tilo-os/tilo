@@ -4,7 +4,7 @@
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --example widget_showcase
+//! cargo run -p ui --example ui-lab -- widget_showcase
 //! ```
 //!
 //! The overlay widgets (`ModalDialog`, `PopoverWidget`) and `VideoPlayer` are
@@ -176,7 +176,7 @@ fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     I18nManager::add_resource(
         "en-US",

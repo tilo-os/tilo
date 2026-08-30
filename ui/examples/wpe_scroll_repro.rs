@@ -7,7 +7,7 @@
 //!
 //! Run:
 //!   WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
-//!   cargo run -p ui --example wpe_scroll_repro --features webview-wpe --release
+//!   cargo run -p ui --example ui-wpe --features webview-wpe --release -- wpe_scroll_repro
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -77,13 +77,12 @@ fn phase(engine: &dyn WebViewEngine, label: &str, window: Duration, mut action: 
     println!("[{label}] distinct new frames: {changes}");
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+pub fn run(args: &[String]) {
     let url = args
-        .get(1)
+        .first()
         .cloned()
         .unwrap_or_else(|| "https://en.wikipedia.org/wiki/Rust_(programming_language)".into());
-    let steps: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60);
+    let steps: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(60);
     println!("url={url} steps={steps}");
 
     let engine: Arc<dyn WebViewEngine> = WpeEngine::new().expect("WpeEngine::new");
