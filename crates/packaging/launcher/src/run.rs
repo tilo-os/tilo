@@ -5,6 +5,7 @@
 //! and relay the exit code.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -88,6 +89,8 @@ pub enum RunError {
     },
     #[error("refusing URI open: {0}")]
     InvalidOpenUri(String),
+    #[error("refusing authored launch: identity signing broker could not start ({0})")]
+    IdentityBroker(String),
 }
 
 impl RunError {
@@ -141,8 +144,9 @@ pub struct RunOptions {
     /// from the compositor's own `zwp_linux_dmabuf_v1` decision rather than
     /// re-derived. `None` means loaders keep their own defaults.
     pub render_node: Option<PathBuf>,
-    /// Host path to the user identity JSON; `None` resolves the
-    /// `$XDG_CONFIG_HOME`/`$HOME` default. Ro-bound with `QOS_USER_IDENTITY` set.
+    /// Host path to user identity metadata; `None` resolves the
+    /// `$XDG_CONFIG_HOME`/`$HOME` default. It is read only by the launcher to
+    /// create a broker capability and is never bound into the sandbox.
     pub identity_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id
     /// ([`crate::sandbox::WORKSPACE_ID_ENV`]). `None` means no session.
@@ -297,6 +301,48 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
     }
     let dir = runtime_identity::identity_dir_from_env().ok()?;
     runtime_identity::resolve_active_identity(&dir)
+}
+
+fn start_identity_broker(
+    path: &Path,
+) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
+    // Standard store records are migrated before loading. Explicit debug
+    // paths outside the store still stay host-side, but are not rewritten in
+    // an unexpected directory.
+    if let Ok(store) = runtime_identity::identity_dir_from_env()
+        && path.parent() == Some(store.as_path())
+        && let Some(id) = path.file_stem().and_then(|value| value.to_str())
+        && path.extension().and_then(|value| value.to_str()) == Some("json")
+        && path == store.join(format!("{id}.json"))
+    {
+        runtime_identity::secure_identity(&store, id)
+            .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    }
+    let identity = runtime_identity::load_from_path(path.to_path_buf())
+        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    let (host, app) =
+        UnixStream::pair().map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    let control = host
+        .try_clone()
+        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    let thread = std::thread::Builder::new()
+        .name("qos-identity-broker".into())
+        .spawn(move || {
+            if let Err(error) = runtime_identity::broker::serve(host, identity) {
+                tracing::debug!(%error, "identity broker connection ended");
+            }
+        })
+        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    Ok((app, control, thread))
+}
+
+fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread::JoinHandle<()>>) {
+    if let Some(control) = control {
+        let _ = control.shutdown(std::net::Shutdown::Both);
+    }
+    if let Some(thread) = thread {
+        let _ = thread.join();
+    }
 }
 
 /// Derive GPU pinning, or `None` when nothing to pin. Every decline is
@@ -677,14 +723,27 @@ pub fn run_with(
     // Created here since bwrap can only bind what exists.
     let app_dir = resolve_app_dir(manifest, opts)?;
 
-    // Identity resolution, threaded through both bwrap-argv builders so the
-    // child gets `QOS_USER_IDENTITY` pointing at the sandbox-side path.
-    let identity_host = resolve_identity_host_path(opts);
-    let identity_arg = identity_host.as_deref();
-
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
     let capabilities = resolve_capabilities(manifest, opts);
+
+    // Resolve the selected record on the host, migrate legacy storage, then
+    // mint one app-scoped broker connection. The path is only a presence
+    // marker for the argv builder; it is never mounted.
+    let identity_host = resolve_identity_host_path(opts);
+    let (identity_broker_app, identity_broker_control, identity_broker_thread) =
+        if capabilities.participation.carries_identity() {
+            match identity_host.as_deref() {
+                Some(path) => {
+                    let (app, control, thread) = start_identity_broker(path)?;
+                    (Some(app), Some(control), Some(thread))
+                }
+                None => (None, None, None),
+            }
+        } else {
+            (None, None, None)
+        };
+    let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
 
     // Egress: a grant naming specific hosts runs a gate; `*` or bare `host`
     // mode shares the host network with no allowlist to enforce, so neither
@@ -926,13 +985,6 @@ pub fn run_with(
             argv.push("--ro".to_string());
             argv.push(plan.sandbox_path.display().to_string());
         }
-        // Same for the ro-bound identity file: without a grant, `load()` gets
-        // EACCES and the feature quietly no-ops. A read-only participant has no
-        // identity bound.
-        if identity_arg.is_some() && capabilities.participation.carries_identity() {
-            argv.push("--ro".to_string());
-            argv.push(crate::sandbox::SANDBOX_IDENTITY_PATH.to_string());
-        }
         // Wayland needs read+write in Landlock: connect(2) on a unix socket is
         // write-flavoured, so read-only surfaces as EACCES at `wl_display_connect`.
         if let Some(bind) = &wayland_bind {
@@ -1011,6 +1063,12 @@ pub fn run_with(
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
         .collect();
+    if let Some(stream) = &identity_broker_app {
+        service_fds.push((
+            stream.as_raw_fd(),
+            runtime_identity::broker::BROKER_CHILD_FD,
+        ));
+    }
     for r in &resolved {
         tracing::info!(
             service = %r.name,
@@ -1070,7 +1128,9 @@ pub fn run_with(
     // Same rule: the child holds its own copies, so the launcher's are dead
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
+    drop(identity_broker_app);
     let status = child.wait()?;
+    stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok(status)
 }
 
@@ -1124,9 +1184,21 @@ pub fn run_with_captured(
         .map(|(p, v)| (p.as_path(), v.as_str()));
     // D-Bus plan (same decision path as `run_with`).
     let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
-    let identity_host = resolve_identity_host_path(opts);
-    let identity_arg = identity_host.as_deref();
     let capabilities = resolve_capabilities(manifest, opts);
+    let identity_host = resolve_identity_host_path(opts);
+    let (identity_broker_app, identity_broker_control, identity_broker_thread) =
+        if capabilities.participation.carries_identity() {
+            match identity_host.as_deref() {
+                Some(path) => {
+                    let (app, control, thread) = start_identity_broker(path)?;
+                    (Some(app), Some(control), Some(thread))
+                }
+                None => (None, None, None),
+            }
+        } else {
+            (None, None, None)
+        };
+    let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
     // Same egress decision as `run_with`: without the gate spliced in here
     // too, a host-scoped grant would be silently offline. No shim on this
     // path, so no loopback relay — ALL_PROXY has nothing listening behind it.
@@ -1206,6 +1278,12 @@ pub fn run_with_captured(
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
         .collect();
+    if let Some(stream) = &identity_broker_app {
+        service_fds.push((
+            stream.as_raw_fd(),
+            runtime_identity::broker::BROKER_CHILD_FD,
+        ));
+    }
     unsafe {
         cmd.pre_exec(move || {
             if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
@@ -1225,12 +1303,14 @@ pub fn run_with_captured(
     // As in `run_with`: the child has its own copies, so holding these open
     // only keeps the service from seeing the app end.
     drop(resolved);
+    drop(identity_broker_app);
     let mut buf = Vec::new();
     if let Some(mut so) = child.stdout.take() {
         use std::io::Read;
         so.read_to_end(&mut buf)?;
     }
     let status = child.wait()?;
+    stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok((status, buf))
 }
 
@@ -1465,6 +1545,49 @@ mod identity_resolution_tests {
             Some(PathBuf::from("/nowhere/does/not/exist.json")),
             "explicit path is used verbatim, no exists() check"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_identity_outside_the_managed_store_is_never_rewritten() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.path().join("custom.json");
+        let secret = [31u8; 32];
+        let key = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let original = serde_json::to_vec(&serde_json::json!({
+            "display_name": "Explicit debug identity",
+            "avatar_color": [1, 2, 3],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": key.verifying_key().to_bytes(),
+                "threshold": 1,
+                "total_shares": 1,
+                "share_index": 1,
+                "secret_bytes": secret,
+            },
+            "created_at": "2026-08-30T00:00:00Z",
+            "schema_version": 1,
+        }))
+        .unwrap();
+        std::fs::write(&path, &original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let (app, control, thread) = start_identity_broker(&path).unwrap();
+        drop(app);
+        drop(control);
+        thread.join().unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "an explicit path must never chmod its parent"
+        );
+        assert!(!dir.path().join("secrets").exists());
+        assert!(!dir.path().join(".identity.lock").exists());
     }
 
     #[test]
