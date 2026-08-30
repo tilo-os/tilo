@@ -5545,7 +5545,7 @@ mod tests {
         dispatch(
             app,
             doc,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: fake_device_id(),
                 position: winit::dpi::PhysicalPosition::new(x, y),
             },
@@ -5555,7 +5555,7 @@ mod tests {
         dispatch(
             app,
             doc,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: fake_device_id(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -5566,7 +5566,7 @@ mod tests {
         dispatch(
             app,
             doc,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: fake_device_id(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -5583,7 +5583,7 @@ mod tests {
         dispatch(
             app,
             doc,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: fake_device_id(),
                 state: ElementState::Pressed,
                 button: MouseButton::Right,

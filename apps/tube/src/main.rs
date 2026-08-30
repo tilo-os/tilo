@@ -1360,7 +1360,10 @@ fn run_bench_scroll(
     // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
     // taffy every frame). `false` = the scroll fast path (apply_layout only when
     // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
-    let run_pass = |force_compute: bool| -> (Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool) {
+    let run_pass = |force_compute: bool| -> Result<
+        (Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool),
+        Box<dyn std::error::Error>,
+    > {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
@@ -1505,7 +1508,7 @@ fn run_bench_scroll(
             widget.mark_drawn();
             draw.push(t.elapsed().as_micros());
         }
-        (sync, compute, apply, draw, ever_reposition_only)
+        Ok((sync, compute, apply, draw, ever_reposition_only))
     };
 
     let report = |label: &str, s: &[u128], c: &[u128], a: &[u128], d: &[u128]| {
@@ -1547,9 +1550,9 @@ fn run_bench_scroll(
         format!("{CARDS} Home cards")
     };
     println!("tube scroll bench: {scene_label}, {w}x{h}, {frames} scroll frames\n");
-    let (bs, bc, ba, bd, _) = run_pass(true);
+    let (bs, bc, ba, bd, _) = run_pass(true)?;
     report("BASELINE (re-solve)", &bs, &bc, &ba, &bd);
-    let (fs, fc, fa, fd, repos) = run_pass(false);
+    let (fs, fc, fa, fd, repos) = run_pass(false)?;
     report("FAST (reposition)", &fs, &fc, &fa, &fd);
     println!(
         "\n  scroll frames took the reposition-only fast path: {}",

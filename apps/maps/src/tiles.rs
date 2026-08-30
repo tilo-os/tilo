@@ -1505,7 +1505,7 @@ mod tests {
         // Now the full production helper: it must return pixels AND persist the
         // tile to the on-disk cache so re-views/zoom are instant.
         let cache = temp_cache();
-        let got = load_tile(&Some(client), &cache, base, id)
+        let got = load_tile(Some(&client), &cache, base, id)
             .expect("load_tile returns decoded pixels over the real network");
         assert_eq!(got.0.len(), 256 * 256 * 4);
         assert!(

@@ -182,7 +182,7 @@ impl BrowserStubWidget {
             globe,
             glyph_size,
             tokens.colors.text_dim,
-            ctx.transform.pre_translate((gx, gy)),
+            ctx.transform.pre_translate((gx, gy).into()),
             None,
         );
         let url = "localhost:3000";
@@ -194,7 +194,7 @@ impl BrowserStubWidget {
             url,
             glyph_size,
             tokens.colors.text_dim,
-            ctx.transform.pre_translate((ux, uy)),
+            ctx.transform.pre_translate((ux, uy).into()),
             None,
         );
     }
@@ -257,7 +257,7 @@ impl BrowserStubWidget {
             headline,
             headline_size,
             on_card_headline,
-            ctx.transform.pre_translate((hx, hy)),
+            ctx.transform.pre_translate((hx, hy).into()),
             None,
         );
 
@@ -271,7 +271,7 @@ impl BrowserStubWidget {
             sub,
             sub_size,
             on_card_subtle,
-            ctx.transform.pre_translate((sx, sy)),
+            ctx.transform.pre_translate((sx, sy).into()),
             None,
         );
     }
@@ -350,7 +350,10 @@ impl Widget for BrowserStubWidget {
             let dy = self.rect.y0 - self.cache_rect.y0;
             // `pre_translate` is kurbo's non-operator equivalent of
             // `out_transform * Affine::translate((dx, dy))`.
-            out_scene.append(&self.cached, Some(out_transform.pre_translate((dx, dy))));
+            out_scene.append(
+                &self.cached,
+                Some(out_transform.pre_translate((dx, dy).into())),
+            );
             return;
         }
 
