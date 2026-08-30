@@ -15,6 +15,12 @@
 //!   5. A workspace with a single window lights nothing — with nothing to
 //!      tell apart, the marker would be decoration.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;

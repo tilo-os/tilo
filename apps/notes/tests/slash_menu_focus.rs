@@ -3,6 +3,12 @@
 //! chosen block, Esc closes. Regression guard for the case where the
 //! sidebar retained focus (after a row click) and swallowed the arrows.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;

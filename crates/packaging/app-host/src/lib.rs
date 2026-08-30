@@ -24,6 +24,15 @@
 //! library surface, so tests can drive the service in-process without
 //! spawning the binary.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::PathBuf;
 
 pub mod fetch;

@@ -6,6 +6,12 @@
 //! Both subscribe to 42; A publishes a Delta envelope. Assert B
 //! receives the same delta bytes via the relay's fan-out.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{CoeditPayload, Envelope, Relay, RelayClient, RelayCoeditSession, RelayConfig};

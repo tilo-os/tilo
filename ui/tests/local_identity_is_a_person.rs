@@ -8,6 +8,12 @@
 //! These tests mutate the environment in one process, so they are serialised
 //! behind a mutex rather than left to race each other.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use ui::collaboration::{local_app_id, local_user_id};

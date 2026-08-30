@@ -32,6 +32,15 @@
 //! the caller shows an indeterminate indication rather than a fraction.
 //! A reader that only cares about the exit status can ignore all of it.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::io::Write;
 
 use app_catalogue::install::DownloadProgress;

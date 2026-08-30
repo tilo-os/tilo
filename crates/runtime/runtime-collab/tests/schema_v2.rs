@@ -19,6 +19,12 @@
 // return; nothing outside this file constructs these servers, so the
 // refinement stays where it is written.
 #![allow(refining_impl_trait_internal)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;

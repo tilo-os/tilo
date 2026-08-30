@@ -8,6 +8,12 @@
 //! that hook the source row's local resolver silently loses the "move to
 //! the OTHER strip" case.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;

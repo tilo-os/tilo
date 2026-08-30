@@ -3,6 +3,12 @@
 //! (`view_for_path`, the portal drain, and `handle_event`), with real disk
 //! I/O and no mocked buffer.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::AutoCommit;
 use hex_editor::HexView;
 use hex_editor::portal::PortalOutcome;

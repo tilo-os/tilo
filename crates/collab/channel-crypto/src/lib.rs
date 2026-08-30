@@ -42,6 +42,15 @@
 //! `MemberRemoved` governance variants carrying the Welcome/removal
 //! bytes, stored in the channel event log and replayed for joiners.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod crypto;
 pub mod errors;
 pub mod group;

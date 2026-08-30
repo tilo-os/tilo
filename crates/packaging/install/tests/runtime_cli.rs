@@ -9,6 +9,12 @@
 //! populate with stub loader / libc files so the tests don't depend on
 //! the runner's actual `/lib64` layout.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

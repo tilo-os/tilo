@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use ui::permissions::UserId;

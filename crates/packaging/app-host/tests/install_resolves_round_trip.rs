@@ -1,6 +1,12 @@
 //! Round-trip test: install a real .qpkg via the library surface,
 //! then resolve it and check the payload landed on disk.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;

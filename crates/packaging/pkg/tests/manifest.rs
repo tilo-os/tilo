@@ -1,6 +1,12 @@
 //! Manifest-level tests: TOML round-trip, schema validation,
 //! service-req parsing.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::fixtures;
 use pkg::manifest::{Manifest, PortalPolicy, Requirement, ServiceReq, ServiceReqParseError};
 use pkg::validate::{ManifestError, validate_manifest};

@@ -4,6 +4,12 @@
 //! under test is [`qos_agent::Session`]'s discovery, dispatch and capability
 //! gating while it participates through the same endpoint as an app.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;

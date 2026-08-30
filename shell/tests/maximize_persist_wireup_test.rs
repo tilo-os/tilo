@@ -9,6 +9,12 @@
 //! [`Widget::update`] runs in production and assert the persisted value
 //! followed (both directions).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;

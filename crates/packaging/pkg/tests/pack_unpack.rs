@@ -1,5 +1,11 @@
 //! pack → unpack → verify integration tests.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::fixtures;
 use ed25519_dalek::SigningKey;
 use pkg::manifest::Manifest;

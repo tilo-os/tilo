@@ -17,6 +17,15 @@
 //! protect the round-trip of GETs and to authenticate the base
 //! URL clients pin.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::net::SocketAddr;
 
 use hyper::server::conn::http1;

@@ -11,6 +11,12 @@
 //! it sees the agent's first change, which lands in the middle of the
 //! agent's own sequence of edits, while the agent is between actions.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;

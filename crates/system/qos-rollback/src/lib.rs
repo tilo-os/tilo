@@ -64,6 +64,15 @@
 //! 5. The counter can only be incremented with a signed, single-use approval bound to one
 //!    target value ([`approval`]); an unreachable authority freezes the floor, never the disk.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod approval;
 pub mod certify;
 pub mod confirm;

@@ -9,6 +9,12 @@
 //! stale inside a `Stack` → `Column` chain. These tests pin the
 //! forwarding for each container so that cannot regress quietly.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;

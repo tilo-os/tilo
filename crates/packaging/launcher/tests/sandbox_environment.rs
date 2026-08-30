@@ -17,6 +17,12 @@
 //! is how a qOS app runs at all, so a machine that can't run these
 //! can't run the product.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

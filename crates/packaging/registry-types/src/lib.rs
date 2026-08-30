@@ -46,6 +46,15 @@
 //! the field list produce identical bytes. That property is what
 //! makes a detached publisher signature portable across the wire.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod change;
 pub mod entry;
 pub mod handshake;

@@ -9,6 +9,12 @@
 //! both replicas export must be byte-identical (the codec is a pure function of
 //! the converged model, so any non-deterministic materialization would surface).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use proptest::prelude::*;
 use qdoc::codecs::odt::container::OdtContainer;
 use qdoc::{Document, FormatProvider, OdtCodec};

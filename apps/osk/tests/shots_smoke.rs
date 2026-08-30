@@ -4,6 +4,12 @@
 //! resulting file exists and starts with the canonical PNG magic header.
 //! Mirrors `apps/file-explorer/tests/shots_smoke.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::fs;
 use std::process::Command;
 

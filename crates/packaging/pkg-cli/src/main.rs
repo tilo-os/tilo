@@ -16,6 +16,15 @@
 //! convention-only (duplicates what's in signed-root) so `tar tf` shows
 //! the `PackageId` without decoding binary.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

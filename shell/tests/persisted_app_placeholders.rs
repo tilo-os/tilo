@@ -4,6 +4,12 @@
 //! `resolve_tile_shape_for_test`, a probe returning `"App"`/`"Stub"`
 //! without exposing `UiTile` (which carries a `Box<dyn AppWidget>`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,
 };

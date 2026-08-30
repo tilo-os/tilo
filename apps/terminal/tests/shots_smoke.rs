@@ -6,6 +6,12 @@
 //! Runs serially (no `--test-threads` requirement here — just one test)
 //! and is hermetic: it writes into the OS tempdir under a unique name.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::fs;
 use std::process::Command;
 

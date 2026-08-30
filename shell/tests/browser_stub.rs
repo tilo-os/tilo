@@ -3,6 +3,12 @@
 //! Explicitly *not* a real browser port — the shell uses this placeholder
 //! tile until/unless Servo is revived.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::browser_stub::BrowserStubWidget;
 use std::sync::{Arc, Mutex};
 use ui::{AppKind, AppWidget, IconDescriptor};

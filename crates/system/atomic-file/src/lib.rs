@@ -25,6 +25,15 @@
 //! within one filesystem — a cross-device rename fails with `EXDEV` and would leave the
 //! original untouched and the write silently lost by any caller that ignored the error.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

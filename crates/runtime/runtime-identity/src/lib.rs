@@ -29,6 +29,15 @@
 //! Missing env var / missing file / bad JSON all surface as
 //! [`NotAvailable`] — never a panic.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};

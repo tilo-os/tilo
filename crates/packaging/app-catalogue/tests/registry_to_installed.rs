@@ -7,6 +7,12 @@
 //! `qos-install` child process. The assertion that matters:
 //! `launcher::registry` (the compositor's own reader) returns the app.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};

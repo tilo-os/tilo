@@ -2,6 +2,12 @@
 //! `cursor_in_bounds` and the clipping `RemoteCursorOverlay` performs
 //! against the active tile.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::remote_cursors::{RemoteCursorOverlay, cursor_in_bounds};
 use ui::presence::{PointerOwner, PresenceCtx, RemoteCursor};
 

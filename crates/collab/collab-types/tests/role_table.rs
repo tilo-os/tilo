@@ -7,6 +7,12 @@
 //! exhaustively means a code change that flips a single row will
 //! fail loudly here.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use collab_types::{ArtifactKind, OpClass, Role, role_permits};
 
 fn all_artifact_kinds() -> [ArtifactKind; 5] {

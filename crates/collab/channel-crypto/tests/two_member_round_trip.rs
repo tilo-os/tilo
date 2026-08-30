@@ -6,6 +6,12 @@
 //! encrypt → decrypt — without touching the openmls 3+-member surface.
 //! A failure here means the crate is fundamentally broken.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 

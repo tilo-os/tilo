@@ -13,7 +13,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports three modes:
@@ -28,6 +27,14 @@
 //     network, wait for the painted page, and render chrome + live page
 //     into a PNG. End-to-end verification of the engine → frame →
 //     widget → offscreen-render pipeline without a window.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
 
 use std::collections::HashMap;
 

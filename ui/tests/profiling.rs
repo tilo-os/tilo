@@ -4,6 +4,12 @@
 //! stands up the same headless [`ui::headless::Driver`] the persistence
 //! harness uses.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
 use ui::state::State;
 use ui::widget::{Column, Scrollable, Text, Widget};

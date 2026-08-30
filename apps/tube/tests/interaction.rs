@@ -6,6 +6,12 @@
 //! `TubeApp::apply`). No app-level shortcuts: a passing test means a real click
 //! at the real coordinates did the real thing.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 mod harness;
 
 use harness::Harness;

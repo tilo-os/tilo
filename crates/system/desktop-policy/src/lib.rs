@@ -5,6 +5,15 @@
 //! resolver composes those three layers; callers must not reimplement the
 //! precedence rules in UI code.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod defaults;
 pub mod storage;
 

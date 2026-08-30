@@ -35,6 +35,15 @@
 //!
 //! The broker lives in the compositor, the FUSE driver in `fs/`, and the
 //! launcher is `qos-launcher` — this umbrella is client-side only.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub use runtime_collab as collab;
 pub use runtime_fs as fs;
 pub use runtime_identity as identity;

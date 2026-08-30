@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ui::widget::{
     AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowGroup, WindowWidth,
     max_group_px, min_group_px,

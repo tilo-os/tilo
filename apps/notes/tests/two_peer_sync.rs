@@ -7,6 +7,12 @@
 //! `doc::tests`, `block_editor` tests, `app::crdt_update_merges`); this
 //! checks that the notes app wires them together.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 

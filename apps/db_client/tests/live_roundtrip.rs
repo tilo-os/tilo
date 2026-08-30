@@ -16,6 +16,12 @@
 //!   `MySQL`:    `QOS_DB_TEST_MYSQL` (gate), `QOS_DB_TEST_MYSQL_HOST` (127.0.0.1),
 //!             `_PORT` (3306), `_USER` (root), `_PASS` (""), `_DB` (mysql)
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use db_client::model::{ConnectionProfile, Engine};
 use db_client::session::Session;
 

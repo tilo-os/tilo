@@ -18,6 +18,15 @@
 //! target is a no-op (an empty lib) — the workspace can still validate
 //! `cargo check` without breaking.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 #[cfg(target_arch = "wasm32")]
 mod guest {
     use qdoc::{Document, FormatProvider, MarkdownCodec};
@@ -27,9 +36,7 @@ mod guest {
         world: "provider",
     });
 
-    use exports::qos::format_provider::format_provider::{
-        Confidence, Detected, CodecError, Guest,
-    };
+    use exports::qos::format_provider::format_provider::{CodecError, Confidence, Detected, Guest};
 
     struct Component;
 

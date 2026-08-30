@@ -1,6 +1,12 @@
 //! Markdown body IO: round-trip a page body through disk, then
 //! delete it and assert the file is gone.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use notes::storage::{
     delete_page_file, ensure_layout, page_file_path, read_page_body, write_page_body,
 };

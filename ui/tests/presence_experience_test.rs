@@ -4,6 +4,12 @@
 //! and assert on the production `PresenceCtx` surface the widgets render
 //! from — not a bespoke helper.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Instant;
 
 use ui::app::App;

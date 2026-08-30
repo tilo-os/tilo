@@ -10,6 +10,12 @@
 //! These tests use libgit2 directly to BUILD fixtures and to VERIFY the
 //! after-state — they never shell out to the `git` CLI.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

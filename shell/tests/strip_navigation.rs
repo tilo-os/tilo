@@ -10,6 +10,12 @@
 //! The harness builds a real `ShellOverlayHost`/`WorkspaceTree`, runs a
 //! real layout pass, and drives real `WindowEvent`s.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 

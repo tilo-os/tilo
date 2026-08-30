@@ -3,6 +3,15 @@
 //! file. Subsequent commits add the wasmtime component runner, the Cap'n
 //! Proto wire, and the inotify hot-reload + main entry point.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 /// Generated Cap'n Proto bindings for `format-router.capnp`. Lives at the
 /// crate root because the capnpc output references `crate::format_router_capnp::*`.
 pub mod format_router_capnp {

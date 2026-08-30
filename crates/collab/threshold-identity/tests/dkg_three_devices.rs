@@ -6,6 +6,12 @@
 //! where a paper share returns to the quorum when a physical device is
 //! unavailable.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::BTreeMap;
 
 use collab_types::{canonical_bytes, verify_event};

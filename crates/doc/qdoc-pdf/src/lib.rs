@@ -24,6 +24,15 @@
 //! Marks: inline bold/italic spans aren't yet applied per-span — bold
 //! comes from block kind/level, not `strong` marks.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 mod metrics;
 mod pdf;
 

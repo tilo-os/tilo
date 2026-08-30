@@ -5,6 +5,12 @@
 //! first terminal grid line once the PTY delivers bytes, and at least one
 //! non-empty-named file-explorer entry.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::{Shell, tile::TileContent};
 use std::time::Duration;
 use ui::AppKind;

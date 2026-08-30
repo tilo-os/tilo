@@ -13,7 +13,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
 // Thin binary entry point — all logic lives in the library.
 //
 // Supports two modes:
@@ -22,6 +21,14 @@
 //   * `--shots <PATH>` — render the file explorer at a default size into
 //     a PNG at `<PATH>` and exit. No window, no event loop. Used for
 //     headless screenshot tests and CI snapshots of the cold-start UI.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
 
 use std::collections::HashMap;
 
