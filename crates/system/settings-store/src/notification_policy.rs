@@ -25,6 +25,12 @@ pub struct AppNotificationRule {
     /// cannot be requested by the app itself.
     #[serde(default)]
     pub priority: bool,
+    /// Permit this verified communications app to assert a sender endpoint
+    /// which the shell checks against its Contacts-owned priority registry.
+    /// The app cannot make an arbitrary contact priority and no unverified
+    /// caller may use this path.
+    #[serde(default)]
+    pub priority_contacts: bool,
     /// Absolute Unix deadline for a temporary mute. `None` is not muted.
     #[serde(default)]
     pub muted_until: Option<i64>,
@@ -153,12 +159,31 @@ impl NotificationPolicy {
         local_minute: u16,
         weekday_from_monday: u8,
     ) -> EffectiveNotificationPolicy {
+        self.effective_for_context(
+            verified_app_id,
+            false,
+            unix_now,
+            local_minute,
+            weekday_from_monday,
+        )
+    }
+
+    pub fn effective_for_context(
+        &self,
+        verified_app_id: Option<&str>,
+        verified_priority_contact: bool,
+        unix_now: i64,
+        local_minute: u16,
+        weekday_from_monday: u8,
+    ) -> EffectiveNotificationPolicy {
         let rule = verified_app_id.and_then(|id| self.per_app.get(id));
         let temporarily_muted = rule
             .and_then(|r| r.muted_until)
             .is_some_and(|deadline| deadline > unix_now);
         let focus = self.focus.active_at(local_minute, weekday_from_monday);
-        let pierces_focus = rule.is_some_and(|r| r.priority) && self.focus.allow_priority;
+        let pierces_focus = rule
+            .is_some_and(|r| r.priority || (r.priority_contacts && verified_priority_contact))
+            && self.focus.allow_priority;
         let quiet = self.do_not_disturb || temporarily_muted || (focus && !pierces_focus);
         EffectiveNotificationPolicy {
             banners: !quiet && rule.and_then(|r| r.banners).unwrap_or(self.show_banners),
@@ -222,5 +247,37 @@ mod tests {
         );
         assert!(p.effective_for(Some("dev.qos.mail"), 199, 0, 0).quiet);
         assert!(!p.effective_for(Some("dev.qos.mail"), 200, 0, 0).quiet);
+    }
+
+    #[test]
+    fn contact_only_pierces_for_a_verified_match_and_authorized_app() {
+        let mut p = NotificationPolicy {
+            focus: FocusSchedule {
+                enabled: true,
+                start_minute: 0,
+                end_minute: 0,
+                ..FocusSchedule::default()
+            },
+            ..NotificationPolicy::default()
+        };
+        p.per_app.insert(
+            "dev.qos.mail".into(),
+            AppNotificationRule {
+                priority_contacts: true,
+                ..AppNotificationRule::default()
+            },
+        );
+        assert!(
+            !p.effective_for_context(Some("dev.qos.mail"), true, 0, 500, 0)
+                .quiet
+        );
+        assert!(
+            p.effective_for_context(Some("dev.qos.mail"), false, 0, 500, 0)
+                .quiet
+        );
+        assert!(
+            p.effective_for_context(Some("dev.qos.other"), true, 0, 500, 0)
+                .quiet
+        );
     }
 }

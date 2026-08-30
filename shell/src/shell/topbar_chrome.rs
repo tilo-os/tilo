@@ -109,6 +109,7 @@ struct CacheFingerprint {
     status_key: StatusKey,
     media_key: Vec<(u32, u8, String)>,
     media_expanded: bool,
+    notification_badge: u32,
 }
 
 /// No calendar source is wired to the shell, so this paints what's
@@ -191,6 +192,7 @@ pub struct TopBarChrome {
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
     media_expanded: bool,
+    notification_badge: u32,
     /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
     /// Scroll over `center_rect` cycles it, dots jump directly.
@@ -238,6 +240,7 @@ impl TopBarChrome {
             media_signature: Vec::new(),
             media_started: None,
             media_expanded: false,
+            notification_badge: 0,
             avatar_stack_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             center_rect: Rect::ZERO,
@@ -283,6 +286,7 @@ impl TopBarChrome {
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
             media_expanded: self.media_expanded,
+            notification_badge: self.notification_badge,
         }
     }
 
@@ -643,6 +647,10 @@ impl Widget for TopBarChrome {
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
         self.status = self.live_status();
+        self.notification_badge = self
+            .chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.borrow().notification_badge_total());
         let signature: Vec<(u32, u8, String)> = self
             .status
             .media
@@ -1123,6 +1131,9 @@ impl Widget for TopBarChrome {
         if battery_pct.is_some() {
             slots += 1;
         }
+        if self.notification_badge > 0 {
+            slots += 1;
+        }
         let mut tray_w = if slots == 0 {
             // Still the quick-settings trigger, so keep one slot for
             // the settings glyph.
@@ -1132,6 +1143,11 @@ impl Widget for TopBarChrome {
         };
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
+        }
+        if self.notification_badge > 0 {
+            // Bell plus a compact exact count (`99+` once the number no longer
+            // fits); the base slot calculation already paid for the bell.
+            tray_w += 20.0;
         }
 
         self.tray_pill_rect = Rect::new(
@@ -1179,6 +1195,51 @@ impl Widget for TopBarChrome {
                 dim,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
+        }
+
+        // --- Notification badge --------------------------------------
+        if self.notification_badge > 0 {
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                slot_rect(sx),
+                ui::icons::Icon::Bell,
+                bright,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            let label = if self.notification_badge > 99 {
+                "99+".to_string()
+            } else {
+                self.notification_badge.to_string()
+            };
+            let label_size = 9.0;
+            let (label_w, label_h) = text_renderer.measure(&label, label_size, None);
+            let badge = Rect::new(
+                sx + tray_slot - 1.0,
+                center_y - 8.0,
+                sx + tray_slot + f64::from(label_w) + 9.0,
+                center_y + 8.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.semantic.danger,
+                None,
+                &RoundedRect::from_rect(badge, 8.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                &label,
+                label_size,
+                Color::WHITE,
+                transform
+                    * Affine::translate((
+                        badge.x0 + (badge.width() - f64::from(label_w)) / 2.0,
+                        badge.y0 + (badge.height() - f64::from(label_h)) / 2.0,
+                    )),
+                None,
+            );
+            sx += tray_slot + 20.0 + tray_gap;
         }
 
         // --- Volume ---------------------------------------------------

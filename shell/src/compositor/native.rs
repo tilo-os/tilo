@@ -1396,6 +1396,8 @@ fn power_notification_to_incoming(
         expire_timeout: if n.critical { 0 } else { -1 },
         urgency: if n.critical { 2 } else { 1 },
         caller: None,
+        badge_count: None,
+        contact_endpoint: None,
     }
 }
 
@@ -2103,7 +2105,12 @@ pub fn run() -> ! {
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
     let notif_bridge = crate::notifications::NotificationBridge::new();
-    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
+    let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
+    frame_builder.with_chrome(|st| {
+        st.set_notification_bridge(notif_bridge.clone());
+        st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
+    });
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
     let mut _notif_runtime: Option<tokio::runtime::Runtime> = None;
     let mut _notif_handle: Option<crate::notifications::ServerHandle> = None;
@@ -2118,11 +2125,13 @@ pub fn run() -> ! {
             let res: Result<crate::notifications::ServerHandle, zbus::Error> =
                 rt.block_on(async move {
                     let conn = zbus::ConnectionBuilder::session()?.build().await?;
-                    let service = crate::notifications::NotificationService::new(
+                    let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
                         // v1: a fresh CallerMap. Per-workspace attribution comes once the bridge
                         // accept path populates it (same shape the portal's CallerMap uses); until then unsandboxed callers carry none.
                         crate::portal::CallerMap::new(),
+                        conn.clone(),
+                        priority_contacts,
                     );
                     let handle =
                         crate::notifications::serve_notifications(conn.clone(), service).await?;

@@ -32,6 +32,7 @@ pub mod audio;
 pub mod audio_runtime;
 pub mod engine;
 pub mod event;
+pub mod notification_sound;
 pub mod ring;
 pub mod source;
 pub mod transport;

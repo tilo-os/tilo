@@ -7,7 +7,7 @@
 //! is local UI state that must not sync to peers.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -293,6 +293,14 @@ pub struct ChromeState {
     /// that leaves [`Self::notifications`] lands here, as does
     /// anything [`Self::dnd`] suppressed.
     notification_history: Vec<Notification>,
+    /// Exact unread counts accepted only from launcher-verified senders.
+    /// The top-bar tray consumes the aggregate; a future dock can consume the
+    /// same per-package map without inventing another badge protocol.
+    notification_badges: BTreeMap<String, u32>,
+    notification_sound: Option<media::notification_sound::NotificationSoundPlayer>,
+    priority_contacts: crate::priority_contacts::PriorityContactRegistry,
+    notification_policy: settings_store::notification_policy::NotificationPolicy,
+    notification_policy_checked: Option<std::time::Instant>,
     /// While `true`, fresh notifications go straight to
     /// [`Self::notification_history`] instead of showing as banners.
     /// Independent of [`Self::session_locked`], which suppresses
@@ -386,6 +394,11 @@ impl ChromeState {
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),
+            notification_badges: BTreeMap::new(),
+            notification_sound: None,
+            priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
+            notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
+            notification_policy_checked: None,
             dnd: false,
             visual_alert_until: None,
             session_locked: false,
@@ -968,6 +981,28 @@ impl ChromeState {
         self.notification_history.len()
     }
 
+    pub fn notification_badge_total(&self) -> u32 {
+        self.notification_badges
+            .iter()
+            .filter(|(app_id, _)| {
+                self.notification_policy
+                    .per_app
+                    .get(*app_id)
+                    .and_then(|rule| rule.badges)
+                    .unwrap_or(self.notification_policy.show_badges)
+            })
+            .map(|(_, count)| *count)
+            .fold(0_u32, u32::saturating_add)
+            .min(9_999)
+    }
+
+    pub fn notification_badge_for(&self, verified_app_id: &str) -> u32 {
+        self.notification_badges
+            .get(verified_app_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Clear the history log (the "Clear all" affordance in the
     /// notification centre). Bumps the revision so the surface re-syncs.
     pub fn clear_notification_history(&mut self) {
@@ -1008,6 +1043,15 @@ impl ChromeState {
         self.notification_bridge = Some(bridge);
     }
 
+    pub fn set_notification_runtime(
+        &mut self,
+        sound: media::notification_sound::NotificationSoundPlayer,
+        priority_contacts: crate::priority_contacts::PriorityContactRegistry,
+    ) {
+        self.notification_sound = Some(sound);
+        self.priority_contacts = priority_contacts;
+    }
+
     pub fn set_session_locked(&mut self, locked: bool) {
         if self.session_locked != locked {
             self.session_locked = locked;
@@ -1025,15 +1069,32 @@ impl ChromeState {
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
+        let refresh_policy = self
+            .notification_policy_checked
+            .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));
+        if refresh_policy {
+            let policy = settings_store::notification_policy::NotificationPolicy::load();
+            if policy != self.notification_policy {
+                self.notification_policy = policy;
+                self.bump();
+            }
+            self.notification_policy_checked = Some(std::time::Instant::now());
+        }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
-            let verified_app_id = inc.caller.as_ref().map(|caller| caller.app_id.as_str());
+            let verified_app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
+            let badge_count = inc.badge_count;
+            let verified_priority_contact = verified_app_id.is_some()
+                && inc
+                    .contact_endpoint
+                    .as_deref()
+                    .is_some_and(|endpoint| self.priority_contacts.matches(endpoint));
             let now = chrono::Local::now();
-            let policy = settings_store::notification_policy::NotificationPolicy::load();
-            let effective = policy.effective_for(
-                verified_app_id,
+            let effective = self.notification_policy.effective_for_context(
+                verified_app_id.as_deref(),
+                verified_priority_contact,
                 now.timestamp(),
                 (now.hour() * 60 + now.minute()) as u16,
                 now.weekday().num_days_from_monday() as u8,
@@ -1041,6 +1102,20 @@ impl ChromeState {
             let mut notification = Notification::from_incoming(inc);
             notification.show_preview = effective.previews;
             notification.show_on_lock_screen = effective.lock_screen;
+            // Keep the verified producer's latest state even while badge
+            // display is disabled. Visibility is a policy filter below; if we
+            // discarded updates here, re-enabling badges would resurrect a
+            // stale count from before the mute.
+            if let (Some(app_id), Some(count)) = (verified_app_id, badge_count) {
+                if count == 0 {
+                    self.notification_badges.remove(&app_id);
+                } else {
+                    self.notification_badges.insert(app_id, count.min(9_999));
+                }
+            }
+            if effective.sounds {
+                let _ = self.notification_sound.as_ref().map(|sound| sound.play());
+            }
             if effective.banners {
                 self.push_notification_full(notification);
             } else {
