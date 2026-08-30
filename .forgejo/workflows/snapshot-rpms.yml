@@ -13,6 +13,10 @@ on:
     branches: ["codex/projection-overlay-production"]
     paths: ["os/Containerfile", ".forgejo/workflows/snapshot-rpms.yml"]
 
+concurrency:
+  group: snapshot-rpms-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   snapshot:
     runs-on: runner
@@ -117,6 +121,7 @@ jobs:
           git config user.email "ci@qos.invalid"
           git add os/rpms-snapshot.env
           git commit -m "os: refresh frozen RPM snapshot"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Dispatch the full image build and boot test
