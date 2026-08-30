@@ -3,7 +3,7 @@
 //! OPML is a tiny XML dialect: feeds are `<outline type="rss"
 //! xmlUrl="..."/>` leaves, optionally nested inside `<outline text="...">`
 //! folder groups. We only need a one-level-deep folder model, which is what
-//! every real reader (NetNewsWire, Feedly, …) emits, so a hand-rolled
+//! every real reader (`NetNewsWire`, Feedly, …) emits, so a hand-rolled
 //! scanner is plenty and saves an XML dependency.
 
 use crate::model::{Feed, FeedKind, Folder, Store};
@@ -28,25 +28,30 @@ pub fn parse(text: &str) -> Vec<OpmlFeed> {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] != b'<' {
+        if bytes.get(i) != Some(&b'<') {
             i += 1;
             continue;
         }
+        let Some(rest) = text.get(i..) else {
+            break;
+        };
         // Closing tag?
-        if text[i..].starts_with("</outline") {
+        if rest.starts_with("</outline") {
             folder_stack.pop();
             i += "</outline".len();
             continue;
         }
-        if !text[i..].starts_with("<outline") {
+        if !rest.starts_with("<outline") {
             i += 1;
             continue;
         }
         // Find the end of the tag.
-        let Some(rel_end) = text[i..].find('>') else {
+        let Some(rel_end) = rest.find('>') else {
             break;
         };
-        let tag = &text[i..i + rel_end + 1];
+        let Some(tag) = text.get(i..=i + rel_end) else {
+            break;
+        };
         let self_closing = tag.trim_end().ends_with("/>");
 
         let xml_url = attr(tag, "xmlUrl");
@@ -90,19 +95,27 @@ pub fn parse(text: &str) -> Vec<OpmlFeed> {
 /// Extract an attribute value from a tag string (handles `"` and `'`).
 fn attr(tag: &str, key: &str) -> Option<String> {
     let mut search = 0;
-    while let Some(rel) = tag[search..].find(key) {
+    while let Some(tail) = tag.get(search..) {
+        let Some(rel) = tail.find(key) else {
+            break;
+        };
         let pos = search + rel;
         // Ensure it's a standalone attribute (preceded by whitespace).
-        let prev_ok = pos == 0 || tag.as_bytes()[pos - 1].is_ascii_whitespace();
-        let after = &tag[pos + key.len()..];
+        let prev_ok = pos == 0
+            || tag
+                .as_bytes()
+                .get(pos - 1)
+                .is_some_and(u8::is_ascii_whitespace);
+        let after = tag.get(pos + key.len()..)?;
         let after_trim = after.trim_start();
         if prev_ok && after_trim.starts_with('=') {
-            let rest = after_trim[1..].trim_start();
+            let rest = after_trim.get(1..)?.trim_start();
             let quote = rest.chars().next()?;
             if quote == '"' || quote == '\'' {
-                let body = &rest[1..];
+                let body = rest.get(1..)?;
                 if let Some(end) = body.find(quote) {
-                    return Some(unescape(&body[..end]));
+                    let matched = body.get(..end)?;
+                    return Some(unescape(matched));
                 }
             }
         }
@@ -130,16 +143,16 @@ fn escape(s: &str) -> String {
 /// Serialise the store's subscriptions to OPML 2.0, grouping feeds under
 /// their folder outlines.
 pub fn export(store: &Store) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<opml version=\"2.0\">\n  <head>\n    <title>Feeds subscriptions</title>\n  </head>\n  <body>\n");
 
     // Folders first, each with its feeds nested.
     for folder in store.folders_sorted() {
-        out.push_str(&format!(
-            "    <outline text=\"{0}\" title=\"{0}\">\n",
-            escape(&folder.name)
-        ));
+        let name = escape(&folder.name);
+        let _ = writeln!(out, "    <outline text=\"{name}\" title=\"{name}\">");
         for feed in store.feeds_in_folder(Some(folder.id)) {
             out.push_str(&feed_outline(feed, 6));
         }
