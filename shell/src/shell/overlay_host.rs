@@ -622,13 +622,22 @@ fn lay_out_chip_strip(
         let mut x = band.x0;
         for (i, w) in natural.iter().enumerate() {
             let w = w.max(CHIP_MIN_W_PX);
-            let row = plan.len() - 1;
-            if !plan[row].is_empty() && (x + w > row_x1(row) || plan[row].len() >= per_row) {
+            // `plan` always starts with one row and is only ever pushed
+            // to, never cleared, so `len() - 1` cannot underflow — spelled
+            // with saturating_sub so the invariant doesn't need re-proving
+            // at every call site.
+            let row = plan.len().saturating_sub(1);
+            let row_full = plan
+                .get(row)
+                .is_some_and(|r| !r.is_empty() && (x + w > row_x1(row) || r.len() >= per_row));
+            if row_full {
                 plan.push(Vec::new());
                 x = band.x0;
             }
-            let row = plan.len() - 1;
-            plan[row].push(i);
+            let row = plan.len().saturating_sub(1);
+            if let Some(r) = plan.get_mut(row) {
+                r.push(i);
+            }
             x += w + CHIP_GAP_PX;
         }
         plan
@@ -654,24 +663,54 @@ fn lay_out_chip_strip(
 
     let mut rects = vec![Rect::ZERO; natural.len()];
     let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
-        let cy = band.y0 + row as f64 * row_h + row_h / 2.0;
+        // `row` is always a small on-screen row count (never remotely
+        // near 2^53), so the usize -> f64 conversion below is exact.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "row is a UI row index, always tiny; f64 represents it exactly"
+        )]
+        let row_f = row as f64;
+        let cy = band.y0 + row_f * row_h + row_h / 2.0;
         let mut x = band.x0;
         for (slot, &id) in ids.iter().enumerate() {
-            let w = widths[slot];
-            rects[id] = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
+            // `widths` is built alongside `ids` by every caller below, so
+            // it always has one entry per id — `.get()` keeps a shape
+            // mismatch from panicking instead of proving it can't happen.
+            let Some(&w) = widths.get(slot) else {
+                continue;
+            };
+            let Some(rect) = rects.get_mut(id) else {
+                continue;
+            };
+            *rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
             x += w + CHIP_GAP_PX;
         }
     };
 
     let kept_rows = rows_needed.min(rows_available);
     for (row, ids) in plan.iter().take(kept_rows.saturating_sub(1)).enumerate() {
-        let widths: Vec<f64> = ids.iter().map(|&i| natural[i].max(CHIP_MIN_W_PX)).collect();
+        let widths: Vec<f64> = ids
+            .iter()
+            .map(|&i| {
+                natural
+                    .get(i)
+                    .copied()
+                    .unwrap_or(CHIP_MIN_W_PX)
+                    .max(CHIP_MIN_W_PX)
+            })
+            .collect();
         place(row, ids, &widths, &mut rects);
     }
-    let last = kept_rows - 1;
-    let leftover: Vec<usize> = plan[last..].iter().flatten().copied().collect();
+    let last = kept_rows.saturating_sub(1);
+    let leftover: Vec<usize> = plan
+        .get(last..)
+        .map(|rows| rows.iter().flatten().copied().collect())
+        .unwrap_or_default();
     let widths = share_row(
-        &leftover.iter().map(|&i| natural[i]).collect::<Vec<_>>(),
+        &leftover
+            .iter()
+            .map(|&i| natural.get(i).copied().unwrap_or(CHIP_MIN_W_PX))
+            .collect::<Vec<_>>(),
         row_x1(last) - band.x0,
     );
     place(last, &leftover, &widths, &mut rects);
@@ -2937,7 +2976,9 @@ impl ShellOverlayHost {
         if let Some(active) = self.file_picker.as_mut()
             && let Some(outcome) = active.widget.take_outcome()
         {
-            let mut active = self.file_picker.take().expect("just checked");
+            let Some(mut active) = self.file_picker.take() else {
+                return dirty;
+            };
             let picked = match outcome {
                 ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
                 ui::widget::FilePickerOutcome::Cancelled => None,
@@ -4767,7 +4808,9 @@ impl ShellOverlayHost {
             }
             let mut input_handled = false;
             let mut input_taffy = TaffyTree::<()>::new();
-            let input_node = input_taffy.new_leaf(Default::default()).unwrap();
+            let Ok(input_node) = input_taffy.new_leaf(Default::default()) else {
+                return false;
+            };
             self.projection_credential_input.handle_event(
                 event,
                 scale_factor,
@@ -5107,33 +5150,40 @@ impl Widget for ShellOverlayHost {
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Override the widget's own narrow 360px default so the palette
         // reads as a centered modal sheet, not a top-right popover.
-        let mut palette_style = taffy.style(palette_node).unwrap().clone();
-        palette_style.position = Position::Absolute;
-        // 70% of viewport clamped to [560, 640]; 560 is the minimum that
-        // still fits the filter strip's eight pills without the last one
-        // bleeding into the close glyph.
-        let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
+        // `taffy.style` can only fail for a `NodeId` foreign to this tree
+        // or already removed — `palette_node` is neither, it was just
+        // inserted above — but the override is skippable, so a failure
+        // here degrades to the widget's own default layout instead of
+        // panicking.
+        if let Ok(style) = taffy.style(palette_node) {
+            let mut palette_style = style.clone();
+            palette_style.position = Position::Absolute;
+            // 70% of viewport clamped to [560, 640]; 560 is the minimum
+            // that still fits the filter strip's eight pills without the
+            // last one bleeding into the close glyph.
+            let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
+            palette_style.size = Size {
+                width: Dimension::length(palette_target_w as f32),
+                height: palette_style.size.height,
+            };
+            palette_style.margin = TaffyRect {
+                left: LengthPercentageAuto::auto(),
+                right: LengthPercentageAuto::auto(),
+                top: LengthPercentageAuto::length(0.0),
+                bottom: LengthPercentageAuto::auto(),
+            };
+            palette_style.inset = TaffyRect {
+                left: LengthPercentageAuto::auto(),
+                right: LengthPercentageAuto::auto(),
+                top: LengthPercentageAuto::length(96.0),
+                bottom: LengthPercentageAuto::auto(),
+            };
+            let _ = taffy.set_style(palette_node, palette_style);
+        }
         // `self.rect` is last frame's, so frame 1 sizes off a zero-width
         // host and lands on the 560 floor; remembering what it sized
         // against lets `apply_layout` re-dirty and converge.
         self.palette_layout_host_w = self.rect.width();
-        palette_style.size = Size {
-            width: Dimension::length(palette_target_w as f32),
-            height: palette_style.size.height,
-        };
-        palette_style.margin = TaffyRect {
-            left: LengthPercentageAuto::auto(),
-            right: LengthPercentageAuto::auto(),
-            top: LengthPercentageAuto::length(0.0),
-            bottom: LengthPercentageAuto::auto(),
-        };
-        palette_style.inset = TaffyRect {
-            left: LengthPercentageAuto::auto(),
-            right: LengthPercentageAuto::auto(),
-            top: LengthPercentageAuto::length(96.0),
-            bottom: LengthPercentageAuto::auto(),
-        };
-        taffy.set_style(palette_node, palette_style).unwrap();
 
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
@@ -5142,26 +5192,31 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
-            let mut style = taffy.style(node).unwrap().clone();
-            style.position = Position::Absolute;
-            style.inset = TaffyRect {
-                left: LengthPercentageAuto::length(0.0),
-                right: LengthPercentageAuto::auto(),
-                top: LengthPercentageAuto::length(self.sidebar_top_y),
-                bottom: LengthPercentageAuto::length(0.0),
-            };
-            style.size = Size {
-                width: Dimension::length(sidebar_width_for_viewport(self.rect.height() as f32)),
-                height: Dimension::auto(),
-            };
-            style.flex_grow = 0.0;
-            style.flex_shrink = 0.0;
-            // A fullscreen surface covers the whole output, so the wheel
-            // is suppressed alongside the top bar.
-            if fullscreen {
-                style.display = Display::None;
+            // See the palette override above: failure here is not
+            // reachable for a node this function just created, but the
+            // override is skippable rather than fatal.
+            if let Ok(style) = taffy.style(node) {
+                let mut style = style.clone();
+                style.position = Position::Absolute;
+                style.inset = TaffyRect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::auto(),
+                    top: LengthPercentageAuto::length(self.sidebar_top_y),
+                    bottom: LengthPercentageAuto::length(0.0),
+                };
+                style.size = Size {
+                    width: Dimension::length(sidebar_width_for_viewport(self.rect.height() as f32)),
+                    height: Dimension::auto(),
+                };
+                style.flex_grow = 0.0;
+                style.flex_shrink = 0.0;
+                // A fullscreen surface covers the whole output, so the
+                // wheel is suppressed alongside the top bar.
+                if fullscreen {
+                    style.display = Display::None;
+                }
+                let _ = taffy.set_style(node, style);
             }
-            taffy.set_style(node, style).unwrap();
             node
         });
         self.sidebar_node = sidebar_node;
@@ -5170,6 +5225,11 @@ impl Widget for ShellOverlayHost {
             Some(s) => vec![content_node, palette_node, s],
             None => vec![content_node, palette_node],
         };
+        // `new_with_children` only errs on a foreign/removed child
+        // `NodeId`, and every id in `children` was just created above in
+        // this same tree — but rather than assert that, fall back to the
+        // content node alone: a host that (impossibly) can't wrap its
+        // overlays still shows the desktop instead of dying.
         let node = taffy
             .new_with_children(
                 Style {
@@ -5181,13 +5241,18 @@ impl Widget for ShellOverlayHost {
                 },
                 &children,
             )
-            .unwrap();
+            .unwrap_or(content_node);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        // A missing layout for `node` would mean taffy never computed
+        // this frame's tree at all — nothing downstream has a sensible
+        // rect to work with, so skip the frame rather than panic.
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -5222,11 +5287,17 @@ impl Widget for ShellOverlayHost {
                 row.set_output_spans(&settled_spans);
             }
         }
-        let children = taffy.children(node).unwrap();
-        self.content
-            .apply_layout(taffy, children[0], Point::new(self.rect.x0, self.rect.y0));
-        self.palette
-            .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
+        let Ok(children) = taffy.children(node) else {
+            return;
+        };
+        if let Some(&content_child) = children.first() {
+            self.content
+                .apply_layout(taffy, content_child, Point::new(self.rect.x0, self.rect.y0));
+        }
+        if let Some(&palette_child) = children.get(1) {
+            self.palette
+                .apply_layout(taffy, palette_child, Point::new(self.rect.x0, self.rect.y0));
+        }
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
             // The wheel disc lives in the overlay layer, not as a sibling
             // of GroupRow, so it pans in lock-step by shifting its origin
@@ -5757,18 +5828,19 @@ impl Widget for ShellOverlayHost {
             if let Some(active) = self.file_picker.as_mut() {
                 active.widget.set_rect(picker_rect);
                 let mut tmp_taffy = TaffyTree::<()>::new();
-                let tmp_node = tmp_taffy.new_leaf(Default::default()).unwrap();
-                active.widget.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    tmp_node,
-                    &tmp_taffy,
-                );
+                if let Ok(tmp_node) = tmp_taffy.new_leaf(Default::default()) {
+                    active.widget.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        tmp_node,
+                        &tmp_taffy,
+                    );
+                }
             }
             *handled = true;
             return;
@@ -5959,20 +6031,21 @@ impl Widget for ShellOverlayHost {
             };
             if forward {
                 let mut tmp_taffy = TaffyTree::<()>::new();
-                let tmp_node = tmp_taffy.new_leaf(Default::default()).unwrap();
-                prompt.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    tmp_node,
-                    &tmp_taffy,
-                );
-                if *handled {
-                    return;
+                if let Ok(tmp_node) = tmp_taffy.new_leaf(Default::default()) {
+                    prompt.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        tmp_node,
+                        &tmp_taffy,
+                    );
+                    if *handled {
+                        return;
+                    }
                 }
             }
         }
@@ -7128,7 +7201,11 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        let children = taffy.children(node_id).unwrap();
+        // No children means taffy never laid this node out this frame —
+        // there is nothing to route the event to.
+        let Ok(children) = taffy.children(node_id) else {
+            return;
+        };
         if self.palette_visible {
             // Before the row hit-test below so a chip click doesn't fall
             // through to the top result.
@@ -7194,24 +7271,26 @@ impl Widget for ShellOverlayHost {
                 return;
             }
             // Let the palette own the character/backspace/arrow keys.
-            let query_before = self.palette.query().to_string();
-            self.palette.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                children[1],
-                taffy,
-            );
-            // Recompute results when a character/backspace changes the query.
-            if self.palette.query() != query_before {
-                self.refresh_search_results(state, path);
-            }
-            if *handled {
-                return;
+            if let Some(&palette_child) = children.get(1) {
+                let query_before = self.palette.query().to_string();
+                self.palette.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    palette_child,
+                    taffy,
+                );
+                // Recompute results when a character/backspace changes the query.
+                if self.palette.query() != query_before {
+                    self.refresh_search_results(state, path);
+                }
+                if *handled {
+                    return;
+                }
             }
         }
         // First dibs so wheel-content precedes the desktop underneath.
@@ -7256,17 +7335,19 @@ impl Widget for ShellOverlayHost {
         {
             self.stamp_active_group_from_click(p);
         }
-        self.content.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            children[0],
-            taffy,
-        );
+        if let Some(&content_child) = children.first() {
+            self.content.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                content_child,
+                taffy,
+            );
+        }
 
         // Same step as Super+Left/Right, avoiding a park on the window
         // seam that free-panning would allow. 0.5 rejects trackpad noise.
