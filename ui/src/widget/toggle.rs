@@ -140,6 +140,7 @@ pub struct ToggleFace {
     rect: Rect,
     on: bool,
     interact: ToggleInteract,
+    on_color: Option<vello::peniko::Color>,
 }
 
 impl ToggleFace {
@@ -148,6 +149,7 @@ impl ToggleFace {
             rect,
             on,
             interact: ToggleInteract::default(),
+            on_color: None,
         }
     }
     pub fn hovered(mut self, v: bool) -> Self {
@@ -162,6 +164,13 @@ impl ToggleFace {
         self.interact.disabled = v;
         self
     }
+    /// Override the active track for a semantic switch (for example a
+    /// connection-status switch). Off, focus, hover, and contrast behavior
+    /// remain shared.
+    pub fn on_color(mut self, color: vello::peniko::Color) -> Self {
+        self.on_color = Some(color);
+        self
+    }
     pub fn colors(
         &self,
         theme: &Theme,
@@ -171,7 +180,26 @@ impl ToggleFace {
         vello::peniko::Color,
         f64,
     ) {
-        toggle_face_colors(theme, self.on, self.interact)
+        let (mut track, mut knob, border, border_w) =
+            toggle_face_colors(theme, self.on, self.interact);
+        if self.on
+            && let Some(color) = self.on_color
+        {
+            track = color;
+            knob = theme.tokens.colors.ink_on_any(
+                &[track],
+                theme.text_dim,
+                crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            );
+            if self.interact.hovered {
+                let reached = crate::a11y::contrast_ratio(knob, track);
+                knob = theme
+                    .tokens
+                    .colors
+                    .ink_on_any(&[track], knob, reached * HOVER_KNOB_GAIN);
+            }
+        }
+        (track, knob, border, border_w)
     }
 }
 
@@ -204,7 +232,7 @@ impl Toggle {
     /// [`Toggle`]'s look. Callers keep their own hit-testing; only the
     /// palette ([`toggle_face_colors`]) is shared.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &ToggleFace) {
-        let (track, knob, border, border_w) = toggle_face_colors(theme, face.on, face.interact);
+        let (track, knob, border, border_w) = face.colors(theme);
         let radius = face.rect.height() / 2.0;
         let track_shape = RoundedRect::from_rect(face.rect, radius);
         let dim = face.interact.disabled;
@@ -611,6 +639,19 @@ mod tests {
                     ..Default::default()
                 }
             ),
+        );
+    }
+
+    #[test]
+    fn toggle_face_accepts_semantic_active_track() {
+        let theme = Theme::dark();
+        let semantic = theme.tokens.colors.semantic.success;
+        let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).on_color(semantic);
+        let (track, knob, _, _) = face.colors(&theme);
+        assert_eq!(track, semantic);
+        assert!(
+            crate::a11y::contrast_ratio(knob, track)
+                >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
         );
     }
 
