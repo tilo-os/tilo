@@ -48,17 +48,19 @@ fn drive_text_input(
     ti: &mut TextInput,
     event: &WindowEvent,
     scale: f64,
-    modifiers: &winit::event::Modifiers,
+    modifiers: winit::event::Modifiers,
 ) {
     let mut doc = AutoCommit::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return;
+    };
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     ti.handle_event(
         event,
         scale,
-        modifiers,
+        &modifiers,
         &mut doc,
         &automerge::ROOT,
         &mut handled,
@@ -199,6 +201,11 @@ enum Hit {
     OfflineClearCache,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent render/interaction cache (drag state, focus, \
+              debounce/CRDT bookkeeping), not a state machine that would collapse into an enum"
+)]
 pub struct MapsApp {
     model: MapModel,
     basemap: Basemap,
@@ -903,7 +910,7 @@ impl MapsApp {
             z1,
             tiles,
         };
-        self.perform(doc, MapsAction::AddRegion(region));
+        self.perform(doc, &MapsAction::AddRegion(region));
     }
 
     /// Remove a saved region: dispatch the row removal as an action, and delete
@@ -926,7 +933,7 @@ impl MapsApp {
         let freed = self.tiles.delete_tiles(&doomed);
         self.cache_bytes = self.tiles.cache_bytes();
         // The metadata row is the action; the tile deletion above is external.
-        self.perform(doc, MapsAction::DeleteRegion { id: id.to_string() });
+        self.perform(doc, &MapsAction::DeleteRegion { id: id.to_string() });
         self.model.status = format!("Removed “{}” · {} freed", region.name, fmt_bytes(freed));
         self.mark_dirty();
     }
@@ -954,7 +961,7 @@ impl MapsApp {
     fn reconcile_download_field(&mut self) {
         let text = self.download_input.text().to_string();
         if text != self.download_query {
-            self.download_query = text.clone();
+            text.clone_into(&mut self.download_query);
             self.download_pick = None; // editing invalidates a prior pick
             if text.trim().is_empty() {
                 self.download_debounce = None;
@@ -974,7 +981,7 @@ impl MapsApp {
                     .cloned()
                 {
                     self.download_input.set_text(&hit.name);
-                    self.download_query = hit.name.clone();
+                    hit.name.clone_into(&mut self.download_query);
                     self.download_pick = Some(hit);
                 }
                 self.download_input.close();
@@ -996,7 +1003,7 @@ impl MapsApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) -> bool {
         // Re-focus the field when it is clicked after a blur (so the user can
         // search again without reopening the dialog).
@@ -1015,13 +1022,15 @@ impl MapsApp {
         }
         let mut doc = AutoCommit::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return false;
+        };
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         self.download_input.handle_event(
             event,
             scale,
-            modifiers,
+            &modifiers,
             &mut doc,
             &automerge::ROOT,
             &mut handled,
@@ -1101,9 +1110,9 @@ impl MapsApp {
     /// host encodes + applies it via the executor (one undo boundary, byte-
     /// identical replay on peers); we then re-adopt the mutated model so the UI
     /// and the document agree on a single source of truth.
-    fn perform(&mut self, doc: &mut AutoCommit, action: MapsAction) {
+    fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
         MapsDoc::save(doc, &self.model);
-        self.actions.dispatch(doc, MAPS_ACTION_TYPE, &action);
+        self.actions.dispatch(doc, MAPS_ACTION_TYPE, action);
         if let Some(model) = MapsDoc::load(doc) {
             self.model = model;
         }
@@ -1353,7 +1362,7 @@ impl MapsApp {
             return;
         };
         self.model.upsert_place(p.clone());
-        self.model.query = p.name.clone();
+        p.name.clone_into(&mut self.model.query);
         self.model.push_recent(&p.name);
         self.search_results.clear();
         self.search_debounce = None;
@@ -1524,12 +1533,12 @@ impl MapsApp {
         self.model.upsert_place(p.clone());
         if origin {
             self.model.origin = Some(p.pos);
-            self.model.origin_name = p.name.clone();
+            p.name.clone_into(&mut self.model.origin_name);
             self.origin_results.clear();
             self.model.origin_query.clear();
         } else {
             self.model.dest = Some(p.pos);
-            self.model.dest_name = p.name.clone();
+            p.name.clone_into(&mut self.model.dest_name);
             self.model.selected = Some(p.id.clone());
             self.dest_results.clear();
             self.model.dest_query.clear();
@@ -1620,9 +1629,8 @@ impl MapsApp {
         if self.model.dest.is_none() {
             self.set_dest_to_selection();
         }
-        let dest = match self.model.dest {
-            Some(d) => d,
-            None => return,
+        let Some(dest) = self.model.dest else {
+            return;
         };
         let origin = self.resolve_origin();
         self.model.origin = Some(origin);
@@ -1660,9 +1668,8 @@ impl MapsApp {
         if self.model.dest.is_none() {
             self.set_dest_to_selection();
         }
-        let dest = match self.model.dest {
-            Some(d) => d,
-            None => return,
+        let Some(dest) = self.model.dest else {
+            return;
         };
         let origin = self.resolve_origin();
         self.model.origin = Some(origin);
@@ -1713,7 +1720,7 @@ impl MapsApp {
             let now_saved = self.model.place(&id).is_some_and(|p| p.saved);
             self.perform(
                 doc,
-                MapsAction::SetPlaceSaved {
+                &MapsAction::SetPlaceSaved {
                     id,
                     saved: !now_saved,
                 },
@@ -1722,7 +1729,7 @@ impl MapsApp {
     }
 
     fn clear_route(&mut self, doc: &mut AutoCommit) {
-        self.perform(doc, MapsAction::ClearRoute);
+        self.perform(doc, &MapsAction::ClearRoute);
     }
 
     /// Exchange the route's origin and destination (both the coordinates and
@@ -1938,7 +1945,9 @@ impl MapsApp {
         let icons = self.poi_icons_shown();
         let mut best: Option<(f64, String)> = None;
         for i in self.visible_poi_indices() {
-            let poi = &self.pois[i];
+            let Some(poi) = self.pois.get(i) else {
+                continue;
+            };
             let c = proj.project(poi.pos);
             let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
             let base = if icons { 9.0 } else { 4.5 };
@@ -2036,6 +2045,12 @@ impl MapsApp {
         best.map(|(_, id)| id)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per NetMsg variant; the length is the number of \
+                  message kinds, and splitting arms out would relocate the code, not \
+                  shrink what a reader must trace for one variant"
+    )]
     fn drain_net(&mut self) {
         while let Ok(msg) = self.net_rx.try_recv() {
             self.pending = self.pending.saturating_sub(1);
@@ -2147,7 +2162,7 @@ impl MapsApp {
                     // while the download dialog is open.
                     if self.offline_open && query.trim() == self.download_query.trim() {
                         if let Ok(hits) = results {
-                            self.download_results = hits.clone();
+                            hits.clone_into(&mut self.download_results);
                             self.download_input
                                 .set_suggestions_open(Self::region_suggestions(&hits));
                         } else {
@@ -2217,6 +2232,11 @@ impl MapsApp {
     }
 
     // --- click dispatch ----------------------------------------------------
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Hit variant; the length is the number of click \
+                  targets the map surface exposes, not accidental complexity in any one arm"
+    )]
     fn dispatch(&mut self, hit: &Hit, doc: &mut AutoCommit) {
         match hit {
             Hit::Consume => {}
@@ -2254,7 +2274,7 @@ impl MapsApp {
             }
             Hit::PoiDirections => self.poi_directions(),
             Hit::Recent(q) => {
-                self.model.query = q.clone();
+                q.clone_into(&mut self.model.query);
                 self.run_search();
             }
             Hit::ZoomIn => self.zoom_by(1.0, self.view_center()),
@@ -2358,7 +2378,7 @@ impl MapsApp {
                 self.cache_bytes = 0;
                 // The on-disk cache clear above is external; dropping every region
                 // row is the collaborative action.
-                self.perform(doc, MapsAction::ClearRegions);
+                self.perform(doc, &MapsAction::ClearRegions);
                 self.model.status = format!("Cleared {} of offline tiles", fmt_bytes(freed));
                 self.mark_dirty();
             }
@@ -2607,6 +2627,12 @@ impl MapsApp {
     /// A small centred sheet with the map-data attribution or licenses, reached
     /// from the ⋯ menu. Honest, one line per credit/term — the OSM/CARTO
     /// requirement met by being reachable rather than pasted over the map.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_map_info_sheet(
         &mut self,
         scene: &mut Scene,
@@ -2796,6 +2822,12 @@ impl MapsApp {
     /// panel) as a dropdown — it deliberately never reflows the panel or the
     /// map to make room. Rows are proximity-ordered with a distance chip, so
     /// the nearest match to where the user is looking reads first.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_search_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2906,6 +2938,12 @@ impl MapsApp {
     /// dropdown idiom as the top search overlay. It deliberately never reflows
     /// the panel below (mode control, route, steps stay put whether or not the
     /// dropdown is open), which was the old inline-list bug.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_endpoint_overlay(
         &mut self,
         scene: &mut Scene,
@@ -3024,6 +3062,17 @@ impl MapsApp {
     /// Surfaces the readable OSM tags — address, opening hours, phone, website —
     /// with a Directions action. Drawn late so it overlays the map and its
     /// controls win the hit-test.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_poi_card(
         &mut self,
         scene: &mut Scene,
@@ -3281,8 +3330,19 @@ impl MapsApp {
     /// docked panel and the bottom-right scale bar). With data it's a colour
     /// key with per-level counts + provenance; with none it's the honest
     /// "No traffic data" pill. Draws nothing when the overlay is off.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_traffic_status(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3400,7 +3460,7 @@ impl MapsApp {
                 row_fs,
                 c.text_primary,
             );
-            let n = counts[level as usize].to_string();
+            let n = counts.get(level as usize).copied().unwrap_or(0).to_string();
             let nw = draw::measure_w(tr, &n, row_fs);
             draw::text(scene, tr, t, &n, card.x1 - pad - nw, y, row_fs, c.text_dim);
             y += row_h;
@@ -3411,6 +3471,17 @@ impl MapsApp {
     /// zoom-depth stepper, an estimated-tile/progress readout, a list of the
     /// areas already saved for offline use (each removable), and
     /// download / clear-all / close actions.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_offline_overlay(
         &mut self,
         scene: &mut Scene,
@@ -3418,14 +3489,14 @@ impl MapsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // The card grows to fit the saved-areas list (capped so it stays a card,
+        // not a full-height sheet).
+        const MAX_ROWS: usize = 4;
         let c = &theme.tokens.colors;
         // Scrim — also swallows background clicks.
         draw::fill_rect(scene, t, self.rect, draw::alpha(Color::BLACK, 0.45));
         self.click_targets.push((self.rect, Hit::OfflineClose));
 
-        // The card grows to fit the saved-areas list (capped so it stays a card,
-        // not a full-height sheet).
-        const MAX_ROWS: usize = 4;
         let region_row_h = 42.0;
         let regions = self.model.regions.clone();
         let n_regions = regions.len();
@@ -3829,7 +3900,7 @@ impl MapsApp {
             .draw_overlay(scene, t, tr, theme, &PresenceCtx::empty());
     }
 
-    fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_status(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         // Suppress the top-centre pill while the search dropdown is open — the
         // overlay sits in the same spot and the search feedback lives there.
         if self.search_overlay_active() {
@@ -3922,6 +3993,11 @@ impl MapsApp {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_panel(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let pr = self.panel_rect();
         if pr.height() < 80.0 {
@@ -4051,6 +4127,11 @@ impl MapsApp {
     }
 
     // Returns the y of the bottom of the drawn content (absolute).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_explore(
         &mut self,
         scene: &mut Scene,
@@ -4312,6 +4393,18 @@ impl MapsApp {
         y
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the standard (scene, t, tr, theme) drawing-context params with every \
+                  other draw_* method in this file; bundling them into a context struct is a \
+                  file-wide refactor out of scope here"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_place_row(
         &mut self,
         scene: &mut Scene,
@@ -4465,7 +4558,7 @@ impl MapsApp {
         &mut self,
         scene: &mut Scene,
         t: Affine,
-        tr: &mut TextRenderer,
+        tr: &TextRenderer,
         theme: &Theme,
         r: Rect,
         dot: Color,
@@ -4487,6 +4580,11 @@ impl MapsApp {
         Rect::new(tx - 4.0, r.y0, r.x1 - 12.0, r.y1)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_directions(
         &mut self,
         scene: &mut Scene,
@@ -4874,6 +4972,11 @@ impl MapsApp {
     /// (and a "Now" reset) let the user anchor the trip to a specific time. For
     /// Transit it anchors the planner query; for the road modes it drives the
     /// computed departure/arrival clock.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_time_picker(
         &mut self,
         scene: &mut Scene,
@@ -5005,6 +5108,17 @@ impl MapsApp {
     /// The public-transport departures list for Transit mode. The depart/arrive
     /// time picker is drawn by [`draw_directions`] just above this; here we
     /// render the destination header and the itinerary cards.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
+              relocate the line count, not the amount a reader must hold in mind"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (scene, t: transform, \
+              tr: text renderer, c: theme colours, r: rect) used consistently across every \
+              draw_* method in this file"
+    )]
     fn draw_departures(
         &mut self,
         scene: &mut Scene,
@@ -5343,6 +5457,11 @@ impl Widget for MapsApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
+                      `Widget::build_layout` returns `NodeId` directly with no fallible path"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -5358,7 +5477,9 @@ impl Widget for MapsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -5387,6 +5508,11 @@ impl Widget for MapsApp {
         self.draw_app(scene, transform, text_renderer, theme);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
+                  branch is a short, independent dispatch to an already-extracted helper"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -5416,13 +5542,13 @@ impl Widget for MapsApp {
                 self.last_mouse = p;
                 // Keep the field inputs' hover state current so a click lands a
                 // caret and a press-drag extends a selection.
-                self.forward_move_to_field_inputs(event, scale_factor, modifiers);
+                self.forward_move_to_field_inputs(event, scale_factor, *modifiers);
                 // Track hover in the open overflow menu / offline city dropdown.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, modifiers);
+                    self.drive_overflow(event, scale_factor, *modifiers);
                 }
                 if self.offline_open {
-                    self.route_offline_event(event, scale_factor, modifiers);
+                    self.route_offline_event(event, scale_factor, *modifiers);
                 }
                 if self.dragging && self.left_down {
                     let dx = p.x - self.drag_last.x;
@@ -5465,7 +5591,7 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu owns the pointer: a row press selects,
                 // an outside press dismisses. Route to it before the map/chrome.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, modifiers);
+                    self.drive_overflow(event, scale_factor, *modifiers);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
@@ -5475,7 +5601,7 @@ impl Widget for MapsApp {
                 // The offline dialog's city field / dropdown takes its own clicks
                 // first; a click elsewhere in the dialog falls through to the
                 // buttons below (download / clear / delete / close / scrim).
-                if self.offline_open && self.route_offline_event(event, scale_factor, modifiers) {
+                if self.offline_open && self.route_offline_event(event, scale_factor, *modifiers) {
                     *handled = true;
                     return;
                 }
@@ -5505,7 +5631,7 @@ impl Widget for MapsApp {
                     // shared TextInput places its caret at the click point (the
                     // preceding CursorMoved already set its hover flag).
                     if matches!(hit, Hit::FocusSearch | Hit::EditOrigin | Hit::EditDest) {
-                        self.forward_press_to_field(hit, event, scale_factor, modifiers);
+                        self.forward_press_to_field(&hit, event, scale_factor, *modifiers);
                     }
                     consumed = true;
                     *handled = true;
@@ -5566,7 +5692,7 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
                 // Esc) via its own handling before the map shortcuts.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, modifiers);
+                    self.drive_overflow(event, scale_factor, *modifiers);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
@@ -5579,7 +5705,7 @@ impl Widget for MapsApp {
                     if matches!(key_event.logical_key, Key::Named(NamedKey::Escape)) {
                         self.close_offline();
                     } else {
-                        self.route_offline_event(event, scale_factor, modifiers);
+                        self.route_offline_event(event, scale_factor, *modifiers);
                     }
                     *handled = true;
                     return;
@@ -5589,10 +5715,10 @@ impl Widget for MapsApp {
                 // shortcuts apply.
                 let field_focused = self.edit_field.is_some() || self.search_focused;
                 if field_focused {
-                    if self.route_field_key(event, scale_factor, modifiers) {
+                    if self.route_field_key(event, scale_factor, *modifiers) {
                         *handled = true;
                     }
-                } else if self.handle_key(&key_event.logical_key, modifiers, state) {
+                } else if self.handle_key(&key_event.logical_key, *modifiers, state) {
                     *handled = true;
                 }
             }
@@ -5701,7 +5827,7 @@ impl MapsApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) -> bool {
         let is_escape = matches!(
             event,
@@ -5765,17 +5891,19 @@ impl MapsApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) {
         let mut doc = AutoCommit::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return;
+        };
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         self.overflow.handle_event(
             event,
             scale,
-            modifiers,
+            &modifiers,
             &mut doc,
             &automerge::ROOT,
             &mut handled,
@@ -5804,7 +5932,7 @@ impl MapsApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) {
         drive_text_input(&mut self.search_input, event, scale, modifiers);
         drive_text_input(&mut self.origin_input, event, scale, modifiers);
@@ -5815,10 +5943,10 @@ impl MapsApp {
     /// it places its caret at the click point.
     fn forward_press_to_field(
         &mut self,
-        which: Hit,
+        which: &Hit,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) {
         let input = match which {
             Hit::FocusSearch => &mut self.search_input,
@@ -5833,7 +5961,7 @@ impl MapsApp {
     fn handle_key(
         &mut self,
         key: &Key,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
     ) -> bool {
         // A Directions endpoint field (From / To) has keyboard focus: typed
@@ -5946,9 +6074,9 @@ mod tests {
     /// throwaway doc from the live model each call, so state carries across taps);
     /// the collaborative doc + undo + replay guarantees are proven separately in
     /// [`crate::actions`] and by [`delete_region_affordance_matches_action_spec`].
-    fn tap(a: &mut MapsApp, hit: Hit) {
+    fn tap(a: &mut MapsApp, hit: &Hit) {
         let mut doc = AutoCommit::new();
-        a.dispatch(&hit, &mut doc);
+        a.dispatch(hit, &mut doc);
     }
 
     #[test]
@@ -6061,7 +6189,7 @@ mod tests {
         assert_eq!(labels, vec!["Attribution", "Offline maps", "Licenses"]);
 
         assert!(!a.overflow.is_open());
-        tap(&mut a, Hit::ToggleOverflow);
+        tap(&mut a, &Hit::ToggleOverflow);
         assert!(a.overflow.is_open(), "the ⋯ button opens the overflow menu");
         // It expands upward from the bottom-right button (never off the bottom).
         assert!(
@@ -6080,7 +6208,7 @@ mod tests {
         assert_eq!(a.map_info, Some(MapInfo::Licenses));
 
         // Toggling again closes it.
-        tap(&mut a, Hit::ToggleOverflow);
+        tap(&mut a, &Hit::ToggleOverflow);
         assert!(
             !a.overflow.is_open(),
             "the ⋯ button toggles the menu closed"
@@ -6107,7 +6235,7 @@ mod tests {
         a.download_pick = Some(munich.clone());
 
         let before = a.model.regions.len();
-        tap(&mut a, Hit::OfflineDownload);
+        tap(&mut a, &Hit::OfflineDownload);
 
         // The picked city's footprint was queued (offline layer marks it done)…
         assert!(
@@ -6175,7 +6303,7 @@ mod tests {
             !a.traffic_on && a.traffic.is_empty(),
             "off + empty at start"
         );
-        tap(&mut a, Hit::ToggleTraffic);
+        tap(&mut a, &Hit::ToggleTraffic);
         assert!(a.traffic_on, "the control toggles the overlay on");
         assert!(
             !a.traffic.is_empty(),
@@ -6187,7 +6315,7 @@ mod tests {
             "provenance is honest"
         );
         // Toggling again turns it off.
-        tap(&mut a, Hit::ToggleTraffic);
+        tap(&mut a, &Hit::ToggleTraffic);
         assert!(!a.traffic_on, "the control toggles the overlay back off");
     }
 
@@ -6559,13 +6687,15 @@ mod tests {
         );
         let first = a.model.transit.first().expect("demo has departures");
         assert_eq!(
-            &first.dep[..2],
+            first.dep.get(..2).unwrap_or_default(),
             "09",
             "Transit departs the same base hour: {}",
             first.dep
         );
         assert_eq!(
-            &dep["Leave ".len()..][..2],
+            dep.get("Leave ".len()..)
+                .and_then(|s| s.get(..2))
+                .unwrap_or_default(),
             "09",
             "Drive and Transit agree on the base hour"
         );
@@ -6717,7 +6847,7 @@ mod tests {
         a.pois = vec![demo_poi("pd", 48.16, 11.60)];
         a.selected_poi = Some("pd".to_string());
         a.model.mode = TravelMode::Car;
-        tap(&mut a, Hit::PoiDirections);
+        tap(&mut a, &Hit::PoiDirections);
         assert_eq!(a.model.panel, Panel::Directions);
         assert_eq!(
             a.model.dest,
@@ -6781,7 +6911,7 @@ mod tests {
 
         // Dispatching the row selects the POI: opens its card AND centres the map
         // on it (the list → map link), without disturbing the place selection.
-        tap(&mut a, Hit::SelectPoi("far".to_string()));
+        tap(&mut a, &Hit::SelectPoi("far".to_string()));
         assert_eq!(
             a.selected_poi.as_deref(),
             Some("far"),
@@ -7043,9 +7173,9 @@ mod tests {
         a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         assert!(a.overlay_mode());
         assert!(!a.panel_visible(), "drawer starts closed");
-        tap(&mut a, Hit::ToggleNav);
+        tap(&mut a, &Hit::ToggleNav);
         assert!(a.panel_visible(), "menu opens the drawer");
-        tap(&mut a, Hit::CloseNav);
+        tap(&mut a, &Hit::CloseNav);
         assert!(!a.panel_visible(), "scrim/Esc closes the drawer");
     }
 
@@ -7447,20 +7577,20 @@ mod tests {
     #[test]
     fn transit_time_controls_adjust_the_anchor() {
         let mut a = app_at(1280.0, 800.0);
-        tap(&mut a, Hit::TransitTimeDelta(15));
-        tap(&mut a, Hit::TransitTimeDelta(15));
+        tap(&mut a, &Hit::TransitTimeDelta(15));
+        tap(&mut a, &Hit::TransitTimeDelta(15));
         assert_eq!(
             a.model.transit_time.offset_min, 30,
             "two +15 steps advance 30 min"
         );
         // Never steps below now.
         for _ in 0..5 {
-            tap(&mut a, Hit::TransitTimeDelta(-15));
+            tap(&mut a, &Hit::TransitTimeDelta(-15));
         }
         assert_eq!(a.model.transit_time.offset_min, 0, "offset floors at now");
-        tap(&mut a, Hit::TransitTimeMode(TransitTimeMode::Arrive));
-        tap(&mut a, Hit::TransitTimeDelta(15));
-        tap(&mut a, Hit::TransitTimeNow);
+        tap(&mut a, &Hit::TransitTimeMode(TransitTimeMode::Arrive));
+        tap(&mut a, &Hit::TransitTimeDelta(15));
+        tap(&mut a, &Hit::TransitTimeNow);
         assert!(a.model.transit_time.is_now(), "\"Now\" resets to leave-now");
     }
 
@@ -7482,7 +7612,7 @@ mod tests {
     /// Feed one `WindowEvent` through the real `handle_event`, returning
     /// whether the app marked it handled. Layout params are unused by the maps
     /// widget (it hit-tests its own recorded rects) so dummies suffice.
-    fn feed(a: &mut MapsApp, ev: WindowEvent) -> bool {
+    fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
         let modifiers = winit::event::Modifiers::default();
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
@@ -7491,7 +7621,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         a.handle_event(
-            &ev,
+            ev,
             1.0,
             &modifiers,
             &mut state,
@@ -7507,7 +7637,7 @@ mod tests {
     fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {
         feed(
             a,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dummy_device_id(),
                 position: winit::dpi::PhysicalPosition::new(x, y),
             },
@@ -7517,7 +7647,7 @@ mod tests {
     fn press_left(a: &mut MapsApp) -> bool {
         feed(
             a,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: dummy_device_id(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -7535,7 +7665,7 @@ mod tests {
         move_to(&mut a, 1100.0, 360.0);
         let handled = feed(
             &mut a,
-            WindowEvent::MouseWheel {
+            &WindowEvent::MouseWheel {
                 device_id: dummy_device_id(),
                 delta: MouseScrollDelta::LineDelta(0.0, 1.0),
                 phase: winit::event::TouchPhase::Moved,
@@ -7861,7 +7991,7 @@ mod tests {
         move_to(&mut a, pr.center().x, pr.y0 + 120.0);
         let handled = feed(
             &mut a,
-            WindowEvent::MouseWheel {
+            &WindowEvent::MouseWheel {
                 device_id: dummy_device_id(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
@@ -7900,7 +8030,7 @@ mod tests {
         ev.text = text;
         feed(
             a,
-            WindowEvent::KeyboardInput {
+            &WindowEvent::KeyboardInput {
                 device_id: dummy_device_id(),
                 event: ev,
                 is_synthetic: false,
@@ -8100,7 +8230,7 @@ mod tests {
         a.model.query = "café".to_string();
         a.run_search();
         assert!(!a.model.results.is_empty(), "search populated results");
-        tap(&mut a, Hit::ClearSearch);
+        tap(&mut a, &Hit::ClearSearch);
         assert!(a.model.query.is_empty(), "clear empties the query");
         assert!(a.model.results.is_empty(), "clear empties the results");
     }
@@ -8112,7 +8242,7 @@ mod tests {
         a.select_place("marienplatz");
         a.enter_directions();
         assert!(a.model.route.is_some());
-        tap(&mut a, Hit::ClearRoute);
+        tap(&mut a, &Hit::ClearRoute);
         assert!(a.model.route.is_none(), "clear-route drops the route");
     }
 
@@ -8120,7 +8250,7 @@ mod tests {
     #[test]
     fn recent_dispatch_runs_search() {
         let mut a = app_at(1280.0, 720.0);
-        tap(&mut a, Hit::Recent("Marienplatz".to_string()));
+        tap(&mut a, &Hit::Recent("Marienplatz".to_string()));
         assert_eq!(a.model.query, "Marienplatz", "recent sets the query");
         assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
         assert!(
@@ -8136,9 +8266,9 @@ mod tests {
     #[test]
     fn offline_open_and_download_dispatch() {
         let mut a = app_at(1280.0, 720.0);
-        tap(&mut a, Hit::OfflineOpen);
+        tap(&mut a, &Hit::OfflineOpen);
         assert!(a.offline_open, "OfflineOpen shows the overlay");
-        tap(&mut a, Hit::OfflineDownload);
+        tap(&mut a, &Hit::OfflineDownload);
         assert!(
             a.model.status.starts_with("Downloading") && a.model.status.contains("tiles"),
             "download surfaces a tile-count status, got {:?}",
@@ -8156,11 +8286,11 @@ mod tests {
     fn offline_zoom_delta_clamps() {
         let mut a = app_at(1280.0, 720.0);
         for _ in 0..10 {
-            tap(&mut a, Hit::OfflineZoomDelta(1));
+            tap(&mut a, &Hit::OfflineZoomDelta(1));
         }
         assert_eq!(a.offline_zoom_extra, 6, "zoom-depth caps at 6");
         for _ in 0..10 {
-            tap(&mut a, Hit::OfflineZoomDelta(-1));
+            tap(&mut a, &Hit::OfflineZoomDelta(-1));
         }
         assert_eq!(a.offline_zoom_extra, 0, "zoom-depth floors at 0");
     }
@@ -8180,7 +8310,7 @@ mod tests {
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
         assert!(a.tiles.cache_bytes() > 0, "seeded cache is non-empty");
 
-        tap(&mut a, Hit::OfflineClearCache);
+        tap(&mut a, &Hit::OfflineClearCache);
         assert!(!dir.exists(), "clear-cache removes the on-disk tree");
         assert_eq!(a.cache_bytes, 0, "the cache-size readout resets to 0");
         assert!(
@@ -8237,9 +8367,9 @@ mod tests {
             a.model.transit.len() >= 3,
             "sample has multiple itineraries"
         );
-        tap(&mut a, Hit::Journey(0));
+        tap(&mut a, &Hit::Journey(0));
         let center0 = a.model.center;
-        tap(&mut a, Hit::Journey(2));
+        tap(&mut a, &Hit::Journey(2));
         assert_eq!(a.model.transit_choice, 2, "the third journey is selected");
         assert!(
             (a.model.center.lat - center0.lat).abs() > 1e-6
@@ -8268,9 +8398,9 @@ mod tests {
         // real tile cache.
         let dir = region_test_cache("regtest");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
-        tap(&mut a, Hit::OfflineOpen);
+        tap(&mut a, &Hit::OfflineOpen);
         let before = a.model.regions.len();
-        tap(&mut a, Hit::OfflineDownload);
+        tap(&mut a, &Hit::OfflineDownload);
         assert_eq!(
             a.model.regions.len(),
             before + 1,
@@ -8285,7 +8415,7 @@ mod tests {
         assert!(!region.name.is_empty(), "the region has a human label");
 
         // Deleting via its id removes exactly that record.
-        tap(&mut a, Hit::OfflineDeleteRegion(region.id.clone()));
+        tap(&mut a, &Hit::OfflineDeleteRegion(region.id.clone()));
         assert!(
             !a.model.regions.iter().any(|r| r.id == region.id),
             "delete removes the region from the managed list"
@@ -8353,7 +8483,7 @@ mod tests {
 
         // Deleting the nested area removes its record but keeps every tile,
         // since the containing area still needs them.
-        tap(&mut a, Hit::OfflineDeleteRegion("small".to_string()));
+        tap(&mut a, &Hit::OfflineDeleteRegion("small".to_string()));
         assert!(!a.model.regions.iter().any(|r| r.id == "small"));
         for id in &big_ids {
             assert!(
@@ -8363,7 +8493,7 @@ mod tests {
         }
 
         // Deleting the last owner frees all of its tiles.
-        tap(&mut a, Hit::OfflineDeleteRegion("big".to_string()));
+        tap(&mut a, &Hit::OfflineDeleteRegion("big".to_string()));
         for id in &big_ids {
             assert!(
                 !a.tiles.cache_path(*id).exists(),
