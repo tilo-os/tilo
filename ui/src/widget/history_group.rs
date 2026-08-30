@@ -152,7 +152,7 @@ pub struct HistoryGroup {
 impl HistoryGroup {
     /// Number of changes in the range, including those inside children.
     pub fn len(&self) -> usize {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -232,11 +232,15 @@ impl HistoryGroup {
 
     /// "Alice", "Alice and Bob", "Alice and 4 others".
     pub fn authors_label(&self) -> String {
-        match self.authors.len() {
-            0 => String::new(),
-            1 => self.authors[0].name.clone(),
-            2 => format!("{} and {}", self.authors[0].name, self.authors[1].name),
-            n => format!("{} and {} others", self.authors[0].name, n - 1),
+        match self.authors.as_slice() {
+            [] => String::new(),
+            [a] => a.name.clone(),
+            [a, b] => format!("{} and {}", a.name, b.name),
+            [a, ..] => format!(
+                "{} and {} others",
+                a.name,
+                self.authors.len().saturating_sub(1)
+            ),
         }
     }
 
@@ -341,7 +345,10 @@ pub fn group_entries(
             // An end anchor we do not hold means the range runs past the window
             // we loaded. Clamp rather than guess; it is not open, it is longer
             // than what is on screen.
-            Some(e) => (index.get(&e).map_or(entries.len(), |i| i + 1), false),
+            Some(e) => (
+                index.get(&e).map_or(entries.len(), |i| i.saturating_add(1)),
+                false,
+            ),
         };
         if end <= start {
             continue;
@@ -382,7 +389,7 @@ fn insert_placed(nodes: &mut Vec<Placed>, mut r: Placed, depth: usize) -> bool {
         if r.end <= last.end {
             // Contained: nest it, or refuse if that would be too deep.
             if depth < MAX_GROUP_DEPTH {
-                return insert_placed(&mut last.children, r, depth + 1);
+                return insert_placed(&mut last.children, r, depth.saturating_add(1));
             }
             return false;
         }
@@ -415,7 +422,9 @@ fn build_level(
         if n.start > cursor {
             out.extend(derived_groups(entries, cursor, n.start, depth, cfg));
         }
-        out.push(named_group(entries, n, depth));
+        if let Some(g) = named_group(entries, n, depth) {
+            out.push(g);
+        }
         cursor = n.end.max(cursor);
     }
     if cursor < hi {
@@ -430,11 +439,12 @@ fn build_level(
 /// since chopping a named version into machine-derived sub-sessions would
 /// bury the name someone chose under boundaries they didn't draw. The depth
 /// cut also lives in [`insert_placed`]; both must read `MAX_GROUP_DEPTH`.
-fn named_group(entries: &[HistoryEntry], n: &Placed, depth: usize) -> HistoryGroup {
-    let children: Vec<HistoryGroup> = if depth + 1 < MAX_GROUP_DEPTH {
+fn named_group(entries: &[HistoryEntry], n: &Placed, depth: usize) -> Option<HistoryGroup> {
+    let next_depth = depth.saturating_add(1);
+    let children: Vec<HistoryGroup> = if next_depth < MAX_GROUP_DEPTH {
         n.children
             .iter()
-            .map(|c| named_group(entries, c, depth + 1))
+            .filter_map(|c| named_group(entries, c, next_depth))
             .collect()
     } else {
         Vec::new()
@@ -452,9 +462,14 @@ fn derived_groups(
 ) -> Vec<HistoryGroup> {
     let mut out = Vec::new();
     let mut start = lo;
-    for i in (lo + 1)..hi {
-        let prev = &entries[i - 1];
-        let cur = &entries[i];
+    let Some(window) = entries.get(lo..hi) else {
+        return out;
+    };
+    for (offset, pair) in window.windows(2).enumerate() {
+        let [prev, cur] = pair else { continue };
+        // `offset` is the index of `prev` within `window`, so `cur` sits one
+        // past it, at absolute index `lo + offset + 1`.
+        let i = lo.saturating_add(offset).saturating_add(1);
         let author_changed = author_key(prev) != author_key(cur);
         let family_changed = OpFamily::of(prev.op_class) != OpFamily::of(cur.op_class);
         // No recorded clock is not evidence of a gap — splitting on it would
@@ -468,14 +483,18 @@ fn derived_groups(
             .duration_since(prev.timestamp)
             .unwrap_or_default();
         let idle = timed && gap > cfg.idle_gap;
-        let full = i - start >= cfg.max_changes;
+        let full = i.saturating_sub(start) >= cfg.max_changes;
         if author_changed || family_changed || idle || full {
-            out.push(finish_group(entries, start, i, depth, None, Vec::new()));
+            if let Some(g) = finish_group(entries, start, i, depth, None, Vec::new()) {
+                out.push(g);
+            }
             start = i;
         }
     }
-    if start < hi {
-        out.push(finish_group(entries, start, hi, depth, None, Vec::new()));
+    if start < hi
+        && let Some(g) = finish_group(entries, start, hi, depth, None, Vec::new())
+    {
+        out.push(g);
     }
     out
 }
@@ -487,6 +506,10 @@ fn author_key(e: &HistoryEntry) -> (&str, &str) {
     (e.author.name.as_str(), e.author.identity_short.as_str())
 }
 
+/// Builds the group covering `start..end`, or `None` when that is not a
+/// valid, non-empty range into `entries`. Every call site derives `start` and
+/// `end` from indices already found in `entries`, so `None` is a defensive
+/// fallback rather than a path callers are expected to hit.
 fn finish_group(
     entries: &[HistoryEntry],
     start: usize,
@@ -494,8 +517,10 @@ fn finish_group(
     depth: usize,
     named: Option<&Placed>,
     children: Vec<HistoryGroup>,
-) -> HistoryGroup {
-    let slice = &entries[start..end];
+) -> Option<HistoryGroup> {
+    let slice = entries.get(start..end)?;
+    let first = slice.first()?;
+    let last = slice.last()?;
     let mut authors: Vec<HistoryAuthor> = Vec::new();
     let mut families: Vec<OpFamily> = Vec::new();
     let mut first_time = SystemTime::UNIX_EPOCH;
@@ -528,17 +553,17 @@ fn finish_group(
         }
         match e.text_delta {
             Some((a, b)) => {
-                ins += a;
-                del += b;
+                ins = ins.saturating_add(a);
+                del = del.saturating_add(b);
             }
             None => all_counted = false,
         }
     }
     let key = match named {
         Some(n) => format!("n:{}", n.id),
-        None => format!("d:{}", hex16(&entries[start].id)),
+        None => format!("d:{}", hex16(&first.id)),
     };
-    HistoryGroup {
+    Some(HistoryGroup {
         key,
         name: named.map(|n| n.label.clone()),
         record_id: named.map(|n| n.id.clone()),
@@ -553,17 +578,19 @@ fn finish_group(
         first_time,
         last_time,
         text_delta: if all_counted { Some((ins, del)) } else { None },
-        first_entry: entries[start].id,
-        last_entry: entries[end - 1].id,
-    }
+        first_entry: first.id,
+        last_entry: last.id,
+    })
 }
 
 /// Lower-case hex of an entry id. Also the document key a name is stored under,
 /// which is why it lives here rather than in the persistence layer.
 pub fn hex16(id: &HistoryEntryId) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(32);
     for b in id.as_bytes() {
-        s.push_str(&format!("{b:02x}"));
+        // `write!` to a `String` never fails.
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -577,10 +604,15 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
     }
     let bytes = s.as_bytes();
     let mut out = [0u8; 16];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let hi = (bytes[i * 2] as char).to_digit(16)?;
-        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
-        *slot = (hi * 16 + lo) as u8;
+    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+        let [hi_b, lo_b] = pair else {
+            return None;
+        };
+        let hi = (*hi_b as char).to_digit(16)?;
+        let lo = (*lo_b as char).to_digit(16)?;
+        // Both digits are 0..=15, so the combined value is 0..=255 and always
+        // fits in a `u8`; `try_from` is the honest spelling of that fact.
+        *slot = u8::try_from(hi.saturating_mul(16).saturating_add(lo)).ok()?;
     }
     Some(HistoryEntryId(out))
 }
@@ -599,7 +631,9 @@ mod tests {
             author: HistoryAuthor::new(author, 120.0, "aaaaaaaa"),
             op_class: op,
             artifact_kind: ArtifactKind::Note,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(secs))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
             summary: format!("op {id}"),
             text_delta: Some((3, 0)),
             diff_payload: None,
@@ -616,7 +650,7 @@ mod tests {
         // Ten changes a second apart by one author: exactly the shape a
         // debounced editor produces, and exactly what must not be ten rows.
         let entries: Vec<HistoryEntry> = (0..10)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
         assert_eq!(
@@ -633,10 +667,11 @@ mod tests {
     #[test]
     fn a_five_minute_gap_ends_the_session() {
         let mut entries: Vec<HistoryEntry> = (0..3)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         // Six minutes later, same person, same kind of change.
-        entries.extend((3..6).map(|i| entry(i, "Alice", 1000 + 360 + i as u64, OpClass::Splice)));
+        entries
+            .extend((3..6).map(|i| entry(i, "Alice", 1000 + 360 + u64::from(i), OpClass::Splice)));
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
         assert_eq!(groups.len(), 2);
         assert_eq!(ids(&groups[0]), (0, 3));
@@ -685,8 +720,11 @@ mod tests {
 
     #[test]
     fn a_group_never_grows_past_the_cap() {
-        let entries: Vec<HistoryEntry> = (0..250)
-            .map(|i| entry((i % 251) as u8, "Alice", 1000 + i as u64, OpClass::Splice))
+        let entries: Vec<HistoryEntry> = (0u32..250)
+            .map(|i| {
+                let id = u8::try_from(i % 251).unwrap_or(0);
+                entry(id, "Alice", 1000 + u64::from(i), OpClass::Splice)
+            })
             .collect();
         let cfg = GroupingConfig {
             max_changes: 100,
@@ -695,7 +733,7 @@ mod tests {
         let groups = group_entries(&entries, &[], &cfg);
         assert_eq!(groups.len(), 3);
         assert!(groups.iter().all(|g| g.len() <= 100));
-        assert_eq!(groups.iter().map(|g| g.len()).sum::<usize>(), 250);
+        assert_eq!(groups.iter().map(HistoryGroup::len).sum::<usize>(), 250);
     }
 
     #[test]
@@ -731,7 +769,7 @@ mod tests {
     #[test]
     fn an_open_group_absorbs_everything_after_its_start() {
         let entries: Vec<HistoryEntry> = (0..5)
-            .map(|i| entry(i, "Alice", 1000 + i as u64 * 1000, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i) * 1000, OpClass::Splice))
             .collect();
         let named = vec![NamedRange {
             id: "r1".into(),
@@ -753,7 +791,7 @@ mod tests {
     #[test]
     fn a_name_inside_a_name_nests_one_level() {
         let entries: Vec<HistoryEntry> = (0..8)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         let named = vec![
             NamedRange {
@@ -787,7 +825,7 @@ mod tests {
     #[test]
     fn a_third_level_of_naming_is_not_rendered_as_a_group() {
         let entries: Vec<HistoryEntry> = (0..8)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         let named = vec![
             NamedRange {
@@ -820,9 +858,9 @@ mod tests {
         for g in &groups {
             g.walk(&mut flat);
         }
-        let names: Vec<&str> = flat.iter().filter_map(|g| g.name.as_deref()).collect();
+        let labels: Vec<&str> = flat.iter().filter_map(|g| g.name.as_deref()).collect();
         assert_eq!(
-            names,
+            labels,
             vec!["outer", "middle"],
             "the third level is not shown"
         );
@@ -835,7 +873,7 @@ mod tests {
         // earlier start keeps its range; the later one is clipped to the tail.
         // Both peers see the same thing whichever order the names merged in.
         let entries: Vec<HistoryEntry> = (0..9)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         let alice = NamedRange {
             id: "alice".into(),
@@ -882,7 +920,7 @@ mod tests {
     #[test]
     fn a_name_whose_first_change_is_missing_is_skipped_not_guessed() {
         let entries: Vec<HistoryEntry> = (0..3)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         let named = vec![NamedRange {
             id: "ghost".into(),
@@ -903,7 +941,7 @@ mod tests {
     #[test]
     fn an_unclocked_change_does_not_drag_the_span_back_to_1970() {
         let mut entries: Vec<HistoryEntry> = (0..3)
-            .map(|i| entry(i, "Alice", 100_000 + i as u64 * 120, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 100_000 + u64::from(i) * 120, OpClass::Splice))
             .collect();
         entries[1].timestamp = SystemTime::UNIX_EPOCH;
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
@@ -918,7 +956,7 @@ mod tests {
     #[test]
     fn a_partial_character_count_is_not_reported_as_a_total() {
         let mut entries: Vec<HistoryEntry> = (0..3)
-            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
             .collect();
         entries[1].text_delta = None;
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
