@@ -2,6 +2,8 @@
 name = "terminal"
 version = "0.2.1"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "terminal"

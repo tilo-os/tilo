@@ -4,20 +4,22 @@
 validation, persistent state, headless driving, deterministic screenshots,
 action registration, and the live event loop. It is intentionally not a
 generic command dispatcher. An entry point should use it when its live root is
-argument-free and its screenshot can be represented by a root factory plus a
-viewport.
+argument-free. Ordinary screenshots are represented by a root factory plus a
+viewport; apps with an established multi-scenario capture pipeline can retain
+that pipeline behind the runner's custom-shot hook.
 
 ## Adopted
 
-The following 16 applications use the shared lifecycle:
+The following 18 applications use the shared lifecycle:
 
 `api_tester`, `backups`, `containers`, `db_client`, `diffmerge`, `feeds`,
-`firewall`, `hex_editor`, `logs`, `mail`, `remote`, `slides`, `snippets`,
-`themes`, `totp`, and `vpn`.
+`firewall`, `hex_editor`, `logs`, `mail`, `remote`, `settings`, `sheets`,
+`slides`, `snippets`, `themes`, `totp`, and `vpn`.
 
-Their `main.rs` files now contain only app-specific root selection and action
-registration. Screenshot argument parsing and the duplicated
-sync/layout/draw/raster pipeline were removed.
+Their `main.rs` files now contain only app-specific root/action setup and, where
+needed, scenario-specific capture setup. Common argument parsing, mode
+dispatch, persistence and live startup are shared; ordinary apps also shed the
+duplicated sync/layout/draw/raster pipeline.
 
 ## Deliberate exceptions
 
@@ -46,8 +48,6 @@ one of these concrete reasons:
 | `osk` | Installs the input-method bridge and its event-loop waker; it also has a no-bridge diagnostic mode. |
 | `pdf_viewer` | Opens a selected PDF into a per-record document and room index rather than the ordinary single store. |
 | `photos` | Opens a selected image/library and stages decoded-image captures after synchronization. |
-| `settings` | Uses filename-selected responsive captures and enables focus/appearance reconciliation on the live `App`. |
-| `sheets` | Stages menus and editing states after the sample spreadsheet has synced into its document. |
 | `store` | Owns a background Flatpak worker whose event-loop wake and shutdown lifetime is tied to the live app. |
 | `terminal` | Owns PTY/session wake integration installed through `run_with_setup`. |
 | `tube` | Has extraction/network/media probes, live shots, and benchmark modes in addition to its window. |

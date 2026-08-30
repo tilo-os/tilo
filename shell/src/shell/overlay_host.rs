@@ -36,7 +36,10 @@ use ui::widget::{
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::file_picker_overlay::FilePickerOverlay;
+pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
+use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
@@ -158,11 +161,9 @@ pub struct ShellOverlayHost {
     /// The `os_action` shell-out fires only on Released so a drag doesn't
     /// spawn a subprocess per pixel of motion.
     qs_slider_drag: Option<usize>,
-    /// Session actions live in their own modal so restart/shutdown require
-    /// a second, explicit click and never share a hit target with QS.
-    power_menu_open: bool,
-    power_menu_transition: ui::Transition,
-    power_menu_armed: Option<usize>,
+    /// Session action modal, including destructive-action arming and its
+    /// own open/close transition.
+    power_menu: PowerMenu,
     /// When the workspace invite link was last copied, to confirm it.
     ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
@@ -236,13 +237,10 @@ pub struct ShellOverlayHost {
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
-    /// The portal's file-picker queue. Drained every frame into
-    /// [`Self::file_picker`].
-    portal_pickers: Option<crate::portal::FilePickerQueue>,
-    /// The live file-chooser dialog, and the request it answers. One at
-    /// a time: a second `OpenFile` while a dialog is up queues instead
-    /// of stacking two modals.
-    file_picker: Option<Box<ActiveFilePicker>>,
+    /// Owns the portal file chooser's queue, modal state, rendering and
+    /// exclusive input routing. Keeping those together prevents the host
+    /// from growing another set of loosely-coupled modal fields.
+    file_picker_overlay: FilePickerOverlay,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced. Off by default; set via `--enable-peer-sync` or
     /// [`Self::with_peer_sync_enabled`].
@@ -935,7 +933,7 @@ const QS_OPEN_ANIM_MS: u64 = 180;
 /// Duration of the modal-style entry animation for workspace-settings
 /// and global-search. Slightly longer than the dropdown variant since
 /// the travel distance is larger.
-const MODAL_OPEN_ANIM_MS: u64 = 220;
+pub(crate) const MODAL_OPEN_ANIM_MS: u64 = 220;
 
 // Surface and scrim alphas. The pinned Vello has no backdrop filter, so
 // chrome surfaces are opaque and scrims carry the depth instead.
@@ -1073,9 +1071,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
-            power_menu_open: false,
-            power_menu_transition: ui::Transition::closed(),
-            power_menu_armed: None,
+            power_menu: PowerMenu::default(),
             ws_invite_copied_at: None,
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -1096,8 +1092,7 @@ impl ShellOverlayHost {
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             portal_prompts: None,
-            portal_pickers: None,
-            file_picker: None,
+            file_picker_overlay: FilePickerOverlay::default(),
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
@@ -3066,93 +3061,24 @@ impl ShellOverlayHost {
         pickers: crate::portal::FilePickerQueue,
     ) {
         self.portal_prompts = Some(prompts);
-        self.portal_pickers = Some(pickers);
+        self.file_picker_overlay.set_queue(pickers);
     }
 
     /// The live file-chooser dialog, if one is up. For the frame
     /// builder's widget walk and for tests.
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
-        self.file_picker.as_ref().map(|a| &a.widget)
+        self.file_picker_overlay.widget()
     }
 
     pub fn file_picker_mut(&mut self) -> Option<&mut ui::widget::FilePicker> {
-        self.file_picker.as_mut().map(|a| &mut a.widget)
+        self.file_picker_overlay.widget_mut()
     }
 
     /// Mounts queued file-chooser dialogs and resolves whichever one the
     /// user just finished. Returns whether anything changed, so the caller
     /// can repaint.
     pub fn pump_file_picker(&mut self) -> bool {
-        let mut dirty = false;
-
-        // Step 1 — resolve a finished dialog. `take_outcome` drains, so
-        // this runs at most once per decision.
-        if let Some(active) = self.file_picker.as_mut()
-            && let Some(outcome) = active.widget.take_outcome()
-        {
-            let Some(mut active) = self.file_picker.take() else {
-                return dirty;
-            };
-            let picked = match outcome {
-                ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
-                ui::widget::FilePickerOutcome::Cancelled => None,
-            };
-            active.answer(picked);
-            dirty = true;
-        }
-
-        // Step 2 — mount the next queued request, if the floor is free.
-        let Some(queue) = self.portal_pickers.as_ref() else {
-            return dirty;
-        };
-        let queued = queue.drain();
-        if queued.is_empty() {
-            return dirty;
-        }
-        for req in queued {
-            if self.file_picker.is_some() {
-                // Already showing a dialog — answer cancelled rather than
-                // queue a modal the user would meet minutes later with no
-                // idea what asked for it.
-                let _ = req.reply.send(None);
-                continue;
-            }
-            let scope = self.picker_scope_for(&req.caller);
-            let active = ActiveFilePicker::mount(req, scope);
-            // Logged so a file dialog with no record of who asked for it
-            // isn't undebuggable after the fact.
-            tracing::info!(
-                app = %active.app_id,
-                dir = %active.widget.current_dir().display(),
-                "portal: file dialog opened"
-            );
-            self.file_picker = Some(Box::new(active));
-            dirty = true;
-        }
-        dirty
-    }
-
-    /// Where the dialog for `caller` may browse: user directories plus any
-    /// filesystem paths this workspace already granted the app.
-    fn picker_scope_for(&self, caller: &crate::portal::PortalCaller) -> crate::portal::PickerScope {
-        let base = crate::portal::PickerScope::for_user();
-        let Some(chrome) = self.chrome.as_ref() else {
-            return base;
-        };
-        let st = chrome.borrow();
-        let tree = st.tree();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
-            return base;
-        };
-        let granted: Vec<std::path::PathBuf> = ws
-            .app_capabilities(&caller.app_id)
-            .into_iter()
-            .filter_map(|cap| match &cap.scope {
-                collab_types::caps::Scope::FsPath(p) => Some(std::path::PathBuf::from(p)),
-                _ => None,
-            })
-            .collect();
-        base.with_granted_paths(granted)
+        self.file_picker_overlay.pump(self.chrome.as_ref())
     }
 
     /// Moves buffered portal prompts onto the chrome's queue for
@@ -5790,34 +5716,8 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        self.power_menu_transition.set_open(
-            self.power_menu_open,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
-        );
-        let power_now = Instant::now();
-        if self.power_menu_transition.is_visible(power_now) {
-            let openness = self.power_menu_transition.value(power_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            let (alpha, dy, scale) =
-                modal_transition_curve(&self.power_menu_transition, power_now, 0.94);
-            let rect = self.power_menu_rect();
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                alpha,
-                transform,
-                &self.rect,
-            );
-            let cx = rect.center().x;
-            let cy = rect.center().y;
-            let modal_xform = transform
-                * Affine::translate((cx, cy + dy))
-                * Affine::scale(scale)
-                * Affine::translate((-cx, -cy));
-            self.draw_power_menu(scene, modal_xform, text_renderer, theme);
-            scene.pop_layer();
-        }
+        self.power_menu
+            .draw(self.rect, scene, transform, text_renderer, theme);
 
         if flags.collaborators {
             self.draw_collaborators(scene, transform, text_renderer, theme);
@@ -5997,13 +5897,8 @@ impl Widget for ShellOverlayHost {
         // answer, and `handle_event` absorbs every event), and drawn by
         // the compositor rather than the requesting app so it can't be
         // drawn over, read, or dismissed by that app.
-        if let Some(active) = self.file_picker.as_mut() {
-            fill_scrim(scene, transform, self.rect, MODAL_SCRIM_ALPHA, theme);
-            active.widget.set_rect(file_picker_rect(self.rect));
-            active
-                .widget
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.file_picker_overlay
+            .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.
@@ -6051,26 +5946,16 @@ impl Widget for ShellOverlayHost {
         // Runs before everything and absorbs every event: genuinely
         // modal (a D-Bus method in another process is parked on the
         // answer), and a typed filename shares characters with chords.
-        if self.file_picker.is_some() {
-            let picker_rect = file_picker_rect(self.rect);
-            if let Some(active) = self.file_picker.as_mut() {
-                active.widget.set_rect(picker_rect);
-                let mut tmp_taffy = TaffyTree::<()>::new();
-                if let Ok(tmp_node) = tmp_taffy.new_leaf(Style::default()) {
-                    active.widget.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        tmp_node,
-                        &tmp_taffy,
-                    );
-                }
-            }
-            *handled = true;
+        if self.file_picker_overlay.handle_event(
+            self.rect,
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+        ) {
             return;
         }
 
@@ -6628,9 +6513,7 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
-                if self.power_menu_open {
-                    self.power_menu_open = false;
-                    self.power_menu_armed = None;
+                if self.power_menu.close() {
                     *handled = true;
                     return;
                 }
@@ -6901,34 +6784,13 @@ impl Widget for ShellOverlayHost {
                 }
             }
             let flags = self.overlay_flags();
-            if self.power_menu_open {
-                let panel = self.power_menu_rect();
-                if !panel.contains(p) {
-                    self.power_menu_open = false;
-                    self.power_menu_armed = None;
+            match self.power_menu.click(self.rect, p) {
+                PowerMenuClick::Ignored => {}
+                PowerMenuClick::Consumed => {
                     *handled = true;
                     return;
                 }
-                for i in 0..5 {
-                    if !self.power_menu_action_rect(i).contains(p) {
-                        continue;
-                    }
-                    // Restart and shutdown are destructive: first click
-                    // arms the row, the second performs it.
-                    if i >= 3 && self.power_menu_armed != Some(i) {
-                        self.power_menu_armed = Some(i);
-                        *handled = true;
-                        return;
-                    }
-                    let action = match i {
-                        0 => os_actions::SessionAction::Lock,
-                        1 => os_actions::SessionAction::Logout,
-                        2 => os_actions::SessionAction::Suspend,
-                        3 => os_actions::SessionAction::Restart,
-                        _ => os_actions::SessionAction::ShutDown,
-                    };
-                    self.power_menu_open = false;
-                    self.power_menu_armed = None;
+                PowerMenuClick::Execute(action) => {
                     std::thread::spawn(move || {
                         os_actions::log_result(
                             "session_action",
@@ -6938,8 +6800,6 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
-                *handled = true;
-                return;
             }
             if flags.room_activity && !self.room_activity.rect().contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
@@ -7239,8 +7099,7 @@ impl Widget for ShellOverlayHost {
                                 return;
                             }
                             _ => {
-                                self.power_menu_open = true;
-                                self.power_menu_armed = None;
+                                self.power_menu.open();
                             }
                         }
                         st.overlays.quick_settings = false;
@@ -7906,6 +7765,7 @@ impl Widget for ShellOverlayHost {
         let qs_in_flight = self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
+        let power_menu_in_flight = self.power_menu.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
         let projection_in_flight = self.projection_transition.is_animating(now);
         let projection_working = matches!(
@@ -7921,6 +7781,7 @@ impl Widget for ShellOverlayHost {
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
+            || power_menu_in_flight
             || room_activity_in_flight
             || projection_in_flight
             // The worker cannot call winit directly. Keep a bounded frame pump
@@ -7947,24 +7808,6 @@ fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
     (alpha, dy, scale)
 }
 
-/// Centre the file-chooser dialog in `viewport`, sized as a clamped
-/// fraction so it stays usable small and doesn't wall a large output.
-pub fn file_picker_rect(viewport: Rect) -> Rect {
-    const MIN_W: f64 = 420.0;
-    const MIN_H: f64 = 320.0;
-    const MAX_W: f64 = 900.0;
-    const MAX_H: f64 = 640.0;
-    let w = (viewport.width() * 0.62)
-        .clamp(MIN_W, MAX_W)
-        .min(viewport.width());
-    let h = (viewport.height() * 0.72)
-        .clamp(MIN_H, MAX_H)
-        .min(viewport.height());
-    let x0 = viewport.x0 + (viewport.width() - w) / 2.0;
-    let y0 = viewport.y0 + (viewport.height() - h) / 2.0;
-    Rect::new(x0, y0, x0 + w, y0 + h)
-}
-
 /// Map the prompt widget's choice onto the portal's outcome vocabulary.
 /// Two enums for one decision because they belong to different layers;
 /// keeping the mapping in one place stops them drifting.
@@ -7975,85 +7818,6 @@ fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcom
         PromptChoice::Session => PromptOutcome::AllowSession,
         PromptChoice::Always => PromptOutcome::AllowAlways,
         PromptChoice::Deny => PromptOutcome::Deny,
-    }
-}
-
-/// A file-chooser dialog on screen, and the portal request it answers.
-/// The reply channel is the point: dropping this without calling
-/// [`Self::answer`] drops the sender, which the `FileChooser` backend
-/// reads as "cancelled" — so a dialog that disappears for any reason
-/// fails closed and releases the caller instead of stranding it.
-pub(crate) struct ActiveFilePicker {
-    pub(crate) widget: ui::widget::FilePicker,
-    /// Who asked, kept for logging/attribution without re-reading the
-    /// consumed request.
-    pub(crate) app_id: crate::shell::state::AppId,
-    /// Whether the app asked for more than one path. Enforced here, not
-    /// in the widget, since `OpenFile` vs `OpenFiles` is a portal-level
-    /// distinction and the widget is shared with non-portal callers.
-    multiple: bool,
-    reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
-}
-
-impl ActiveFilePicker {
-    /// Build the dialog for `req`. Title, filters and suggested filename
-    /// are the app's to choose (presentation); where the dialog opens
-    /// and how far it can browse come from
-    /// [`crate::portal::PickerScope`] instead — an app that could aim
-    /// the dialog could use it to learn what exists outside its sandbox.
-    fn mount(req: crate::portal::FilePickerRequest, scope: crate::portal::PickerScope) -> Self {
-        use ui::widget::file_picker::FileFilter;
-        use ui::widget::{FilePicker, FilePickerMode};
-
-        let mut filters: Vec<FileFilter> = req
-            .filters
-            .iter()
-            .filter(|f| !f.is_catch_all())
-            .map(|f| {
-                let exts: Vec<&str> = f
-                    .extensions
-                    .iter()
-                    .map(std::string::String::as_str)
-                    .collect();
-                FileFilter::new(f.label.clone(), &exts)
-            })
-            .collect();
-        // "All files" always last: a filter list with no escape hatch
-        // can't open a file whose extension the app didn't anticipate.
-        filters.push(FileFilter::all());
-
-        let mode = if req.save {
-            FilePickerMode::Save
-        } else {
-            FilePickerMode::Open
-        };
-        let mut widget = FilePicker::new(req.title.clone(), &scope.initial_dir, scope.roots)
-            .with_mode(mode)
-            .with_filters(filters);
-        if let Some(name) = req.current_name.as_deref() {
-            widget = widget.with_filename(name);
-        }
-        Self {
-            widget,
-            app_id: req.caller.app_id.clone(),
-            multiple: req.multiple,
-            reply: Some(req.reply),
-        }
-    }
-
-    /// Release the blocked portal call. An `OpenFile` caller gets one
-    /// path even if the user ctrl-clicked several, since the dialog is
-    /// shared and permits multi-select regardless of what was asked.
-    fn answer(&mut self, picked: Option<Vec<std::path::PathBuf>>) {
-        let picked = picked.map(|mut paths| {
-            if !self.multiple {
-                paths.truncate(1);
-            }
-            paths
-        });
-        if let Some(tx) = self.reply.take() {
-            let _ = tx.send(picked);
-        }
     }
 }
 
@@ -8340,8 +8104,14 @@ fn draw_modal_scrim_at(
 /// Paint `rect` in the theme's scrim hue at `strength`. Uses
 /// `surfaces.scrim` rather than a literal black, since a light theme's
 /// scrim is a different colour from a dark theme's.
-fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
-    let alpha = f32_to_u8_saturating((strength.clamp(0.0, 1.0) * 255.0).round());
+pub(crate) fn fill_scrim(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    strength: f32,
+    theme: &Theme,
+) {
+    let alpha = (strength.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
     if alpha == 0 {
         return;
     }
@@ -8466,7 +8236,11 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
 /// The panel starts 20 px low at `start_scale` and rises to rest on the
 /// enter; the exit plays the same curve in reverse instead of the panel
 /// vanishing.
-fn modal_transition_curve(t: &ui::Transition, now: Instant, start_scale: f64) -> (f32, f64, f64) {
+pub(crate) fn modal_transition_curve(
+    t: &ui::Transition,
+    now: Instant,
+    start_scale: f64,
+) -> (f32, f64, f64) {
     let o = t.value(now);
     let scale = start_scale + (1.0 - start_scale) * f64::from(o);
     (o, 20.0 * f64::from(1.0 - o), scale)
@@ -10113,101 +9887,6 @@ impl ShellOverlayHost {
             if self.palette.set_host_filter_strip_rows(strip.rows_needed) {
                 self.palette_layout_dirty = true;
             }
-        }
-    }
-
-    fn power_menu_rect(&self) -> Rect {
-        let w = 420.0_f64.min(self.rect.width() - 48.0);
-        let h = 388.0_f64.min(self.rect.height() - 48.0);
-        let c = self.rect.center();
-        Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0)
-    }
-
-    fn power_menu_action_rect(&self, index: usize) -> Rect {
-        let panel = self.power_menu_rect();
-        let y0 = panel.y0 + 62.0 + index as f64 * 58.0;
-        Rect::new(panel.x0 + 18.0, y0, panel.x1 - 18.0, y0 + 50.0)
-    }
-
-    fn draw_power_menu(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let panel = self.power_menu_rect();
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[1],
-            None,
-            &RoundedRect::from_rect(panel, 24.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Session",
-            theme.tokens.typography.scale.lg,
-            colors.text_primary,
-            transform * Affine::translate((panel.x0 + 22.0, panel.y0 + 20.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let rows = [
-            ("Lock", "Keep apps running", ui::icons::Icon::Shield),
-            ("Log out", "End this session", ui::icons::Icon::ArrowRight),
-            ("Suspend", "Resume where you left off", ui::icons::Icon::Sun),
-            ("Restart", "Restart the computer", ui::icons::Icon::RotateCw),
-            ("Shut down", "Turn off the computer", ui::icons::Icon::Power),
-        ];
-        for (i, (label, detail, icon)) in rows.iter().enumerate() {
-            let row = self.power_menu_action_rect(i);
-            let armed = self.power_menu_armed == Some(i);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if armed {
-                    colors.semantic.danger.with_alpha_factor(0.18)
-                } else {
-                    colors.neutral[2]
-                },
-                None,
-                &RoundedRect::from_rect(row, 14.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 14.0, row.y0 + 14.0, row.x0 + 36.0, row.y0 + 36.0),
-                *icon,
-                if armed {
-                    colors.semantic.danger
-                } else {
-                    colors.text_primary
-                },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                if armed {
-                    "Click again to confirm"
-                } else {
-                    label
-                },
-                theme.tokens.typography.scale.sm,
-                colors.text_primary,
-                transform * Affine::translate((row.x0 + 50.0, row.y0 + 8.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text(
-                scene,
-                detail,
-                theme.tokens.typography.scale.xs,
-                colors.text_dim,
-                transform * Affine::translate((row.x0 + 50.0, row.y0 + 28.0)),
-                None,
-            );
         }
     }
 

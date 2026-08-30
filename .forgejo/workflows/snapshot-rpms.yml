@@ -7,6 +7,17 @@ name: Snapshot frozen RPM repo
 # os/rpms-snapshot.env (a normal PR/commit) and the OS build picks it up.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      # These are the only files used below to derive the frozen package set.
+      # Refreshing on changes prevents an OS build from asking an older snapshot
+      # for a package that was added to one of the Containerfiles.
+      - os/Containerfile
+      - os/Containerfile.host
+      - os/containers/qos-relay/Containerfile
+      - os/kernel/Containerfile
+      - .forgejo/workflows/snapshot-rpms.yml
 
 concurrency:
   group: snapshot-rpms-${{ github.ref }}

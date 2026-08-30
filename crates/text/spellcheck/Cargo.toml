@@ -2,6 +2,8 @@
 name = "spellcheck"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Self-contained English spelling engine for qOS: tokenize, check, and suggest corrections"
 
 # Intentionally NO external dependencies: the tokenizer, dictionary loader, and

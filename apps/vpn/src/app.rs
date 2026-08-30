@@ -392,7 +392,9 @@ impl VpnApp {
         let Some(intent) = self.pending_tool_intent.take() else {
             return;
         };
-        let os_actions::ToolIntent::Vpn { route, profile } = intent;
+        let os_actions::ToolIntent::Vpn { route, profile } = intent else {
+            return;
+        };
         match route {
             os_actions::VpnRoute::Overview | os_actions::VpnRoute::Import => {}
             os_actions::VpnRoute::Profile | os_actions::VpnRoute::DnsRouting => {

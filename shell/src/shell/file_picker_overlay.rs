@@ -1,0 +1,278 @@
+//! Portal file-chooser overlay.
+//!
+//! This component owns the entire modal lifecycle: queued portal requests,
+//! the active picker and its reply channel, security-scoped mounting,
+//! painting, and exclusive event routing. The shell overlay host only decides
+//! where this modal sits in the global z-order.
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
+use winit::event::{Modifiers, WindowEvent};
+
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
+
+use crate::shell::chrome_state::Chrome;
+use crate::shell::overlay_host::{MODAL_SCRIM_ALPHA, fill_scrim};
+
+/// The portal file chooser's complete on-screen state.
+#[derive(Default)]
+pub(crate) struct FilePickerOverlay {
+    queue: Option<crate::portal::FilePickerQueue>,
+    active: Option<Box<ActiveFilePicker>>,
+}
+
+impl FilePickerOverlay {
+    pub(crate) fn set_queue(&mut self, queue: crate::portal::FilePickerQueue) {
+        self.queue = Some(queue);
+    }
+
+    pub(crate) fn widget(&self) -> Option<&ui::widget::FilePicker> {
+        self.active.as_ref().map(|active| &active.widget)
+    }
+
+    pub(crate) fn widget_mut(&mut self) -> Option<&mut ui::widget::FilePicker> {
+        self.active.as_mut().map(|active| &mut active.widget)
+    }
+
+    /// Resolves a completed picker and mounts the next queued request.
+    ///
+    /// Only one request is allowed on screen. Requests arriving while a
+    /// picker is active are cancelled immediately instead of becoming stale,
+    /// unattributed modals later in the session.
+    pub(crate) fn pump(&mut self, chrome: Option<&Chrome>) -> bool {
+        let mut dirty = false;
+
+        if let Some(active) = self.active.as_mut()
+            && let Some(outcome) = active.widget.take_outcome()
+        {
+            let mut active = self.active.take().expect("active picker just checked");
+            let picked = match outcome {
+                ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
+                ui::widget::FilePickerOutcome::Cancelled => None,
+            };
+            active.answer(picked);
+            dirty = true;
+        }
+
+        let Some(queue) = self.queue.as_ref() else {
+            return dirty;
+        };
+        for request in queue.drain() {
+            if self.active.is_some() {
+                let _ = request.reply.send(None);
+                continue;
+            }
+            let scope = picker_scope_for(chrome, &request.caller);
+            let active = ActiveFilePicker::mount(request, scope);
+            tracing::info!(
+                app = %active.app_id,
+                dir = %active.widget.current_dir().display(),
+                "portal: file dialog opened"
+            );
+            self.active = Some(Box::new(active));
+            dirty = true;
+        }
+        dirty
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        viewport: Rect,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        fill_scrim(scene, transform, viewport, MODAL_SCRIM_ALPHA, theme);
+        active.widget.set_rect(file_picker_rect(viewport));
+        active
+            .widget
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    /// Routes an event to the active picker and reports whether the modal
+    /// consumed the shell's input. An active picker always consumes input,
+    /// even when its inner widget has no action for a particular event.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn handle_event(
+        &mut self,
+        viewport: Rect,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+    ) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        active.widget.set_rect(file_picker_rect(viewport));
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Default::default()).unwrap();
+        active.widget.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node,
+            &taffy,
+        );
+        *handled = true;
+        true
+    }
+}
+
+/// Centre the file chooser in `viewport`, clamping its fraction so it stays
+/// usable on a small output without walling a large one.
+pub fn file_picker_rect(viewport: Rect) -> Rect {
+    const MIN_W: f64 = 420.0;
+    const MIN_H: f64 = 320.0;
+    const MAX_W: f64 = 900.0;
+    const MAX_H: f64 = 640.0;
+    let w = (viewport.width() * 0.62)
+        .clamp(MIN_W, MAX_W)
+        .min(viewport.width());
+    let h = (viewport.height() * 0.72)
+        .clamp(MIN_H, MAX_H)
+        .min(viewport.height());
+    let x0 = viewport.x0 + (viewport.width() - w) / 2.0;
+    let y0 = viewport.y0 + (viewport.height() - h) / 2.0;
+    Rect::new(x0, y0, x0 + w, y0 + h)
+}
+
+fn picker_scope_for(
+    chrome: Option<&Chrome>,
+    caller: &crate::portal::PortalCaller,
+) -> crate::portal::PickerScope {
+    let base = crate::portal::PickerScope::for_user();
+    let Some(chrome) = chrome else {
+        return base;
+    };
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let Some(workspace) = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == caller.workspace_id)
+    else {
+        return base;
+    };
+    let granted: Vec<std::path::PathBuf> = workspace
+        .app_capabilities(&caller.app_id)
+        .into_iter()
+        .filter_map(|capability| match &capability.scope {
+            collab_types::caps::Scope::FsPath(path) => Some(std::path::PathBuf::from(path)),
+            _ => None,
+        })
+        .collect();
+    base.with_granted_paths(granted)
+}
+
+/// An on-screen dialog and the portal request it must answer.
+struct ActiveFilePicker {
+    widget: ui::widget::FilePicker,
+    app_id: crate::shell::state::AppId,
+    multiple: bool,
+    reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
+}
+
+impl ActiveFilePicker {
+    fn mount(request: crate::portal::FilePickerRequest, scope: crate::portal::PickerScope) -> Self {
+        use ui::widget::file_picker::FileFilter;
+        use ui::widget::{FilePicker, FilePickerMode};
+
+        let mut filters = request
+            .filters
+            .iter()
+            .filter(|filter| !filter.is_catch_all())
+            .map(|filter| {
+                let extensions = filter
+                    .extensions
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                FileFilter::new(filter.label.clone(), &extensions)
+            })
+            .collect::<Vec<_>>();
+        filters.push(FileFilter::all());
+
+        let mode = if request.save {
+            FilePickerMode::Save
+        } else {
+            FilePickerMode::Open
+        };
+        let mut widget = FilePicker::new(request.title.clone(), &scope.initial_dir, scope.roots)
+            .with_mode(mode)
+            .with_filters(filters);
+        if let Some(name) = request.current_name.as_deref() {
+            widget = widget.with_filename(name);
+        }
+        Self {
+            widget,
+            app_id: request.caller.app_id.clone(),
+            multiple: request.multiple,
+            reply: Some(request.reply),
+        }
+    }
+
+    fn answer(&mut self, picked: Option<Vec<std::path::PathBuf>>) {
+        let picked = constrain_selection(picked, self.multiple);
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(picked);
+        }
+    }
+}
+
+fn constrain_selection(
+    picked: Option<Vec<std::path::PathBuf>>,
+    multiple: bool,
+) -> Option<Vec<std::path::PathBuf>> {
+    picked.map(|mut paths| {
+        if !multiple {
+            paths.truncate(1);
+        }
+        paths
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picker_rect_is_centered_and_clamped_to_viewport() {
+        let viewport = Rect::new(30.0, 40.0, 330.0, 240.0);
+        let picker = file_picker_rect(viewport);
+        assert_eq!(picker, viewport);
+
+        let viewport = Rect::new(10.0, 20.0, 2010.0, 1220.0);
+        let picker = file_picker_rect(viewport);
+        assert_eq!(picker.width(), 900.0);
+        assert_eq!(picker.height(), 640.0);
+        assert_eq!(picker.center(), viewport.center());
+    }
+
+    #[test]
+    fn single_file_request_cannot_receive_multiple_paths() {
+        let paths = vec!["first".into(), "second".into()];
+        assert_eq!(constrain_selection(Some(paths), false).unwrap().len(), 1);
+
+        let paths = vec!["first".into(), "second".into()];
+        assert_eq!(constrain_selection(Some(paths), true).unwrap().len(), 2);
+        assert_eq!(constrain_selection(None, false), None);
+    }
+}

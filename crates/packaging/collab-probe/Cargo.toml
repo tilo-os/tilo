@@ -2,6 +2,8 @@
 name = "collab-probe"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Sandboxed CRDT collaboration probe — reaches the broker exactly as a packaged app does."
 
 [[bin]]

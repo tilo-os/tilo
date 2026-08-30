@@ -16,6 +16,7 @@ pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
 type RootFactory = fn() -> Box<dyn Widget>;
 type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
+type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type ConfigureApp = fn(&mut App);
 
@@ -51,6 +52,7 @@ pub struct LaunchSpec {
     app_id: &'static str,
     live_root: RootFactory,
     shot_root: ShotFactory,
+    shot_handler: Option<ShotHandler>,
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
     allowed_flags: &'static [&'static str],
@@ -64,6 +66,7 @@ impl LaunchSpec {
             app_id,
             live_root,
             shot_root: |_| Err(LaunchError::ShotsUnsupported),
+            shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
             allowed_flags: &[],
@@ -74,6 +77,14 @@ impl LaunchSpec {
 
     pub fn shot_root(mut self, factory: ShotFactory) -> Self {
         self.shot_root = factory;
+        self
+    }
+
+    /// Delegate screenshot execution to an app-specific pipeline while the
+    /// standard runner still owns parsing, mode validation, logging, headless
+    /// driving, persistence and live startup.
+    pub fn shot_handler(mut self, handler: ShotHandler) -> Self {
+        self.shot_handler = Some(handler);
         self
     }
 
@@ -122,6 +133,7 @@ pub enum LaunchError {
     ShotsOnly(String),
     ShotsUnsupported,
     Scenario(String),
+    Operation(String),
 }
 
 impl fmt::Display for LaunchError {
@@ -140,18 +152,29 @@ impl fmt::Display for LaunchError {
             Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
             Self::Scenario(message) => f.write_str(message),
+            Self::Operation(message) => f.write_str(message),
         }
     }
 }
 
 impl std::error::Error for LaunchError {}
 
+impl LaunchError {
+    fn exit_code(&self) -> i32 {
+        if matches!(self, Self::Operation(_)) {
+            1
+        } else {
+            2
+        }
+    }
+}
+
 /// Run the standard app lifecycle and report command-line errors using the
 /// conventional usage-error exit status (`2`).
 pub fn run_or_exit(spec: LaunchSpec) {
     if let Err(error) = run(spec) {
         eprintln!("error: {error}");
-        std::process::exit(2);
+        std::process::exit(error.exit_code());
     }
 }
 
@@ -159,10 +182,18 @@ pub fn run_or_exit(spec: LaunchSpec) {
 pub fn run(spec: LaunchSpec) -> Result<(), LaunchError> {
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
-    let args = parse_args(&args, spec.allowed_flags, spec.allowed_options)?;
+    run_with_args(spec, &args)
+}
+
+fn run_with_args(spec: LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+    let args = parse_args(raw_args, spec.allowed_flags, spec.allowed_options)?;
     validate_spec_args(&args, &spec)?;
 
     if let Some(out) = &args.shots {
+        if let Some(handler) = spec.shot_handler {
+            handler(&args)?;
+            return Ok(());
+        }
         let root = (spec.shot_root)(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
         let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme());
@@ -325,6 +356,9 @@ fn parse_viewport(value: &str) -> Result<(u32, u32), LaunchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static CUSTOM_SHOT_RAN: AtomicBool = AtomicBool::new(false);
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -458,5 +492,27 @@ mod tests {
             ),
             Err(LaunchError::Duplicate(option)) if option == "--screen"
         ));
+    }
+
+    fn custom_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+        if args.shots.as_deref() != Some(std::path::Path::new("/tmp/custom.png")) {
+            return Err(LaunchError::Operation("wrong shot path".into()));
+        }
+        CUSTOM_SHOT_RAN.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[test]
+    fn custom_shot_pipeline_uses_standard_mode_dispatch() {
+        CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).shot_handler(custom_shot);
+        run_with_args(spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
+        assert!(CUSTOM_SHOT_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn operational_failures_are_not_reported_as_cli_usage_errors() {
+        assert_eq!(LaunchError::Operation("failed".into()).exit_code(), 1);
+        assert_eq!(LaunchError::UnknownArgument("--bad".into()).exit_code(), 2);
     }
 }
