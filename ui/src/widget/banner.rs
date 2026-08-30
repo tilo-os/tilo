@@ -98,24 +98,29 @@ fn paint_banner(
         f64::from(title_size)
     };
     let mut ty = rect.center().y - total_text_h / 2.0;
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine composition is float matrix multiplication; it cannot overflow or \
+                  panic"
+    )]
+    let title_transform = transform * Affine::translate((text_x, ty));
     text_renderer.draw_text(
         scene,
         title,
         title_size,
         theme.text_primary,
-        transform * Affine::translate((text_x, ty)),
+        title_transform,
         None,
     );
     ty += f64::from(title_size) + 4.0;
     if let Some(msg) = message {
-        text_renderer.draw_text(
-            scene,
-            msg,
-            msg_size,
-            theme.text_dim,
-            transform * Affine::translate((text_x, ty)),
-            None,
-        );
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition is float matrix multiplication; it cannot overflow \
+                      or panic"
+        )]
+        let msg_transform = transform * Affine::translate((text_x, ty));
+        text_renderer.draw_text(scene, msg, msg_size, theme.text_dim, msg_transform, None);
     }
 
     if dismissible {
@@ -162,9 +167,8 @@ impl BannerKind {
     /// [`Banner::with_icon`]).
     pub fn default_icon(self) -> Icon {
         match self {
-            BannerKind::Info => Icon::Info,
+            BannerKind::Info | BannerKind::Warning => Icon::Info,
             BannerKind::Success => Icon::Check,
-            BannerKind::Warning => Icon::Info,
             BannerKind::Error => Icon::Ban,
         }
     }
@@ -220,17 +224,20 @@ impl Banner {
         Self::new(BannerKind::Error, title)
     }
 
+    #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
     }
 
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// Show a trailing "×" the user can click to dismiss.
+    #[must_use]
     pub fn dismissible(mut self) -> Self {
         self.dismissible = true;
         self
@@ -301,6 +308,11 @@ impl Banner {
 impl Widget for Banner {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "content_height is a small, bounded pixel value built from theme typography \
+                  constants; f32 precision loss is immaterial for widget layout"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -324,6 +336,11 @@ impl Widget for Banner {
         node
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "content_height is a small, bounded pixel value built from theme typography \
+                  constants; f32 precision loss is immaterial for widget layout"
+    )]
     fn measure(
         &mut self,
         _k: taffy::Size<Option<f32>>,
@@ -467,10 +484,9 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(vh),
                 },
                 |k, a, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
-                        .unwrap_or(taffy::Size::ZERO)
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
                 },
             )
             .unwrap();
