@@ -43,11 +43,17 @@ pub fn settings_path() -> Option<PathBuf> {
 /// Load the policy from the shared settings file, falling back to the
 /// Settings defaults on any read/parse failure.
 pub fn load_policy() -> PowerPolicy {
+    load_policy_for_profile(active_power_profile().as_deref())
+}
+
+/// Load Settings policy for a profile already obtained from
+/// power-profiles-daemon. This avoids spawning its CLI from the D-Bus monitor.
+pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
     let Some(path) = settings_path() else {
         return default_policy();
     };
     match std::fs::read_to_string(&path) {
-        Ok(text) => policy_from_settings_json(&text),
+        Ok(text) => policy_from_settings_json_for_profile(&text, active_profile),
         Err(_) => default_policy(),
     }
 }
@@ -66,6 +72,13 @@ pub fn default_policy() -> PowerPolicy {
 /// Parse a [`PowerPolicy`] from a full `settings.json` document. Never fails;
 /// unknown/missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
+    policy_from_settings_json_for_profile(text, active_power_profile().as_deref())
+}
+
+pub fn policy_from_settings_json_for_profile(
+    text: &str,
+    active_profile: Option<&str>,
+) -> PowerPolicy {
     let root: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => return default_policy(),
@@ -73,7 +86,7 @@ pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
     let Some(section) = root.get("power") else {
         return default_policy();
     };
-    policy_from_section(section)
+    policy_from_section_for_profile(section, active_profile)
 }
 
 /// Parse a [`PowerPolicy`] from just the `"power"` object.
