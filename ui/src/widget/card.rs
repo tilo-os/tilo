@@ -23,6 +23,13 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{Column, Container, Element, Row, Spacer, Text, Widget};
 
+/// Lossless `usize -> f64` widening for grid geometry. Column/row counts
+/// are bounded far below `u32::MAX`, so routing through `u32` (which `f64`
+/// represents exactly) avoids the precision loss a direct cast risks.
+fn usize_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
 /// Default minimum card width (logical px) a [`CardGrid`] column will hold
 /// before it drops to fewer columns. Sized for a typical content card.
 pub const DEFAULT_CARD_MIN_WIDTH: f64 = 260.0;
@@ -44,15 +51,27 @@ pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
     if stride <= 0.0 || avail_w <= 0.0 {
         return 1;
     }
-    (((avail_w + gap) / stride).floor() as usize).max(1)
+    let n = ((avail_w + gap) / stride).floor();
+    // `n` is finite (both operands are finite by construction) and the
+    // early return above guarantees `avail_w + gap > 0`, so `n >= 0`; clamp
+    // into a range `usize` always holds before the cast, so nothing here
+    // can truncate or misread a sign.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "n is clamped into `[1.0, u32::MAX]` immediately before the cast, so the \
+                  conversion is provably exact"
+    )]
+    let cols = n.clamp(1.0, f64::from(u32::MAX)) as usize;
+    cols
 }
 
 /// Never negative. Combined with [`card_columns`] this snaps every card to
 /// the same aligned column so a grid of cards lines up exactly.
 pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
     let cols = cols.max(1);
-    let total_gap = (cols - 1) as f64 * gap;
-    ((avail_w - total_gap) / cols as f64).max(0.0)
+    let total_gap = usize_to_f64(cols.saturating_sub(1)) * gap;
+    ((avail_w - total_gap) / usize_to_f64(cols)).max(0.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -277,17 +296,20 @@ impl CardGrid {
         }
     }
 
+    #[must_use]
     pub fn with_min_card_width(mut self, px: f64) -> Self {
         self.min_card_w = px.max(1.0);
         self
     }
 
+    #[must_use]
     pub fn with_card_height(mut self, px: f64) -> Self {
         self.card_h = px.max(1.0);
         self
     }
 
     /// Defaults to the theme gap.
+    #[must_use]
     pub fn with_gap(mut self, px: f64) -> Self {
         self.gap_override = Some(px.max(0.0));
         self
@@ -303,16 +325,19 @@ impl CardGrid {
             return 0.0;
         }
         let rows = n.div_ceil(columns.max(1));
-        rows as f64 * self.card_h + (rows.saturating_sub(1)) as f64 * self.gap
+        usize_to_f64(rows) * self.card_h + usize_to_f64(rows.saturating_sub(1)) * self.gap
     }
 
     fn cell_origin(&self, i: usize) -> Point {
         let cols = self.columns.max(1);
-        let col = i % cols;
-        let row = i / cols;
+        // `cols >= 1` always (just clamped above), so these never hit their
+        // fallback — `checked_*` just spells that out for the reader (and
+        // the lint) instead of an unchecked `%`/`/`.
+        let col = i.checked_rem(cols).unwrap_or(0);
+        let row = i.checked_div(cols).unwrap_or(0);
         Point::new(
-            self.rect.x0 + col as f64 * (self.cell_w + self.gap),
-            self.rect.y0 + row as f64 * (self.card_h + self.gap),
+            self.rect.x0 + usize_to_f64(col) * (self.cell_w + self.gap),
+            self.rect.y0 + usize_to_f64(row) * (self.card_h + self.gap),
         )
     }
 
@@ -329,6 +354,11 @@ impl CardGrid {
 
     /// Called from `draw` (which has the theme + text renderer), mirroring
     /// `NavShell`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "cell width/height are bounded on-screen pixel values; f32 precision loss \
+                  is immaterial for widget layout"
+    )]
     fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let mut taffy = TaffyTree::<()>::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -379,26 +409,33 @@ impl Widget for CardGrid {
 
     fn build_layout(
         &mut self,
-        _taffy: &mut TaffyTree<()>,
+        taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The cards are laid out in an inner tree during draw, so this node
         // is a measured leaf.
-        self.gap = self.gap_override.unwrap_or(f64::from(theme.gap_standard));
-        let node = _taffy.leaf_node(Style::default());
+        self.gap = self
+            .gap_override
+            .unwrap_or_else(|| f64::from(theme.gap_standard));
+        let node = taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "width/height are bounded on-screen pixel values; f32 precision loss is \
+                  immaterial for widget layout"
+    )]
     fn measure(
         &mut self,
         known: taffy::Size<Option<f32>>,
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known.width.map_or(
-            match available.width {
+        let width = known.width.map_or_else(
+            || match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.min_card_w,
             },
@@ -562,6 +599,11 @@ mod tests {
     use std::collections::HashMap;
     use vello::kurbo::Point;
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test-only layout size is a small pixel value; f32 precision loss is \
+                  immaterial"
+    )]
     fn lay_out_grid(mut g: CardGrid, w: f64, h: f64) -> CardGrid {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();

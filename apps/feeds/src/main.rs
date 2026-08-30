@@ -3,14 +3,14 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 //!
 //! Optional flags for `--shots` (used to capture interaction states the
 //! single-frame headless renderer can't reach through live input):
 //!   * `--scenario NAME` — stage a state (`sidebar-open`); see
-//!                          [`feeds::app_root_for_shot`].
+//!     [`feeds::app_root_for_shot`].
 //!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 560x800`
-//!                          to exercise the narrow-window overlay flap).
+//!     to exercise the narrow-window overlay flap).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -43,6 +43,9 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns `Err` if the screenshot renderer fails to write its output file.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
