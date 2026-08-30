@@ -549,6 +549,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     distrobox \
     git \
     cups \
+    cups-ipptool \
     podman \
     foot \
     wl-clipboard \
@@ -582,7 +583,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
-# C9 printing (cups). `cups` only — deliberately NOT `cups-browsed`, which is
+# C9 printing (CUPS plus its standard IPP query tool). Deliberately NOT
+# `cups-browsed`, which is
 # the daemon that turns *remote* DNS-SD advertisements into local print
 # queues and was the 2024 RCE chain (CVE-2024-47076/47175/47176/47177). Its
 # absence is why nothing on the network can make a print queue appear here.
@@ -590,6 +592,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # os/etc/cups/cupsd.conf; see docs/printing-threat-model.md.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     cups \
+    cups-ipptool \
     && dnf clean all
 
 # Ensure system groups exist in /etc/group and add greetd to them

@@ -2143,28 +2143,23 @@ fn load_account_store() -> AccountStore {
 fn report_account_sync(
     account_id: &str,
     health: accounts::AccountSyncHealth,
-    success: bool,
-    message: Option<&str>,
+    _success: bool,
+    _message: Option<&str>,
 ) {
     if account_id.trim().is_empty() {
         return;
     }
-    let id = accounts::AccountId::from(account_id.to_string());
-    let mut store = accounts::AccountSyncStatusStore::load();
-    let previous_success = store.get(&id).and_then(|status| status.last_success_unix);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
-    store.report(
-        &id,
-        accounts::AccountSyncStatus::sanitized(
-            health,
-            Some(now),
-            if success { Some(now) } else { previous_success },
-            message,
-        ),
-    );
-    if let Err(error) = store.save() {
+    let reporter = accounts::AccountSyncReporter::new(account_id.to_string());
+    let persisted = match health {
+        accounts::AccountSyncHealth::Never | accounts::AccountSyncHealth::Syncing => {
+            reporter.started()
+        }
+        accounts::AccountSyncHealth::Healthy => reporter.succeeded(),
+        accounts::AccountSyncHealth::Offline => reporter.offline(),
+        accounts::AccountSyncHealth::NeedsAuthentication => reporter.needs_authentication(),
+        accounts::AccountSyncHealth::Error => reporter.failed(),
+    };
+    if let Err(error) = persisted {
         tracing::warn!(%error, account = account_id, "mail: could not persist sync status");
     }
 }
