@@ -199,11 +199,20 @@ pub fn encode_frame(opcode: u8, sub_opcode: u8, content_encoding: u8, payload: &
 
 /// Inverse of [`encode_frame`], with the same `size == length - 4` validation
 /// Grayjay's `handleData` performs.
+///
+/// # Errors
+///
+/// Returns `Err` if `buf` is shorter than [`HEADER_SIZE`] or its declared
+/// length doesn't match the actual buffer size.
 pub fn decode_frame(buf: &[u8]) -> Result<Frame, FrameError> {
-    if buf.len() < HEADER_SIZE {
+    let Some(header) = buf.get(0..HEADER_SIZE) else {
         return Err(FrameError::TooShort);
-    }
-    let declared = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    };
+    let Some(&[b0, b1, b2, b3, opcode, sub_opcode, content_encoding]) = header.first_chunk::<7>()
+    else {
+        return Err(FrameError::TooShort);
+    };
+    let declared = u32::from_le_bytes([b0, b1, b2, b3]);
     if declared as usize != buf.len() - 4 {
         return Err(FrameError::SizeMismatch {
             declared,
@@ -211,10 +220,10 @@ pub fn decode_frame(buf: &[u8]) -> Result<Frame, FrameError> {
         });
     }
     Ok(Frame {
-        opcode: buf[4],
-        sub_opcode: buf[5],
-        content_encoding: buf[6],
-        payload: buf[HEADER_SIZE..].to_vec(),
+        opcode,
+        sub_opcode,
+        content_encoding,
+        payload: buf.get(HEADER_SIZE..).unwrap_or_default().to_vec(),
     })
 }
 
