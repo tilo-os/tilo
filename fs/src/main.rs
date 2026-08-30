@@ -7,7 +7,7 @@ use fs::{
     AclHandle, CapabilityFile, ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
     Refresh, Ticket, Workspace, identity_paths, load_mount_identity,
 };
-use fuser::{Config, Filesystem, MountOption, SessionACL};
+use fuser::{Config, MountOption, SessionACL};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

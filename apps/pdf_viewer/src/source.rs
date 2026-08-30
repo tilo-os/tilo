@@ -219,7 +219,6 @@ impl Rasterizer {
         if page_sizes.is_empty() {
             return None;
         }
-        drop(pages);
         Some(Source { doc, page_sizes })
     }
 

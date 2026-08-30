@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 
 use crate::network::actor::{Actor, NetCmd, NetEvent};
 use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
-use crate::network::hub::TopicSubscriber;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;

@@ -980,7 +980,6 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         // Sibling or shallower: close the current item, then unwind any deeper lists (each wrapped in its parent item).
                         if item_open {
                             body.push_str("</text:list-item>");
-                            item_open = false;
                         }
                         while depth > target {
                             body.push_str("</text:list>");
