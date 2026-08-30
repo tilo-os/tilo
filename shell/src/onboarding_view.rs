@@ -1,35 +1,32 @@
 //! The rendered first-login identity ceremony.
 //!
-//! Chrome, not an app: the compositor draws this before the desktop exists.
-//! An identity is the thing every later signature rests on, so the screen
-//! that creates it cannot be something an application could imitate.
+//! Chrome, not an app: the compositor draws this before the desktop
+//! exists, since the screen that creates an identity cannot be something
+//! an application could imitate.
 //!
-//! The decisions all live in [`crate::onboarding::Onboarding`]; this file is
-//! only the composition. Every element is a shared `ui` widget — `Card`,
-//! `Banner`, `Text`, `Button`, `Checkbox` — so the ceremony inherits the
-//! system theme, focus order and accessibility the same way the rest of the
-//! desktop does.
+//! The decisions all live in [`crate::onboarding::Onboarding`]; this
+//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
+//! system theme, focus order and accessibility like the rest of the desktop.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Banner, Button, Card, Checkbox, Column, Row, Spacer, Text, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::onboarding::{
-    MintedIdentity, Onboarding, Screen, ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY,
-    INTRO_POINTS, INTRO_TITLE, NO_RECOVERY_POINTS, NO_RECOVERY_TITLE,
+    ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY, INTRO_POINTS, INTRO_TITLE, MintedIdentity,
+    NO_RECOVERY_POINTS, NO_RECOVERY_TITLE, Onboarding, Screen,
 };
 
-/// Measure for the ceremony's column, in logical px. Body text at 13px wants
-/// roughly this width to land near 70 characters a line; wider and the eye
-/// loses the start of the next line, which is the last thing you want on the
-/// one screen that has to actually be read.
+/// Measure for the ceremony's column, in logical px — body text at 13px
+/// wants roughly this width to land near 70 characters a line, or the eye loses the start of the next line.
 const CONTENT_WIDTH: f32 = 620.0;
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
@@ -39,13 +36,11 @@ pub const KEY_FINISH: &str = "onboarding.finish";
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 
-/// The ceremony widget.
 pub struct OnboardingView {
     flow: Onboarding,
     minter: Minter,
-    /// Set when minting failed, shown in place of the success screen. A
-    /// failure here is loud: booting on into a desktop that silently has no
-    /// identity is the behaviour this whole flow replaces.
+    /// Set when minting failed, shown in place of the success screen — loud,
+    /// since booting on into a desktop that silently has no identity is what this flow replaces.
     error: Option<String>,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
@@ -62,8 +57,7 @@ impl OnboardingView {
         }))
     }
 
-    /// Build with an injected minter, so tests drive the whole widget
-    /// without writing a key to disk.
+    /// Build with an injected minter, so tests drive the whole widget without writing a key to disk.
     pub fn with_minter(minter: Minter) -> Self {
         Self {
             flow: Onboarding::new(),
@@ -122,19 +116,21 @@ impl OnboardingView {
         for point in NO_RECOVERY_POINTS {
             list = list.push(bullet(point));
         }
-        // The gate. Disabled until the box is ticked, so the primary action
-        // cannot be clicked past the consequence.
-        let create = Button::new("onboarding.create.button", "Create my identity", Some(KEY_CREATE))
-            .with_style(ui::widget::ButtonStyle::Primary)
-            .with_enabled(self.flow.can_create());
+        // The gate. Disabled until the box is ticked, so the primary action can't be clicked past the consequence.
+        let create = Button::new(
+            "onboarding.create.button",
+            "Create my identity",
+            Some(KEY_CREATE),
+        )
+        .with_style(ui::widget::ButtonStyle::Primary)
+        .with_enabled(self.flow.can_create());
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_gap(20.0)
-                .push(Box::new(
-                    Banner::warning(NO_RECOVERY_TITLE)
-                        .with_message("Read this before continuing — it cannot be undone later."),
-                ))
+                .push(Box::new(Banner::warning(NO_RECOVERY_TITLE).with_message(
+                    "Read this before continuing — it cannot be undone later.",
+                )))
                 .push(Box::new(Card::new(Box::new(list))))
                 .push(Box::new(
                     Row::new()
@@ -173,7 +169,7 @@ impl OnboardingView {
         }
         let minted = self.flow.minted();
         let fingerprint = minted
-            .map(|m| m.grouped_fingerprint())
+            .map(super::onboarding::MintedIdentity::grouped_fingerprint)
             .unwrap_or_default();
         let path = minted
             .map(|m| m.path.display().to_string())
@@ -199,17 +195,20 @@ impl OnboardingView {
                 .push(Box::new(Banner::success(DONE_TITLE)))
                 .push(paragraph(DONE_BODY, theme))
                 .push(Box::new(Card::titled("Fingerprint", Box::new(detail))))
-                // Repeated deliberately. This is the last moment the user is
-                // looking at the subject, and it is the one fact they need to
-                // carry away from the whole ceremony.
+                // Repeated deliberately: the last moment the user is looking at the
+                // subject is the one fact they need to carry away from the whole ceremony.
                 .push(paragraph(
                     "There is still no way to recover this key. If this device goes, so does \
                      this identity.",
                     theme,
                 ))
                 .push(actions(vec![Box::new(
-                    Button::new("onboarding.finish.button", "Start using qOS", Some(KEY_FINISH))
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                    Button::new(
+                        "onboarding.finish.button",
+                        "Start using qOS",
+                        Some(KEY_FINISH),
+                    )
+                    .with_style(ui::widget::ButtonStyle::Primary),
                 )])),
         )
     }
@@ -219,24 +218,21 @@ fn heading(text: &str) -> Box<dyn Widget> {
     Box::new(Text::new(text).with_size(26.0))
 }
 
-/// Secondary body copy. Takes the live theme rather than a hard-coded one:
-/// a dark-theme dim grey on a light background is barely legible, and OS
-/// chrome has no business pinning a palette.
+/// Secondary body copy. Takes the live theme rather than a hard-coded
+/// one — a dark-theme dim grey on a light background is barely legible.
 fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
     Box::new(Text::new(text).with_size(13.0).with_color(theme.text_dim))
 }
 
 /// A list item.
 ///
-/// The marker is part of the same `Text` rather than a sibling in a `Row`:
-/// these lines wrap, and a marker in its own column detaches from its
-/// sentence and floats onto a line of its own.
+/// The marker is part of the same `Text` rather than a sibling in a
+/// `Row`: these lines wrap, and a marker in its own column detaches from its sentence.
 fn bullet(text: &str) -> Box<dyn Widget> {
     Box::new(Text::new(&format!("•   {text}")).with_size(13.0))
 }
 
-/// A right-aligned action row, so the primary button lands where the eye
-/// finishes reading.
+/// A right-aligned action row, so the primary button lands where the eye finishes reading.
 fn actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
     let mut row = Row::new().push(Box::new(Spacer::new()));
     for b in buttons {
@@ -261,8 +257,7 @@ impl Widget for OnboardingView {
             self.flow.begin();
         }
 
-        // The checkbox drives the gate directly rather than being latched, so
-        // unticking really does close it again.
+        // The checkbox drives the gate directly rather than being latched, so unticking really does close it again.
         let understood = read_bool(state, root, KEY_UNDERSTOOD);
         if understood != self.flow.acknowledged() {
             self.flow.set_acknowledged(understood);
@@ -271,8 +266,7 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CREATE) {
             let _ = state.put(root, KEY_CREATE, ScalarValue::Boolean(false));
-            // `can_create` is checked inside `complete` too — this is the
-            // outer guard, that one is the invariant.
+            // `can_create` is checked inside `complete` too — this is the outer guard, that one is the invariant.
             if self.flow.can_create() {
                 match (self.minter)() {
                     Ok(minted) => {
@@ -281,8 +275,7 @@ impl Widget for OnboardingView {
                     Err(e) => {
                         tracing::error!(target: "qos::onboarding", error = %e, "identity minting failed");
                         self.error = Some(e);
-                        // Force the result screen so the failure is shown
-                        // rather than leaving the user on a dead button.
+                        // Force the result screen so the failure is shown rather than leaving the user on a dead button.
                         self.flow.set_acknowledged(true);
                         self.flow.complete(MintedIdentity {
                             fingerprint: String::new(),
@@ -317,13 +310,11 @@ impl Widget for OnboardingView {
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
-        // Hold the text to a comfortable measure and let the root centre it.
-        // This is a full-screen ceremony, so without both the copy would run
-        // the width of a 4K display and sit hard against the top edge.
+        // Hold the text to a comfortable measure and let the root centre it —
+        // full-screen, so without this the copy would run the width of a 4K display.
         if let Ok(mut cs) = taffy.style(child).cloned() {
             cs.size.width = taffy::Dimension::length(CONTENT_WIDTH);
-            // Auto height, or the column claims the full viewport and there
-            // is nothing left for the root to centre.
+            // Auto height, or the column claims the full viewport and there's nothing left for the root to centre.
             cs.size.height = taffy::Dimension::auto();
             cs.flex_grow = 0.0;
             cs.flex_shrink = 0.0;
@@ -342,24 +333,23 @@ impl Widget for OnboardingView {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -389,27 +379,30 @@ impl Widget for OnboardingView {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.as_ref().map(|c| c.as_ref()).into_iter().collect()
+        self.composed
+            .as_ref()
+            .map(std::convert::AsRef::as_ref)
+            .into_iter()
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -420,7 +413,7 @@ impl Widget for OnboardingView {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "OnboardingView"
     }
 
@@ -437,8 +430,7 @@ impl Widget for OnboardingView {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -446,8 +438,8 @@ impl Widget for OnboardingView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -466,8 +458,7 @@ mod tests {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
     }
 
-    /// The whole point: clicking through without ticking the box must not
-    /// produce a key.
+    /// The whole point: clicking through without ticking the box must not produce a key.
     #[test]
     fn pressing_create_without_acknowledging_mints_nothing() {
         let (mut v, calls) = view();
@@ -508,7 +499,11 @@ mod tests {
         v.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_UNDERSTOOD);
         v.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(&automerge::ROOT, KEY_UNDERSTOOD, ScalarValue::Boolean(false));
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_UNDERSTOOD,
+            ScalarValue::Boolean(false),
+        );
         v.sync(&mut doc, &automerge::ROOT);
         assert!(!v.flow().can_create());
         press(&mut doc, KEY_CREATE);
@@ -516,8 +511,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    /// A minting failure must be shown, not swallowed into a desktop that
-    /// silently has no identity.
+    /// A minting failure must be shown, not swallowed into a desktop that silently has no identity.
     #[test]
     fn a_failed_mint_is_surfaced_rather_than_hidden() {
         let mut v = OnboardingView::with_minter(Box::new(|| Err("disk full".to_string())));
@@ -542,13 +536,17 @@ mod tests {
         assert!(v.finished());
     }
 
-    /// Every screen must lay out. A ceremony that panics on the screen after
-    /// the one under test is worse than no ceremony.
+    /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
     #[test]
     fn every_screen_builds_a_layout() {
         let (mut v, _) = view();
         let mut doc = AutoCommit::new();
-        for step in [None, Some(KEY_BEGIN), Some(KEY_UNDERSTOOD), Some(KEY_CREATE)] {
+        for step in [
+            None,
+            Some(KEY_BEGIN),
+            Some(KEY_UNDERSTOOD),
+            Some(KEY_CREATE),
+        ] {
             if let Some(k) = step {
                 press(&mut doc, k);
                 v.sync(&mut doc, &automerge::ROOT);

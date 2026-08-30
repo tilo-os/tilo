@@ -6,9 +6,9 @@
 
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 /// Standard toolbar height, so callers can reserve space consistently.
 pub const TOOLBAR_HEIGHT: f64 = 50.0;
@@ -24,7 +24,6 @@ pub enum LabelCue {
     Strike,
 }
 
-/// One toolbar button.
 #[derive(Clone)]
 pub struct ToolbarItem {
     pub label: String,
@@ -37,7 +36,13 @@ pub struct ToolbarItem {
 
 impl ToolbarItem {
     pub fn new(label: impl Into<String>, width: f64) -> Self {
-        Self { label: label.into(), width, active: false, cue: LabelCue::None, group_start: false }
+        Self {
+            label: label.into(),
+            width,
+            active: false,
+            cue: LabelCue::None,
+            group_start: false,
+        }
     }
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
@@ -54,8 +59,21 @@ impl ToolbarItem {
 }
 
 /// Draw a themed toolbar in `rect`; returns each item's clickable rect in order.
-pub fn draw(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, items: &[ToolbarItem]) -> Vec<Rect> {
-    scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &rect);
+pub fn draw(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    items: &[ToolbarItem],
+) -> Vec<Rect> {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised,
+        None,
+        &rect,
+    );
     scene.fill(
         Fill::NonZero,
         transform,
@@ -72,30 +90,73 @@ pub fn draw(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: 
     for item in items {
         if item.group_start {
             let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
-            scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &sep,
+            );
             x += 14.0;
         }
         let r = Rect::new(x, cy - bh / 2.0, x + item.width, cy + bh / 2.0);
         if item.active {
-            scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &RoundedRect::from_rect(r, 6.0));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.accent_primary,
+                None,
+                &RoundedRect::from_rect(r, 6.0),
+            );
         }
-        let color = if item.active { white } else { theme.text_primary };
+        let color = if item.active {
+            white
+        } else {
+            theme.text_primary
+        };
         let (lw, _) = tr.measure(&item.label, 15.0, None);
-        let lx = x + (item.width - lw as f64) / 2.0;
+        let lx = x + (item.width - f64::from(lw)) / 2.0;
         let ly = cy - 9.0;
         if item.cue == LabelCue::Bold {
-            tr.draw_text_weighted(scene, &item.label, 15.0, color, transform * Affine::translate((lx, ly)), None, TextWeight::Bold);
+            tr.draw_text_weighted(
+                scene,
+                &item.label,
+                15.0,
+                color,
+                transform * Affine::translate((lx, ly)),
+                None,
+                TextWeight::Bold,
+            );
         } else {
-            tr.draw_text(scene, &item.label, 15.0, color, transform * Affine::translate((lx, ly)), None);
+            tr.draw_text(
+                scene,
+                &item.label,
+                15.0,
+                color,
+                transform * Affine::translate((lx, ly)),
+                None,
+            );
         }
         match item.cue {
             LabelCue::Underline => {
                 let uy = ly + 18.0;
-                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, uy, lx + lw as f64, uy + 1.5));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    color,
+                    None,
+                    &Rect::new(lx, uy, lx + f64::from(lw), uy + 1.5),
+                );
             }
             LabelCue::Strike => {
                 let sy = ly + 9.0;
-                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, sy, lx + lw as f64, sy + 1.5));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    color,
+                    None,
+                    &Rect::new(lx, sy, lx + f64::from(lw), sy + 1.5),
+                );
             }
             _ => {}
         }
@@ -129,7 +190,10 @@ mod tests {
         assert_eq!(rects.len(), 3);
         // ascending, non-overlapping, with a separator gap before item 2
         assert!(rects[0].x1 <= rects[1].x0);
-        assert!(rects[1].x1 + 10.0 <= rects[2].x0, "group separator widened the gap");
+        assert!(
+            rects[1].x1 + 10.0 <= rects[2].x0,
+            "group separator widened the gap"
+        );
         let mid = rects[1].center();
         assert_eq!(hit(&rects, mid), Some(1));
         assert_eq!(hit(&rects, Point::new(5000.0, 5.0)), None);

@@ -208,27 +208,42 @@ pub fn set_starred_action(ids: Vec<String>, starred: bool) -> MailAction {
 
 /// Move a batch of messages to a system folder.
 pub fn move_action(ids: Vec<String>, folder: Folder) -> MailAction {
-    MailAction::Move { ids, folder: folder.as_key().to_string() }
+    MailAction::Move {
+        ids,
+        folder: folder.as_key().to_string(),
+    }
 }
 
 /// Add a label to a batch of messages.
 pub fn add_label_action(ids: Vec<String>, label: &str) -> MailAction {
-    MailAction::AddLabel { ids, label: label.to_string() }
+    MailAction::AddLabel {
+        ids,
+        label: label.to_string(),
+    }
 }
 
 /// Remove a label from a batch of messages.
 pub fn remove_label_action(ids: Vec<String>, label: &str) -> MailAction {
-    MailAction::RemoveLabel { ids, label: label.to_string() }
+    MailAction::RemoveLabel {
+        ids,
+        label: label.to_string(),
+    }
 }
 
 /// Create a local folder with a caller-minted id.
 pub fn create_folder_action(id: &str, name: &str) -> MailAction {
-    MailAction::CreateFolder { id: id.to_string(), name: name.to_string() }
+    MailAction::CreateFolder {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 /// Rename a local folder.
 pub fn rename_folder_action(id: &str, name: &str) -> MailAction {
-    MailAction::RenameFolder { id: id.to_string(), name: name.to_string() }
+    MailAction::RenameFolder {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 /// Delete a local folder.
@@ -323,11 +338,18 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
         ctx.current_folder.title().to_string(),
     );
     if ctx.current_folder == Folder::Drafts && ctx.has_draft {
-        folder_node =
-            folder_node.with_action(immediate_spec("discard-draft", "Discard draft", &discard_draft_action()));
+        folder_node = folder_node.with_action(immediate_spec(
+            "discard-draft",
+            "Discard draft",
+            &discard_draft_action(),
+        ));
     }
     for m in &ctx.messages {
-        let mut msg = Resource::new(format!("mail.message:{}", m.id), "mail.message", message_label(m));
+        let mut msg = Resource::new(
+            format!("mail.message:{}", m.id),
+            "mail.message",
+            message_label(m),
+        );
 
         let read_label = if m.read { "Mark unread" } else { "Mark read" };
         msg = msg.with_action(immediate_spec(
@@ -390,7 +412,11 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
             ExecutionLocus::ClientLocal,
             move |n: &str| encode(&rename_folder_action(&rid, n.trim())),
         ));
-        f = f.with_action(immediate_spec("delete-folder", "Delete folder", &delete_folder_action(id)));
+        f = f.with_action(immediate_spec(
+            "delete-folder",
+            "Delete folder",
+            &delete_folder_action(id),
+        ));
         root = root.with_child(f);
     }
 
@@ -406,10 +432,10 @@ impl ResourceProvider for crate::app::MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{avatar_store_offline, MailApp};
+    use crate::app::{MailApp, avatar_store_offline};
     use crate::model::Folder;
     use crate::state::{CtxAction, MailState};
-    use automerge::ROOT;
+
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
@@ -480,14 +506,20 @@ mod tests {
             .expect("a message resource in the open folder");
         let msg_actions: Vec<&str> = message.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["read", "star", "archive", "delete", "add-label"] {
-            assert!(msg_actions.contains(&want), "message exports {want}: {msg_actions:?}");
+            assert!(
+                msg_actions.contains(&want),
+                "message exports {want}: {msg_actions:?}"
+            );
         }
 
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New folder")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("New folder")),
+            "{labels:?}"
+        );
         assert!(
             labels.iter().any(|l| l.contains("Archive")),
             "the palette surfaces a message action: {labels:?}"
@@ -510,27 +542,19 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             MailDoc::get_folder_for(&state.doc, id),
             Some(Folder::Trash),
             "the action moved the message to Trash"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             MailDoc::get_folder_for(&state.doc, id),
             Some(Folder::Inbox),
@@ -548,14 +572,22 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = set_starred_action(vec!["m".to_string()], true);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(MailDoc::get_starred(&b, "m"), Some(true));
     }
 
@@ -570,14 +602,22 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = move_action(vec!["m1".into(), "m2".into(), "m3".into()], Folder::Archive);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "the whole batch replayed identically");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "the whole batch replayed identically"
+        );
         for id in ["m1", "m2", "m3"] {
             assert_eq!(MailDoc::get_folder_for(&b, id), Some(Folder::Archive));
         }
@@ -598,7 +638,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "label add replayed identically");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "label add replayed identically"
+        );
         assert_eq!(MailDoc::get_labels(&b, "m"), vec!["work"]);
     }
 
@@ -606,11 +650,18 @@ mod tests {
     #[test]
     fn save_then_discard_draft_action() {
         let mut doc = AutoCommit::new();
-        let draft = Draft { to: "x@y.example".into(), subject: "Hi".into(), ..Default::default() };
+        let draft = Draft {
+            to: "x@y.example".into(),
+            subject: "Hi".into(),
+            ..Default::default()
+        };
         dispatch(&mut doc, &save_draft_action(&draft));
         assert_eq!(MailDoc::load_draft(&doc).to, "x@y.example");
         dispatch(&mut doc, &discard_draft_action());
-        assert!(MailDoc::load_draft(&doc).to.is_empty(), "discard cleared the draft");
+        assert!(
+            MailDoc::load_draft(&doc).to.is_empty(),
+            "discard cleared the draft"
+        );
     }
 
     /// The "New folder" prompted action mints an id and creates a folder in the
@@ -619,9 +670,13 @@ mod tests {
     fn new_folder_action_creates_a_local_folder() {
         let (app, state) = seeded_app();
         let resources = Widget::resources(&app, &state.doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "new-folder").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-folder")
+            .unwrap();
         let encoded = prompted_encode(spec, "Receipts");
-        let mut doc = state.doc.clone();
+        let mut doc = state.doc;
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -636,8 +691,16 @@ mod tests {
     fn palette_and_builder_encode_identically() {
         let (app, state) = seeded_app();
         let resources = Widget::resources(&app, &state.doc);
-        let folder = resources[0].children.iter().find(|r| r.kind == "mail.folder").unwrap();
-        let message = folder.children.iter().find(|r| r.kind == "mail.message").unwrap();
+        let folder = resources[0]
+            .children
+            .iter()
+            .find(|r| r.kind == "mail.folder")
+            .unwrap();
+        let message = folder
+            .children
+            .iter()
+            .find(|r| r.kind == "mail.message")
+            .unwrap();
         let id = message.id.0.trim_start_matches("mail.message:").to_string();
 
         // Archive spec == move-to-Archive builder.
@@ -645,7 +708,10 @@ mod tests {
         let from_spec = immediate_encode(archive_spec);
         let from_builder = encode(&move_action(vec![id.clone()], Folder::Archive));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "archive is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "archive is one source of truth"
+        );
 
         // Read toggle spec == set-read builder for the negated current state.
         let read_spec = message.actions.iter().find(|a| a.id == "read").unwrap();
@@ -658,13 +724,23 @@ mod tests {
             .unwrap();
         let from_spec = immediate_encode(read_spec);
         let from_builder = encode(&set_read_action(vec![id.clone()], !row_read));
-        assert_eq!(from_spec.payload, from_builder.payload, "read toggle is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "read toggle is one source of truth"
+        );
 
         // Add-label prompted spec == add-label builder for the same text.
-        let label_spec = message.actions.iter().find(|a| a.id == "add-label").unwrap();
+        let label_spec = message
+            .actions
+            .iter()
+            .find(|a| a.id == "add-label")
+            .unwrap();
         let from_spec = prompted_encode(label_spec, "work");
-        let from_builder = encode(&add_label_action(vec![id.clone()], "work"));
-        assert_eq!(from_spec.payload, from_builder.payload, "add-label is one source of truth");
+        let from_builder = encode(&add_label_action(vec![id], "work"));
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "add-label is one source of truth"
+        );
     }
 
     /// Single source of truth #2: the on-screen message affordance
@@ -678,7 +754,10 @@ mod tests {
         let id = an_inbox_id(&st);
 
         st.apply_message_action(&mut doc, id.parse().unwrap(), CtxAction::Archive);
-        let dispatched = st.actions.last_dispatched().expect("archive dispatched an action");
+        let dispatched = st
+            .actions
+            .last_dispatched()
+            .expect("archive dispatched an action");
         let expected = encode(&move_action(vec![id.clone()], Folder::Archive));
         assert_eq!(dispatched.type_id, expected.type_id);
         assert_eq!(

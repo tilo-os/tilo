@@ -1,31 +1,17 @@
 //! `Toast` + `ToastStack` primitive — transient notifications anchored
-//! top-right of the shell.
+//! top-right of the shell, sinking fallible OS operations
+//! (trash/rename/move/copy), `ShellError` conversions, and confirmations.
 //!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — Phase A
-//! step 15 (`ContextMenu`, `Tooltip`, `Toast` primitives landed with their
-//! first shell consumer). Toasts are the sink for fallible OS operations
-//! (trash/rename/move/copy), `ShellError` conversions and "Workspace
-//! created" confirmations.
-//!
-//! This landing (plan task **T9**) provides the primitive's expiry + cap
-//! contract exercised by the plan test plus a `Widget` impl that stacks
-//! the active toasts top-right using Plan 1 tokens (no hard-coded colors
-//! or spacing).
-//!
-//! Public surface:
-//! - [`ToastKind`] — `Info`, `Success`, `Warning`, `Error`. Maps to
-//!   `Theme::tokens.colors.semantic.*` for the accent bar.
-//! - [`Toast`] — `text`, `kind`, `ttl_remaining`. Constructed via
-//!   [`ToastStack::push`]; not meant to be created directly by shell code.
-//! - [`ToastStack`] — ring-buffered list with `new`, `with_max(n)`,
-//!   `push(text, kind)`, `tick(dt)`, `len`, `iter`. The default TTL is
-//!   `DEFAULT_TTL` (3s); the default cap is `DEFAULT_MAX` (5 toasts).
+//! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*` for the accent
+//!   bar.
+//! - [`Toast`] is constructed via [`ToastStack::push`], not directly.
+//! - [`ToastStack`] is a ring-buffered list; default TTL is [`DEFAULT_TTL`]
+//!   (3s), default cap is [`DEFAULT_MAX`] (5 toasts).
 //!
 //! The `Widget` impl draws each active toast as a stacked raised-surface
-//! card with a kind-colored accent bar on the left. Enter/exit motion
-//! uses `theme.tokens.motion.springs.snappy` — wired by the shell
-//! consumer that owns the animation driver (the primitive itself is a
-//! pure render of the current state so tests stay deterministic).
+//! card with a kind-coloured accent bar. It's a pure render of the current
+//! state — enter/exit motion is wired by the shell consumer that owns the
+//! animation driver — so tests stay deterministic.
 
 use automerge::{AutoCommit, ObjId};
 use std::time::Duration;
@@ -37,10 +23,11 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ButtonFace, Widget};
 
 /// Default time-to-live for a freshly pushed toast.
-pub const DEFAULT_TTL: Duration = Duration::from_millis(3000);
+pub const DEFAULT_TTL: Duration = Duration::from_secs(3);
 
 /// Default maximum number of simultaneous toasts. When the cap is
 /// exceeded by [`ToastStack::push`] the oldest entry is dropped.
@@ -95,7 +82,9 @@ impl std::fmt::Debug for ToastStack {
 }
 
 impl Default for ToastStack {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToastStack {
@@ -173,7 +162,11 @@ impl ToastStack {
         if rel - idx as f64 * stride > TOAST_HEIGHT {
             return None;
         }
-        if idx < self.toasts.len() { Some(idx) } else { None }
+        if idx < self.toasts.len() {
+            Some(idx)
+        } else {
+            None
+        }
     }
 
     /// Dismiss the toast at `idx` (no-op if out of range).
@@ -184,19 +177,29 @@ impl ToastStack {
     }
 
     /// Number of active (non-expired) toasts.
-    pub fn len(&self) -> usize { self.toasts.len() }
+    pub fn len(&self) -> usize {
+        self.toasts.len()
+    }
 
     /// `true` when no toasts are currently visible.
-    pub fn is_empty(&self) -> bool { self.toasts.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.toasts.is_empty()
+    }
 
     /// Iterate the active toasts in push order (oldest first).
-    pub fn iter(&self) -> std::slice::Iter<'_, Toast> { self.toasts.iter() }
+    pub fn iter(&self) -> std::slice::Iter<'_, Toast> {
+        self.toasts.iter()
+    }
 
     /// Maximum simultaneous toasts.
-    pub fn max(&self) -> usize { self.max }
+    pub fn max(&self) -> usize {
+        self.max
+    }
 
     /// Current default TTL applied to subsequent [`Self::push`] calls.
-    pub fn default_ttl(&self) -> Duration { self.default_ttl }
+    pub fn default_ttl(&self) -> Duration {
+        self.default_ttl
+    }
 }
 
 const TOAST_WIDTH: f64 = 320.0;
@@ -216,14 +219,10 @@ fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
 // Shared notification-card renderer
 // ---------------------------------------------------------------------------
 //
-// One immediate-mode painter for a toast / notification card, used by both the
-// retained [`ToastStack`] (in-app toasts) and the shell's OS-notification stack
-// (`shell::shell::notification::NotificationStack`). Before this, the shell
-// hand-painted its own richer card — a fork of this widget that re-derived the
-// surface, the severity treatment, the close affordance and the enter/exit
-// fade. HIG §8 says extend the widget, don't fork it, so the richer layout
-// (attribution caption + title + body + a real dismiss button + an actionable
-// chevron) lives here now and both surfaces render through it.
+// One immediate-mode painter for a toast/notification card, shared by the
+// retained [`ToastStack`] (in-app toasts) and the shell's OS-notification
+// stack (`shell::shell::notification::NotificationStack`) — HIG §8: extend
+// the widget, don't fork it.
 
 const CARD_ACCENT_BAR_W: f64 = 4.0;
 const CARD_PAD_X: f64 = 14.0;
@@ -328,19 +327,15 @@ pub fn paint_card(
     if rect.width() <= 0.0 || rect.height() <= 0.0 || a <= 0.0 {
         return hit;
     }
-    let radius = theme.tokens.radii.md as f64;
+    let radius = f64::from(theme.tokens.radii.md);
     let shape = RoundedRect::from_rect(rect, radius);
 
-    // Soft drop shadow — fades with the card.
-    crate::surface::soft_shadow(
-        scene,
-        transform,
-        rect,
-        theme.tokens.colors.neutral[0],
-        18.0,
-        6.0,
-        (a * 0.5).clamp(0.0, 1.0),
-    );
+    // Drop shadow from the elevation token (not ad-hoc literals), following
+    // the card's own radius and fading with the card.
+    use crate::color_compat::ColorCompat;
+    let mut elev = theme.tokens.elevation.e3;
+    elev.color = elev.color.with_alpha_factor(a);
+    crate::surface::shadow(scene, transform, rect, radius, &elev);
 
     // Raised surface + hairline border.
     scene.fill(
@@ -358,8 +353,7 @@ pub fn paint_card(
         &shape,
     );
 
-    // Left severity accent stripe — the at-a-glance state form (HIG §7)
-    // that replaces the shell's hand-drawn severity dot.
+    // Left severity accent stripe — the at-a-glance state form (HIG §7).
     let bar = Rect::new(
         rect.x0 + 1.5,
         rect.y0 + 8.0,
@@ -371,7 +365,7 @@ pub fn paint_card(
         transform,
         kind_color(card.kind, theme).with_alpha(a),
         None,
-        &RoundedRect::from_rect(bar, theme.tokens.radii.sm as f64),
+        &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm)),
     );
 
     // Dismiss (X) button — a ghost `Button` face, top-right. Wrapped in an
@@ -422,9 +416,13 @@ pub fn paint_card(
 
     let has_caption = !card.caption.is_empty();
     let has_body = !card.body.is_empty();
-    let cap_h = if has_caption { caption_size as f64 + 4.0 } else { 0.0 };
-    let title_h = title_size as f64 + if has_body { 4.0 } else { 0.0 };
-    let body_h = if has_body { body_size as f64 } else { 0.0 };
+    let cap_h = if has_caption {
+        f64::from(caption_size) + 4.0
+    } else {
+        0.0
+    };
+    let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
+    let body_h = if has_body { f64::from(body_size) } else { 0.0 };
     let block_h = cap_h + title_h + body_h;
     let mut ty = rect.y0 + ((rect.height() - block_h) / 2.0).max(CARD_PAD_Y);
 
@@ -498,26 +496,24 @@ impl Widget for ToastStack {
             let height = (TOAST_HEIGHT * n as f64) + (TOAST_GAP * (n.saturating_sub(1)) as f64);
             (TOAST_WIDTH as f32, height as f32)
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(w),
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -576,7 +572,11 @@ impl Widget for ToastStack {
                     self.hovered = now_hover;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if let Some(idx) = self.card_at(self.last_cursor) {
                     self.dismiss(idx);
                     self.hovered = false;
@@ -587,17 +587,19 @@ impl Widget for ToastStack {
         }
     }
 
-    fn name(&self) -> &str { "ToastStack" }
+    fn name(&self) -> &'static str {
+        "ToastStack"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
-        // The stack is a live region of transient notifications. Expose it as a
-        // named group whose value is the most recent toast's text, and mark it
-        // an assertive live region so a freshly-shown toast announces itself
-        // immediately (without stealing keyboard focus). The stable `name`
-        // ("Notifications") is the identity the host diffs across frames.
+        // Assertive live region so a freshly-shown toast announces itself
+        // immediately without stealing keyboard focus; the stable `name`
+        // is the identity the host diffs across frames.
         let latest = self.toasts.last().map(|t| t.text.clone());
         let mut node = AccessNode::new(Role::Group)
             .with_name("Notifications")
@@ -631,24 +633,32 @@ mod tests {
         stack.apply_layout(&tree, node, Point::ZERO);
     }
 
-    fn device() -> DeviceId { unsafe { std::mem::zeroed() } }
+    fn device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
 
     fn feed(s: &mut ToastStack, ev: WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        s.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        s.handle_event(
+            &ev,
+            1.0,
+            &Default::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
     }
 
     #[test]
     fn paint_card_returns_a_top_right_close_rect_when_closable() {
-        // The card renderer owns the dismiss-button geometry: a `closable`
-        // card returns a non-empty rect anchored to the card's top-right,
-        // which the shell's notification stack hit-tests instead of doing
-        // its own close-rect maths.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
@@ -665,7 +675,10 @@ mod tests {
                 .closable(true)
                 .actionable(true),
         );
-        assert!(hit.close_rect.area() > 0.0, "closable card returns a close rect");
+        assert!(
+            hit.close_rect.area() > 0.0,
+            "closable card returns a close rect"
+        );
         assert!(
             hit.close_rect.x1 <= rect.x1 && hit.close_rect.x1 > rect.center().x,
             "close rect hugs the card's right edge",
@@ -692,8 +705,15 @@ mod tests {
             &ToastCard::new("Build finished", ToastKind::Success),
         );
         let enc = scene.encoding();
-        let color_fills = enc.draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
-        assert!(color_fills >= 2, "surface + accent stripe fills; got {color_fills}");
+        let color_fills = enc
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            color_fills >= 2,
+            "surface + accent stripe fills; got {color_fills}"
+        );
         assert!(
             !enc.resources.glyph_runs.is_empty(),
             "the title must push a glyph run into the scene",
@@ -702,8 +722,6 @@ mod tests {
 
     #[test]
     fn paint_card_is_a_noop_when_fully_faded() {
-        // alpha == 0 (the tail of the exit animation) paints nothing and
-        // returns an empty hit, so a faded-out card can't be clicked.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
@@ -714,9 +732,15 @@ mod tests {
             &mut tr,
             &theme,
             rect,
-            &ToastCard::new("gone", ToastKind::Info).alpha(0.0).closable(true),
+            &ToastCard::new("gone", ToastKind::Info)
+                .alpha(0.0)
+                .closable(true),
         );
-        assert_eq!(hit.close_rect, Rect::ZERO, "faded card exposes no close rect");
+        assert_eq!(
+            hit.close_rect,
+            Rect::ZERO,
+            "faded card exposes no close rect"
+        );
         assert!(
             scene.encoding().draw_tags.is_empty(),
             "a fully-faded card emits no draw ops",
@@ -730,8 +754,21 @@ mod tests {
         s.push("second", ToastKind::Error);
         lay_out(&mut s);
         // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
-        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (160.0, 80.0).into() });
-        feed(&mut s, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
+        feed(
+            &mut s,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (160.0, 80.0).into(),
+            },
+        );
+        feed(
+            &mut s,
+            WindowEvent::MouseInput {
+                device_id: device(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(s.len(), 1);
         assert_eq!(s.iter().next().unwrap().text, "first");
     }
@@ -753,7 +790,11 @@ mod tests {
         s.push("hello", ToastKind::Info);
         s.push("world", ToastKind::Error);
         let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(node.value.as_deref(), Some("world"), "value is the newest toast");
+        assert_eq!(
+            node.value.as_deref(),
+            Some("world"),
+            "value is the newest toast"
+        );
         assert_eq!(node.live, Some(Politeness::Assertive));
     }
 
@@ -763,13 +804,25 @@ mod tests {
         s.push("stay", ToastKind::Info);
         lay_out(&mut s);
         // Hover over the only card.
-        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (160.0, 24.0).into() });
+        feed(
+            &mut s,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (160.0, 24.0).into(),
+            },
+        );
         assert!(s.is_hovered());
         // tick longer than the TTL — but hovered, so it must NOT expire.
         s.tick(Duration::from_millis(500));
         assert_eq!(s.len(), 1, "hovered toast does not expire");
         // Move away → expiry resumes.
-        feed(&mut s, WindowEvent::CursorMoved { device_id: device(), position: (900.0, 900.0).into() });
+        feed(
+            &mut s,
+            WindowEvent::CursorMoved {
+                device_id: device(),
+                position: (900.0, 900.0).into(),
+            },
+        );
         assert!(!s.is_hovered());
         s.tick(Duration::from_millis(500));
         assert_eq!(s.len(), 0, "expires once un-hovered");

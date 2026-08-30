@@ -7,17 +7,18 @@
 //         cage -s -- /usr/bin/qos-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
-//   * `--shots <PATH> [--scenario form|error|authenticating|fingerprint|caps]`
-//     — render one login-card state into a PNG at `<PATH>` and exit. No
-//     window, no event loop. Headless snapshot for CI / visual inspection
-//     (identical output to the live binary). `--scenario` defaults to
-//     `form`.
+//   * `--shots <PATH> [--scenario <name>]` — render one login-card state
+//     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
+//     snapshot for CI / visual inspection (identical output to the live
+//     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
+//     `fingerprint`, `starting`, `caps`, `longname`. Defaults to `form`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use greeter::greeter_app::AuthScenario;
 use greeter::GreeterApp;
+use greeter::greeter_app::AuthScenario;
+use taffy::prelude::*;
 use ui::app::UserEvent;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -25,10 +26,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
@@ -40,12 +40,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
-        // Seed sample credentials for every state except the empty form so
-        // the snapshot is representative (live runs start with empty
-        // fields).
-        let seed = !matches!(scenario, AuthScenario::Form);
         let widget = GreeterApp::for_shot(scenario);
-        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out, seed)?;
+        render_shot_to_png(
+            Box::new(widget),
+            DEFAULT_SHOTS_VIEWPORT,
+            &out,
+            shot_credentials(scenario),
+        )?;
         return Ok(());
     }
 
@@ -59,10 +60,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // type credentials immediately, with no click required.
     app.autofocus_first = true;
     // Preserve keyboard focus across the structural rebuilds triggered by
-    // session-cycle, status, and auth-phase changes — without this the
-    // caret/focus is dropped on every status update (deliverable #4). The
-    // greeter never raises `take_focus_reset`, so focus is *preserved* at
-    // the same focusable ordinal rather than reset to the first field.
+    // session, status, and Caps-Lock changes — without this the caret and
+    // focus are dropped on every status update. Those rebuilds leave
+    // `take_focus_reset` clear, so focus is *preserved* at the same
+    // focusable ordinal; only an auth-phase transition raises it, because
+    // that one enables/disables the inputs and so changes which widgets are
+    // focusable at all.
     app.autofocus_on_structure_change = true;
     app.run_with_setup(move |proxy| {
         let _ = proxy_slot.set(proxy);
@@ -104,7 +107,28 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
         "authenticating" => Some(AuthScenario::Authenticating),
         "fingerprint" => Some(AuthScenario::Fingerprint),
         "caps" | "capslock" | "caps-lock" => Some(AuthScenario::CapsLock),
+        "hint" => Some(AuthScenario::Hint),
+        "starting" => Some(AuthScenario::Starting),
+        "longname" | "long-name" | "long" => Some(AuthScenario::LongName),
         _ => None,
+    }
+}
+
+/// Credentials to seed for a `--shots` render, as `(username, password)`,
+/// or `None` to leave both fields empty.
+///
+/// Live runs always start empty; these exist only so each snapshot shows a
+/// representative frame of the state it is named after.
+fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static str)> {
+    match scenario {
+        // The first frame anyone ever sees: both fields empty.
+        AuthScenario::Form => None,
+        // The whole point of the hint state is the *missing* password.
+        AuthScenario::Hint => Some(("quinten", "")),
+        // Long enough to overrun the field, so the snapshot proves how it
+        // degrades rather than leaving it to chance.
+        AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
+        _ => Some(("quinten", "hunter2")),
     }
 }
 
@@ -112,18 +136,18 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
 ///
-/// `seed_creds` pre-populates the username/password CRDT objects so the
+/// `seed` pre-populates the username/password CRDT objects so the
 /// non-form screens render representative text. Because the composed
 /// children are only created *inside* `build_layout`, we sync a second time
-/// afterwards so those children (the TextInputs) pull their values from the
+/// afterwards so those children (the `TextInputs`) pull their values from the
 /// document — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
-    seed_creds: bool,
+    seed: Option<(&str, &str)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use automerge::{transaction::Transactable, ObjType};
+    use automerge::{ObjType, transaction::Transactable};
 
     let (w, h) = viewport;
     let theme = Theme::dark();
@@ -135,15 +159,15 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
 
-    if seed_creds {
+    if let Some((username, password)) = seed {
         let uobj = state
             .doc
             .put_object(&state.root, "greeter.username", ObjType::Text)?;
-        let _ = state.doc.splice_text(&uobj, 0, 0, "quinten");
+        let _ = state.doc.splice_text(&uobj, 0, 0, username);
         let pobj = state
             .doc
             .put_object(&state.root, "greeter.password", ObjType::Text)?;
-        let _ = state.doc.splice_text(&pobj, 0, 0, "hunter2");
+        let _ = state.doc.splice_text(&pobj, 0, 0, password);
     }
 
     widget.sync(&mut state.doc, &state.root);

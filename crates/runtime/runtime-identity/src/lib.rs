@@ -1,37 +1,23 @@
 //! `runtime-identity` — user-identity loader for qOS apps.
 //!
 //! The launcher points at the user's identity record file via the
-//! `QOS_USER_IDENTITY` env var. This crate reads and parses it,
-//! exposes a [`SigningIdentity`] that apps use to sign collab-op
-//! and attestation payloads.
+//! `QOS_USER_IDENTITY` env var; this crate reads and parses it, exposing a
+//! [`SigningIdentity`] apps use to sign collab-op and attestation payloads.
 //!
-//! ## On-disk format
-//!
-//! The file is the JSON emitted by the identity-flow's
-//! `IdentityRecord::to_json_bytes` (see `ui/src/widget/identity_flow`).
-//! We deliberately keep a *minimal local copy* of the schema
-//! (`ondisk::IdentityRecord`) instead of taking a dep on `ui` —
-//! `ui` is heavy and depends on this SDK layer transitively, so a
-//! back-edge would form a cycle. If the flow's schema evolves in a
-//! breaking way, both sides bump the version tag together.
-//!
-//! ## Single-device vs. threshold signing
+//! The on-disk file is the JSON emitted by the identity-flow's
+//! `IdentityRecord::to_json_bytes` (see `ui/src/widget/identity_flow`). This
+//! crate keeps a minimal local copy of the schema (`ondisk::IdentityRecord`)
+//! rather than depending on `ui`, which is heavy and depends on this SDK
+//! layer transitively — a dep the other way would form a cycle. Both sides
+//! bump the version tag together on a breaking schema change.
 //!
 //! In 1-of-1 (single-device) mode this crate signs locally via
-//! ed25519-dalek — the on-disk `secret_bytes` is the 32-byte Ed25519
-//! seed and standard verification works against the recorded
-//! `group_public_key`. The loader proves that pairing before handing
-//! back an identity: a record whose secret does not derive its own
-//! recorded public key is refused, not warned about.
-//!
-//! In threshold mode (`t > 1`) signing requires a multi-device
-//! FROST round-trip that this SDK crate does NOT drive. [`SigningIdentity::sign`]
-//! returns [`NotAvailable::ConnectionFailed`] wrapping an `Unsupported`
-//! `io::Error` in that case; apps that need threshold-mode signing
-//! should reach for `threshold-identity` directly and orchestrate
-//! the ceremony themselves.
-//!
-//! ## Usage
+//! ed25519-dalek; the loader refuses (not just warns about) a record whose
+//! `secret_bytes` does not derive its own recorded `group_public_key`. In
+//! threshold mode (`t > 1`) signing needs a multi-device FROST round-trip
+//! this SDK crate does not drive — [`SigningIdentity::sign`] returns
+//! [`NotAvailable::ConnectionFailed`] and apps needing it should reach for
+//! `threshold-identity` directly.
 //!
 //! ```ignore
 //! let identity = runtime_identity::load()?;
@@ -51,14 +37,11 @@ use ed25519_dalek::{Signer, SigningKey};
 
 pub use runtime_portal::NotAvailable;
 
-/// Environment-variable name the launcher sets to a path pointing
-/// at the on-disk identity record.
+/// Env var the launcher sets to the on-disk identity record's path.
 pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
 
-/// Wire-format types the loader deserialises from disk. Mirrors the
-/// shape of `ui::widget::identity_flow::IdentityRecord`; extra
-/// fields are ignored so an older SDK reading a newer file does not
-/// hard-fail.
+/// Wire-format types the loader deserialises from disk, mirroring
+/// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
     use serde::Deserialize;
 
@@ -85,16 +68,20 @@ mod ondisk {
     }
 }
 
-/// Reason the identity record failed to load — bundled into
-/// `NotAvailable::ConnectionFailed` via an `io::Error` so callers
-/// have exactly one error type to match on.
+/// Reason the identity record failed to load; bundled into
+/// `NotAvailable::ConnectionFailed` so callers match one error type.
 #[derive(Debug)]
 enum LoadFailure {
     ReadFailed(io::Error),
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
-    SecretSizeMismatch { got: usize },
-    PublicKeyMismatch { derived: [u8; 32], recorded: [u8; 32] },
+    SecretSizeMismatch {
+        got: usize,
+    },
+    PublicKeyMismatch {
+        derived: [u8; 32],
+        recorded: [u8; 32],
+    },
 }
 
 impl std::fmt::Display for LoadFailure {
@@ -117,9 +104,8 @@ impl std::fmt::Display for LoadFailure {
     }
 }
 
-/// First four bytes of a key, hex, for error text. Never the whole
-/// key: an error string can end up in a log a third party reads, and
-/// a prefix is enough to tell two keys apart while debugging.
+/// First four bytes of a key, hex, for error text — never the whole key,
+/// since an error string can end up in a log a third party reads.
 fn hex4(key: &[u8; 32]) -> String {
     key[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -137,12 +123,11 @@ impl LoadFailure {
     }
 }
 
-/// The loaded user identity. Owns the private signing material in
-/// memory for the process lifetime; wrap it in an `Arc` in the app
-/// if you need to share it across tasks.
+/// The loaded user identity; owns the private signing material for the
+/// process lifetime (wrap in an `Arc` to share across tasks).
 ///
-/// **Never** serialise or log this struct — it holds the raw
-/// Ed25519 secret. `Debug` deliberately omits `signing_key`.
+/// **Never** serialise or log this struct — it holds the raw Ed25519
+/// secret. `Debug` deliberately omits `signing_key`.
 pub struct SigningIdentity {
     display_name: String,
     avatar_color: [u8; 3],
@@ -150,9 +135,8 @@ pub struct SigningIdentity {
     threshold: u16,
     total_shares: u16,
     share_index: u16,
-    /// Present only in single-device (1-of-1) mode. `None` in
-    /// threshold mode; [`Self::sign`] then returns an unsupported
-    /// error.
+    /// Present only in single-device (1-of-1) mode; `None` in threshold mode,
+    /// where [`Self::sign`] returns an unsupported error.
     signing_key: Option<SigningKey>,
 }
 
@@ -170,8 +154,7 @@ impl std::fmt::Debug for SigningIdentity {
 }
 
 impl SigningIdentity {
-    /// Human-picked display name (e.g. surfaced in chrome, presence
-    /// pills). May be empty.
+    /// Human-picked display name (chrome, presence pills); may be empty.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
@@ -181,15 +164,13 @@ impl SigningIdentity {
         self.avatar_color
     }
 
-    /// The 32-byte group public key — byte-compatible with a
-    /// standard Ed25519 verifier and stable across threshold
-    /// enrolments (until the next DKG rotation).
+    /// The 32-byte group public key — byte-compatible with a standard Ed25519
+    /// verifier, stable across threshold enrolments until the next DKG rotation.
     pub fn group_public_key(&self) -> [u8; 32] {
         self.group_public_key
     }
 
-    /// `t` in t-of-n. `1` when the user is still in single-device
-    /// bootstrap mode.
+    /// `t` in t-of-n; `1` while the user is still in single-device bootstrap mode.
     pub fn threshold(&self) -> u16 {
         self.threshold
     }
@@ -204,20 +185,15 @@ impl SigningIdentity {
         self.share_index
     }
 
-    /// True while the identity is still in 1-of-1 mode — the fast
-    /// path where signing is local and cheap.
+    /// True while the identity is still in 1-of-1 mode, the fast local-signing path.
     pub fn is_single_device(&self) -> bool {
         self.signing_key.is_some()
     }
 
-    /// Sign a message locally.
-    ///
-    /// - **Single-device mode:** returns the raw 64-byte Ed25519
-    ///   signature.
-    /// - **Threshold mode:** returns [`NotAvailable::ConnectionFailed`]
-    ///   wrapping an `Unsupported` `io::Error`. Apps that need
-    ///   threshold-mode signing must drive the multi-device FROST
-    ///   ceremony via `threshold-identity` directly.
+    /// Sign a message locally. In single-device mode, returns the raw 64-byte
+    /// Ed25519 signature; in threshold mode, returns
+    /// [`NotAvailable::ConnectionFailed`] — threshold signing needs the
+    /// multi-device FROST ceremony via `threshold-identity` instead.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.signing_key {
             Some(sk) => Ok(sk.sign(message).to_bytes()),
@@ -230,16 +206,11 @@ impl SigningIdentity {
     }
 }
 
-/// Load the user's identity from the file the launcher points at
-/// via [`IDENTITY_ENV_VAR`].
-///
-/// Returns:
-/// - `Err(NotAvailable::ServiceFdMissing)` when the env var is
-///   unset or empty (app is running outside qOS).
-/// - `Err(NotAvailable::ConnectionFailed(_))` when the file is
-///   missing, unreadable, or the JSON does not match the expected
-///   schema.
-/// - `Ok(SigningIdentity)` on success.
+/// Load the user's identity from the file the launcher points at via
+/// [`IDENTITY_ENV_VAR`]. Returns `Err(NotAvailable::ServiceFdMissing)` when
+/// the env var is unset/empty (running outside qOS),
+/// `Err(NotAvailable::ConnectionFailed(_))` when the file is missing,
+/// unreadable, or malformed, and `Ok(SigningIdentity)` on success.
 pub fn load() -> Result<SigningIdentity, NotAvailable> {
     let path_str = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
     if path_str.is_empty() {
@@ -248,13 +219,10 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
     load_from_path(PathBuf::from(path_str))
 }
 
-/// Same as [`load`] but reads from a caller-specified path. Handy
-/// for tests and for apps that resolve the identity path themselves
-/// (e.g. from a settings menu that lets the user pick between
-/// multiple identities).
+/// Same as [`load`] but reads from a caller-specified path — for tests, or
+/// apps that resolve the identity path themselves.
 pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
-    let bytes = fs::read(&path)
-        .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
+    let bytes = fs::read(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     load_from_bytes(&bytes)
 }
 
@@ -269,32 +237,29 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 
     let ti = record.threshold_identity;
     if ti.secret_bytes.len() != 32 {
-        return Err(
-            LoadFailure::SecretSizeMismatch { got: ti.secret_bytes.len() }.into_not_available(),
-        );
+        return Err(LoadFailure::SecretSizeMismatch {
+            got: ti.secret_bytes.len(),
+        }
+        .into_not_available());
     }
 
     let signing_key = if ti.single_device {
         let mut scalar = [0u8; 32];
         scalar.copy_from_slice(&ti.secret_bytes);
-        // SigningKey::from_bytes is infallible: it accepts any
-        // 32-byte input as an Ed25519 scalar seed. If a future
-        // dalek revision surfaces validation errors, catch them
-        // here.
+        // SigningKey::from_bytes is infallible today; if a future dalek revision
+        // surfaces validation errors, catch them here.
         Some(SigningKey::from_bytes(&scalar))
     } else {
         None
     };
 
-    // The record's two halves must agree: expanding `secret_bytes`
-    // must derive `group_public_key`. A record that fails this is not
-    // an identity — it signs under a key nobody knows it by, so every
-    // op it authors is rejected by the verifier while the app believes
-    // it is authenticated. Refuse to load it.
+    // The record's two halves must agree: expanding `secret_bytes` must derive
+    // `group_public_key`. A record that fails this signs under a key nobody
+    // verifies it by, so every op it authors is silently rejected downstream
+    // while the app believes itself authenticated — refuse to load it.
     //
-    // This check is fatal in every build. A check that warns under
-    // `debug_assertions` and passes in release is not a check: the
-    // configuration that ships is the one that skips it.
+    // This check is fatal in every build: one that only warns under
+    // `debug_assertions` ships exactly the configuration that skips it.
     if let Some(sk) = &signing_key {
         let derived = sk.verifying_key().to_bytes();
         if derived != ti.group_public_key {
@@ -321,9 +286,8 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 // Serialize/Debug-with-secret onto SigningIdentity's signing_key.
 #[allow(dead_code)]
 fn _static_no_serialize() {
-    // If someone adds `#[derive(serde::Serialize)]` to SigningIdentity
-    // in the future, this stops compiling — the `SigningKey` doesn't
-    // want a serde derive at the outer layer.
+    // If SigningIdentity ever gains `#[derive(serde::Serialize)]`, this stops
+    // compiling — `SigningKey` doesn't want a serde derive at the outer layer.
     fn takes<T>(_: &T) {}
     let _ = |x: &SigningIdentity| takes(x);
 }
@@ -411,10 +375,7 @@ mod tests {
 
     #[test]
     fn single_device_load_then_sign_and_verify() {
-        // Cook up a real Ed25519 keypair, wrap it in the on-disk
-        // schema, load it, sign a message, verify via a standard
-        // Ed25519 verifier. This is the end-to-end happy path
-        // apps will hit.
+        // The end-to-end happy path apps will hit.
         use ed25519_dalek::{Verifier, VerifyingKey};
 
         let secret = [7u8; 32];
@@ -449,13 +410,14 @@ mod tests {
         let sig_bytes = ident.sign(msg).expect("sign");
         let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
         let verifier = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
-        verifier.verify(msg, &sig).expect("verification should succeed");
+        verifier
+            .verify(msg, &sig)
+            .expect("verification should succeed");
     }
 
-    /// A record whose secret does not derive its recorded public key
-    /// must not load. Historically this mismatch was tolerated with a
-    /// debug-only stderr note, so release builds silently handed apps
-    /// an identity whose every signature was rejected downstream.
+    /// A record whose secret does not derive its recorded public key must not
+    /// load — silently accepting it would hand apps an identity that can never
+    /// sign successfully.
     #[test]
     fn secret_that_does_not_derive_the_recorded_pubkey_is_refused() {
         // The exact shape the old identity ceremony wrote: a digest

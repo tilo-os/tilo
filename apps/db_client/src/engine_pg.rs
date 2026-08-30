@@ -1,4 +1,4 @@
-//! PostgreSQL execution engine: opens a real TCP connection through the sync
+//! `PostgreSQL` execution engine: opens a real TCP connection through the sync
 //! `postgres` crate, introspects the catalog (`information_schema` +
 //! `pg_catalog`) and runs arbitrary SQL returning a [`QueryResult`]. Mirrors
 //! the shape of [`crate::engine::SqliteEngine`] so the session layer can hold
@@ -19,7 +19,7 @@ use crate::model::{
     TableInfo, TypeClass,
 };
 
-/// A live PostgreSQL connection. Owns the client for the session lifetime.
+/// A live `PostgreSQL` connection. Owns the client for the session lifetime.
 pub struct PostgresEngine {
     client: Client,
 }
@@ -34,7 +34,11 @@ pub(crate) fn pg_config(profile: &crate::model::ConnectionProfile) -> Config {
         profile.host.as_str()
     };
     cfg.host(host);
-    cfg.port(if profile.port == 0 { 5432 } else { profile.port });
+    cfg.port(if profile.port == 0 {
+        5432
+    } else {
+        profile.port
+    });
     if !profile.user.is_empty() {
         cfg.user(&profile.user);
     }
@@ -232,7 +236,10 @@ impl PostgresEngine {
             schema.replace('"', "\"\""),
             table.replace('"', "\"\"")
         );
-        let row = self.client.query_one(&sql, &[]).map_err(|e| e.to_string())?;
+        let row = self
+            .client
+            .query_one(&sql, &[])
+            .map_err(|e| e.to_string())?;
         row.try_get::<_, i64>(0).map_err(|e| e.to_string())
     }
 
@@ -250,10 +257,7 @@ impl PostgresEngine {
         match self.client.prepare(trimmed) {
             Ok(stmt) if stmt.columns().is_empty() => {
                 // DML/DDL — execute and report affected rows.
-                let affected = self
-                    .client
-                    .execute(&stmt, &[])
-                    .map_err(|e| e.to_string())?;
+                let affected = self.client.execute(&stmt, &[]).map_err(|e| e.to_string())?;
                 Ok(QueryResult {
                     columns: Vec::new(),
                     rows: Vec::new(),
@@ -263,8 +267,11 @@ impl PostgresEngine {
                 })
             }
             Ok(stmt) => {
-                let columns: Vec<String> =
-                    stmt.columns().iter().map(|c| c.name().to_string()).collect();
+                let columns: Vec<String> = stmt
+                    .columns()
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect();
                 let rows = self.simple_rows(trimmed)?;
                 Ok(QueryResult {
                     columns,
@@ -309,11 +316,7 @@ impl PostgresEngine {
                 SimpleQueryMessage::Row(row) => {
                     saw_rows = true;
                     if columns.is_empty() {
-                        columns = row
-                            .columns()
-                            .iter()
-                            .map(|c| c.name().to_string())
-                            .collect();
+                        columns = row.columns().iter().map(|c| c.name().to_string()).collect();
                     }
                     let mut cells = Vec::with_capacity(row.len());
                     for i in 0..row.len() {

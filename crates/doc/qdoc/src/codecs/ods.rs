@@ -1,16 +1,21 @@
-//! `.ods` (OpenDocument Spreadsheet) codec. Parses the ODF package's `content.xml`
+//! `.ods` (`OpenDocument` Spreadsheet) codec. Parses the ODF package's `content.xml`
 //! spreadsheet body into the CRDT [`Workbook`] model — sheets, positional cells,
 //! cell types, and **formulas** (`table:formula`, preserved verbatim) — and
 //! serializes a complete valid package back. Untrusted bytes enter only through
 //! the bounded/hardened [`SheetPackage`] reader (zip-bomb + XXE defence).
 
-use crate::codecs::sheet_common::{attr_local, end_local_name, local_name, xml_escape, SheetPackage, SheetProvider};
+use crate::codecs::sheet_common::{
+    SheetPackage, SheetProvider, attr_local, end_local_name, local_name, xml_escape,
+};
 use crate::format::{CodecError, Confidence};
 use crate::sheet::snapshot::CellType;
 use crate::sheet::{CellInput, CellView, SheetView, Workbook, WorkbookSnapshot};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 const MIMETYPE: &str = "application/vnd.oasis.opendocument.spreadsheet";
 
@@ -31,18 +36,19 @@ impl SheetProvider for OdsCodec {
 
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
         let pkg = SheetPackage::read(bytes)?;
-        let content = pkg.get("content.xml").ok_or_else(|| CodecError::Parse("ods: missing content.xml".into()))?;
+        let content = pkg
+            .get("content.xml")
+            .ok_or_else(|| CodecError::Parse("ods: missing content.xml".into()))?;
         parse_content(content, wb)?;
         if let Some(meta) = pkg.get("meta.xml") {
             import_meta(meta, wb);
         }
-        // Preserve styles + other unmodeled parts so table:style-name refs resolve
-        // and the package stays valid; content.xml is regenerated on export.
+        // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
         for name in pkg.names() {
-            if is_preserved_part(name) {
-                if let Some(b) = pkg.get(name) {
-                    wb.set_preserved(&format!("ods/part/{name}"), b);
-                }
+            if is_preserved_part(name)
+                && let Some(b) = pkg.get(name)
+            {
+                wb.set_preserved(&format!("ods/part/{name}"), b);
             }
         }
         Ok(())
@@ -58,16 +64,15 @@ impl SheetProvider for OdsCodec {
         if let Some(styles) = wb.preserved_part("ods/part/styles.xml") {
             pkg.set("styles.xml", styles);
         }
-        pkg.set("META-INF/manifest.xml", manifest_xml(has_styles).into_bytes());
+        pkg.set(
+            "META-INF/manifest.xml",
+            manifest_xml(has_styles).into_bytes(),
+        );
         pkg.write_odf()
     }
 }
 
-// ---- content.xml parsing ---------------------------------------------------
-
-/// Parse the spreadsheet body: `table:table` (sheets) → `table:table-row` →
-/// `table:table-cell` (positional cells, honouring column/row repeats and
-/// preserving `table:formula`).
+/// Parses the spreadsheet body: `table:table` → `table:table-row` → `table:table-cell` (positional, honouring column/row repeats and formulas).
 fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
@@ -78,19 +83,24 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
     let mut row_repeat: u32 = 1;
     let mut col: u32 = 0; // column cursor within the current row
 
-    // Current-cell scratch.
     let mut cur = OdsCell::default();
     let mut in_text_p = false;
 
     loop {
-        match reader.read_event().map_err(|e| CodecError::Parse(format!("content xml: {e}")))? {
+        match reader
+            .read_event()
+            .map_err(|e| CodecError::Parse(format!("content xml: {e}")))?
+        {
             Event::Start(e) | Event::Empty(e) if local_name(&e) == b"table" => {
                 let name = attr_local(&e, b"name").unwrap_or_else(|| "Sheet".to_string());
                 sheet_id = Some(wb.add_sheet(&name));
                 row = 0;
             }
             Event::Start(e) if local_name(&e) == b"table-row" => {
-                row_repeat = attr_local(&e, b"number-rows-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).max(1);
+                row_repeat = attr_local(&e, b"number-rows-repeated")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(1)
+                    .max(1);
                 cur_row = row + 1;
                 col = 0;
             }
@@ -100,20 +110,27 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
                 row_repeat = 1;
             }
             // A self-closing cell — no `<text:p>` child, flush immediately.
-            Event::Empty(e) if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" => {
+            Event::Empty(e)
+                if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
+            {
                 let (cell, repeat) = read_cell_attrs(&e, col + 1);
                 if let Some(sid) = sheet_id.as_deref() {
                     flush_cell(wb, sid, &cell, cur_row);
                 }
                 col += repeat;
             }
-            Event::Start(e) if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" => {
+            Event::Start(e)
+                if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
+            {
                 let (cell, repeat) = read_cell_attrs(&e, col + 1);
                 cur = cell;
                 cur.repeat = repeat;
                 in_text_p = false;
             }
-            Event::End(e) if end_local_name(&e) == b"table-cell" || end_local_name(&e) == b"covered-table-cell" => {
+            Event::End(e)
+                if end_local_name(&e) == b"table-cell"
+                    || end_local_name(&e) == b"covered-table-cell" =>
+            {
                 let _ = &e;
                 if let Some(sid) = sheet_id.as_deref() {
                     flush_cell(wb, sid, &cur, cur_row);
@@ -134,7 +151,9 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
             }
             Event::Text(t) => {
                 if in_text_p {
-                    let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
+                    let txt = t
+                        .xml10_content()
+                        .map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
                     cur.text.push_str(&txt);
                 }
             }
@@ -161,7 +180,10 @@ struct OdsCell {
 }
 
 fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> (OdsCell, u32) {
-    let repeat = attr_local(e, b"number-columns-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).max(1);
+    let repeat = attr_local(e, b"number-columns-repeated")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
     let cell = OdsCell {
         col,
         repeat,
@@ -177,13 +199,16 @@ fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> (OdsCell, u32
     (cell, repeat)
 }
 
-/// Resolve a parsed ODS cell into a [`CellInput`] and write it (skipping cells
-/// with no value, formula, or style). Repeated *populated* cells are placed once
-/// at their first column — the common repeat is a run of empty cells, which carry
-/// nothing to store.
+/// Resolves a parsed ODS cell into a [`CellInput`] and writes it (skipping cells with
+/// no value/formula/style); a repeated *populated* cell is placed once at its first column.
 fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
     let (cell_type, value) = match cell.value_type.as_str() {
-        "float" | "percentage" | "currency" => (CellType::Number, cell.office_value.clone().unwrap_or_else(|| cell.text.clone())),
+        "float" | "percentage" | "currency" => (
+            CellType::Number,
+            cell.office_value
+                .clone()
+                .unwrap_or_else(|| cell.text.clone()),
+        ),
         "boolean" => (
             CellType::Bool,
             match cell.bool_value.as_deref() {
@@ -192,8 +217,16 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
                 None => cell.text.clone(),
             },
         ),
-        "date" | "time" => (CellType::Text, cell.date_value.clone().unwrap_or_else(|| cell.text.clone())),
-        "string" => (CellType::Text, cell.string_value.clone().unwrap_or_else(|| cell.text.clone())),
+        "date" | "time" => (
+            CellType::Text,
+            cell.date_value.clone().unwrap_or_else(|| cell.text.clone()),
+        ),
+        "string" => (
+            CellType::Text,
+            cell.string_value
+                .clone()
+                .unwrap_or_else(|| cell.text.clone()),
+        ),
         _ => {
             // No declared type: infer from what's present.
             if let Some(v) = &cell.office_value {
@@ -208,15 +241,28 @@ fn flush_cell(wb: &mut Workbook, sheet_id: &str, cell: &OdsCell, row: u32) {
     if value.is_empty() && cell.formula.is_none() && cell.style.is_none() {
         return;
     }
-    let cell_type = if value.is_empty() && cell.formula.is_none() { CellType::Empty } else { cell_type };
+    let cell_type = if value.is_empty() && cell.formula.is_none() {
+        CellType::Empty
+    } else {
+        cell_type
+    };
     let reference = crate::sheet::a1::make_ref(cell.col, row);
-    wb.set_cell(sheet_id, &reference, CellInput { value, cell_type, formula: cell.formula.clone(), style: cell.style.clone() });
+    wb.set_cell(
+        sheet_id,
+        &reference,
+        CellInput {
+            value,
+            cell_type,
+            formula: cell.formula.clone(),
+            style: cell.style.clone(),
+        },
+    );
 }
 
-// ---- meta.xml --------------------------------------------------------------
-
 fn import_meta(xml: &[u8], wb: &mut Workbook) {
-    let Ok(s) = std::str::from_utf8(xml) else { return };
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return;
+    };
     let mut reader = Reader::from_str(s);
     let mut cur: Option<&'static str> = None;
     let mut buf = String::new();
@@ -233,17 +279,17 @@ fn import_meta(xml: &[u8], wb: &mut Workbook) {
                 buf.clear();
             }
             Event::Text(t) => {
-                if cur.is_some() {
-                    if let Ok(txt) = t.xml10_content() {
-                        buf.push_str(&txt);
-                    }
+                if cur.is_some()
+                    && let Ok(txt) = t.xml10_content()
+                {
+                    buf.push_str(&txt);
                 }
             }
             Event::End(_) => {
-                if let Some(key) = cur.take() {
-                    if !buf.is_empty() {
-                        wb.set_prop(key, &buf);
-                    }
+                if let Some(key) = cur.take()
+                    && !buf.is_empty()
+                {
+                    wb.set_prop(key, &buf);
                 }
             }
             Event::Eof => break,
@@ -251,8 +297,6 @@ fn import_meta(xml: &[u8], wb: &mut Workbook) {
         }
     }
 }
-
-// ---- export: content.xml ---------------------------------------------------
 
 const CONTENT_NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2" xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0""#;
 
@@ -278,10 +322,12 @@ fn table_xml(sheet: &SheetView) -> String {
     let mut rows_xml = String::new();
     let mut prev_row = 0u32;
     for (&row, cells) in &by_row {
-        // Collapse the empty rows between the previous populated row and this one.
         if row > prev_row + 1 {
             let gap = row - prev_row - 1;
-            rows_xml.push_str(&format!(r#"<table:table-row table:number-rows-repeated="{gap}"><table:table-cell/></table:table-row>"#));
+            let _ = write!(
+                rows_xml,
+                r#"<table:table-row table:number-rows-repeated="{gap}"><table:table-cell/></table:table-row>"#
+            );
         }
         rows_xml.push_str("<table:table-row>");
         let mut prev_col = 0u32;
@@ -290,7 +336,10 @@ fn table_xml(sheet: &SheetView) -> String {
         for c in ordered {
             if c.col > prev_col + 1 {
                 let gap = c.col - prev_col - 1;
-                rows_xml.push_str(&format!(r#"<table:table-cell table:number-columns-repeated="{gap}"/>"#));
+                let _ = write!(
+                    rows_xml,
+                    r#"<table:table-cell table:number-columns-repeated="{gap}"/>"#
+                );
             }
             rows_xml.push_str(&cell_xml(c));
             prev_col = c.col;
@@ -307,17 +356,38 @@ fn table_xml(sheet: &SheetView) -> String {
 }
 
 fn cell_xml(cell: &CellView) -> String {
-    let formula_attr = cell.formula.as_deref().map(|f| format!(r#" table:formula="{}""#, xml_escape(f))).unwrap_or_default();
-    let style_attr = cell.style.as_deref().map(|s| format!(r#" table:style-name="{}""#, xml_escape(s))).unwrap_or_default();
+    let formula_attr = cell
+        .formula
+        .as_deref()
+        .map(|f| format!(r#" table:formula="{}""#, xml_escape(f)))
+        .unwrap_or_default();
+    let style_attr = cell
+        .style
+        .as_deref()
+        .map(|s| format!(r#" table:style-name="{}""#, xml_escape(s)))
+        .unwrap_or_default();
     let (value_attrs, body): (String, String) = match cell.cell_type {
         CellType::Number => (
-            format!(r#" office:value-type="float" office:value="{}""#, xml_escape(&cell.value)),
+            format!(
+                r#" office:value-type="float" office:value="{}""#,
+                xml_escape(&cell.value)
+            ),
             format!("<text:p>{}</text:p>", xml_escape(&cell.value)),
         ),
-        CellType::Text => (r#" office:value-type="string""#.to_string(), format!("<text:p>{}</text:p>", xml_escape(&cell.value))),
+        CellType::Text => (
+            r#" office:value-type="string""#.to_string(),
+            format!("<text:p>{}</text:p>", xml_escape(&cell.value)),
+        ),
         CellType::Bool => {
-            let b = if cell.value.eq_ignore_ascii_case("true") || cell.value == "1" { "true" } else { "false" };
-            (format!(r#" office:value-type="boolean" office:boolean-value="{b}""#), format!("<text:p>{b}</text:p>"))
+            let b = if cell.value.eq_ignore_ascii_case("true") || cell.value == "1" {
+                "true"
+            } else {
+                "false"
+            };
+            (
+                format!(r#" office:value-type="boolean" office:boolean-value="{b}""#),
+                format!("<text:p>{b}</text:p>"),
+            )
         }
         CellType::Error => (
             r#" office:value-type="float" calcext:value-type="error""#.to_string(),
@@ -325,24 +395,26 @@ fn cell_xml(cell: &CellView) -> String {
         ),
         CellType::Empty => (String::new(), String::new()),
     };
-    format!(r#"<table:table-cell{value_attrs}{formula_attr}{style_attr}>{body}</table:table-cell>"#)
+    format!(r"<table:table-cell{value_attrs}{formula_attr}{style_attr}>{body}</table:table-cell>")
 }
-
-// ---- export: meta.xml + manifest.xml ---------------------------------------
 
 fn meta_xml(props: &BTreeMap<String, String>) -> String {
     let mut fields = String::new();
     if let Some(v) = props.get("title") {
-        fields.push_str(&format!("<dc:title>{}</dc:title>", xml_escape(v)));
+        let _ = write!(fields, "<dc:title>{}</dc:title>", xml_escape(v));
     }
     if let Some(v) = props.get("author") {
-        fields.push_str(&format!("<dc:creator>{}</dc:creator>", xml_escape(v)));
+        let _ = write!(fields, "<dc:creator>{}</dc:creator>", xml_escape(v));
     }
     if let Some(v) = props.get("created") {
-        fields.push_str(&format!("<meta:creation-date>{}</meta:creation-date>", xml_escape(v)));
+        let _ = write!(
+            fields,
+            "<meta:creation-date>{}</meta:creation-date>",
+            xml_escape(v)
+        );
     }
     if let Some(v) = props.get("modified") {
-        fields.push_str(&format!("<dc:date>{}</dc:date>", xml_escape(v)));
+        let _ = write!(fields, "<dc:date>{}</dc:date>", xml_escape(v));
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -362,9 +434,11 @@ fn manifest_xml(has_styles: bool) -> String {
     )
 }
 
-/// Whether an ODS part is preserved verbatim (kept so `table:style-name` refs
-/// resolve and the package stays valid). The regenerated parts — `mimetype`,
-/// `content.xml`, `meta.xml`, the manifest — are not preserved.
+/// Whether an ODS part is preserved verbatim; the regenerated parts (`mimetype`, `content.xml`, `meta.xml`, the manifest) are not.
 fn is_preserved_part(name: &str) -> bool {
-    !(name == "mimetype" || name == "content.xml" || name == "meta.xml" || name == "META-INF/manifest.xml" || name.ends_with('/'))
+    !(name == "mimetype"
+        || name == "content.xml"
+        || name == "meta.xml"
+        || name == "META-INF/manifest.xml"
+        || name.ends_with('/'))
 }

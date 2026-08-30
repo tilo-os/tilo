@@ -3,26 +3,26 @@
 //! Renders four frames through the widget's real five-pass pipeline and its
 //! real event handler (no private-field pokes):
 //!   1. `table-base.png`          — a seeded 3-column table with a header band
-//!                                   and the always-on insert ticks in the
-//!                                   gutters.
+//!      and the always-on insert ticks in the
+//!      gutters.
 //!   2. `table-insert-col.png`    — hovering a *middle* column boundary shows
-//!                                   the accent insert pill + full-height guide.
+//!      the accent insert pill + full-height guide.
 //!   3. `table-delete-row.png`    — hovering a row's delete handle tints the
-//!                                   row danger-red and shows the "×" handle.
+//!      row danger-red and shows the "×" handle.
 //!   4. `table-after-insert.png`  — after clicking that middle boundary, a new
-//!                                   empty column has appeared between the
-//!                                   originals (asserted on the model too).
+//!      empty column has appeared between the
+//!      originals (asserted on the model too).
 //!
-//! Run:  cargo run -p ui --example table_shots
+//! Run:  cargo run -p ui --example ui-shots -- table_shots
 //! Out:  $TABLE_SHOTS_OUT (default /tmp/table_shots)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, transaction::Transactable};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use vello::kurbo::{Affine, Point};
 use vello::Scene;
+use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
@@ -30,8 +30,8 @@ use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::table::{self, Table};
 use ui::widget::Widget;
+use ui::widget::table::{self, Table};
 
 const MARGIN: f64 = 28.0;
 const LEFT_GUTTER: f64 = 24.0;
@@ -63,7 +63,11 @@ fn seed(doc: &mut AutoCommit, t: &ObjId) {
 
 /// sync → build_layout → compute_layout → apply_layout at the table's natural
 /// size, positioned at `(MARGIN, MARGIN)`.
-fn frame(table: &mut Table, doc: &mut AutoCommit, t: &ObjId) -> (TaffyTree<()>, NodeId, (f64, f64)) {
+fn frame(
+    table: &mut Table,
+    doc: &mut AutoCommit,
+    t: &ObjId,
+) -> (TaffyTree<()>, NodeId, (f64, f64)) {
     table.sync(doc, t);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -102,7 +106,15 @@ fn dispatch(
     let mut focus_target = None;
     let mods = Modifiers::default();
     table.handle_event(
-        ev, 1.0, &mods, doc, t, &mut handled, &mut focus_target, node, taffy,
+        ev,
+        1.0,
+        &mods,
+        doc,
+        t,
+        &mut handled,
+        &mut focus_target,
+        node,
+        taffy,
     );
 }
 
@@ -133,7 +145,7 @@ fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("TABLE_SHOTS_OUT").unwrap_or_else(|_| "/tmp/table_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
@@ -158,7 +170,14 @@ fn main() {
 
     // 3. hover a row's delete handle (row 2, a data row)
     let dy = MARGIN + TOP_GUTTER + 2.5 * ROW_H;
-    dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(MARGIN + LEFT_GUTTER / 2.0, dy));
+    dispatch(
+        &mut table,
+        &taffy,
+        node,
+        &mut doc,
+        &t,
+        &cursor(MARGIN + LEFT_GUTTER / 2.0, dy),
+    );
     shoot(&mut table, size, &dir.join("table-delete-row.png"));
 
     // 4. click the middle boundary → insert a column, then relayout + shoot.
@@ -166,14 +185,22 @@ fn main() {
     dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by));
     dispatch(&mut table, &taffy, node, &mut doc, &t, &press());
     let cols_after = table::dims(&doc, &t).1;
-    assert_eq!(cols_after, cols_before + 1, "middle click inserted a column");
+    assert_eq!(
+        cols_after,
+        cols_before + 1,
+        "middle click inserted a column"
+    );
 
     let (_taffy2, _node2, size2) = frame(&mut table, &mut doc, &t);
     shoot(&mut table, size2, &dir.join("table-after-insert.png"));
 
     // The freshly inserted middle column is empty; its neighbours are intact.
     assert_eq!(table::cell_text(&doc, &t, 1, 0), "Ada");
-    assert_eq!(table::cell_text(&doc, &t, 1, 1), "", "new middle column is empty");
+    assert_eq!(
+        table::cell_text(&doc, &t, 1, 1),
+        "",
+        "new middle column is empty"
+    );
     assert_eq!(table::cell_text(&doc, &t, 1, 2), "Owner");
     println!("OK: middle column inserted between originals; content preserved");
 }

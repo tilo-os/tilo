@@ -68,7 +68,11 @@ pub enum MusicAction {
     /// Remove the first occurrence of a track from a playlist.
     RemoveTrackFromPlaylist { playlist: String, track: String },
     /// Reorder a track within a playlist from `from` to `to` (clamped).
-    MoveTrackInPlaylist { playlist: String, from: usize, to: usize },
+    MoveTrackInPlaylist {
+        playlist: String,
+        from: usize,
+        to: usize,
+    },
     /// Set (or clear, with an empty string) a playlist's cover image URL. The
     /// *pick* (the native file portal) is app-side, non-deterministic work; the
     /// resulting write of the chosen URL is this deterministic, replayable action.
@@ -153,11 +157,17 @@ pub fn new_playlist_id() -> String {
 // ===========================================================================
 
 pub fn create_playlist_action(id: &str, name: &str) -> MusicAction {
-    MusicAction::CreatePlaylist { id: id.to_string(), name: name.to_string() }
+    MusicAction::CreatePlaylist {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 pub fn rename_playlist_action(id: &str, name: &str) -> MusicAction {
-    MusicAction::RenamePlaylist { id: id.to_string(), name: name.to_string() }
+    MusicAction::RenamePlaylist {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
 }
 
 pub fn delete_playlist_action(id: &str) -> MusicAction {
@@ -165,31 +175,50 @@ pub fn delete_playlist_action(id: &str) -> MusicAction {
 }
 
 pub fn add_track_action(playlist: &str, track: &str) -> MusicAction {
-    MusicAction::AddTrackToPlaylist { playlist: playlist.to_string(), track: track.to_string() }
+    MusicAction::AddTrackToPlaylist {
+        playlist: playlist.to_string(),
+        track: track.to_string(),
+    }
 }
 
 pub fn remove_track_action(playlist: &str, track: &str) -> MusicAction {
-    MusicAction::RemoveTrackFromPlaylist { playlist: playlist.to_string(), track: track.to_string() }
+    MusicAction::RemoveTrackFromPlaylist {
+        playlist: playlist.to_string(),
+        track: track.to_string(),
+    }
 }
 
 pub fn move_track_action(playlist: &str, from: usize, to: usize) -> MusicAction {
-    MusicAction::MoveTrackInPlaylist { playlist: playlist.to_string(), from, to }
+    MusicAction::MoveTrackInPlaylist {
+        playlist: playlist.to_string(),
+        from,
+        to,
+    }
 }
 
 pub fn set_cover_action(playlist: &str, cover: &str) -> MusicAction {
-    MusicAction::SetPlaylistCover { playlist: playlist.to_string(), cover: cover.to_string() }
+    MusicAction::SetPlaylistCover {
+        playlist: playlist.to_string(),
+        cover: cover.to_string(),
+    }
 }
 
 pub fn toggle_liked_action(track: &str) -> MusicAction {
-    MusicAction::ToggleLiked { track: track.to_string() }
+    MusicAction::ToggleLiked {
+        track: track.to_string(),
+    }
 }
 
 pub fn toggle_saved_album_action(album: &str) -> MusicAction {
-    MusicAction::ToggleSavedAlbum { album: album.to_string() }
+    MusicAction::ToggleSavedAlbum {
+        album: album.to_string(),
+    }
 }
 
 pub fn toggle_followed_artist_action(artist: &str) -> MusicAction {
-    MusicAction::ToggleFollowedArtist { artist: artist.to_string() }
+    MusicAction::ToggleFollowedArtist {
+        artist: artist.to_string(),
+    }
 }
 
 // ===========================================================================
@@ -225,7 +254,11 @@ fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
 
 fn playlist_label(p: &PlaylistResource) -> String {
     let n = p.name.trim();
-    if n.is_empty() { "Untitled playlist".to_string() } else { n.to_string() }
+    if n.is_empty() {
+        "Untitled playlist".to_string()
+    } else {
+        n.to_string()
+    }
 }
 
 /// Build the resource tree Music currently has open: the library (with a "New
@@ -245,7 +278,11 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         "playlist name…",
         ExecutionLocus::ClientLocal,
         move |name: &str| {
-            let name = if name.trim().is_empty() { "New Playlist" } else { name.trim() };
+            let name = if name.trim().is_empty() {
+                "New Playlist"
+            } else {
+                name.trim()
+            };
             encode(&create_playlist_action(&new_playlist_id(), name))
         },
     ));
@@ -268,7 +305,11 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             move |name: &str| encode(&rename_playlist_action(&pid, name.trim())),
         ));
         // Delete the whole playlist.
-        child = child.with_action(immediate_spec("delete", "Delete playlist", &delete_playlist_action(&pl.id)));
+        child = child.with_action(immediate_spec(
+            "delete",
+            "Delete playlist",
+            &delete_playlist_action(&pl.id),
+        ));
 
         // Each track in the playlist → its own resource (remove + toggle-like).
         for tk in &pl.tracks {
@@ -387,8 +428,14 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New playlist")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Rename playlist")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("New playlist")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Rename playlist")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -410,16 +457,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             crate::doc::load_library(&state.doc).playlists.len(),
@@ -427,21 +465,26 @@ mod tests {
             "the action deleted a playlist"
         );
         assert!(
-            crate::doc::load_library(&state.doc).playlist(&victim).is_none(),
+            crate::doc::load_library(&state.doc)
+                .playlist(&victim)
+                .is_none(),
             "the right playlist is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             crate::doc::load_library(&state.doc).playlists.len(),
             before,
             "undo reverted the deletion and nothing else"
         );
         assert!(
-            crate::doc::load_library(&state.doc).playlist(&victim).is_some(),
+            crate::doc::load_library(&state.doc)
+                .playlist(&victim)
+                .is_some(),
             "the playlist is back after undo"
         );
     }
@@ -456,17 +499,25 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Add a real track to a real playlist.
         let lib = crate::doc::load_library(&a);
-        let playlist = lib.playlists.iter().find(|p| !p.track_ids.is_empty()).unwrap();
+        let playlist = lib
+            .playlists
+            .iter()
+            .find(|p| !p.track_ids.is_empty())
+            .unwrap();
         let taken = playlist.track_ids.clone();
         let new_track = lib
             .tracks
             .keys()
+            .find(|t| !taken.contains(*t))
             .cloned()
-            .find(|t| !taken.contains(t))
             .expect("a track not already in the playlist");
         let pid = playlist.id.clone();
         let action = add_track_action(&pid, &new_track);
@@ -475,9 +526,17 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert!(
-            crate::doc::load_library(&b).playlist(&pid).unwrap().track_ids.contains(&new_track),
+            crate::doc::load_library(&b)
+                .playlist(&pid)
+                .unwrap()
+                .track_ids
+                .contains(&new_track),
             "the track landed on the peer too"
         );
     }
@@ -492,7 +551,12 @@ mod tests {
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
 
-        let track = crate::doc::load_library(&a).tracks.keys().next().unwrap().clone();
+        let track = crate::doc::load_library(&a)
+            .tracks
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
         let before = crate::doc::load_library(&a).is_liked(&track);
         let action = toggle_liked_action(&track);
         let encoded = encode(&action);
@@ -513,29 +577,49 @@ mod tests {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
         let lib = &resources[0];
-        let playlist = lib.children.iter().find(|r| r.kind == "music.playlist").unwrap();
+        let playlist = lib
+            .children
+            .iter()
+            .find(|r| r.kind == "music.playlist")
+            .unwrap();
         let id = playlist.id.as_str().trim_start_matches("music.playlist:");
 
         let delete_spec = playlist.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_playlist_action(id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         let rename_spec = playlist.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "Road Trip");
         let from_builder = encode(&rename_playlist_action(id, "Road Trip"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
 
         // And a nested track's remove spec matches the remove builder.
-        let with_tracks = lib.children.iter().find(|r| !r.children.is_empty()).unwrap();
-        let pid = with_tracks.id.as_str().trim_start_matches("music.playlist:");
+        let with_tracks = lib
+            .children
+            .iter()
+            .find(|r| !r.children.is_empty())
+            .unwrap();
+        let pid = with_tracks
+            .id
+            .as_str()
+            .trim_start_matches("music.playlist:");
         let track = &with_tracks.children[0];
         let tid = track.id.as_str().rsplit(':').next().unwrap();
         let remove_spec = track.actions.iter().find(|a| a.id == "remove").unwrap();
         let from_spec = immediate_encode(remove_spec);
         let from_builder = encode(&remove_track_action(pid, tid));
-        assert_eq!(from_spec.payload, from_builder.payload, "remove is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "remove is one source of truth"
+        );
     }
 
     /// Dispatching the "New playlist" prompted action creates a playlist with the
@@ -545,7 +629,11 @@ mod tests {
     fn new_playlist_action_creates_a_playlist() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "new-playlist").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-playlist")
+            .unwrap();
         let before = crate::doc::load_library(&doc).playlists.len();
 
         let encoded = prompted_encode(spec, "Late Night");
@@ -554,7 +642,11 @@ mod tests {
         qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let lib = crate::doc::load_library(&doc);
-        assert_eq!(lib.playlists.len(), before + 1, "the action added a playlist");
+        assert_eq!(
+            lib.playlists.len(),
+            before + 1,
+            "the action added a playlist"
+        );
         assert!(
             lib.playlists.iter().any(|p| p.name == "Late Night"),
             "the created playlist carries the committed name"

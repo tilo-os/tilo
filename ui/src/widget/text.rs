@@ -1,14 +1,19 @@
+use crate::i18n::ArgValue;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::text_render::{
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
+    TextRenderer, TextStyle, TextWeight, TextWrapMode,
+};
+use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
-use taffy::{TaffyTree, NodeId, Style, Size};
-use crate::widget::Widget;
-use crate::text_render::{FontChoice, TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
-use crate::i18n::ArgValue;
 
 pub struct Text {
     label: String,
@@ -17,20 +22,9 @@ pub struct Text {
     /// to `Count is 5` (not the literal `{$count}`) every frame, even though the
     /// widget caches its rendered scene. Empty for plain, variable-free labels.
     args: Vec<(String, ArgValue)>,
-    size: f32,
-    /// Optional explicit colour. `None` (the default) renders with the
-    /// theme's `text_primary`, keeping Text theme-driven; `Some(c)` lets
-    /// callers paint secondary/dim/semantic copy (e.g. the installer's
-    /// per-field helper text in `theme.text_dim`) without hard-coding a
-    /// colour at the call site — they still pass a Theme token.
+    style: TextStyle,
+    /// `None` (default) renders with the theme's `text_primary`.
     color: Option<vello::peniko::Color>,
-    /// Optional font-family override. `None` (the default) shapes the label in
-    /// the system sans face; `Some(family)` renders it in an explicit
-    /// [`FontChoice`] — a serif book face or a named installed family —
-    /// resolved through the same cosmic-text font system the renderer uses.
-    /// This is the first-class way to typeset a label in a chosen family (e.g.
-    /// a font-picker row previewing each family in its own face).
-    family: Option<FontChoice>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -38,16 +32,14 @@ pub struct Text {
     /// across frames via `Scene::append` so an unchanged Text
     /// widget contributes ~zero shape / emit work per frame.
     cached: Scene,
-    /// Whether the cache content needs to be re-emitted. Flipped
-    /// on when the *size* of `self.rect` changes — pure
-    /// translation (e.g. `Scrollable` offsetting all child rects
-    /// during a scroll) keeps the cache, with the new position
-    /// absorbed by the `Scene::append` transform below.
+    /// Whether the cache content needs to be re-emitted, flipped on when
+    /// the *size* of `self.rect` changes — pure translation (e.g.
+    /// `Scrollable` offsetting child rects) keeps the cache, absorbed by
+    /// the `Scene::append` transform in `draw`.
     dirty: bool,
-    /// Rect the cache was emitted at. We compare *size* against
-    /// the current rect to decide whether to re-emit, and use the
-    /// origin to compute the per-frame translate that lets the
-    /// cached scene follow its widget across the screen without
+    /// Rect the cache was emitted at: size is compared against the
+    /// current rect to decide whether to re-emit, and origin gives the
+    /// per-frame translate so the cache follows its widget without
     /// re-encoding.
     cache_rect: vello::kurbo::Rect,
 }
@@ -57,9 +49,8 @@ impl Text {
         Self {
             label: label.to_string(),
             args: Vec::new(),
-            size: 16.0,
+            style: TextStyle::new(16.0),
             color: None,
-            family: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -74,7 +65,10 @@ impl Text {
     /// `counter = Count is { $count }` to `Count is 5`.
     pub fn with_args(key: &str, args: &[(&str, ArgValue)]) -> Self {
         let mut text = Self::new(key);
-        text.args = args.iter().map(|(n, v)| (n.to_string(), v.clone())).collect();
+        text.args = args
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.clone()))
+            .collect();
         text
     }
 
@@ -92,24 +86,144 @@ impl Text {
         if self.args.is_empty() {
             crate::i18n!(&self.label)
         } else {
-            let args: Vec<(&str, ArgValue)> =
-                self.args.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+            let args: Vec<(&str, ArgValue)> = self
+                .args
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.clone()))
+                .collect();
             crate::i18n::I18nManager::format(&self.label, &args)
         }
     }
 
     pub fn with_size(mut self, size: f32) -> Self {
-        self.size = size;
+        self.style.size = size;
         self
     }
 
-    /// Render this label in an explicit [`FontChoice`] family (a serif book
-    /// face, a named installed family, …) instead of the default sans. Both
-    /// the intrinsic measurement and the draw shape in the same family, so a
-    /// label previewing a font in its own face lays out correctly. The family
-    /// is resolved through the renderer's cosmic-text font system.
+    /// Apply a complete style in one operation. Measurement and painting use
+    /// this same value, so leading, weight, face, and italic cannot drift.
+    pub fn with_style(mut self, style: TextStyle) -> Self {
+        self.style = style;
+        self.dirty = true;
+        self
+    }
+
+    /// Resolve a semantic role from the active theme. This is the preferred
+    /// application-level API: one role selects size, leading, weight, and face
+    /// together and automatically reflects text/UI scaling in `theme`.
+    pub fn with_role(self, role: TextRole, theme: &Theme) -> Self {
+        self.with_style(theme.tokens.typography.style(role))
+    }
+
+    pub fn with_line_height(mut self, multiplier: f32) -> Self {
+        self.style.line_height = multiplier.max(0.1);
+        self.dirty = true;
+        self
+    }
+
+    /// Enable TeX/Liang automatic hyphenation for this text block using a
+    /// BCP-47 language tag such as `"en-US"` or `"de"`.
+    pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
+        self.style = self.style.with_auto_hyphenation(language);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_weight(mut self, weight: TextWeight) -> Self {
+        self.style.weight = weight;
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.style.italic = italic;
+        self.dirty = true;
+        self
+    }
+
+    /// Render this label in an explicit [`FontChoice`] instead of the
+    /// default sans. Both measurement and draw shape use the same family,
+    /// so a label previewing a font in its own face lays out correctly.
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
-        self.family = Some(family);
+        self.style.family = family;
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_letter_spacing(mut self, px: f32) -> Self {
+        self.style = self.style.with_letter_spacing(px);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_tracking(mut self, em: f32) -> Self {
+        self.style = self.style.with_tracking(em);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_font_feature(mut self, tag: OpenTypeTag, value: u32) -> Self {
+        self.style = self.style.with_font_feature(tag, value);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_kerning(mut self, enabled: bool) -> Self {
+        self.style = self.style.with_kerning(enabled);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_discretionary_ligatures(mut self, enabled: bool) -> Self {
+        self.style = self.style.with_discretionary_ligatures(enabled);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_small_caps(mut self, enabled: bool) -> Self {
+        self.style = self.style.with_small_caps(enabled);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_numeric_style(mut self, numeric_style: NumericStyle) -> Self {
+        self.style = self.style.with_numeric_style(numeric_style);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_font_variation(mut self, tag: OpenTypeTag, value: f32) -> Self {
+        self.style = self.style.with_font_variation(tag, value);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_optical_sizing(mut self, optical_sizing: OpticalSizing) -> Self {
+        self.style = self.style.with_optical_sizing(optical_sizing);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_align(mut self, align: ParagraphAlign) -> Self {
+        self.style = self.style.with_align(align);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_balanced_wrap(mut self) -> Self {
+        self.style = self.style.with_wrap_mode(TextWrapMode::Balance);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_hanging_punctuation(mut self, hanging: HangingPunctuation) -> Self {
+        self.style = self.style.with_hanging_punctuation(hanging);
+        self.dirty = true;
+        self
+    }
+
+    pub fn with_fragmentation(mut self, orphans: u8, widows: u8) -> Self {
+        self.style = self.style.with_fragmentation(orphans, widows);
         self.dirty = true;
         self
     }
@@ -117,28 +231,30 @@ impl Text {
     /// Mutate the font-family override after construction. `None` restores the
     /// default sans face.
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
-        if self.family != family {
-            self.family = family;
+        let family = family.unwrap_or(FontChoice::SansSerif);
+        if self.style.family != family {
+            self.style.family = family;
             self.dirty = true;
         }
     }
 
-    /// External-layout assignment for callers that place this label outside the
-    /// taffy tree (an app drawing its own immediate-mode chrome). Mirrors
-    /// [`crate::widget::TextInput::apply_layout_external`]: the caller asserts
-    /// it has done what `apply_layout` would — today, just establishing
-    /// `self.rect`.
+    pub fn text_style(&self) -> &TextStyle {
+        &self.style
+    }
+
+    /// External-layout assignment for callers placing this label outside
+    /// the taffy tree. Mirrors
+    /// [`crate::widget::TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
-        let size_changed = rect.width() != self.cache_rect.width()
-            || rect.height() != self.cache_rect.height();
+        let size_changed =
+            rect.width() != self.cache_rect.width() || rect.height() != self.cache_rect.height();
         self.rect = rect;
         if size_changed {
             self.dirty = true;
         }
     }
 
-    /// Render this text in an explicit colour instead of the theme's
-    /// `text_primary`. Pass a Theme token (e.g. `theme.text_dim` or
+    /// Pass a Theme token (e.g. `theme.text_dim` or
     /// `theme.tokens.colors.semantic.danger`) so the choice still tracks
     /// the active theme.
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
@@ -162,64 +278,65 @@ impl Text {
 impl Widget for Text {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
             size: Size {
                 width: taffy::Dimension::auto(),
                 height: taffy::Dimension::auto(),
             },
-            // flex_shrink: 1.0 is CRITICAL for wrapping. 
-            // It allows Taffy to propose a smaller width than natural_w.
+            // flex_shrink 1.0 lets Taffy propose a smaller width than
+            // natural_w — critical for wrapping.
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
-        }).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn measure(&mut self, known_dimensions: taffy::Size<Option<f32>>, available_space: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
+    fn measure(
+        &mut self,
+        known_dimensions: taffy::Size<Option<f32>>,
+        available_space: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
         let label = self.resolved_label();
-        
-        // 1. Determine the maximum width we are allowed to have
+
         let max_w = if let Some(w) = known_dimensions.width {
             Some(w)
         } else {
             match available_space.width {
                 taffy::AvailableSpace::Definite(w) => Some(w),
-                taffy::AvailableSpace::MinContent => Some(0.0), // Force wrap to min-content
-                taffy::AvailableSpace::MaxContent => None,      // Allow infinite width
+                taffy::AvailableSpace::MinContent => Some(0.0), // force wrap to min-content
+                taffy::AvailableSpace::MaxContent => None,      // allow infinite width
             }
         };
 
-        // 2. Measure with that constraint — through the family-aware path when
-        //    an override is set so the reserved box matches the drawn face.
-        let (w, h) = if let Some(fam) = &self.family {
-            text_renderer.measure_font(&label, self.size, max_w, TextWeight::Regular, false, fam)
-        } else {
-            text_renderer.measure(&label, self.size, max_w)
-        };
+        let (w, h) = text_renderer.measure_style(&label, max_w, &self.style);
 
-        // 3. Return the measured size. 
-        // We add a tiny 0.1 epsilon to width to prevent rounding errors in Row/Column
-        // from thinking the text is "just a bit too big" and wrapping it unnecessarily.
-        taffy::Size { width: w + 0.1, height: h }
+        // Tiny epsilon on width so rounding in Row/Column doesn't read the
+        // text as "just a bit too big" and wrap it unnecessarily.
+        taffy::Size {
+            width: w + 0.1,
+            height: h,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = vello::kurbo::Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        // `dirty` here only tracks **size** changes — pure
-        // translation is absorbed by the per-frame `Scene::append`
-        // transform computed in `draw`. Without this, scrolling a
-        // 1000-widget tree would invalidate every cache every
-        // frame (every widget's rect shifts by the scroll offset)
-        // and the per-widget cache becomes net-negative.
+        // Without this, scrolling a 1000-widget tree would invalidate every
+        // cache every frame and the per-widget cache goes net-negative.
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         if size_changed {
@@ -227,78 +344,87 @@ impl Widget for Text {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
             let max_width = self.rect.width() as f32;
             let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
-            if let Some(fam) = &self.family {
-                text_renderer.draw_text_font(
-                    &mut self.cached,
-                    &label,
-                    self.size,
-                    color,
-                    origin,
-                    Some(max_width + 1.0),
-                    TextWeight::Regular,
-                    false,
-                    fam,
-                );
-            } else {
-                text_renderer.draw_text(
-                    &mut self.cached,
-                    &label,
-                    self.size,
-                    color,
-                    origin,
-                    Some(max_width + 1.0),
-                );
-            }
+            text_renderer.draw_style(
+                &mut self.cached,
+                &label,
+                color,
+                origin,
+                Some(max_width + 1.0),
+                &self.style,
+            );
             self.cache_rect = self.rect;
         }
-        // Per-frame translation between cache emit-time origin
-        // and current origin — applied via the append transform
-        // so the cached primitives don't get re-encoded just for
-        // a scroll.
         let dx = self.rect.x0 - self.cache_rect.x0;
         let dy = self.rect.y0 - self.cache_rect.y0;
         scene.append(&self.cached, Some(transform * Affine::translate((dx, dy))));
     }
 
-    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
 
-    fn name(&self) -> &str { "Text" }
+    fn name(&self) -> &'static str {
+        "Text"
+    }
 
-    /// Opt into incremental redraw. Returns true while the cache
-    /// has not been written yet (or has been invalidated by a rect
-    /// change). The App's redraw gate uses this to skip frames
-    /// where no Text widget changed.
-    fn needs_redraw(&self) -> bool { self.dirty }
+    /// Opt into incremental redraw: true while the cache is unwritten or
+    /// invalidated by a rect change. The App's redraw gate uses this to
+    /// skip frames where no Text widget changed.
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
 
-    /// Clears the cache-stale flag after the App has consumed the
-    /// scene. Subsequent frames will re-use `self.cached` until
-    /// the rect changes again.
-    fn mark_drawn(&mut self) { self.dirty = false; }
+    /// Clears the cache-stale flag after the App consumes the scene.
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
 
-    /// Text never changes its own intrinsic size between frames
-    /// (the label is fixed at construction, the size too) — once
-    /// `apply_layout` has set `self.rect` to its non-zero
-    /// resolved value, we report `false` so an unrelated sibling
-    /// reflow doesn't drag a Text re-shape along with it. The
-    /// `Rect::ZERO` sentinel covers "haven't been laid out yet"
-    /// so the first frame still runs `compute_layout`.
-    fn is_layout_dirty(&self) -> bool { self.rect == vello::kurbo::Rect::ZERO }
+    /// Text's intrinsic size is fixed at construction, so once
+    /// `apply_layout` sets a non-zero `self.rect` this reports `false` —
+    /// an unrelated sibling reflow shouldn't drag a re-shape along.
+    /// `Rect::ZERO` means "not laid out yet," so the first frame still runs.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == vello::kurbo::Rect::ZERO
+    }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { false }
+    fn is_focusable(&self) -> bool {
+        false
+    }
     fn set_focus(&mut self, _focused: bool) {}
-    fn is_focused(&self) -> bool { false }
-    fn needs_commit(&self) -> bool { false }
+    fn is_focused(&self) -> bool {
+        false
+    }
+    fn needs_commit(&self) -> bool {
+        false
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -315,7 +441,9 @@ impl Widget for Text {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -332,22 +460,29 @@ impl Widget for Text {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }
@@ -355,6 +490,28 @@ impl Widget for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_style_is_retained_by_the_widget() {
+        let style = TextStyle::new(18.0)
+            .with_line_height(1.6)
+            .with_weight(TextWeight::Semibold)
+            .with_italic(true)
+            .with_family(FontChoice::Serif);
+        let text = Text::new("Reading").with_style(style.clone());
+        assert_eq!(text.text_style(), &style);
+    }
+
+    #[test]
+    fn semantic_role_uses_active_theme_typography() {
+        let theme = Theme::dark().with_text_scale(1.5);
+        let text = Text::new("Readable").with_role(TextRole::Reading, &theme);
+        assert_eq!(text.text_style().size, theme.tokens.typography.scale.base);
+        assert_eq!(
+            text.text_style().line_height,
+            theme.tokens.typography.line_height_relaxed
+        );
+    }
     use crate::a11y::Role;
 
     #[test]
@@ -428,11 +585,10 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));
     }
 
-    /// A label with a font-family override resolves to that family: after the
-    /// label draws once, re-shaping the same string+size+width in the SAME
-    /// named family is a shape-cache hit (the label already shaped it there),
-    /// while the sans default is a distinct miss. This proves the override
-    /// reaches the renderer's family-aware path rather than the sans default.
+    /// A label with a font-family override resolves to that family: after
+    /// it draws once, re-shaping the same string in the SAME named family
+    /// is a shape-cache hit, while the sans default is a distinct miss —
+    /// proving the override reaches the family-aware path.
     #[test]
     fn font_family_override_label_resolves_to_named_family() {
         use crate::presence::PresenceCtx;
@@ -453,16 +609,30 @@ mod tests {
         // Same string, size (16 default), wrap width (401.0) and family → a hit.
         let _ = tr.take_shape_stats();
         tr.draw_text_font(
-            &mut scene, "Reading", 16.0, theme.tokens.colors.text_primary, Affine::IDENTITY,
-            Some(401.0), TextWeight::Regular, false, &FontChoice::Named(fam),
+            &mut scene,
+            "Reading",
+            16.0,
+            theme.tokens.colors.text_primary,
+            Affine::IDENTITY,
+            Some(401.0),
+            TextWeight::Regular,
+            false,
+            &FontChoice::Named(fam),
         );
         let (hits, _m, _ns) = tr.take_shape_stats();
         assert_eq!(hits, 1, "the label shaped its text in the named family");
 
         // Sans of the same string is a separate shape entry.
         tr.draw_text_font(
-            &mut scene, "Reading", 16.0, theme.tokens.colors.text_primary, Affine::IDENTITY,
-            Some(401.0), TextWeight::Regular, false, &FontChoice::SansSerif,
+            &mut scene,
+            "Reading",
+            16.0,
+            theme.tokens.colors.text_primary,
+            Affine::IDENTITY,
+            Some(401.0),
+            TextWeight::Regular,
+            false,
+            &FontChoice::SansSerif,
         );
         let (_h, misses, _ns) = tr.take_shape_stats();
         assert_eq!(misses, 1, "sans is a separate shape from the named family");

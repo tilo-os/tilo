@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 /// The embedded English word list.
 ///
-/// Source: the system `hunspell` en_US spelling dictionary
+/// Source: the system `hunspell` `en_US` spelling dictionary
 /// (`/usr/share/hunspell/en_US.dic`, the SCOWL-derived list shipped by Fedora),
 /// used as an oracle to validate a lowercased/normalised pass over the much
 /// larger but noisier `/usr/share/dict/words` (`linux.words`). Every candidate
@@ -16,6 +16,19 @@ use std::collections::HashSet;
 ///
 /// Size: ~75,000 words, ~700 KB. See `spellcheck/data/words.txt`.
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
+
+/// Words this OS puts in front of people that a general English list has
+/// no reason to contain.
+///
+/// A spellchecker that underlines the name of the assistant shipped
+/// beside it is reporting the system as a mistake. These are proper
+/// nouns of the product itself, so they belong in the dictionary the
+/// product ships rather than in each person's user list — nobody should
+/// have to teach their computer what it is called.
+///
+/// Membership is case-insensitive (see [`Dictionary::contains`]), so one
+/// spelling covers `qOS`, `QOS` and `qos`.
+const PRODUCT_WORDS: &[&str] = &["qos", "claude", "nirios"];
 
 /// A set of known words for spell checking.
 ///
@@ -44,7 +57,7 @@ pub struct Dictionary {
 impl Dictionary {
     /// Build the dictionary embedded in the binary at compile time.
     pub fn builtin() -> Self {
-        Self::from_words(BUILTIN_WORDS.lines())
+        Self::from_words(BUILTIN_WORDS.lines().chain(PRODUCT_WORDS.iter().copied()))
     }
 
     /// Like [`builtin`](Self::builtin), but also load any persisted user words
@@ -100,7 +113,11 @@ impl Dictionary {
                 by_len[len].push(normalized);
             }
         }
-        Dictionary { words: set, by_len, user_words: HashSet::new() }
+        Dictionary {
+            words: set,
+            by_len,
+            user_words: HashSet::new(),
+        }
     }
 
     /// Returns `true` if `word` is in the dictionary (built-in list **or** the
@@ -244,8 +261,14 @@ mod tests {
         assert!(d.contains("qos"), "added word is now known");
         assert!(d.contains("QOS"), "membership stays case-insensitive");
         // Re-adding is a no-op, and adding a built-in word records nothing.
-        assert!(!d.add_word("qos"), "re-adding an existing user word is a no-op");
-        assert!(!d.add_word("alpha"), "adding a built-in word records nothing");
+        assert!(
+            !d.add_word("qos"),
+            "re-adding an existing user word is a no-op"
+        );
+        assert!(
+            !d.add_word("alpha"),
+            "adding a built-in word records nothing"
+        );
     }
 
     #[test]
@@ -254,5 +277,36 @@ mod tests {
         assert!(!d.add_word(""));
         assert!(!d.add_word("   "));
         assert_eq!(d.user_words().count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod product_vocabulary_tests {
+    use super::*;
+
+    /// The assistant this OS ships is not a misspelling.
+    ///
+    /// A red underline beneath `Claude` in a qOS document is the system
+    /// reporting itself as an error, and it turned up in a document where
+    /// somebody had simply addressed the agent by name.
+    #[test]
+    fn the_products_own_nouns_are_not_misspellings() {
+        let d = Dictionary::builtin();
+        for word in ["Claude", "claude", "qOS", "QOS", "qos", "nirios"] {
+            assert!(
+                d.contains(word),
+                "{word} is a name this OS puts on screen itself, so its own \
+                 spellchecker must not underline it",
+            );
+        }
+    }
+
+    /// And the general list still applies — a dictionary that accepted
+    /// everything would pass the test above for the wrong reason.
+    #[test]
+    fn an_ordinary_misspelling_is_still_caught() {
+        let d = Dictionary::builtin();
+        assert!(!d.contains("teh"), "the general word list must still apply");
+        assert!(d.contains("the"));
     }
 }

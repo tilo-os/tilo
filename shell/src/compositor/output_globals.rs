@@ -1,29 +1,27 @@
 //! `wl_output` globals, kept in step with the backend's output set.
 //!
-//! The compositor advertised `wl_output_manager` but never created a
-//! single `wl_output`. A client asking "what displays are there, how big,
-//! at what scale" got nothing back — which is why a toolkit could not pick
-//! a buffer scale, and why plugging a monitor in could not possibly have
-//! been visible to anything running on the session.
+//! Without a `wl_output` global, no client can learn what displays exist,
+//! at what size or scale — so a toolkit can't pick a buffer scale, and
+//! plugging in a monitor is invisible to anything running in the session.
 //!
 //! This module owns the mapping. The decision half — which globals to
-//! create, update or destroy given what exists and what should — is
-//! [`plan`], a pure function over plain data; the [`OutputGlobals`]
-//! registry performs it against a live `DisplayHandle`.
+//! create, update or destroy — is [`plan`], a pure function over plain
+//! data; the [`OutputGlobals`] registry performs it against a live
+//! `DisplayHandle`.
 //!
-//! # Why identity matters more than it looks
-//!
-//! A `wl_output` global that is destroyed and re-created is, to a client,
-//! a monitor that vanished and a different one that appeared: surfaces get
-//! `leave` then `enter`, toolkits re-run their scale logic, and windows
-//! visibly re-layout. So a display that merely changed mode must keep its
-//! global and have its state updated in place. Matching by [`OutputId`] —
-//! which the DRM registry mints per `(device, connector)` and keeps stable
-//! across re-enumeration — is what makes that possible.
+//! A `wl_output` that is destroyed and re-created reads to a client as a
+//! monitor vanishing and a different one appearing (`leave`/`enter`, a
+//! toolkit re-running scale logic, a visible re-layout), so a display
+//! that merely changed mode keeps its global and gets updated in place.
+//! Matching by [`OutputId`] — which the DRM registry mints per
+//! `(device, connector)` and keeps stable across re-enumeration — is what
+//! makes that possible.
 
 use std::collections::HashMap;
 
-use smithay::output::{Mode as OutputMode, Output as WlOutputHandle, PhysicalProperties, Scale, Subpixel};
+use smithay::output::{
+    Mode as OutputMode, Output as WlOutputHandle, PhysicalProperties, Scale, Subpixel,
+};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{Size, Transform};
@@ -73,7 +71,7 @@ pub fn plan(advertised: &[(OutputId, AdvertisedState)], desired: &[Output]) -> V
         match advertised.iter().find(|(id, _)| *id == want.id) {
             None => changes.push(GlobalChange::Create(want.id)),
             Some((_, have)) if *have != AdvertisedState::from(want) => {
-                changes.push(GlobalChange::Update(want.id))
+                changes.push(GlobalChange::Update(want.id));
             }
             Some(_) => {}
         }
@@ -174,7 +172,7 @@ impl OutputGlobals {
                     handle.change_current_state(
                         Some(mode),
                         Some(Transform::Normal),
-                        Some(Scale::Fractional(out.scale as f64)),
+                        Some(Scale::Fractional(f64::from(out.scale))),
                         Some(out.position.into()),
                     );
                     handle.set_preferred(mode);
@@ -206,7 +204,7 @@ impl OutputGlobals {
                     live.handle.change_current_state(
                         Some(mode),
                         Some(Transform::Normal),
-                        Some(Scale::Fractional(out.scale as f64)),
+                        Some(Scale::Fractional(f64::from(out.scale))),
                         Some(out.position.into()),
                     );
                     live.handle.set_preferred(mode);
@@ -256,9 +254,6 @@ mod tests {
 
     #[test]
     fn the_first_sync_advertises_every_output() {
-        // The bug this whole module exists for: the compositor advertised
-        // no `wl_output` at all, so no client could learn there was a
-        // display, let alone how big or how dense.
         let desired = [out(0, (0, 0), (1920, 1080), 1.0)];
         assert_eq!(plan(&[], &desired), vec![GlobalChange::Create(OutputId(0))]);
     }
@@ -266,7 +261,7 @@ mod tests {
     #[test]
     fn an_unchanged_set_produces_no_wire_traffic() {
         let o = out(0, (0, 0), (1920, 1080), 1.0);
-        assert!(plan(&[advertised(&o)], &[o.clone()]).is_empty());
+        assert!(plan(&[advertised(&o)], std::slice::from_ref(&o)).is_empty());
     }
 
     #[test]
@@ -283,7 +278,7 @@ mod tests {
         let external = out(1, (1920, 0), (2560, 1440), 1.0);
         let changes = plan(
             &[advertised(&laptop), advertised(&external)],
-            &[laptop.clone()],
+            std::slice::from_ref(&laptop),
         );
         assert_eq!(changes, vec![GlobalChange::Destroy(OutputId(1))]);
     }
@@ -324,13 +319,13 @@ mod tests {
         let first = out(0, (0, 0), (1920, 1080), 1.0);
         let second = out(1, (1920, 0), (2560, 1440), 1.0);
         let second_moved = out(1, (0, 0), (2560, 1440), 1.0);
-        let changes = plan(
-            &[advertised(&first), advertised(&second)],
-            &[second_moved],
-        );
+        let changes = plan(&[advertised(&first), advertised(&second)], &[second_moved]);
         assert_eq!(
             changes,
-            vec![GlobalChange::Update(OutputId(1)), GlobalChange::Destroy(OutputId(0))]
+            vec![
+                GlobalChange::Update(OutputId(1)),
+                GlobalChange::Destroy(OutputId(0))
+            ]
         );
     }
 

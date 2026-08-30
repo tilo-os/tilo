@@ -2,7 +2,7 @@
 name = "runtime-dylib"
 version = "0.1.0"
 edition = "2024"
-description = "Opt-in dynamic-library build of the qOS runtime SDK. Produces libruntime_dylib.so so thin apps can link the SDK (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
+description = "Opt-in dynamic-library build of the qOS runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
 
 # ── Why this crate exists ───────────────────────────────────────────
 # A Rust `dylib` crate-type demands `panic = "unwind"` and is
@@ -33,3 +33,19 @@ crate-type = ["dylib"]
 [dependencies]
 runtime = { path = "../runtime" }
 cli = { path = "../cli" }
+# The UI toolkit. This is the dependency that makes the dylib worth
+# shipping: `runtime` + `cli` are a couple of hundred KB, whereas `ui`
+# drags in wgpu (Vulkan/GL backends + the naga shader compiler), vello,
+# cosmic-text (rustybuzz / swash / Unicode tables), automerge, taffy,
+# fluent and winit. Statically linked, that graph is the ~18 MB of
+# `.text` every graphical qOS app was carrying its own copy of.
+#
+# `portal` is enabled here so the shipped `.so` covers the apps that
+# open host files through the XDG portal (the word processor among
+# them). Features unify across a single cargo invocation, so an app
+# asking for a superset still resolves to this one copy; enabling it
+# here is what makes the standalone-built dylib useful on its own.
+ui = { path = "../../../ui", features = ["portal"] }
+
+[lints]
+workspace = true

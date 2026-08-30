@@ -2,9 +2,9 @@
 //! affordance used by the notes app.
 //!
 //! Conceptually a thinner cousin of [`crate::widget::CommandPalette`]
-//! — the CommandPalette has a concept-locked filter strip + footer
+//! — the `CommandPalette` has a concept-locked filter strip + footer
 //! row that doesn't fit the notes app's "just jump to a page" mental
-//! model. PageJumpPalette ships only the input row + the filtered
+//! model. `PageJumpPalette` ships only the input row + the filtered
 //! result list, sized to look like a fullscreen-ish dialog when
 //! anchored at a generous offset from the window's top-center.
 
@@ -18,11 +18,16 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::query_text::{QueryComposition, QueryEventChange};
 use crate::text_render::TextRenderer;
+use crate::text_selection::Selection;
 use crate::theme::Theme;
-use crate::widget::link_popover::PageEntry;
+use crate::tokens::TextRole;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::link_popover::PageEntry;
 
 const WIDTH: f64 = 480.0;
 const ROW_HEIGHT: f64 = 36.0;
@@ -35,6 +40,8 @@ pub struct PageJumpPalette {
     visible: Vec<usize>,
     cursor: usize,
     query: String,
+    query_selection: Selection,
+    query_composition: QueryComposition,
     visible_flag: bool,
     /// Top-left anchor in logical coords. Set by the host when
     /// opening the palette — typically `(window_width/2 - WIDTH/2,
@@ -56,6 +63,8 @@ impl PageJumpPalette {
             visible: Vec::new(),
             cursor: 0,
             query: String::new(),
+            query_selection: Selection::collapsed(0),
+            query_composition: QueryComposition::new(),
             visible_flag: false,
             anchor: Point::ZERO,
             pending: None,
@@ -71,6 +80,8 @@ impl PageJumpPalette {
         self.visible_flag = visible;
         if !visible {
             self.query.clear();
+            self.query_selection = Selection::collapsed(0);
+            self.query_composition.clear();
             self.cursor = 0;
             self.rebuild_visible();
         }
@@ -93,7 +104,9 @@ impl PageJumpPalette {
     }
 
     pub fn highlighted(&self) -> Option<&PageEntry> {
-        self.visible.get(self.cursor).and_then(|&i| self.items.get(i))
+        self.visible
+            .get(self.cursor)
+            .and_then(|&i| self.items.get(i))
     }
 
     pub fn take_selection(&mut self) -> Option<PageEntry> {
@@ -105,7 +118,7 @@ impl PageJumpPalette {
     }
 
     pub fn height(&self) -> f64 {
-        let rows = self.visible.len().min(MAX_VISIBLE_ROWS).max(1) as f64;
+        let rows = self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64;
         PADDING * 2.0 + INPUT_HEIGHT + PADDING + ROW_HEIGHT * rows
     }
 
@@ -131,20 +144,43 @@ impl PageJumpPalette {
         }
     }
 
-    /// Handle a key event when the palette is visible. Returns true
-    /// if consumed.
+    /// First result kept in the painted window. Keyboard movement can reach
+    /// every result without letting the highlighted row disappear below the
+    /// fixed-height palette.
+    fn window_start(&self) -> usize {
+        self.cursor
+            .saturating_add(1)
+            .saturating_sub(MAX_VISIBLE_ROWS)
+    }
+
     pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
         if !self.visible_flag {
             return false;
         }
         let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
             ..
         } = event
         else {
-            return false;
+            let change = self.query_composition.handle_event(
+                event,
+                &mut self.query,
+                &mut self.query_selection,
+                false,
+                false,
+            );
+            if change == QueryEventChange::Edited {
+                self.cursor = 0;
+                self.rebuild_visible();
+            }
+            return change != QueryEventChange::Ignored;
         };
-        match logical_key {
+        let handled = match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 if !self.visible.is_empty() {
                     self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
@@ -168,38 +204,26 @@ impl PageJumpPalette {
                 self.set_visible(false);
                 true
             }
-            Key::Named(NamedKey::Backspace) => {
-                if self.query.pop().is_some() {
+            _ => {
+                let change = self.query_composition.handle_event(
+                    event,
+                    &mut self.query,
+                    &mut self.query_selection,
+                    false,
+                    false,
+                );
+                if change == QueryEventChange::Edited {
+                    self.cursor = 0;
                     self.rebuild_visible();
                 }
-                true
+                change != QueryEventChange::Ignored
             }
-            Key::Named(NamedKey::Space) => {
-                self.query.push(' ');
-                self.rebuild_visible();
-                true
-            }
-            Key::Character(_) => {
-                let mut pushed = false;
-                if let Some(t) = text {
-                    for c in t.chars() {
-                        if !c.is_control() {
-                            self.query.push(c);
-                            pushed = true;
-                        }
-                    }
-                }
-                if pushed {
-                    self.rebuild_visible();
-                }
-                pushed
-            }
-            _ => false,
-        }
+        };
+        handled
     }
 
     pub fn draw_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -226,15 +250,13 @@ impl PageJumpPalette {
             &shape,
         );
 
-        // Input row.
         let input_rect = Rect::new(
             rect.x0 + PADDING,
             rect.y0 + PADDING,
             rect.x1 - PADDING,
             rect.y0 + PADDING + INPUT_HEIGHT,
         );
-        let input_shape =
-            RoundedRect::from_rect(input_rect, theme.tokens.radii.md as f64);
+        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.md));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -250,31 +272,32 @@ impl PageJumpPalette {
             &input_shape,
         );
 
-        let text_size = tokens.typography.scale.base;
-        let placeholder = "Jump to page…";
-        let display = if self.query.is_empty() { placeholder } else { &self.query };
-        let text_color = if self.query.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        let ty =
-            input_rect.y0 + (input_rect.height() - text_size as f64) / 2.0;
-        text_renderer.draw_text(
+        self.query_composition.draw(
             scene,
-            display,
-            text_size,
-            text_color,
-            transform * Affine::translate((input_rect.x0 + 12.0, ty)),
-            None,
+            transform,
+            text_renderer,
+            &self.query,
+            &self.query_selection,
+            "Jump to page…",
+            Rect::new(
+                input_rect.x0 + 12.0,
+                input_rect.y0,
+                input_rect.x1 - 12.0,
+                input_rect.y1,
+            ),
+            &tokens.typography.style(TextRole::Body),
+            tokens.colors.text_primary,
+            tokens.colors.text_dim,
+            tokens.colors.accent[5].with_alpha_factor(0.3),
+            tokens.colors.accent[5],
+            true,
         );
 
-        // Results list.
         let list_top = input_rect.y1 + PADDING;
         let row_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
             let label = "No pages match";
-            let y = list_top + (ROW_HEIGHT - row_size as f64) / 2.0;
+            let y = list_top + (ROW_HEIGHT - f64::from(row_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -286,18 +309,19 @@ impl PageJumpPalette {
             return;
         }
 
-        for (i, &idx) in self.visible.iter().take(MAX_VISIBLE_ROWS).enumerate() {
+        for (slot, (visible_index, &idx)) in self
+            .visible
+            .iter()
+            .enumerate()
+            .skip(self.window_start())
+            .take(MAX_VISIBLE_ROWS)
+            .enumerate()
+        {
             let row = &self.items[idx];
-            let y0 = list_top + i as f64 * ROW_HEIGHT;
-            let row_rect = Rect::new(
-                rect.x0 + PADDING,
-                y0,
-                rect.x1 - PADDING,
-                y0 + ROW_HEIGHT,
-            );
-            if i == self.cursor {
-                let hl =
-                    RoundedRect::from_rect(row_rect, theme.tokens.radii.sm as f64);
+            let y0 = list_top + slot as f64 * ROW_HEIGHT;
+            let row_rect = Rect::new(rect.x0 + PADDING, y0, rect.x1 - PADDING, y0 + ROW_HEIGHT);
+            if visible_index == self.cursor {
+                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -306,8 +330,7 @@ impl PageJumpPalette {
                     &hl,
                 );
             }
-            let ty =
-                row_rect.y0 + (row_rect.height() - row_size as f64) / 2.0;
+            let ty = row_rect.y0 + (row_rect.height() - f64::from(row_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -319,8 +342,8 @@ impl PageJumpPalette {
         }
     }
 
-    /// Static page-id getter for tests that don't want to fish
-    /// through `take_selection`.
+    /// Page-id getter for tests that don't want to fish through
+    /// `take_selection`.
     pub fn highlighted_id(&self) -> Option<Uuid> {
         self.highlighted().map(|e| e.id)
     }
@@ -334,8 +357,8 @@ impl Widget for PageJumpPalette {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -361,7 +384,7 @@ impl Widget for PageJumpPalette {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PageJumpPalette"
     }
     fn test_id(&self) -> Option<&str> {
@@ -369,6 +392,51 @@ impl Widget for PageJumpPalette {
     }
     fn get_rect(&self) -> Rect {
         self.rect()
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.query_composition.ime_cursor_rect()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if !self.visible_flag {
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Jump to page")
+                    .with_state(AccessState {
+                        hidden: true,
+                        modal: true,
+                        ..Default::default()
+                    }),
+            );
+        }
+        let count = self.visible.len();
+        let children = self
+            .visible
+            .iter()
+            .enumerate()
+            .filter_map(|(position, &item_index)| {
+                self.items.get(item_index).map(|item| {
+                    AccessNode::new(Role::MenuItem)
+                        .with_name(item.title.clone())
+                        .with_state(AccessState {
+                            selected: position == self.cursor,
+                            ..Default::default()
+                        })
+                        .with_position(position + 1, count)
+                })
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name("Jump to page")
+                .with_optional_value((!self.query.is_empty()).then(|| self.query.clone()))
+                .with_state(AccessState {
+                    modal: true,
+                    ..Default::default()
+                })
+                .with_children(children),
+        )
     }
 }
 
@@ -381,9 +449,7 @@ mod tests {
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -402,8 +468,14 @@ mod tests {
     fn seed_two() -> PageJumpPalette {
         let mut p = PageJumpPalette::new();
         p.set_items(vec![
-            PageEntry { id: Uuid::from_u128(1), title: "Welcome".into() },
-            PageEntry { id: Uuid::from_u128(2), title: "Roadmap".into() },
+            PageEntry {
+                id: Uuid::from_u128(1),
+                title: "Welcome".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(2),
+                title: "Roadmap".into(),
+            },
         ]);
         p
     }
@@ -423,6 +495,55 @@ mod tests {
         assert_eq!(p.query(), "r");
         assert_eq!(p.visible_len(), 1);
         assert_eq!(p.highlighted().unwrap().title, "Roadmap");
+    }
+
+    #[test]
+    fn typing_replaces_selection_at_the_caret_instead_of_appending() {
+        let mut p = seed_two();
+        p.set_visible(true);
+        p.query = "wxyz".into();
+        p.query_selection = Selection {
+            anchor: 1,
+            cursor: 3,
+        };
+        assert!(p.handle_key(&char_press("a")));
+        assert_eq!(p.query(), "waz");
+        assert_eq!(p.query_selection, Selection::collapsed(2));
+    }
+
+    #[test]
+    fn ime_preedit_draws_without_filtering_until_commit() {
+        let mut palette = PageJumpPalette::new();
+        palette.set_items(vec![
+            PageEntry {
+                id: Uuid::from_u128(1),
+                title: "東京".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(2),
+                title: "London".into(),
+            },
+        ]);
+        palette.set_visible(true);
+        palette.set_anchor(Point::new(20.0, 20.0));
+        assert!(
+            palette.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
+                "東京".into(),
+                Some(("東".len(), "東".len())),
+            )))
+        );
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.visible_len(), 2);
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        palette.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+        assert!(Widget::ime_cursor_rect(&palette).is_some());
+
+        assert!(palette.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("東京".into(),))));
+        assert_eq!(palette.query(), "東京");
+        assert_eq!(palette.visible_len(), 1);
+        assert_eq!(palette.highlighted().unwrap().title, "東京");
     }
 
     #[test]
@@ -453,5 +574,39 @@ mod tests {
         assert_eq!(p.highlighted().unwrap().title, "Roadmap");
         p.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
         assert_eq!(p.highlighted().unwrap().title, "Welcome");
+    }
+
+    #[test]
+    fn long_result_lists_keep_the_keyboard_highlight_in_the_painted_window() {
+        let mut p = PageJumpPalette::new();
+        p.set_items(
+            (0..14)
+                .map(|i| PageEntry {
+                    id: Uuid::from_u128(i + 1),
+                    title: format!("Page {i}"),
+                })
+                .collect(),
+        );
+        p.set_visible(true);
+        for _ in 0..12 {
+            p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+        }
+        assert_eq!(p.cursor, 12);
+        assert_eq!(p.window_start(), 3);
+        assert!(p.cursor < p.window_start() + MAX_VISIBLE_ROWS);
+    }
+
+    #[test]
+    fn accessibility_exposes_committed_query_and_selected_result() {
+        let mut p = seed_two();
+        let hidden = Widget::accessibility(&p).unwrap();
+        assert!(hidden.state.hidden);
+        p.set_visible(true);
+        p.handle_key(&char_press("r"));
+        let node = Widget::accessibility(&p).unwrap();
+        assert_eq!(node.role, crate::a11y::Role::Dialog);
+        assert_eq!(node.value.as_deref(), Some("r"));
+        assert_eq!(node.children.len(), 1);
+        assert!(node.children[0].state.selected);
     }
 }

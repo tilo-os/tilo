@@ -1,23 +1,23 @@
-//! Multi-column section layout ⇄ OOXML section properties. WordprocessingML models
-//! newspaper-style columns as a `<w:cols w:num="N" w:space="…"/>` element inside the
-//! body's `<w:sectPr>` (the section that closes `<w:body>`). `w:num` is the column
-//! count; `w:space` is the inter-column gap in twentieths of a point (twips). This
-//! maps that count/gap onto the document-wide column setting (both directions); the
-//! exporter hands back the `<w:cols>` element to fold into the generated sectPr.
+//! Multi-column section layout ⇄ OOXML section properties. `WordprocessingML` models
+//! newspaper-style columns as `<w:cols w:num="N" w:space="…"/>` inside the body's
+//! `<w:sectPr>`; `w:space` is the inter-column gap in twips. This maps that count/gap
+//! onto the document-wide column setting; the exporter hands back the `<w:cols>`
+//! element to fold into the generated sectPr.
 
-use crate::model::{columns as model_columns, DocMut, DocRef};
+use crate::model::{DocMut, DocRef, columns as model_columns};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
 /// Twips (1/20 pt) per CSS px at 96 dpi: 1 px = 1/96 in = 1440/96 twips = 15 twips.
 const TWIPS_PER_PX: f64 = 15.0;
 
-/// Import the body column count + gap from the first `w:sectPr`'s `w:cols` in a
-/// `word/document.xml` into the document-wide column setting. No-op when the section
-/// carries no `w:cols` (or a count of one) — the document keeps its single-column
-/// default.
+/// Import the body column count + gap from the first `w:sectPr`'s `w:cols`. No-op when
+/// the section carries no `w:cols` (or a count of one) — the document keeps its
+/// single-column default.
 pub(super) fn import_section_columns(document_xml: &[u8], doc: &mut DocMut) {
-    let Some((count, gap)) = parse_cols(document_xml) else { return };
+    let Some((count, gap)) = parse_cols(document_xml) else {
+        return;
+    };
     if count <= 1 {
         return;
     }
@@ -25,7 +25,7 @@ pub(super) fn import_section_columns(document_xml: &[u8], doc: &mut DocMut) {
 }
 
 /// Scan `document.xml` for the first `w:cols` inside a `w:sectPr` and read its
-/// `w:num` / `w:space`. Returns `None` when no `w:cols` is present.
+/// `w:num`/`w:space`; `None` when no `w:cols` is present.
 fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
     let s = std::str::from_utf8(document_xml).ok()?;
     let mut reader = Reader::from_str(s);
@@ -43,13 +43,21 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:num")
-                    .and_then(|a| a.unescape_value().ok().and_then(|v| v.trim().parse::<u32>().ok()))
+                    .and_then(|a| {
+                        a.unescape_value()
+                            .ok()
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                    })
                     .unwrap_or(1);
                 let gap = e
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:space")
-                    .and_then(|a| a.unescape_value().ok().and_then(|v| v.trim().parse::<f64>().ok()))
+                    .and_then(|a| {
+                        a.unescape_value()
+                            .ok()
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                    })
                     .map(|twips| (twips / TWIPS_PER_PX * 100.0).round() / 100.0);
                 return Some((num, gap));
             }
@@ -59,11 +67,9 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
     }
 }
 
-/// The `<w:cols>` element XML for the document's column setting, or `None` for a
-/// single column (which needs no `w:cols`). Folded into the generated `w:sectPr` by
-/// the exporter. Note: in a `w:sectPr`'s defined element order `w:cols` comes after
-/// `w:headerReference`/`w:footerReference`/`w:pgSz`/`w:pgMar`, so the exporter
-/// appends this after the header/footer references.
+/// The `<w:cols>` element XML for the document's column setting, or `None` for a single
+/// column (needs none). A `w:sectPr`'s defined element order puts `w:cols` after the
+/// header/footer references, so the exporter appends this after them.
 pub(super) fn section_columns_xml(doc: &DocRef) -> Option<String> {
     let (count, gap) = model_columns(doc.doc, doc.c);
     if count <= 1 {

@@ -107,7 +107,7 @@ collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
         "Sequencing looks right. I'd pull sandboxing forward — it's the \
 security boundary everything else leans on. Let's not ship streaming before \
 the bubblewrap policy is solid.\n\nGrace",
-        1 * h + 47,
+        h + 47,
         true,
         false,
         Folder::Inbox,
@@ -128,7 +128,7 @@ revised gantt. Can you review the collaboration section before Friday?",
 
     // ---- Thread 2: CI failure (unread, attachment: log)
     mb.insert(message(
-        ci.clone(),
+        ci,
         vec![me.clone()],
         "Build #4821 failed on shell --lib",
         "Pipeline qos/qos run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
@@ -157,7 +157,7 @@ solver. Margins are tight on the third burn — want me to widen the window?",
 
     // ---- Thread 4: Alan, single short (unread)
     mb.insert(message(
-        alan.clone(),
+        alan,
         vec![me.clone()],
         "Coffee before the standup?",
         "Fancy a coffee at 9:15 before we dive into the compositor review? \
@@ -171,7 +171,7 @@ I have thoughts on the focus model.",
 
     // ---- Thread 5: Linus, mailing-list style (read, long)
     mb.insert(message(
-        linus.clone(),
+        linus,
         vec![Addr::bare("qos-dev@lists.qos.example")],
         "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
         "On Tue, the patch looks mostly fine, but the readahead window is \
@@ -186,7 +186,7 @@ moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
 
     // ---- Calendar invite (unread, ics attachment)
     mb.insert(message(
-        calendar.clone(),
+        calendar,
         vec![me.clone()],
         "Invitation: Compositor sync @ Thu 11:00",
         "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
@@ -201,7 +201,7 @@ moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
     // ---- Sent items
     mb.insert(message(
         me.clone(),
-        vec![ada.clone(), grace.clone()],
+        vec![ada, grace.clone()],
         "Re: Launch plan for the spatial shell",
         "Thanks both. I'll own the tiling engine and have a skeleton up by \
 Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
@@ -213,7 +213,7 @@ Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
     ));
     mb.insert(message(
         me.clone(),
-        vec![katherine.clone()],
+        vec![katherine],
         "Re: Re-check the trajectory math",
         "Widen it — better a longer window than a missed burn. I'll update \
 the solver bounds and re-run tonight.",
@@ -226,7 +226,7 @@ the solver bounds and re-run tonight.",
 
     // ---- Archive
     mb.insert(message(
-        grace.clone(),
+        grace,
         vec![me.clone()],
         "Onboarding notes",
         "Welcome aboard! Here are the cluster conventions and the review \
@@ -241,7 +241,7 @@ rota. Ping me if the FUSE mount misbehaves.",
     // ---- Junk
     mb.insert(message(
         Addr::new("Totally Legit Prize Co", "winner@prize.example"),
-        vec![me.clone()],
+        vec![me],
         "\u{1F389} You have WON a free spatial monitor!!!",
         "Dear winner, click here within 24 hours to claim your prize. This \
 is definitely not a scam.",
@@ -261,8 +261,11 @@ is definitely not a scam.",
         m.starred = false;
         mb.insert(m);
     }
-    if let Some(mut m) = parse_eml(RAW_WITH_PDF.as_bytes(), SAMPLE_NOW_MIN - 7 * 60, Folder::Inbox)
-    {
+    if let Some(mut m) = parse_eml(
+        RAW_WITH_PDF.as_bytes(),
+        SAMPLE_NOW_MIN - 7 * 60,
+        Folder::Inbox,
+    ) {
         m.read = true;
         mb.insert(m);
     }
@@ -313,7 +316,10 @@ pub fn sample_account_store() -> AccountStore {
     let mut a1 = Account::new(work);
     a1.tint = 3;
     a1.collapsed = true;
-    AccountStore { accounts: vec![a0, a1], active: 0 }
+    AccountStore {
+        accounts: vec![a0, a1],
+        active: 0,
+    }
 }
 
 /// A plain text/plain message, parsed live by mail-parser.
@@ -341,7 +347,7 @@ Content-Type: multipart/mixed; boundary=\"=_qos_boundary_=\"\r\n\
 --=_qos_boundary_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
-Your mdns + gossipsub topology can loop if two clusters bridge the same \
+Your direct + hosted gossip topology can loop if two clusters bridge the same \
 peer. A spanning-tree pass keeps the collaboration buffer from echoing. \
 Diagram attached.\r\n\
 --=_qos_boundary_=\r\n\
@@ -366,7 +372,7 @@ Content-Type: multipart/alternative; boundary=\"=_qos_alt_=\"\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
 This week: the scrollable-strip shell landed, and collaboration buffers now \
-stream over gossipsub. Read on.\r\n\
+stream over gossip. Read on.\r\n\
 --=_qos_alt_=\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
@@ -374,7 +380,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 <h1 style=\"color:#4f7cff\">This week in qOS</h1>\
 <img src=\"https://track.weekly.qos.example/open.gif?u=you\" width=\"1\" height=\"1\">\
 <p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
-buffers now stream over gossipsub.</p>\
+buffers now stream over gossip.</p>\
 <ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
 <li>Live collab presence</li></ul>\
 <blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
@@ -395,7 +401,11 @@ mod tests {
     #[test]
     fn corpus_is_populated_across_folders() {
         let mb = sample_mailbox();
-        assert!(mb.count(Folder::Inbox) >= 8, "inbox: {}", mb.count(Folder::Inbox));
+        assert!(
+            mb.count(Folder::Inbox) >= 8,
+            "inbox: {}",
+            mb.count(Folder::Inbox)
+        );
         assert!(mb.count(Folder::Sent) >= 2);
         assert!(mb.count(Folder::Archive) >= 1);
         assert!(mb.count(Folder::Junk) >= 1);
@@ -415,10 +425,11 @@ mod tests {
         assert_eq!(radia.attachments.len(), 1);
         assert_eq!(radia.attachments[0].filename, "spanning-tree.pdf");
         // The Margaret message was parsed from plain MIME.
-        assert!(mb
-            .messages
-            .values()
-            .any(|m| m.from.email == "margaret@apollo.example"));
+        assert!(
+            mb.messages
+                .values()
+                .any(|m| m.from.email == "margaret@apollo.example")
+        );
     }
 
     #[test]
@@ -430,7 +441,10 @@ mod tests {
             .values()
             .find(|m| m.from.email == "radia@spanning.example")
             .unwrap();
-        assert!(radia.attachments[0].is_downloadable(), "parsed attachment carries bytes");
+        assert!(
+            radia.attachments[0].is_downloadable(),
+            "parsed attachment carries bytes"
+        );
         assert!(!radia.attachments[0].content.is_empty());
         // A hand-built projected attachment has metadata only (not downloaded).
         let gantt = mb
@@ -439,7 +453,10 @@ mod tests {
             .flat_map(|m| m.attachments.iter())
             .find(|a| a.filename == "rollout-gantt.pdf")
             .unwrap();
-        assert!(!gantt.is_downloadable(), "projected attachment has no bytes yet");
+        assert!(
+            !gantt.is_downloadable(),
+            "projected attachment has no bytes yet"
+        );
     }
 
     #[test]

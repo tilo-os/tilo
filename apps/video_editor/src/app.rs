@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
-use uuid::Uuid;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -24,28 +24,25 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::a11y::{AccessNode, AccessState, Role};
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::a11y::{AccessNode, AccessState, Role};
 use ui::widget::{
     ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout, Widget,
 };
 
 use crate::actions::{
-    delete_clip_action, remove_media_action, ripple_delete_action, set_project_meta_action,
-    split_clip_action,
-    upsert_clip_action, upsert_media_action, upsert_track_action, VideoResourceCtx,
-    VIDEO_EDITOR_ACTION_TYPE,
+    VIDEO_EDITOR_ACTION_TYPE, VideoResourceCtx, delete_clip_action, remove_media_action,
+    ripple_delete_action, set_project_meta_action, split_clip_action, upsert_clip_action,
+    upsert_media_action, upsert_track_action,
 };
 use crate::doc::VideoDoc;
-use crate::export::{
-    Container, ExportSettings, ExportStatus, FrameRate, Resolution,
-};
+use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
-    Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TextAlign,
-    TextSource, TrackId, TrackKind, Transition, MAX_SPEED, MIN_SPEED,
+    Clip, ClipId, EffectKind, Filters, MAX_SPEED, MIN_SPEED, MediaId, MediaItem, MediaKind,
+    Project, TextAlign, TextSource, TrackId, TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
@@ -501,10 +498,9 @@ impl NumField {
             NumField::ScaleX | NumField::ScaleY => format!("{v:.2}×"),
             NumField::PosX | NumField::PosY => format!("{v:+.2}"),
             NumField::Rotation => format!("{v:.0}°"),
-            NumField::CropLeft
-            | NumField::CropRight
-            | NumField::CropTop
-            | NumField::CropBottom => format!("{:.0}%", v * 100.0),
+            NumField::CropLeft | NumField::CropRight | NumField::CropTop | NumField::CropBottom => {
+                format!("{:.0}%", v * 100.0)
+            }
             NumField::KeyTolerance
             | NumField::KeySoftness
             | NumField::KeySpill
@@ -541,13 +537,24 @@ enum Drag {
     /// is the lane it should land on, re-resolved from the cursor on every
     /// move so a vertical drag crosses tracks. Every other selected clip
     /// follows by the same time delta.
-    ClipMove { id: ClipId, grab_dt: f64, track: TrackId },
-    TrimIn { id: ClipId },
-    TrimOut { id: ClipId },
+    ClipMove {
+        id: ClipId,
+        grab_dt: f64,
+        track: TrackId,
+    },
+    TrimIn {
+        id: ClipId,
+    },
+    TrimOut {
+        id: ClipId,
+    },
     /// Rubber-band selection from `origin` on empty lane space. `additive`
     /// keeps the previous selection (shift held). A press that never leaves
     /// [`MARQUEE_THRESHOLD`] falls back to scrubbing on release.
-    Marquee { origin: Point, additive: bool },
+    Marquee {
+        origin: Point,
+        additive: bool,
+    },
     /// Dragging a scrollbar thumb. The variant names which pane's bar, so
     /// one drag arm serves the timeline, the inspector and the bin.
     Scrollbar(ScrollPane),
@@ -561,12 +568,17 @@ enum Drag {
     /// Dragging the incoming transition's length.
     TransitionLen,
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
-    EffectAmount { idx: usize },
+    EffectAmount {
+        idx: usize,
+    },
     /// Dragging control point `idx` of `channel`'s tone curve. Released
     /// outside the editor's box, an interior point is removed — the standard
     /// way to take a point off a curve, and the only one that does not need
     /// a second control per point on a 300px column.
-    CurvePoint { channel: crate::curve::Channel, idx: usize },
+    CurvePoint {
+        channel: crate::curve::Channel,
+        idx: usize,
+    },
     /// Dragging one of the ranged controls — geometry, rate, title size. See
     /// [`NumField`], which carries the range, the readout and where the value
     /// is written.
@@ -847,7 +859,7 @@ pub struct VideoEditorApp {
     shot_interaction_applied: bool,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
-    zoom: f64,  // pixels per second
+    zoom: f64,   // pixels per second
     scroll: f64, // seconds at the left edge of the lane area
     /// Shared scrollbar interaction models (thumb geometry, thumb drag, track
     /// paging) — the same ones [`ui::widget::Scrollable`] and
@@ -895,7 +907,7 @@ pub struct VideoEditorApp {
     /// Ctrl+Z would decline.
     undo: ui::UndoAccess,
     /// Real preview decoder. Only driven under `--features decode`, where it
-    /// decodes the true frame of the clip under the playhead through GStreamer.
+    /// decodes the true frame of the clip under the playhead through `GStreamer`.
     #[cfg(feature = "decode")]
     preview_decoder: preview::PreviewDecoder,
     /// The preview's frame source, held for the app's lifetime.
@@ -995,8 +1007,8 @@ pub struct VideoEditorApp {
     flap_tick: Instant,
     // --- media-bin clip management ---
     /// Right-click context menu for a bin item (Add to timeline / Rename /
-    /// Delete). Owned as a field and driven directly (open_at / item_at /
-    /// take_selection) because the editor is a canvas, not a taffy tree.
+    /// Delete). Owned as a field and driven directly (`open_at` / `item_at` /
+    /// `take_selection`) because the editor is a canvas, not a taffy tree.
     bin_menu: ContextMenu,
     /// What the open context menu (or a pending menu action) targets — a bin
     /// media item or a timeline track header.
@@ -1489,7 +1501,12 @@ impl VideoEditorApp {
         // topbar is already full at the widths where the panel collapses —
         // and a toggle that does not fit is worse than one on the wrong side.
         let inspector_btn = if self.inspector_split() == SplitLayout::Overlay {
-            Rect::new(import_btn.x0 - 42.0, r.y0 + 10.0, import_btn.x0 - 14.0, r.y0 + 38.0)
+            Rect::new(
+                import_btn.x0 - 42.0,
+                r.y0 + 10.0,
+                import_btn.x0 - 14.0,
+                r.y0 + 38.0,
+            )
         } else {
             Rect::ZERO
         };
@@ -1500,7 +1517,11 @@ impl VideoEditorApp {
         // capture width itself. Below the room it needs it is dropped
         // entirely: a truncation so short it reads as a different project name
         // would be worse than nothing, and the shortcuts still reach it.
-        let project_x0 = if overlay { menu_btn.x1 + 8.0 } else { r.x0 + 12.0 };
+        let project_x0 = if overlay {
+            menu_btn.x1 + 8.0
+        } else {
+            r.x0 + 12.0
+        };
         let leading_limit = if inspector_btn.width() > 0.0 {
             inspector_btn.x0
         } else {
@@ -1553,15 +1574,55 @@ impl VideoEditorApp {
         };
         let preview = Rect::new(preview_x0, mid_top, preview_x1, mid_bot);
         let transport = Rect::new(preview.x0, preview.y1 - TRANSPORT_H, preview.x1, preview.y1);
-        let canvas_area = Rect::new(preview.x0 + 10.0, preview.y0 + 10.0, preview.x1 - 10.0, transport.y0 - 8.0);
-        let canvas = fit_aspect(canvas_area, self.project.width.max(16) as f64, self.project.height.max(9) as f64);
-        let ruler = Rect::new(timeline.x0 + GUTTER_W, timeline.y0, timeline.x1, timeline.y0 + RULER_H);
-        let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
-        let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
+        let canvas_area = Rect::new(
+            preview.x0 + 10.0,
+            preview.y0 + 10.0,
+            preview.x1 - 10.0,
+            transport.y0 - 8.0,
+        );
+        let canvas = fit_aspect(
+            canvas_area,
+            f64::from(self.project.width.max(16)),
+            f64::from(self.project.height.max(9)),
+        );
+        let ruler = Rect::new(
+            timeline.x0 + GUTTER_W,
+            timeline.y0,
+            timeline.x1,
+            timeline.y0 + RULER_H,
+        );
+        let gutter = Rect::new(
+            timeline.x0,
+            timeline.y0 + RULER_H,
+            timeline.x0 + GUTTER_W,
+            timeline.y1,
+        );
+        let lanes = Rect::new(
+            timeline.x0 + GUTTER_W,
+            timeline.y0 + RULER_H,
+            timeline.x1,
+            timeline.y1,
+        );
         Regions {
-            topbar, menu_btn, inspector_btn, project_btn, export_btn, split_btn, import_btn, bin,
-            preview, canvas, transport, inspector, timeline, ruler, gutter, lanes, scrim,
-            bin_overlay: overlay, inspector_overlay,
+            topbar,
+            menu_btn,
+            inspector_btn,
+            project_btn,
+            export_btn,
+            split_btn,
+            import_btn,
+            bin,
+            preview,
+            canvas,
+            transport,
+            inspector,
+            timeline,
+            ruler,
+            gutter,
+            lanes,
+            scrim,
+            bin_overlay: overlay,
+            inspector_overlay,
         }
     }
 
@@ -1660,7 +1721,9 @@ impl VideoEditorApp {
                     continue;
                 }
                 let (_, n) = filmstrip_cells(inner);
-                let Some(m) = self.project.media(clip.media) else { continue };
+                let Some(m) = self.project.media(clip.media) else {
+                    continue;
+                };
                 want.push((
                     clip.media,
                     m.palette,
@@ -1706,7 +1769,11 @@ impl VideoEditorApp {
         let mut out = Vec::new();
         let mut y = r.lanes.y0 + LANE_GAP;
         for t in self.project.display_tracks() {
-            let h = if t.kind == TrackKind::Video { VIDEO_LANE_H } else { AUDIO_LANE_H };
+            let h = if t.kind == TrackKind::Video {
+                VIDEO_LANE_H
+            } else {
+                AUDIO_LANE_H
+            };
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
             out.push((t.id, t.kind, lane));
             y += h + LANE_GAP;
@@ -1722,7 +1789,12 @@ impl VideoEditorApp {
 
     /// The mute pill rect on a track header (shared by draw + hit-test).
     fn mute_pill_rect(&self, header: Rect) -> Rect {
-        Rect::new(header.x1 - 26.0, header.center().y - 9.0, header.x1 - 8.0, header.center().y + 9.0)
+        Rect::new(
+            header.x1 - 26.0,
+            header.center().y - 9.0,
+            header.x1 - 8.0,
+            header.center().y + 9.0,
+        )
     }
 
     /// The lock pill rect, immediately left of the mute pill.
@@ -1743,8 +1815,7 @@ impl VideoEditorApp {
         let lanes = self.lane_rects(r);
         let y = lanes
             .last()
-            .map(|(_, _, l)| l.y1 + LANE_GAP + 4.0)
-            .unwrap_or(r.gutter.y0 + 6.0);
+            .map_or(r.gutter.y0 + 6.0, |(_, _, l)| l.y1 + LANE_GAP + 4.0);
         if y + 24.0 > r.timeline.y1 {
             return Vec::new();
         }
@@ -1792,7 +1863,10 @@ impl VideoEditorApp {
             let x = x0 + i * (HISTORY_W + 4.0);
             (v, Rect::new(x, cy - 13.0, x + HISTORY_W, cy + 13.0))
         };
-        vec![mk(0.0, ui::UndoRequest::Undo), mk(1.0, ui::UndoRequest::Redo)]
+        vec![
+            mk(0.0, ui::UndoRequest::Undo),
+            mk(1.0, ui::UndoRequest::Redo),
+        ]
     }
 
     /// Where everything right of the transport cluster starts: past the
@@ -1849,7 +1923,9 @@ impl VideoEditorApp {
         if self.media_is_projected(mid) {
             return false; // absent bytes are a different, recoverable state
         }
-        let Some(m) = self.project.media(mid) else { return false };
+        let Some(m) = self.project.media(mid) else {
+            return false;
+        };
         if self.thumbnails.is_undecodable(mid) {
             return true;
         }
@@ -1882,7 +1958,10 @@ impl VideoEditorApp {
     fn bin_order(&self) -> Vec<MediaId> {
         let mut v: Vec<&crate::model::MediaItem> = self.project.media.iter().collect();
         v.sort_by(|a, b| {
-            b.kind.is_visual().cmp(&a.kind.is_visual()).then(a.name.cmp(&b.name))
+            b.kind
+                .is_visual()
+                .cmp(&a.kind.is_visual())
+                .then(a.name.cmp(&b.name))
         });
         v.into_iter().map(|m| m.id).collect()
     }
@@ -1977,12 +2056,16 @@ impl VideoEditorApp {
 
     /// Track rect + metrics + current offset for one scrollable pane, so the
     /// press / drag / hover paths do not each re-derive them.
-    fn scroll_pane(&self, pane: ScrollPane, r: &Regions) -> Option<(Rect, ui::widget::ScrollMetrics)> {
+    fn scroll_pane(
+        &self,
+        pane: ScrollPane,
+        r: &Regions,
+    ) -> Option<(Rect, ui::widget::ScrollMetrics)> {
         match pane {
             ScrollPane::Timeline => self.hscroll_track(r).map(|t| (t, self.h_metrics(r))),
-            ScrollPane::Inspector => {
-                self.inspector_scroll_track(r).map(|t| (t, self.inspector_metrics(r)))
-            }
+            ScrollPane::Inspector => self
+                .inspector_scroll_track(r)
+                .map(|t| (t, self.inspector_metrics(r))),
             ScrollPane::Bin => self.bin_scroll_track(r).map(|t| (t, self.bin_metrics(r))),
         }
     }
@@ -2049,7 +2132,9 @@ impl VideoEditorApp {
                 self.monitor_stale = false;
             }
         }
-        let Some(m) = self.monitor.as_ref() else { return };
+        let Some(m) = self.monitor.as_ref() else {
+            return;
+        };
         if self.monitor_stale {
             m.set_project(&self.project);
             self.monitor_stale = false;
@@ -2250,7 +2335,9 @@ impl VideoEditorApp {
     fn split_selected(&mut self, doc: &mut AutoCommit) {
         let mut right_halves = Vec::new();
         for id in self.editable_selection() {
-            let Some(rid) = self.project.split_clip(id, self.playhead) else { continue };
+            let Some(rid) = self.project.split_clip(id, self.playhead) else {
+                continue;
+            };
             let left = self.project.clip(id).cloned();
             let right = self.project.clip(rid).cloned();
             if let (Some(left), Some(right)) = (left, right) {
@@ -2301,8 +2388,11 @@ impl VideoEditorApp {
                 .iter()
                 .filter_map(|m| self.project.clip(*m).cloned())
                 .collect();
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &ripple_delete_action(&id, &moved));
+            self.actions.dispatch(
+                doc,
+                VIDEO_EDITOR_ACTION_TYPE,
+                &ripple_delete_action(&id, &moved),
+            );
         }
         self.selection.clear();
     }
@@ -2315,7 +2405,11 @@ impl VideoEditorApp {
             .iter()
             .filter_map(|id| self.project.clip(*id).cloned())
             .collect();
-        clips.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        clips.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if !clips.is_empty() {
             self.clipboard = clips;
         }
@@ -2340,17 +2434,23 @@ impl VideoEditorApp {
         if src.is_empty() {
             return;
         }
-        let base = src
-            .iter()
-            .map(|c| c.start)
-            .fold(f64::INFINITY, f64::min);
-        let near = self.selected().and_then(|s| self.project.clip(s)).map(|c| c.track);
+        let base = src.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
+        let near = self
+            .selected()
+            .and_then(|s| self.project.clip(s))
+            .map(|c| c.track);
         let mut pasted = Vec::new();
         for clip in src {
             let kind = self
                 .project
                 .media(clip.media)
-                .map(|m| if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio })
+                .map(|m| {
+                    if m.kind.is_visual() {
+                        TrackKind::Video
+                    } else {
+                        TrackKind::Audio
+                    }
+                })
                 .unwrap_or(TrackKind::Video);
             // The clip's own track first (that is where the user copied it
             // from), then the current selection's track, then any unlocked
@@ -2360,7 +2460,10 @@ impl VideoEditorApp {
                 .placement_track(kind, Some(clip.track))
                 .or_else(|| self.project.placement_track(kind, near))
                 .unwrap_or_else(|| self.ensure_track_of_kind(doc, kind));
-            let start = snap_to_frame((self.playhead + (clip.start - base)).max(0.0), self.project.fps);
+            let start = snap_to_frame(
+                (self.playhead + (clip.start - base)).max(0.0),
+                self.project.fps,
+            );
             let id = self.project.paste_clip(clip, track, start);
             self.dispatch_clip(doc, id);
             pasted.push(id);
@@ -2406,7 +2509,11 @@ impl VideoEditorApp {
         if !self.project.clip_editable(id) {
             return;
         }
-        let delta = self.project.clip(id).map(|c| self.playhead - c.start).unwrap_or(0.0);
+        let delta = self
+            .project
+            .clip(id)
+            .map(|c| self.playhead - c.start)
+            .unwrap_or(0.0);
         if delta.abs() < 1e-6 {
             return;
         }
@@ -2421,7 +2528,11 @@ impl VideoEditorApp {
         if !self.project.clip_editable(id) {
             return;
         }
-        let delta = self.project.clip(id).map(|c| self.playhead - c.end()).unwrap_or(0.0);
+        let delta = self
+            .project
+            .clip(id)
+            .map(|c| self.playhead - c.end())
+            .unwrap_or(0.0);
         if delta.abs() < 1e-6 {
             return;
         }
@@ -2489,7 +2600,9 @@ impl VideoEditorApp {
         if !self.project.clip_editable(id) {
             return;
         }
-        let Some(mid) = self.project.clip(id).map(|c| c.media) else { return };
+        let Some(mid) = self.project.clip(id).map(|c| c.media) else {
+            return;
+        };
         if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
             edit(m);
         }
@@ -2506,7 +2619,10 @@ impl VideoEditorApp {
     /// Apply `edit` to the selected clip's title styling and dispatch it as
     /// one media write. A no-op on a clip whose source is not a title.
     fn edit_title(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut TextSource)) {
-        let has_text = self.selected_media_item().map(|m| m.text.is_some()).unwrap_or(false);
+        let has_text = self
+            .selected_media_item()
+            .map(|m| m.text.is_some())
+            .unwrap_or(false);
         if !has_text {
             return;
         }
@@ -2515,7 +2631,13 @@ impl VideoEditorApp {
             edit(&mut t);
             // The bin row names a title by its first line, so keep the two in
             // step rather than leaving a renamed title labelled by old words.
-            m.name = t.content.lines().next().unwrap_or("Title").trim().to_string();
+            m.name = t
+                .content
+                .lines()
+                .next()
+                .unwrap_or("Title")
+                .trim()
+                .to_string();
             if m.name.is_empty() {
                 m.name = "Title".into();
             }
@@ -2631,7 +2753,10 @@ impl VideoEditorApp {
     /// it, without one it plants one. Both ways it can step to the
     /// neighbouring keys and clear the whole curve.
     fn open_key_menu(&mut self, param: Param, at: Point) {
-        let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
+        let clip = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .cloned();
         let Some(clip) = clip else { return };
         let on_key = clip.has_key_at(param, self.playhead);
         let interp = clip.key_interp_at(param, self.playhead).unwrap_or_default();
@@ -2705,7 +2830,9 @@ impl VideoEditorApp {
     /// Presentation, so no action: the playhead is this reader's, not the
     /// document's.
     fn jump_to_key(&mut self, forward: bool) {
-        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else { return };
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+            return;
+        };
         let to = if forward {
             clip.next_key_after(self.playhead)
         } else {
@@ -2742,10 +2869,17 @@ impl VideoEditorApp {
         let palette = (next.markers.len() as u8 % 6) + 1;
         let id = next.add_marker(self.playhead, "Marker", palette);
         self.project = next.clone();
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &set_project_meta_action(&next),
+        );
         self.collapsed.remove(&Section::Markers);
-        self.begin_marker_rename(MarkerRef { id, clip: None, at: self.playhead });
+        self.begin_marker_rename(MarkerRef {
+            id,
+            clip: None,
+            at: self.playhead,
+        });
     }
 
     fn begin_marker_rename(&mut self, m: MarkerRef) {
@@ -2763,8 +2897,13 @@ impl VideoEditorApp {
     /// draw has filled the cache, and then the picker is not opened at all
     /// rather than opened over nothing.
     fn open_font_picker(&mut self) {
-        let Some(m) = self.selected_media_item() else { return };
-        let (mid, current) = (m.id, m.text.as_ref().map(|t| t.font.clone()).unwrap_or_default());
+        let Some(m) = self.selected_media_item() else {
+            return;
+        };
+        let (mid, current) = (
+            m.id,
+            m.text.as_ref().map(|t| t.font.clone()).unwrap_or_default(),
+        );
         if self.system_fonts.is_empty() {
             return;
         }
@@ -2785,7 +2924,9 @@ impl VideoEditorApp {
             "font",
             shown.as_str(),
         );
-        let mut dd = ui::widget::Dropdown::new(options, "font").with_id("title_font").open();
+        let mut dd = ui::widget::Dropdown::new(options, "font")
+            .with_id("title_font")
+            .open();
         dd.sync(&mut doc, &automerge::ROOT);
         self.font_picker = Some((mid, Box::new(dd), doc));
     }
@@ -2802,7 +2943,11 @@ impl VideoEditorApp {
         let chosen = dd.selected().to_string();
         let mid = *mid;
         self.font_picker = None;
-        let family = if chosen == Self::DEFAULT_FONT_LABEL { String::new() } else { chosen };
+        let family = if chosen == Self::DEFAULT_FONT_LABEL {
+            String::new()
+        } else {
+            chosen
+        };
         Some((mid, family))
     }
 
@@ -2832,7 +2977,9 @@ impl VideoEditorApp {
                 MarkerField::Note => mk.note.clone(),
             })
             .unwrap_or_default();
-        let mut label = EditableLabel::new(&current).with_font_size(12.0).with_id("marker_rename");
+        let mut label = EditableLabel::new(&current)
+            .with_font_size(12.0)
+            .with_id("marker_rename");
         label.begin_edit();
         self.marker_field = field;
         self.marker_rename = Some((m, label));
@@ -2881,13 +3028,18 @@ impl VideoEditorApp {
         match m.clip {
             None => {
                 let mut next = self.project.clone();
-                let Some(mk) = next.marker_mut(m.id) else { return false };
+                let Some(mk) = next.marker_mut(m.id) else {
+                    return false;
+                };
                 if !write(mk) {
                     return false;
                 }
                 self.project = next.clone();
-                self.actions
-                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+                self.actions.dispatch(
+                    doc,
+                    VIDEO_EDITOR_ACTION_TYPE,
+                    &set_project_meta_action(&next),
+                );
                 true
             }
             Some(cid) => {
@@ -2922,8 +3074,11 @@ impl VideoEditorApp {
                     return;
                 }
                 self.project = next.clone();
-                self.actions
-                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+                self.actions.dispatch(
+                    doc,
+                    VIDEO_EDITOR_ACTION_TYPE,
+                    &set_project_meta_action(&next),
+                );
             }
             Some(cid) => {
                 let gone = self
@@ -2997,7 +3152,9 @@ impl VideoEditorApp {
     /// Commit new words for a title: one media write, so the picture, the bin
     /// row and every clip that placed this title all follow from it.
     fn commit_title_text(&mut self, doc: &mut AutoCommit, mid: MediaId, words: &str) {
-        let Some(m) = self.project.media(mid) else { return };
+        let Some(m) = self.project.media(mid) else {
+            return;
+        };
         let mut next = m.clone();
         let mut t = next.text.clone().unwrap_or_default();
         if t.content == words {
@@ -3062,9 +3219,9 @@ impl VideoEditorApp {
     fn move_effect_selected(&mut self, doc: &mut AutoCommit, idx: usize, up: bool) {
         self.edit_selected(doc, move |c| {
             if up {
-                c.move_effect_up(idx)
+                c.move_effect_up(idx);
             } else {
-                c.move_effect_down(idx)
+                c.move_effect_down(idx);
             }
         });
     }
@@ -3106,14 +3263,18 @@ impl VideoEditorApp {
             .max()
             .unwrap_or(0)
             + 1;
-        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let name = format!(
+            "{}{index}",
+            if kind == TrackKind::Video { "V" } else { "A" }
+        );
         let track = crate::model::Track {
             id: Uuid::new_v4(),
             name,
             kind,
             index,
             muted: false,
-            locked: false, solo: false,
+            locked: false,
+            solo: false,
         };
         let id = track.id;
         self.actions
@@ -3127,14 +3288,13 @@ impl VideoEditorApp {
     /// new clip id.
     fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) -> Option<ClipId> {
         let m = self.project.media(media).cloned()?;
-        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
+        let kind = if m.kind.is_visual() {
+            TrackKind::Video
+        } else {
+            TrackKind::Audio
+        };
         let track = self.ensure_track_of_kind(doc, kind);
-        let start = self
-            .project
-            .clips_on(track)
-            .last()
-            .map(|c| c.end())
-            .unwrap_or(0.0);
+        let start = self.project.clips_on(track).last().map_or(0.0, |c| c.end());
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
         self.selection.select_only(id);
@@ -3209,7 +3369,9 @@ impl VideoEditorApp {
     /// intent, this is where the rename actually begins — release-time, so a
     /// drag that started from the same press has already cancelled it.
     fn release_bin_drag(&mut self, doc: &mut AutoCommit, r: &Regions) {
-        let Some(bd) = self.bin_drag.take() else { return };
+        let Some(bd) = self.bin_drag.take() else {
+            return;
+        };
         if !bd.active {
             // A plain click that never moved. If it landed on the name of an
             // item clicked a moment ago, that is the Finder-style slow second
@@ -3222,7 +3384,11 @@ impl VideoEditorApp {
         }
         self.pending_rename = None;
         let p = self.last_mouse;
-        let want_kind = if self.project.media(bd.media).map(|m| m.kind.is_visual()).unwrap_or(true) {
+        let want_kind = if self
+            .project
+            .media(bd.media)
+            .is_none_or(|m| m.kind.is_visual())
+        {
             TrackKind::Video
         } else {
             TrackKind::Audio
@@ -3280,9 +3446,18 @@ impl VideoEditorApp {
         let locked = t.map(|t| t.locked).unwrap_or(false);
         let solo = t.map(|t| t.solo).unwrap_or(false);
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action(if muted { "Unmute track" } else { "Mute track" }, || {}));
-        menu.push(MenuItem::action(if solo { "Unsolo track" } else { "Solo track" }, || {}));
-        menu.push(MenuItem::action(if locked { "Unlock track" } else { "Lock track" }, || {}));
+        menu.push(MenuItem::action(
+            if muted { "Unmute track" } else { "Mute track" },
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            if solo { "Unsolo track" } else { "Solo track" },
+            || {},
+        ));
+        menu.push(MenuItem::action(
+            if locked { "Unlock track" } else { "Lock track" },
+            || {},
+        ));
         menu.push(MenuItem::separator());
         menu.push(MenuItem::action("Add video track", || {}));
         menu.push(MenuItem::action("Add audio track", || {}));
@@ -3325,7 +3500,9 @@ impl VideoEditorApp {
         if !r.lanes.contains(p) {
             return false;
         }
-        let Some((cid, _lane)) = self.clip_at(r, p) else { return false };
+        let Some((cid, _lane)) = self.clip_at(r, p) else {
+            return false;
+        };
         self.open_clip_menu(cid, p);
         true
     }
@@ -3419,14 +3596,18 @@ impl VideoEditorApp {
             .max()
             .unwrap_or(0)
             + 1;
-        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let name = format!(
+            "{}{index}",
+            if kind == TrackKind::Video { "V" } else { "A" }
+        );
         let track = crate::model::Track {
             id: Uuid::new_v4(),
             name,
             kind,
             index,
             muted: false,
-            locked: false, solo: false,
+            locked: false,
+            solo: false,
         };
         let id = track.id;
         self.actions
@@ -3437,8 +3618,13 @@ impl VideoEditorApp {
 
     /// Delete a track and every clip on it, as one action.
     fn delete_track(&mut self, doc: &mut AutoCommit, tid: TrackId) {
-        let clip_ids: Vec<ClipId> =
-            self.project.clips.iter().filter(|c| c.track == tid).map(|c| c.id).collect();
+        let clip_ids: Vec<ClipId> = self
+            .project
+            .clips
+            .iter()
+            .filter(|c| c.track == tid)
+            .map(|c| c.id)
+            .collect();
         self.selection.remove_all(&clip_ids);
         self.actions.dispatch(
             doc,
@@ -3499,7 +3685,9 @@ impl VideoEditorApp {
     /// Begin an inline rename of bin media `mid` using the shared editable
     /// label (real caret / selection / clipboard). No-op if the media is gone.
     fn begin_rename(&mut self, mid: MediaId) {
-        let Some(m) = self.project.media(mid) else { return };
+        let Some(m) = self.project.media(mid) else {
+            return;
+        };
         let mut label = EditableLabel::new(&m.name)
             .with_font_size(13.0)
             .with_id("bin_rename");
@@ -3527,12 +3715,20 @@ impl VideoEditorApp {
 
     /// Delete a bin media and every clip that placed it, as one action.
     fn delete_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
-        let clip_ids: Vec<ClipId> =
-            self.project.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        let clip_ids: Vec<ClipId> = self
+            .project
+            .clips
+            .iter()
+            .filter(|c| c.media == mid)
+            .map(|c| c.id)
+            .collect();
         // Keep the in-memory selection consistent before the reload.
         self.selection.remove_all(&clip_ids);
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &remove_media_action(&mid, &clip_ids));
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &remove_media_action(&mid, &clip_ids),
+        );
         // Mirror the action in memory, the way the import path does. The
         // document is the truth and `sync` will reload it, but the model
         // must not disagree with it in between — a caller that deletes and
@@ -3634,8 +3830,7 @@ impl VideoEditorApp {
         let stored = crate::media::stored_path_for_import(&resolved.abs_path);
         let name = path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| stored.clone());
+            .map_or_else(|| stored.clone(), |n| n.to_string_lossy().into_owned());
         let palette = (self.project.media.len() as u8) % 7;
         let item = MediaItem {
             id: Uuid::new_v4(),
@@ -3669,7 +3864,9 @@ impl VideoEditorApp {
     fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
         // `add_media_to_timeline` now creates a matching track when the project
         // has none, so this just places and parks the playhead in the new clip.
-        let Some(cid) = self.add_media_to_timeline(doc, media_id) else { return };
+        let Some(cid) = self.add_media_to_timeline(doc, media_id) else {
+            return;
+        };
         if let Some(c) = self.project.clip(cid) {
             let inside = c.start + (c.duration() * 0.4);
             self.playhead = inside.clamp(c.start, (c.end() - 0.05).max(c.start));
@@ -3723,7 +3920,9 @@ impl VideoEditorApp {
                 Err(e) => tracing::warn!(error = %e, "no GPU compositor for the preview"),
             }
         }
-        let Some(compositor) = self.compositor.as_mut() else { return };
+        let Some(compositor) = self.compositor.as_mut() else {
+            return;
+        };
         if self.project.clips.is_empty() || r.canvas.width() < 1.0 {
             self.composited = None;
             return;
@@ -3869,12 +4068,22 @@ impl VideoEditorApp {
         let key_at = |y: f64| Rect::new(x0, y - 3.0, x0 + KEY_BOX, y + 15.0);
 
         if is_video {
-            l.opacity = Some(track_at(y)); l.keys.push((Param::Opacity, key_at(y))); y += row;
-            l.brightness = Some(track_at(y)); l.keys.push((Param::Brightness, key_at(y))); y += row;
-            l.contrast = Some(track_at(y)); l.keys.push((Param::Contrast, key_at(y))); y += row;
-            l.saturation = Some(track_at(y)); l.keys.push((Param::Saturation, key_at(y))); y += row;
+            l.opacity = Some(track_at(y));
+            l.keys.push((Param::Opacity, key_at(y)));
+            y += row;
+            l.brightness = Some(track_at(y));
+            l.keys.push((Param::Brightness, key_at(y)));
+            y += row;
+            l.contrast = Some(track_at(y));
+            l.keys.push((Param::Contrast, key_at(y)));
+            y += row;
+            l.saturation = Some(track_at(y));
+            l.keys.push((Param::Saturation, key_at(y)));
+            y += row;
         } else {
-            l.volume = Some(track_at(y)); l.keys.push((Param::Volume, key_at(y))); y += row;
+            l.volume = Some(track_at(y));
+            l.keys.push((Param::Volume, key_at(y)));
+            y += row;
         }
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
@@ -3887,7 +4096,8 @@ impl VideoEditorApp {
         l.transition_y = y + 15.0;
         for (i, t) in Transition::ALL.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
-            l.transitions.push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
+            l.transitions
+                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
         }
         y += 48.0;
         // Transition length, only when there is a transition to size.
@@ -3899,9 +4109,12 @@ impl VideoEditorApp {
         l.colors_y = y + 15.0;
         let sw = 24.0;
         for i in 0..7u8 {
-            let sx0 = x0 + i as f64 * (sw + 4.0);
-            if sx0 + sw > x1 { break; }
-            l.colors.push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
+            let sx0 = x0 + f64::from(i) * (sw + 4.0);
+            if sx0 + sw > x1 {
+                break;
+            }
+            l.colors
+                .push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
         }
         y += 44.0;
 
@@ -3919,7 +4132,8 @@ impl VideoEditorApp {
             let cw = (x1 - x0) / crate::curve::Channel::ALL.len() as f64;
             for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
                 let cx = x0 + i as f64 * cw;
-                l.curve_channels.push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 24.0)));
+                l.curve_channels
+                    .push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 24.0)));
             }
             y += 32.0;
             // Square, so the diagonal that means "unchanged" really is a
@@ -3963,8 +4177,10 @@ impl VideoEditorApp {
                 [NumField::CropLeft, NumField::CropRight],
                 [NumField::CropTop, NumField::CropBottom],
             ] {
-                l.nums.push((pair[0], Rect::new(x0, y + 19.0, x0 + half, y + 28.0)));
-                l.nums.push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
+                l.nums
+                    .push((pair[0], Rect::new(x0, y + 19.0, x0 + half, y + 28.0)));
+                l.nums
+                    .push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
                 y += row;
             }
             // Anchor: the point scale and rotation turn about. Nine presets
@@ -3978,7 +4194,8 @@ impl VideoEditorApp {
             for ay in ANCHOR_STOPS {
                 for (col, ax) in ANCHOR_STOPS.iter().enumerate() {
                     let cx = x0 + col as f64 * cell;
-                    l.anchor.push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 22.0)));
+                    l.anchor
+                        .push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 22.0)));
                 }
                 y += 25.0;
             }
@@ -3996,7 +4213,8 @@ impl VideoEditorApp {
             .enumerate()
             {
                 let bx = x0 + i as f64 * (bw + 6.0);
-                l.pip.push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
+                l.pip
+                    .push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
             }
             y += 32.0;
             l.reset_transform = Some(Rect::new(x0, y, x1, y + 26.0));
@@ -4009,7 +4227,8 @@ impl VideoEditorApp {
             let pw = (x1 - x0) / SPEED_PRESETS.len() as f64;
             for (i, rate) in SPEED_PRESETS.iter().enumerate() {
                 let px0 = x0 + i as f64 * pw;
-                l.speed_presets.push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 24.0)));
+                l.speed_presets
+                    .push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 24.0)));
             }
             y += 32.0;
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
@@ -4067,7 +4286,8 @@ impl VideoEditorApp {
                 let mw = (x1 - x0) / crate::model::MaskShape::ALL.len() as f64;
                 for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
                     let sx = x0 + i as f64 * mw;
-                    l.mask_shapes.push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 24.0)));
+                    l.mask_shapes
+                        .push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 24.0)));
                 }
                 y += 32.0;
                 if clip.mask.is_active() {
@@ -4106,7 +4326,8 @@ impl VideoEditorApp {
             let aw = (x1 - x0) / TextAlign::ALL.len() as f64;
             for (i, a) in TextAlign::ALL.iter().enumerate() {
                 let ax = x0 + i as f64 * aw;
-                l.title_align.push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
+                l.title_align
+                    .push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
             }
             // The caption above the chooser needs its own line: at the
             // ordinary 16px gap it landed on the alignment row's buttons.
@@ -4119,7 +4340,8 @@ impl VideoEditorApp {
                 if sx + sw > x1 {
                     break;
                 }
-                l.title_colors.push((*col, Rect::new(sx, y, sx + sw, y + sw)));
+                l.title_colors
+                    .push((*col, Rect::new(sx, y, sx + sw, y + sw)));
             }
             y += sw + 12.0;
             let hw = (x1 - x0) / 2.0 - 4.0;
@@ -4206,7 +4428,13 @@ impl VideoEditorApp {
         let mut diag = BezPath::new();
         diag.move_to((canvas.x0, canvas.y1));
         diag.line_to((canvas.x1, canvas.y0));
-        scene.stroke(&Stroke::new(1.0), tf, with_alpha(c.text_dim, 0.45), None, &diag);
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            with_alpha(c.text_dim, 0.45),
+            None,
+            &diag,
+        );
 
         // The curve itself, sampled densely enough that the cubic reads as a
         // curve rather than as the polyline it is drawn with.
@@ -4246,7 +4474,11 @@ impl VideoEditorApp {
             scene.stroke(
                 &Stroke::new(1.5),
                 tf,
-                if live { c.text_primary } else { c.surfaces.base },
+                if live {
+                    c.text_primary
+                } else {
+                    c.surfaces.base
+                },
                 None,
                 &Circle::new(at, r),
             );
@@ -4259,7 +4491,16 @@ impl VideoEditorApp {
         } else {
             "Click to add a point · drag to shape"
         };
-        text(scene, tr, tf, hint, 10.5, c.text_dim, canvas.x0, canvas.y1 + 12.0);
+        text(
+            scene,
+            tr,
+            tf,
+            hint,
+            10.5,
+            c.text_dim,
+            canvas.x0,
+            canvas.y1 + 12.0,
+        );
     }
 
     /// Draw the marker list: one row per marked instant, with rename and
@@ -4280,30 +4521,62 @@ impl VideoEditorApp {
             if hovered {
                 fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
             }
-            let Some((_, mk, _)) =
-                self.project.all_markers().into_iter().find(|(_, k, _)| k.id == m.id)
+            let Some((_, mk, _)) = self
+                .project
+                .all_markers()
+                .into_iter()
+                .find(|(_, k, _)| k.id == m.id)
             else {
                 continue;
             };
             let col = clip_color(theme, mk.palette);
             scene.fill(
-                Fill::NonZero, tf, col, None,
+                Fill::NonZero,
+                tf,
+                col,
+                None,
                 &Circle::new(Point::new(row.x0 + 7.0, row.y0 + 13.0), 4.0),
             );
             let editing = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
             let renaming = editing && self.marker_field == MarkerField::Name;
             if !renaming {
-                let name = if mk.name.trim().is_empty() { "Marker" } else { mk.name.as_str() };
+                let name = if mk.name.trim().is_empty() {
+                    "Marker"
+                } else {
+                    mk.name.as_str()
+                };
                 let shown = elide_w(name, name_rect.width() as f32, tr);
                 let baseline = text_baseline(name_rect, 12.0, tr);
-                text(scene, tr, tf, &shown, 12.0, c.text_primary, name_rect.x0, baseline);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &shown,
+                    12.0,
+                    c.text_primary,
+                    name_rect.x0,
+                    baseline,
+                );
                 // A clip marker says which clip it travels with, because
                 // moving that clip moves the marker and nothing else would
                 // explain why the time changed.
                 let stamp = timecode(m.at, self.project.fps);
                 let (sw2, _) = tr.measure(&stamp, 11.0, None);
-                let stamp_col = if m.clip.is_some() { c.text_tertiary } else { c.text_dim };
-                text(scene, tr, tf, &stamp, 11.0, stamp_col, note_btn.x0 - 8.0 - sw2 as f64, baseline);
+                let stamp_col = if m.clip.is_some() {
+                    c.text_tertiary
+                } else {
+                    c.text_dim
+                };
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &stamp,
+                    11.0,
+                    stamp_col,
+                    note_btn.x0 - 8.0 - sw2 as f64,
+                    baseline,
+                );
             }
             // The note, on its own line under the name. Present only when
             // there is one, so an unannotated list stays a list of names.
@@ -4327,11 +4600,17 @@ impl VideoEditorApp {
                     }
                     let g = 11.0;
                     let box_ = Rect::new(
-                        rect.center().x - g / 2.0, rect.center().y - g / 2.0,
-                        rect.center().x + g / 2.0, rect.center().y + g / 2.0,
+                        rect.center().x - g / 2.0,
+                        rect.center().y - g / 2.0,
+                        rect.center().x + g / 2.0,
+                        rect.center().y + g / 2.0,
                     );
                     ui::icons::draw_icon(
-                        scene, tf, box_, icon, tint,
+                        scene,
+                        tf,
+                        box_,
+                        icon,
+                        tint,
                         ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
@@ -4339,10 +4618,25 @@ impl VideoEditorApp {
         }
         if let Some(rect) = l.add_marker {
             if l.marker_rows.is_empty() {
-                text(scene, tr, tf, "Nothing marked yet", 11.5, c.text_dim, x0, rect.y0 - 16.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "Nothing marked yet",
+                    11.5,
+                    c.text_dim,
+                    x0,
+                    rect.y0 - 16.0,
+                );
             }
             draw_button(
-                scene, tf, tr, theme, rect, ADD_MARKER_LABEL, false,
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                ADD_MARKER_LABEL,
+                false,
                 rect.contains(self.last_mouse),
             );
         }
@@ -4354,7 +4648,8 @@ impl VideoEditorApp {
     /// Shared by both inspector states: the list is the same whether a clip
     /// is selected or not, because a marker belongs to the project.
     fn layout_markers(&self, l: &mut InspectorLayout, x0: f64, x1: f64, y: &mut f64) {
-        l.sections.push((Section::Markers, Rect::new(x0, *y, x1, *y + SECTION_H)));
+        l.sections
+            .push((Section::Markers, Rect::new(x0, *y, x1, *y + SECTION_H)));
         *y += SECTION_H + 4.0;
         if self.collapsed.contains(&Section::Markers) {
             return;
@@ -4372,7 +4667,11 @@ impl VideoEditorApp {
                 && self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
             let h = marker_row_height(!m.note.trim().is_empty() || writing_note);
             l.marker_rows.push((
-                MarkerRef { id: m.id, clip: on_clip, at },
+                MarkerRef {
+                    id: m.id,
+                    clip: on_clip,
+                    at,
+                },
                 Rect::new(x0, *y, x1, *y + h),
             ));
             *y += h + 4.0;
@@ -4418,10 +4717,18 @@ impl VideoEditorApp {
         let card_h = 360.0_f64.min(self.rect.height() - 32.0).max(200.0);
         let cx = (r.timeline.x0 + r.timeline.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
-        let card = Rect::new(cx - card_w / 2.0, cy - card_h / 2.0, cx + card_w / 2.0, cy + card_h / 2.0);
+        let card = Rect::new(
+            cx - card_w / 2.0,
+            cy - card_h / 2.0,
+            cx + card_w / 2.0,
+            cy + card_h / 2.0,
+        );
         let x0 = card.x0 + 24.0;
         let x1 = card.x1 - 24.0;
-        let mut l = ExportLayout { card, ..Default::default() };
+        let mut l = ExportLayout {
+            card,
+            ..Default::default()
+        };
         // The three groups are spaced within the band between the header and
         // the footer rather than from fixed offsets off the card top. The old
         // constants assumed a 360px card AND that the header was one line: the
@@ -4432,12 +4739,24 @@ impl VideoEditorApp {
         let step = ((footer_top - content_top) / 3.0).clamp(EXPORT_GROUP_H, 64.0);
         let seg = |x0: f64, x1: f64, n: usize, y: f64| -> Vec<Rect> {
             let w = (x1 - x0) / n as f64;
-            (0..n).map(|i| Rect::new(x0 + i as f64 * w, y, x0 + (i as f64 + 1.0) * w - 4.0, y + 32.0)).collect()
+            (0..n)
+                .map(|i| {
+                    Rect::new(
+                        x0 + i as f64 * w,
+                        y,
+                        x0 + (i as f64 + 1.0) * w - 4.0,
+                        y + 32.0,
+                    )
+                })
+                .collect()
         };
         // Each group's label is drawn 18px above its segments, so the segment
         // row starts one label-height into the group's slot.
         let mut y = content_top + EXPORT_LABEL_H;
-        for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y).into_iter().enumerate() {
+        for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y)
+            .into_iter()
+            .enumerate()
+        {
             l.resolution.push((Resolution::ALL[i], rect));
         }
         y += step;
@@ -4448,8 +4767,18 @@ impl VideoEditorApp {
         for (i, rect) in seg(x0, x1, FrameRate::ALL.len(), y).into_iter().enumerate() {
             l.fps.push((FrameRate::ALL[i], rect));
         }
-        l.cancel = Rect::new(x0, card.y1 - 50.0, (x0 + x1) / 2.0 - 6.0, card.y1 - 18.0);
-        l.confirm = Rect::new((x0 + x1) / 2.0 + 6.0, card.y1 - 50.0, x1, card.y1 - 18.0);
+        l.cancel = Rect::new(
+            x0,
+            card.y1 - 50.0,
+            f64::midpoint(x0, x1) - 6.0,
+            card.y1 - 18.0,
+        );
+        l.confirm = Rect::new(
+            f64::midpoint(x0, x1) + 6.0,
+            card.y1 - 50.0,
+            x1,
+            card.y1 - 18.0,
+        );
         l
     }
 
@@ -4664,7 +4993,7 @@ impl VideoEditorApp {
                 let item = self
                     .bin_item_rects(r)
                     .into_iter()
-                    .find(|(m, _)| self.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false));
+                    .find(|(m, _)| self.project.media(*m).is_some_and(|mm| mm.kind.is_visual()));
                 let lane = self
                     .lane_rects(r)
                     .into_iter()
@@ -4697,7 +5026,8 @@ impl VideoEditorApp {
                     let cid = c.id;
                     self.selection.select_only(cid);
                     if let Some(c) = self.project.clip_mut(cid) {
-                        c.transform = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
+                        c.transform =
+                            crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
                         c.transform.rotation = -6.0;
                         c.transform.crop_left = 0.08;
                         c.transform.crop_right = 0.08;
@@ -4898,8 +5228,7 @@ impl VideoEditorApp {
                 // Open the menu on the key the playhead is sitting on, from
                 // the control's own rect — the same call the click makes.
                 let l = self.inspector_layout(r);
-                if let Some((_, rect)) =
-                    l.keys.iter().find(|(p, _)| *p == Param::Opacity).copied()
+                if let Some((_, rect)) = l.keys.iter().find(|(p, _)| *p == Param::Opacity).copied()
                 {
                     self.open_key_menu(Param::Opacity, Point::new(rect.center().x, rect.y1));
                 }
@@ -5244,10 +5573,10 @@ impl Widget for VideoEditorApp {
         // whatever is left selected rather than clearing the lot.
         self.selection.retain_existing(&self.project);
         // Drop a rename / menu whose target media vanished (e.g. remote delete).
-        if let Some((mid, _)) = &self.bin_rename {
-            if self.project.media(*mid).is_none() {
-                self.bin_rename = None;
-            }
+        if let Some((mid, _)) = &self.bin_rename
+            && self.project.media(*mid).is_none()
+        {
+            self.bin_rename = None;
         }
         match self.menu_target {
             Some(MenuTarget::Media(mid)) if self.project.media(mid).is_none() => {
@@ -5264,10 +5593,10 @@ impl Widget for VideoEditorApp {
             }
             _ => {}
         }
-        if let Some(bd) = self.bin_drag {
-            if self.project.media(bd.media).is_none() {
-                self.bin_drag = None;
-            }
+        if let Some(bd) = self.bin_drag
+            && self.project.media(bd.media).is_none()
+        {
+            self.bin_drag = None;
         }
         self.ensure_initial_selection();
         // Resolve which sources actually have bytes here. The reference always
@@ -5307,13 +5636,21 @@ impl Widget for VideoEditorApp {
             .media
             .iter()
             .filter(|m| m.kind.is_visual())
-            .map(|m| (m.id, m.palette, m.source(), (m.duration * 0.3).clamp(0.2, 3.0)))
+            .map(|m| {
+                (
+                    m.id,
+                    m.palette,
+                    m.source(),
+                    (m.duration * 0.3).clamp(0.2, 3.0),
+                )
+            })
             .collect();
         for (id, palette, src, at) in visual {
             self.thumbnails.ensure(id, palette, &src, at);
         }
         // Apply a one-shot capture scenario once the project is loaded.
-        if !self.shot_applied && self.shot_scenario != ShotScenario::Live
+        if !self.shot_applied
+            && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
         {
             self.apply_shot_scenario(state);
@@ -5367,17 +5704,17 @@ impl Widget for VideoEditorApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -5539,7 +5876,8 @@ impl Widget for VideoEditorApp {
         }
         // The context menus float above everything else.
         self.bin_menu.draw(scene, transform, tr, theme, presence);
-        self.project_menu.draw(scene, transform, tr, theme, presence);
+        self.project_menu
+            .draw(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(
@@ -5571,7 +5909,14 @@ impl Widget for VideoEditorApp {
                     label.apply_layout_external(rect);
                 }
                 label.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
                 (*mid, label.take_outcome())
@@ -5599,7 +5944,14 @@ impl Widget for VideoEditorApp {
                 }
                 let root = automerge::ROOT;
                 dd.handle_event(
-                    event, scale_factor, modifiers, local, &root, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    local,
+                    &root,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
             }
@@ -5642,8 +5994,13 @@ impl Widget for VideoEditorApp {
             let l = self.inspector_layout(&r);
             let outside_press = matches!(
                 event,
-                WindowEvent::MouseInput { state: ElementState::Pressed, .. }
-            ) && l.title_text.is_none_or(|rect| !rect.inset(-4.0).contains(self.last_mouse));
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) && l
+                .title_text
+                .is_none_or(|rect| !rect.inset(-4.0).contains(self.last_mouse));
             if outside_press {
                 let (mid, words) = {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
@@ -5660,7 +6017,14 @@ impl Widget for VideoEditorApp {
                     field.apply_layout_external(rect.inset(-4.0));
                 }
                 field.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
             }
@@ -5682,7 +6046,14 @@ impl Widget for VideoEditorApp {
                     label.apply_layout_external(rect);
                 }
                 label.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
                     taffy,
                 );
                 (*target, label.take_outcome())
@@ -5702,7 +6073,15 @@ impl Widget for VideoEditorApp {
         // An open bin context menu is a transient overlay that owns clicks/keys.
         if self.bin_menu.is_open() {
             self.bin_menu.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             if let Some(idx) = self.bin_menu.take_selection() {
                 self.bin_menu_choose(state, idx);
@@ -5714,7 +6093,15 @@ impl Widget for VideoEditorApp {
         // Same for the project menu.
         if self.project_menu.is_open() {
             self.project_menu.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             if let Some(idx) = self.project_menu.take_selection() {
                 if let Some(item) = self.project_menu_intent(idx) {
@@ -5732,28 +6119,34 @@ impl Widget for VideoEditorApp {
             button: MouseButton::Right,
             ..
         } = event
-        {
-            if self.open_bin_menu_at_cursor(&r)
+            && (self.open_bin_menu_at_cursor(&r)
                 || self.open_track_menu_at_cursor(&r)
-                || self.open_clip_menu_at_cursor(&r)
-            {
-                *handled = true;
-                return;
-            }
+                || self.open_clip_menu_at_cursor(&r))
+        {
+            *handled = true;
+            return;
         }
         match event {
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
                 if self.handle_key(&key_event.logical_key, modifiers, state, &r) {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 self.handle_press(state, &r, modifiers.state().shift_key());
                 *handled = true;
             }
-            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position;
                     // a bin press that never moved may instead begin a rename.
@@ -5813,7 +6206,10 @@ impl Widget for VideoEditorApp {
                 let shift = modifiers.state().shift_key();
                 let over_bin = self.bin_is_visible(&r) && r.bin.contains(self.last_mouse);
                 let over_timeline = r.timeline.contains(self.last_mouse);
-                if self.inspector_is_visible(&r) && r.inspector.contains(self.last_mouse) && !over_bin {
+                if self.inspector_is_visible(&r)
+                    && r.inspector.contains(self.last_mouse)
+                    && !over_bin
+                {
                     // Scroll the inspector body (its content can exceed the pane).
                     if dy.abs() > 0.0 {
                         let max = self.inspector_max_scroll(&r);
@@ -5843,7 +6239,11 @@ impl Widget for VideoEditorApp {
                 } else if dy.abs() > 0.0 {
                     // Plain wheel zooms, anchored on the time under the pointer
                     // so the frame you are looking at stays put.
-                    self.zoom_at(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 }, self.last_mouse.x, &r);
+                    self.zoom_at(
+                        if dy > 0.0 { 1.12 } else { 1.0 / 1.12 },
+                        self.last_mouse.x,
+                        &r,
+                    );
                     *handled = true;
                 }
             }
@@ -5864,13 +6264,17 @@ impl Widget for VideoEditorApp {
                 || l.resolution.iter().any(|(_, rc)| rc.contains(point))
                 || l.container.iter().any(|(_, rc)| rc.contains(point))
                 || l.fps.iter().any(|(_, rc)| rc.contains(point));
-            return Some(if over_btn { CursorIcon::Pointer } else { CursorIcon::Default });
+            return Some(if over_btn {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
         }
         // A live drag owns the cursor for its whole duration.
         match self.drag {
             Some(Drag::ClipMove { .. }) => return Some(CursorIcon::Grabbing),
             Some(Drag::TrimIn { .. }) | Some(Drag::TrimOut { .. }) => {
-                return Some(CursorIcon::EwResize)
+                return Some(CursorIcon::EwResize);
             }
             Some(Drag::Playhead) | Some(Drag::Scrubber) => return Some(CursorIcon::ColResize),
             Some(Drag::Marquee { .. }) => return Some(CursorIcon::Crosshair),
@@ -5882,18 +6286,29 @@ impl Widget for VideoEditorApp {
         // Scrollbars first — they float over their panes.
         for pane in Self::SCROLL_PANES {
             if let Some((track, m)) = self.scroll_pane(pane, &r) {
-                if self.scroll_bar(pane).thumb_rect(track, m).is_some_and(|t| t.contains(point)) {
+                if self
+                    .scroll_bar(pane)
+                    .thumb_rect(track, m)
+                    .is_some_and(|t| t.contains(point))
+                {
                     return Some(CursorIcon::Pointer);
                 }
             }
         }
         // Topbar buttons.
-        if [r.import_btn, r.split_btn, r.export_btn, r.menu_btn].iter().any(|b| b.contains(point)) {
+        if [r.import_btn, r.split_btn, r.export_btn, r.menu_btn]
+            .iter()
+            .any(|b| b.contains(point))
+        {
             return Some(CursorIcon::Pointer);
         }
         // Bin rows can be dragged onto the timeline.
         if self.bin_is_visible(&r) && r.bin.contains(point) {
-            if self.bin_item_rects(&r).iter().any(|(_, rect)| rect.contains(point)) {
+            if self
+                .bin_item_rects(&r)
+                .iter()
+                .any(|(_, rect)| rect.contains(point))
+            {
                 return Some(CursorIcon::Grab);
             }
             return Some(CursorIcon::Default);
@@ -5906,7 +6321,11 @@ impl Widget for VideoEditorApp {
         {
             return Some(CursorIcon::Pointer);
         }
-        if self.transport_buttons(&r).iter().any(|(_, rect)| rect.contains(point)) {
+        if self
+            .transport_buttons(&r)
+            .iter()
+            .any(|(_, rect)| rect.contains(point))
+        {
             return Some(CursorIcon::Pointer);
         }
         if self.has_scrubber(&r) {
@@ -5934,7 +6353,11 @@ impl Widget for VideoEditorApp {
                     return Some(CursorIcon::Pointer);
                 }
             }
-            if self.add_track_buttons(&r).iter().any(|(_, rect)| rect.contains(point)) {
+            if self
+                .add_track_buttons(&r)
+                .iter()
+                .any(|(_, rect)| rect.contains(point))
+            {
                 return Some(CursorIcon::Pointer);
             }
             return Some(CursorIcon::Default);
@@ -5959,8 +6382,14 @@ impl Widget for VideoEditorApp {
         if self.inspector_is_visible(&r) && r.inspector.contains(point) {
             let l = self.inspector_layout(&r);
             let sliders = [
-                l.opacity, l.volume, l.brightness, l.contrast, l.saturation, l.fade_in,
-                l.fade_out, l.transition_len,
+                l.opacity,
+                l.volume,
+                l.brightness,
+                l.contrast,
+                l.saturation,
+                l.fade_in,
+                l.fade_out,
+                l.transition_len,
             ];
             if sliders.iter().flatten().any(|t| hit_slider(*t, point))
                 || l.nums.iter().any(|(_, t)| hit_slider(*t, point))
@@ -6202,7 +6631,7 @@ impl Widget for VideoEditorApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        use ui::a11y::{hash_key, Action};
+        use ui::a11y::{Action, hash_key};
         let Some(&pane_key) = key_path.first() else {
             return false;
         };
@@ -6226,7 +6655,9 @@ impl Widget for VideoEditorApp {
                 return false;
             }
             if pane_key == hash_key(&"discard") {
-                let Some(&which) = key_path.get(1) else { return false };
+                let Some(&which) = key_path.get(1) else {
+                    return false;
+                };
                 if !matches!(action, Action::Activate) {
                     return false;
                 }
@@ -6356,7 +6787,10 @@ impl VideoEditorApp {
     /// by that section's controls when it is open.
     fn a11y_inspector_rows(&self) -> Vec<InspectorRow> {
         let mut out = Vec::new();
-        let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
+        let clip = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .cloned();
         for section in self.a11y_sections(clip.as_ref()) {
             out.push(InspectorRow::Header(section));
             if self.collapsed.contains(&section) {
@@ -6507,7 +6941,8 @@ impl VideoEditorApp {
             .filter_map(|(i, mid)| {
                 let m = self.project.media(*mid)?;
                 let projected = self.projected_media.contains(mid);
-                let mut value = format!("{}, {}", m.kind.label(), crate::timecode::clock(m.duration));
+                let mut value =
+                    format!("{}, {}", m.kind.label(), crate::timecode::clock(m.duration));
                 if projected {
                     // A source whose bytes are not here yet is a real, visible
                     // state; saying so is the difference between "empty" and
@@ -6677,7 +7112,10 @@ impl VideoEditorApp {
     fn a11y_inspector(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Inspector;
         let rows = self.a11y_inspector_rows();
-        let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
+        let clip = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .cloned();
         let markers = self.a11y_marker_rows();
         // With nothing selected on a project holding no clips at all, the
         // panel paints its empty state -- and, under it, the marker list,
@@ -6736,8 +7174,7 @@ impl VideoEditorApp {
                     let pos = markers.iter().position(|(r, _, _)| r.id == m.id);
                     let Some(pos) = pos else { continue };
                     let (_, name, value) = &markers[pos];
-                    let node =
-                        Self::a11y_marker_node(m, name, value, pos, markers.len(), focused);
+                    let node = Self::a11y_marker_node(m, name, value, pos, markers.len(), focused);
                     if let Some((_, kids)) = current.as_mut() {
                         kids.push(node);
                     } else {
@@ -6802,7 +7239,10 @@ impl VideoEditorApp {
                 AccessNode::new(Role::Button)
                     .with_name(format!("{verb} {name}"))
                     .with_hashed_key((m.id, *verb))
-                    .with_state(AccessState { focusable: true, ..Default::default() })
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    })
             })
             .collect();
         AccessNode::new(Role::ListItem)
@@ -6814,11 +7254,20 @@ impl VideoEditorApp {
             .with_hashed_key(m.id)
             .with_position(pos + 1, n)
             .with_description("Activate to move the playhead here")
-            .with_state(AccessState { focusable: true, focused, ..Default::default() })
+            .with_state(AccessState {
+                focusable: true,
+                focused,
+                ..Default::default()
+            })
             .with_children(verbs)
     }
 
-    fn a11y_section_node(&self, section: Section, kids: Vec<AccessNode>, focused: bool) -> AccessNode {
+    fn a11y_section_node(
+        &self,
+        section: Section,
+        kids: Vec<AccessNode>,
+        focused: bool,
+    ) -> AccessNode {
         let folded = self.collapsed.contains(&section);
         AccessNode::new(Role::Group)
             .with_name(section.label())
@@ -6867,7 +7316,11 @@ impl VideoEditorApp {
                         c.mask.shape.label().to_lowercase(),
                         c.mask.w * 100.0,
                         c.mask.h * 100.0,
-                        if c.mask.invert { "keeping the outside" } else { "keeping the inside" }
+                        if c.mask.invert {
+                            "keeping the outside"
+                        } else {
+                            "keeping the inside"
+                        }
                     )
                 }
             }
@@ -6885,9 +7338,7 @@ impl VideoEditorApp {
             }
             // The same words the folded header shows, so a reader is never
             // told a tidier story than the panel tells.
-            (Section::Curves, Some(c)) => {
-                curve_summary(c).unwrap_or_else(|| "unchanged".into())
-            }
+            (Section::Curves, Some(c)) => curve_summary(c).unwrap_or_else(|| "unchanged".into()),
             (Section::Title, Some(_)) => "title properties".into(),
             _ => "collapsed".into(),
         }
@@ -6908,7 +7359,10 @@ impl VideoEditorApp {
             .with_name(self.project_label())
             .with_value(self.project_status_line())
             .with_key(ui::a11y::hash_key(&"project"))
-            .with_state(AccessState { focusable: visible, ..Default::default() });
+            .with_state(AccessState {
+                focusable: visible,
+                ..Default::default()
+            });
         node = if !visible {
             node.with_description("Not shown at this width — use Ctrl+O to open, Ctrl+S to save")
         } else if self.project_is_dirty() {
@@ -6938,20 +7392,32 @@ impl VideoEditorApp {
             AccessNode::new(Role::Button)
                 .with_name("Cancel")
                 .with_key(1)
-                .with_state(AccessState { focusable: true, ..Default::default() }),
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
             AccessNode::new(Role::Button)
                 .with_name("Open anyway")
                 .with_key(2)
-                .with_state(AccessState { focusable: true, ..Default::default() }),
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
             AccessNode::new(Role::Button)
                 .with_name("Save…")
                 .with_key(3)
-                .with_state(AccessState { focusable: true, ..Default::default() }),
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
         ];
         AccessNode::new(Role::Dialog)
             .with_name(format!("Save {} first?", pending.losing))
             .with_key(ui::a11y::hash_key(&"discard"))
-            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_state(AccessState {
+                modal: true,
+                ..Default::default()
+            })
             .with_children(kids)
     }
 
@@ -6981,7 +7447,10 @@ impl VideoEditorApp {
             AccessNode::new(Role::Button)
                 .with_name("Close export")
                 .with_key(2)
-                .with_state(AccessState { focusable: true, ..Default::default() }),
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
         ];
         if let ExportStatus::Rendering { progress } = self.export_status {
             kids.push(
@@ -6992,13 +7461,19 @@ impl VideoEditorApp {
                     // A render's progress changes with no focus movement, so it
                     // must announce itself or the user is left guessing.
                     .with_live(ui::a11y::Politeness::Polite)
-                    .with_state(AccessState { busy: true, ..Default::default() }),
+                    .with_state(AccessState {
+                        busy: true,
+                        ..Default::default()
+                    }),
             );
         }
         AccessNode::new(Role::Dialog)
             .with_name("Export video")
             .with_key(ui::a11y::hash_key(&"export"))
-            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_state(AccessState {
+                modal: true,
+                ..Default::default()
+            })
             .with_children(kids)
     }
 }
@@ -7080,7 +7555,10 @@ fn help_group_h(rows: usize) -> f64 {
 /// because the row loop simply stops drawing — so the sheet claimed to be the
 /// list of shortcuts while omitting two of them.
 fn help_columns(two_col: bool) -> (usize, f64) {
-    let heights: Vec<f64> = SHORTCUTS.iter().map(|(_, rows)| help_group_h(rows.len())).collect();
+    let heights: Vec<f64> = SHORTCUTS
+        .iter()
+        .map(|(_, rows)| help_group_h(rows.len()))
+        .collect();
     let total: f64 = heights.iter().sum();
     if !two_col {
         return (SHORTCUTS.len(), total);
@@ -7127,12 +7605,18 @@ impl VideoEditorApp {
             AccessNode::new(Role::Button)
                 .with_name("Close shortcuts")
                 .with_key(key)
-                .with_state(AccessState { focusable: true, ..Default::default() }),
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
         );
         AccessNode::new(Role::Dialog)
             .with_name("Keyboard shortcuts")
             .with_key(ui::a11y::hash_key(&"help"))
-            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_state(AccessState {
+                modal: true,
+                ..Default::default()
+            })
             .with_children(kids)
     }
 
@@ -7192,7 +7676,11 @@ impl VideoEditorApp {
     /// nearest the current one in time — the "same place, one track up" move,
     /// not an arbitrary index walk.
     fn step_clip_across_tracks(&mut self, up: bool) -> bool {
-        let Some(current) = self.selection.primary().and_then(|id| self.project.clip(id)).cloned()
+        let Some(current) = self
+            .selection
+            .primary()
+            .and_then(|id| self.project.clip(id))
+            .cloned()
         else {
             // Nothing selected: take the first clip on the first track that has one.
             if let Some(first) = self.project.clips.first().map(|c| c.id) {
@@ -7201,7 +7689,12 @@ impl VideoEditorApp {
             }
             return false;
         };
-        let Some(cur_track) = self.project.tracks.iter().position(|t| t.id == current.track) else {
+        let Some(cur_track) = self
+            .project
+            .tracks
+            .iter()
+            .position(|t| t.id == current.track)
+        else {
             return false;
         };
         let n = self.project.tracks.len();
@@ -7240,7 +7733,7 @@ impl VideoEditorApp {
     /// through the same `perform_action_at` an assistive technology uses, so
     /// the two can never do different things.
     fn activate_focused(&mut self, state: &mut AutoCommit) -> bool {
-        use ui::a11y::{hash_key, Action};
+        use ui::a11y::{Action, hash_key};
         let pane = self.focus.pane;
         let rest: Vec<u64> = match pane {
             Pane::Bin => match self.a11y_bin_items().get(self.focus.bin) {
@@ -7249,7 +7742,10 @@ impl VideoEditorApp {
             },
             Pane::Transport => vec![hash_key(&self.focus.transport)],
             Pane::Timeline => {
-                let Some(clip) = self.selection.primary().and_then(|id| self.project.clip(id))
+                let Some(clip) = self
+                    .selection
+                    .primary()
+                    .and_then(|id| self.project.clip(id))
                 else {
                     return false;
                 };
@@ -7263,18 +7759,22 @@ impl VideoEditorApp {
                     vec![hash_key(&Section::Markers.label()), hash_key(&m.id)]
                 }
                 Some(InspectorRow::AddMarker) => {
-                    vec![hash_key(&Section::Markers.label()), hash_key(&ADD_MARKER_KEY)]
+                    vec![
+                        hash_key(&Section::Markers.label()),
+                        hash_key(&ADD_MARKER_KEY),
+                    ]
                 }
                 Some(InspectorRow::Field(f)) => {
                     // A control's path runs through its section.
                     let rows = self.a11y_inspector_rows();
-                    let section = rows[..=self.focus.inspector]
-                        .iter()
-                        .rev()
-                        .find_map(|r| match r {
-                            InspectorRow::Header(sec) => Some(*sec),
-                            _ => None,
-                        });
+                    let section =
+                        rows[..=self.focus.inspector]
+                            .iter()
+                            .rev()
+                            .find_map(|r| match r {
+                                InspectorRow::Header(sec) => Some(*sec),
+                                _ => None,
+                            });
                     match section {
                         Some(sec) => vec![hash_key(&sec.label()), hash_key(&f.label())],
                         None => return false,
@@ -7299,7 +7799,11 @@ impl VideoEditorApp {
                     TransportAction::ToStart => "Jump to start",
                     TransportAction::StepBack => "Step back one frame",
                     TransportAction::PlayPause => {
-                        if self.playing { "Pause" } else { "Play" }
+                        if self.playing {
+                            "Pause"
+                        } else {
+                            "Play"
+                        }
                     }
                     TransportAction::StepFwd => "Step forward one frame",
                     TransportAction::ToEnd => "Jump to end",
@@ -7337,8 +7841,10 @@ impl VideoEditorApp {
         rest: &[u64],
         state: &mut AutoCommit,
     ) -> bool {
-        use ui::a11y::{hash_key, Action};
-        let Some(&key) = rest.first() else { return false };
+        use ui::a11y::{Action, hash_key};
+        let Some(&key) = rest.first() else {
+            return false;
+        };
         let items = self.a11y_bin_items();
         // A row an AT is holding can be gone; match nothing rather than acting
         // on whichever import now occupies that slot.
@@ -7362,8 +7868,10 @@ impl VideoEditorApp {
     }
 
     fn a11y_transport_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
-        use ui::a11y::{hash_key, Action};
-        let Some(&key) = rest.first() else { return false };
+        use ui::a11y::{Action, hash_key};
+        let Some(&key) = rest.first() else {
+            return false;
+        };
         // History first: its keys are hashed from the verb, so they cannot
         // collide with the transport's positional ones.
         for which in [ui::UndoRequest::Undo, ui::UndoRequest::Redo] {
@@ -7400,9 +7908,16 @@ impl VideoEditorApp {
         rest: &[u64],
         state: &mut AutoCommit,
     ) -> bool {
-        use ui::a11y::{hash_key, Action};
-        let Some(&track_key) = rest.first() else { return false };
-        let Some(track) = self.project.tracks.iter().find(|t| hash_key(&t.id) == track_key) else {
+        use ui::a11y::{Action, hash_key};
+        let Some(&track_key) = rest.first() else {
+            return false;
+        };
+        let Some(track) = self
+            .project
+            .tracks
+            .iter()
+            .find(|t| hash_key(&t.id) == track_key)
+        else {
             return false;
         };
         let tid = track.id;
@@ -7462,8 +7977,10 @@ impl VideoEditorApp {
         rest: &[u64],
         doc: &mut AutoCommit,
     ) -> bool {
-        use ui::a11y::{hash_key, Action};
-        let Some(&section_key) = rest.first() else { return false };
+        use ui::a11y::{Action, hash_key};
+        let Some(&section_key) = rest.first() else {
+            return false;
+        };
         self.focus.pane = Pane::Inspector;
         let rows = self.a11y_inspector_rows();
         // A control lives inside its section, so its path is
@@ -7472,9 +7989,7 @@ impl VideoEditorApp {
         let key = rest.get(1).copied().unwrap_or(section_key);
         for (i, row) in rows.iter().enumerate() {
             match row {
-                InspectorRow::Header(sec)
-                    if rest.len() == 1 && hash_key(&sec.label()) == key =>
-                {
+                InspectorRow::Header(sec) if rest.len() == 1 && hash_key(&sec.label()) == key => {
                     self.focus.inspector = i;
                     return match action {
                         Action::Focus => true,
@@ -7551,7 +8066,7 @@ impl VideoEditorApp {
         action: &ui::a11y::Action,
         doc: &mut AutoCommit,
     ) -> bool {
-        use ui::a11y::{hash_key, Action};
+        use ui::a11y::{Action, hash_key};
         let field = if hash_key(&(m.id, MARKER_VERBS[0])) == verb {
             MarkerField::Note
         } else if hash_key(&(m.id, MARKER_VERBS[1])) == verb {
@@ -7589,7 +8104,9 @@ impl VideoEditorApp {
     /// document exactly like a dragged one, or the two disagree about what the
     /// clip is.
     fn a11y_nudge_field(&mut self, f: NumField, dir: f64, doc: &mut AutoCommit) -> bool {
-        let Some(v) = self.num_value(f) else { return false };
+        let Some(v) = self.num_value(f) else {
+            return false;
+        };
         let next = f.from_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0));
         self.set_num(f, next);
         if f.is_media() {
@@ -7602,7 +8119,9 @@ impl VideoEditorApp {
 
     fn a11y_export_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
         use ui::a11y::Action;
-        let Some(&key) = rest.first() else { return false };
+        let Some(&key) = rest.first() else {
+            return false;
+        };
         match (key, action) {
             (1, Action::Activate) => {
                 if self.export_is_offered() {
@@ -7627,7 +8146,11 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
     if n == 0 {
         return 0;
     }
-    if up { i.saturating_sub(1) } else { (i + 1).min(n - 1) }
+    if up {
+        i.saturating_sub(1)
+    } else {
+        (i + 1).min(n - 1)
+    }
 }
 
 /// A focus stop in the inspector: a section header, or one control inside an
@@ -7713,9 +8236,7 @@ impl VideoEditorApp {
                     }
                 }
                 Key::Character(c) => {
-                    if entry.len() < 12
-                        && c.chars().all(|ch| ch.is_ascii_digit() || ch == ':')
-                    {
+                    if entry.len() < 12 && c.chars().all(|ch| ch.is_ascii_digit() || ch == ':') {
                         entry.push_str(c);
                         self.goto_notice = false;
                     }
@@ -7738,7 +8259,11 @@ impl VideoEditorApp {
                 self.nav_arrow(false, false, state)
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                let step = if shift { 1.0 } else { frame_step(self.project.fps) };
+                let step = if shift {
+                    1.0
+                } else {
+                    frame_step(self.project.fps)
+                };
                 if !self.selection.is_empty() {
                     self.nudge_selected(state, -step);
                 } else {
@@ -7747,7 +8272,11 @@ impl VideoEditorApp {
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                let step = if shift { 1.0 } else { frame_step(self.project.fps) };
+                let step = if shift {
+                    1.0
+                } else {
+                    frame_step(self.project.fps)
+                };
                 if !self.selection.is_empty() {
                     self.nudge_selected(state, step);
                 } else {
@@ -7770,7 +8299,7 @@ impl VideoEditorApp {
                 true
             }
             // Shift+Delete ripples (closes the gap); plain Delete lifts.
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if shift {
                     self.ripple_delete_selected(state);
                 } else {
@@ -8010,11 +8539,11 @@ impl VideoEditorApp {
             return;
         }
         // Empty-bin "Import media" affordance.
-        if let Some(btn) = self.empty_bin_import_rect(r) {
-            if btn.contains(p) {
-                self.trigger_import();
-                return;
-            }
+        if let Some(btn) = self.empty_bin_import_rect(r)
+            && btn.contains(p)
+        {
+            self.trigger_import();
+            return;
         }
         // "+ Title" in the bin header.
         if self.bin_is_visible(r) && self.add_title_rect(r).contains(p) {
@@ -8039,9 +8568,9 @@ impl VideoEditorApp {
                     // or a fresh one. Both the double-click and the rename are
                     // gated on it, so a freshly-imported, auto-selected item is
                     // never renamed on the first click.
-                    let since = self.last_click_media.and_then(|(m, t)| {
-                        (m == mid).then(|| t.elapsed().as_millis())
-                    });
+                    let since = self
+                        .last_click_media
+                        .and_then(|(m, t)| (m == mid).then(|| t.elapsed().as_millis()));
                     let dbl = matches!(since, Some(ms) if ms < BIN_DOUBLE_CLICK_MS);
                     // The rename window is *bounded at both ends*: fast enough
                     // and it is a double-click, slow enough and the earlier
@@ -8064,10 +8593,13 @@ impl VideoEditorApp {
                         // never moved, and is cancelled the moment the press
                         // becomes a drag (see `update_bin_drag`). A drag
                         // therefore always wins over a rename.
-                        self.bin_drag = Some(BinDrag { media: mid, origin: p, active: false });
-                        self.pending_rename = (rename_window
-                            && self.bin_name_rect(rect).contains(p))
-                        .then_some(mid);
+                        self.bin_drag = Some(BinDrag {
+                            media: mid,
+                            origin: p,
+                            active: false,
+                        });
+                        self.pending_rename =
+                            (rename_window && self.bin_name_rect(rect).contains(p)).then_some(mid);
                         self.last_click_media = Some((mid, Instant::now()));
                     }
                     return;
@@ -8150,7 +8682,9 @@ impl VideoEditorApp {
     /// `true` when one took the press.
     fn press_scrollbars(&mut self, r: &Regions, p: Point) -> bool {
         for pane in Self::SCROLL_PANES {
-            let Some((track, m)) = self.scroll_pane(pane, r) else { continue };
+            let Some((track, m)) = self.scroll_pane(pane, r) else {
+                continue;
+            };
             match self.scroll_bar_mut(pane).press(track, m, p) {
                 ui::widget::PressOutcome::Thumb => {
                     self.drag = Some(Drag::Scrollbar(pane));
@@ -8237,7 +8771,9 @@ impl VideoEditorApp {
             // A narrow window keeps the inspector out of the way until there
             // is something to inspect; picking a clip is exactly that moment.
             self.reveal_inspector();
-            let Some(clip) = self.project.clip(cid).cloned() else { return };
+            let Some(clip) = self.project.clip(cid).cloned() else {
+                return;
+            };
             let cr = self.clip_rect(&clip, &lane, r);
             // A key diamond on the clip's keyframe lane takes the playhead to
             // that key. Checked before the trim handles and the move drag,
@@ -8276,7 +8812,10 @@ impl VideoEditorApp {
         // Empty lane area: a rubber band, resolved on release. A press that
         // never travels past MARQUEE_THRESHOLD scrubs the playhead instead,
         // so click-to-scrub still works exactly as it did.
-        self.drag = Some(Drag::Marquee { origin: p, additive: shift });
+        self.drag = Some(Drag::Marquee {
+            origin: p,
+            additive: shift,
+        });
         self.marquee = None;
     }
 
@@ -8338,7 +8877,11 @@ impl VideoEditorApp {
             }
         }
         // Fade in / out sliders (value in seconds, 0..clip-duration).
-        let max = self.selected().and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+        let max = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .map(|c| c.duration())
+            .unwrap_or(0.0);
         if let Some(track) = l.fade_in {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::FadeIn);
@@ -8347,13 +8890,13 @@ impl VideoEditorApp {
                 return;
             }
         }
-        if let Some(track) = l.fade_out {
-            if hit_slider(track, p) {
-                self.drag = Some(Drag::FadeOut);
-                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
-                return;
-            }
+        if let Some(track) = l.fade_out
+            && hit_slider(track, p)
+        {
+            self.drag = Some(Drag::FadeOut);
+            let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+            self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
+            return;
         }
         if let Some(track) = l.transition_len {
             if hit_slider(track, p) {
@@ -8553,9 +9096,8 @@ impl VideoEditorApp {
                 self.edit_selected(state, move |c| {
                     let shape = c.mask.shape;
                     let (feather, invert) = (c.mask.feather, c.mask.invert);
-                    c.mask = crate::model::Mask::over(
-                        shape, &c.transform, src_aspect, frame_aspect,
-                    );
+                    c.mask =
+                        crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
                     c.mask.feather = feather;
                     c.mask.invert = invert;
                 });
@@ -8624,7 +9166,9 @@ impl VideoEditorApp {
     /// answer is always "where I clicked". A click too close to an existing
     /// point grabs that one instead, so points cannot be stacked.
     fn press_curve(&mut self, doc: &mut AutoCommit, canvas: Rect, p: Point) {
-        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else { return };
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+            return;
+        };
         let ch = self.curve_channel;
         let (x, y) = curve_coords(canvas, p);
         let existing = clip.curves.spline(ch).point_near(x, y, POINT_GRAB);
@@ -8976,7 +9520,9 @@ impl VideoEditorApp {
     /// continues into the open on its own, so the user does not have to
     /// remember what they were doing.
     fn resolve_pending_open(&mut self, doc: &mut AutoCommit, choice: DiscardChoice) {
-        let Some(pending) = self.pending_open.take() else { return };
+        let Some(pending) = self.pending_open.take() else {
+            return;
+        };
         match choice {
             DiscardChoice::Cancel => {
                 self.save_then_open = None;
@@ -9002,7 +9548,10 @@ impl VideoEditorApp {
                     None => "Save…  (Ctrl+S)".to_string(),
                 },
             ),
-            (ProjectMenuItem::SaveAs, "Save As…  (Ctrl+Shift+S)".to_string()),
+            (
+                ProjectMenuItem::SaveAs,
+                "Save As…  (Ctrl+Shift+S)".to_string(),
+            ),
         ];
         // Recents, minus the project already open — an entry that reopens
         // what you are looking at is a row that does nothing.
@@ -9033,7 +9582,8 @@ impl VideoEditorApp {
                 self.project_menu.push(ui::widget::MenuItem::separator());
                 first_recent = false;
             }
-            self.project_menu.push(ui::widget::MenuItem::action(label, || {}));
+            self.project_menu
+                .push(ui::widget::MenuItem::action(label, || {}));
             self.project_menu_items.push(item);
         }
         self.project_menu.open_at([at.x as f32, at.y as f32]);
@@ -9077,7 +9627,9 @@ impl VideoEditorApp {
             return; // one render at a time
         }
         if let Some(reason) = crate::export::unavailable_reason() {
-            self.export_status = ExportStatus::Failed { reason: reason.to_string() };
+            self.export_status = ExportStatus::Failed {
+                reason: reason.to_string(),
+            };
             return;
         }
         let name = self.export.suggested_filename(&self.project.name);
@@ -9090,7 +9642,11 @@ impl VideoEditorApp {
     fn begin_export_to(&mut self, destination: PathBuf) {
         self.export_notice = None;
         self.export_status = ExportStatus::Rendering { progress: 0.0 };
-        self.export_job = Some(crate::export::start_export(&self.project, &self.export, destination));
+        self.export_job = Some(crate::export::start_export(
+            &self.project,
+            &self.export,
+            destination,
+        ));
     }
 
     /// Drain the destination picker and poll the running render. Called every
@@ -9120,10 +9676,7 @@ impl VideoEditorApp {
                 // No portal on this box. Say where the file will go rather than
                 // silently dropping it somewhere the user will never look.
                 let fallback = crate::export::output_path(&self.export, &self.project);
-                self.export_notice = Some(format!(
-                    "{reason} — saving to {}",
-                    fallback.display()
-                ));
+                self.export_notice = Some(format!("{reason} — saving to {}", fallback.display()));
                 self.begin_export_to(fallback);
             }
             None => {}
@@ -9182,7 +9735,9 @@ impl VideoEditorApp {
                 // The box is re-derived from the live layout rather than
                 // captured at press: the inspector scrolls, and a captured
                 // rect would leave the point tracking a box that has moved.
-                let Some(canvas) = self.inspector_layout(r).curve_canvas else { return };
+                let Some(canvas) = self.inspector_layout(r).curve_canvas else {
+                    return;
+                };
                 let (x, y) = curve_coords(canvas, p);
                 self.preview_edit(move |c| {
                     c.curves.spline_mut(channel).move_point(idx, x, y);
@@ -9246,26 +9801,26 @@ impl VideoEditorApp {
                     }
                 }
                 if let Some(d) = self.drag.as_mut() {
-                    *d = Drag::ClipMove { id, grab_dt, track: target };
+                    *d = Drag::ClipMove {
+                        id,
+                        grab_dt,
+                        track: target,
+                    };
                 }
             }
             Drag::TrimIn { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map(|c| target - c.start).unwrap_or(0.0);
+                let delta = self.project.clip(id).map_or(0.0, |c| target - c.start);
                 self.project.trim_in(id, delta);
             }
             Drag::TrimOut { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map(|c| target - c.end()).unwrap_or(0.0);
+                let delta = self.project.clip(id).map_or(0.0, |c| target - c.end());
                 self.project.trim_out(id, delta);
             }
-            Drag::Opacity
-            | Drag::Volume
-            | Drag::Brightness
-            | Drag::Contrast
-            | Drag::Saturation => {
+            Drag::Opacity | Drag::Volume | Drag::Brightness | Drag::Contrast | Drag::Saturation => {
                 let l = self.inspector_layout(r);
                 let (track, param) = match drag {
                     Drag::Opacity => (l.opacity, Param::Opacity),
@@ -9282,7 +9837,11 @@ impl VideoEditorApp {
             Drag::FadeIn => {
                 if let Some(track) = self.inspector_layout(r).fade_in {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    let max = self.selected().and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    let max = self
+                        .selected()
+                        .and_then(|id| self.project.clip(id))
+                        .map(|c| c.duration())
+                        .unwrap_or(0.0);
                     self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 }
             }
@@ -9296,12 +9855,21 @@ impl VideoEditorApp {
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    let max = self.selected().and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    let max = self
+                        .selected()
+                        .and_then(|id| self.project.clip(id))
+                        .map(|c| c.duration())
+                        .unwrap_or(0.0);
                     self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
             Drag::EffectAmount { idx } => {
-                if let Some(slider) = self.inspector_layout(r).effect_rows.get(idx).map(|row| Self::effect_row_parts(*row).3) {
+                if let Some(slider) = self
+                    .inspector_layout(r)
+                    .effect_rows
+                    .get(idx)
+                    .map(|row| Self::effect_row_parts(*row).3)
+                {
                     let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
                     self.preview_edit(move |c| {
                         if let Some(e) = c.effects.get_mut(idx) {
@@ -9461,7 +10029,10 @@ impl VideoEditorApp {
         }
         let bin_visible = self.bin_is_visible(r);
         self.hover_media = if bin_visible {
-            self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m)
+            self.bin_item_rects(r)
+                .into_iter()
+                .find(|(_, rect)| rect.contains(p))
+                .map(|(m, _)| m)
         } else {
             None
         };
@@ -9486,12 +10057,28 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
-    fn draw_chrome(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_chrome(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, self.rect);
         // Top bar.
         fill_rect(scene, tf, c.surfaces.raised, r.topbar);
-        stroke_line(scene, tf, c.border_standard, r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.topbar.x0,
+            r.topbar.y1,
+            r.topbar.x1,
+            r.topbar.y1,
+            1.0,
+        );
         // Leading slot: a hamburger toggle when the bin is collapsed to an
         // overlay flap. The OS owns the window title/app-name/logo, so the app
         // draws no glyph or wordmark here.
@@ -9511,12 +10098,21 @@ impl VideoEditorApp {
                 c.neutral[3]
             };
             fill_rrect(scene, tf, bg, rect, 7.0);
-            let fg = if open { on_fill(theme, bg).1 } else { c.text_primary };
+            let fg = if open {
+                on_fill(theme, bg).1
+            } else {
+                c.text_primary
+            };
             // A panel glyph: the pane outline with its right column filled,
             // which is where the inspector lives and what the toggle reveals.
             let g = rect.inset(-8.0);
             stroke_rrect(scene, tf, fg, g, 2.0, 1.4);
-            fill_rect(scene, tf, fg, Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1));
+            fill_rect(
+                scene,
+                tf,
+                fg,
+                Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1),
+            );
         }
         // The project button. The frame size and rate still live in the
         // transport beside the timecode they belong with — this is a *control*
@@ -9528,9 +10124,36 @@ impl VideoEditorApp {
         // neither: which *file* is open, and whether it is written down, are
         // things only the app knows.
         self.draw_project_button(scene, tf, tr, theme, r);
-        draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false, r.import_btn.contains(self.last_mouse));
-        draw_button(scene, tf, tr, theme, r.split_btn, "Split (S)", false, r.split_btn.contains(self.last_mouse));
-        draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true, r.export_btn.contains(self.last_mouse));
+        draw_button(
+            scene,
+            tf,
+            tr,
+            theme,
+            r.import_btn,
+            "Import…",
+            false,
+            r.import_btn.contains(self.last_mouse),
+        );
+        draw_button(
+            scene,
+            tf,
+            tr,
+            theme,
+            r.split_btn,
+            "Split (S)",
+            false,
+            r.split_btn.contains(self.last_mouse),
+        );
+        draw_button(
+            scene,
+            tf,
+            tr,
+            theme,
+            r.export_btn,
+            "Export…",
+            true,
+            r.export_btn.contains(self.last_mouse),
+        );
     }
 
     /// The project button: which project is open, whether it has been written
@@ -9556,7 +10179,12 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.last_mouse) || self.project_menu.is_open();
         // Room for the leading icon, the padding either side, and the badge.
-        let label = elide_at(&self.project_label(), (rect.width() - 52.0) as f32, 13.0, tr);
+        let label = elide_at(
+            &self.project_label(),
+            (rect.width() - 52.0) as f32,
+            13.0,
+            tr,
+        );
         let face = ui::widget::ButtonFace::new(rect, &label)
             .style(ui::widget::ButtonStyle::Neutral)
             .icon(ui::icons::Icon::Film)
@@ -9570,7 +10198,13 @@ impl VideoEditorApp {
             // A filled dot on the corner, ringed in the topbar's own colour so
             // it reads as a badge on the button rather than a speck in it.
             let ctr = Point::new(rect.x1 - 7.0, rect.y0 + 7.0);
-            scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &Circle::new(ctr, 5.0));
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                c.surfaces.raised,
+                None,
+                &Circle::new(ctr, 5.0),
+            );
             scene.fill(Fill::NonZero, tf, c.accent[5], None, &Circle::new(ctr, 3.5));
         }
     }
@@ -9610,7 +10244,17 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, c.surfaces.raised, plate, 10.0);
         stroke_rrect(scene, tf, c.accent[5], plate, 10.0, 1.5);
         let baseline = text_baseline(plate, 15.0, tr);
-        text_w(scene, tr, tf, hint, 15.0, c.accent[5], plate.x0 + 18.0, baseline, TextWeight::Semibold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            hint,
+            15.0,
+            c.accent[5],
+            plate.x0 + 18.0,
+            baseline,
+            TextWeight::Semibold,
+        );
     }
 
     /// The last thing that happened to the project file, on a strip under the
@@ -9625,7 +10269,9 @@ impl VideoEditorApp {
         theme: &Theme,
         r: &Regions,
     ) {
-        let Some(notice) = &self.project_notice else { return };
+        let Some(notice) = &self.project_notice else {
+            return;
+        };
         let c = &theme.tokens.colors;
         let tint = if self.project_notice_is_error() {
             c.semantic.danger
@@ -9641,7 +10287,11 @@ impl VideoEditorApp {
         // "Saved to …" and "MEDIA BIN · 7 clips" were painted on top of each
         // other; this is opaque, sized to its words, and plainly a transient
         // thing sitting over the editor rather than a row of the layout.
-        let x0 = if r.project_btn.width() > 0.0 { r.project_btn.x0 } else { r.topbar.x0 + 12.0 };
+        let x0 = if r.project_btn.width() > 0.0 {
+            r.project_btn.x0
+        } else {
+            r.topbar.x0 + 12.0
+        };
         let room = (r.topbar.x1 - 12.0 - x0).max(80.0);
         let shown = elide_at(notice, (room - 24.0) as f32, 11.5, tr);
         let (w, _) = tr.measure(&shown, 11.5, None);
@@ -9655,7 +10305,16 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, with_alpha(tint, 0.18), plate, 7.0);
         stroke_rrect(scene, tf, with_alpha(tint, 0.55), plate, 7.0, 1.0);
         let baseline = text_baseline(plate, 11.5, tr);
-        text(scene, tr, tf, &shown, 11.5, c.text_primary, plate.x0 + 12.0, baseline);
+        text(
+            scene,
+            tr,
+            tf,
+            &shown,
+            11.5,
+            c.text_primary,
+            plate.x0 + 12.0,
+            baseline,
+        );
     }
 
     /// Whether the standing project notice reports a failure, so it is tinted
@@ -9679,7 +10338,12 @@ impl VideoEditorApp {
         let w = 420.0_f64.min(self.rect.width() - 48.0).max(240.0);
         let h = 172.0;
         let ctr = self.rect.center();
-        let card = Rect::new(ctr.x - w / 2.0, ctr.y - h / 2.0, ctr.x + w / 2.0, ctr.y + h / 2.0);
+        let card = Rect::new(
+            ctr.x - w / 2.0,
+            ctr.y - h / 2.0,
+            ctr.x + w / 2.0,
+            ctr.y + h / 2.0,
+        );
         let by1 = card.y1 - 20.0;
         let by0 = by1 - 32.0;
         let save = Rect::new(card.x1 - 20.0 - 110.0, by0, card.x1 - 20.0, by1);
@@ -9696,9 +10360,16 @@ impl VideoEditorApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(pending) = &self.pending_open else { return };
+        let Some(pending) = &self.pending_open else {
+            return;
+        };
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA), self.rect);
+        fill_rect(
+            scene,
+            tf,
+            with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA),
+            self.rect,
+        );
         let (card, cancel, discard, save) = self.discard_layout();
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
         stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
@@ -9728,9 +10399,27 @@ impl VideoEditorApp {
         .enumerate()
         {
             let shown = elide_at(line, (card.width() - 48.0) as f32, 12.5, tr);
-            text(scene, tr, tf, &shown, 12.5, c.text_dim, x0, card.y0 + 56.0 + i as f64 * 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &shown,
+                12.5,
+                c.text_dim,
+                x0,
+                card.y0 + 56.0 + i as f64 * 20.0,
+            );
         }
-        draw_button(scene, tf, tr, theme, cancel, "Cancel", false, cancel.contains(self.last_mouse));
+        draw_button(
+            scene,
+            tf,
+            tr,
+            theme,
+            cancel,
+            "Cancel",
+            false,
+            cancel.contains(self.last_mouse),
+        );
         draw_button(
             scene,
             tf,
@@ -9741,7 +10430,16 @@ impl VideoEditorApp {
             false,
             discard.contains(self.last_mouse),
         );
-        draw_button(scene, tf, tr, theme, save, "Save…", true, save.contains(self.last_mouse));
+        draw_button(
+            scene,
+            tf,
+            tr,
+            theme,
+            save,
+            "Save…",
+            true,
+            save.contains(self.last_mouse),
+        );
     }
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
@@ -9761,43 +10459,108 @@ impl VideoEditorApp {
             c.neutral[3]
         };
         fill_rrect(scene, tf, bg, rect, 7.0);
-        let bar = if open { on_fill(theme, bg).1 } else { c.text_primary };
+        let bar = if open {
+            on_fill(theme, bg).1
+        } else {
+            c.text_primary
+        };
         let bx0 = rect.x0 + 7.0;
         let bx1 = rect.x1 - 7.0;
         for i in 0..3 {
-            let by = rect.center().y - 5.0 + i as f64 * 5.0;
+            let by = rect.center().y - 5.0 + f64::from(i) * 5.0;
             fill_rrect(scene, tf, bar, Rect::new(bx0, by - 1.0, bx1, by + 1.0), 1.0);
         }
     }
 
-    fn draw_bin(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_bin(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.bin);
-        stroke_line(scene, tf, c.border_standard, r.bin.x1, r.bin.y0, r.bin.x1, r.bin.y1, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.bin.x1,
+            r.bin.y0,
+            r.bin.x1,
+            r.bin.y1,
+            1.0,
+        );
         // The drop invitation is NOT drawn here any more — see
         // `draw_file_drop_invite`. It used to highlight only this pane, which
         // promised less than the app accepts (a drop lands anywhere in the
         // window) and vanished entirely when the bin was a closed flap, so on
         // a narrow window a drop that would have worked looked impossible.
-        text_w(scene, tr, tf, "MEDIA BIN", 11.0, c.text_dim, r.bin.x0 + 14.0, r.bin.y0 + 14.0, TextWeight::Semibold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "MEDIA BIN",
+            11.0,
+            c.text_dim,
+            r.bin.x0 + 14.0,
+            r.bin.y0 + 14.0,
+            TextWeight::Semibold,
+        );
         // A title is the one source you make rather than import, so the bin
         // offers it beside the count instead of leaving `MediaKind::Text`
         // reachable only from the palette.
         let add = self.add_title_rect(r);
         let add_hover = add.contains(self.last_mouse);
-        fill_rrect(scene, tf, if add_hover { c.surface_white_10 } else { c.neutral[3] }, add, 5.0);
+        fill_rrect(
+            scene,
+            tf,
+            if add_hover {
+                c.surface_white_10
+            } else {
+                c.neutral[3]
+            },
+            add,
+            5.0,
+        );
         stroke_rrect(scene, tf, c.border_standard, add, 5.0, 1.0);
         let at = text_centre(add, "+ Title", 10.5, TextWeight::Medium, tr);
-        text_w(scene, tr, tf, "+ Title", 10.5, c.text_primary, at.x, at.y, TextWeight::Medium);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "+ Title",
+            10.5,
+            c.text_primary,
+            at.x,
+            at.y,
+            TextWeight::Medium,
+        );
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
         let count_x = r.bin.x1 - 14.0 - cw as f64;
         if count_x > add.x1 + 8.0 {
-            text(scene, tr, tf, &count, 11.0, c.text_dim, count_x, r.bin.y0 + 14.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &count,
+                11.0,
+                c.text_dim,
+                count_x,
+                r.bin.y0 + 14.0,
+            );
         }
 
         // Clip bin content so a long list can't bleed over the timeline.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1));
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1),
+        );
         if self.project.media.is_empty() {
             // Empty state: a real "Import media" affordance (the button opens the
             // host file picker) plus an honest status line.
@@ -9805,13 +10568,33 @@ impl VideoEditorApp {
             let cy = r.bin.y0 + 120.0;
             let line1 = "No media yet";
             let (w1, _) = tr.measure(line1, 14.0, None);
-            text(scene, tr, tf, line1, 14.0, c.text_primary, cx - w1 as f64 / 2.0, cy);
+            text(
+                scene,
+                tr,
+                tf,
+                line1,
+                14.0,
+                c.text_primary,
+                cx - f64::from(w1) / 2.0,
+                cy,
+            );
             if let Some(btn) = self.empty_bin_import_rect(r) {
-                draw_button(scene, tf, tr, theme, btn, "Import media", true, btn.contains(self.last_mouse));
+                draw_button(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    btn,
+                    "Import media",
+                    true,
+                    btn.contains(self.last_mouse),
+                );
             }
         }
         for (mid, rect) in self.bin_item_rects(r) {
-            let Some(m) = self.project.media(mid) else { continue };
+            let Some(m) = self.project.media(mid) else {
+                continue;
+            };
             let selected = self.selected_media == Some(mid);
             let hover = self.hover_media == Some(mid);
             if selected {
@@ -9821,7 +10604,12 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, c.surface_white_5, rect, 8.0);
             }
             // Thumbnail swatch.
-            let thumb = Rect::new(rect.x0 + 8.0, rect.y0 + 8.0, rect.x0 + 8.0 + 64.0, rect.y1 - 8.0);
+            let thumb = Rect::new(
+                rect.x0 + 8.0,
+                rect.y0 + 8.0,
+                rect.x0 + 8.0 + 64.0,
+                rect.y1 - 8.0,
+            );
             let base = clip_color(theme, m.palette);
             fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
             // Visual media: the cached thumbnail frame (representative, or real
@@ -9831,18 +10619,23 @@ impl VideoEditorApp {
                     blit_thumb(scene, tf, t, thumb, 5.0);
                 } else {
                     for i in 0..3 {
-                        let bx = thumb.x0 + 6.0 + i as f64 * 18.0;
+                        let bx = thumb.x0 + 6.0 + f64::from(i) * 18.0;
                         let block = Rect::new(bx, thumb.y0 + 6.0, bx + 14.0, thumb.y1 - 6.0);
                         fill_rrect(scene, tf, lighten(base, 0.18), block, 2.0);
                     }
                 }
             } else {
                 let color = lighten(base, 0.25);
-                let inner = Rect::new(thumb.x0 + 4.0, thumb.y0 + 6.0, thumb.x1 - 4.0, thumb.y1 - 6.0);
+                let inner = Rect::new(
+                    thumb.x0 + 4.0,
+                    thumb.y0 + 6.0,
+                    thumb.x1 - 4.0,
+                    thumb.y1 - 6.0,
+                );
                 match (self.waveforms.state(m.id), self.waveforms.peaks(m.id)) {
-                    (crate::waveform::WaveformState::Ready, Some(peaks)) => {
-                        draw_waveform(scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color)
-                    }
+                    (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
+                        scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color,
+                    ),
                     _ => draw_flat_signal(scene, tf, inner, color),
                 }
             }
@@ -9878,7 +10671,13 @@ impl VideoEditorApp {
                 MediaKind::Image => c.semantic.warning,
                 MediaKind::Text => c.accent[5],
             };
-            scene.fill(Fill::NonZero, tf, kc, None, &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0));
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                kc,
+                None,
+                &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
+            );
             // text (the name is drawn by the inline rename field while editing).
             let tx = thumb.x1 + 12.0;
             let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
@@ -9888,7 +10687,17 @@ impl VideoEditorApp {
                 // again as wide.
                 let avail = (rect.x1 - 8.0 - tx) as f32;
                 let shown = elide_w(&m.name, avail, tr);
-                text_w(scene, tr, tf, &shown, 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    &shown,
+                    13.0,
+                    c.text_primary,
+                    tx,
+                    rect.y0 + 10.0,
+                    TextWeight::Medium,
+                );
             }
             let sub = self.bin_subtitle(m);
             // A source the editor cannot use says which kind of "cannot": the
@@ -9919,9 +10728,7 @@ impl VideoEditorApp {
                     (tx, short),
                 ]
                 .into_iter()
-                .find(|(x0, label)| {
-                    x0 + tr.measure(label, 10.5, None).0 as f64 + 14.0 <= right
-                })
+                .find(|(x0, label)| x0 + tr.measure(label, 10.5, None).0 as f64 + 14.0 <= right)
             });
             // The metadata line survives unless the chip had to take its place.
             if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
@@ -9931,9 +10738,25 @@ impl VideoEditorApp {
                 let w = tr.measure(label, 10.5, None).0 as f64 + 14.0;
                 let chip = Rect::new(cx0, rect.y0 + 28.0, cx0 + w, rect.y0 + 45.0);
                 fill_rrect(scene, tf, with_alpha(c.semantic.warning, 0.20), chip, 4.0);
-                stroke_rrect(scene, tf, with_alpha(c.semantic.warning, 0.65), chip, 4.0, 1.0);
+                stroke_rrect(
+                    scene,
+                    tf,
+                    with_alpha(c.semantic.warning, 0.65),
+                    chip,
+                    4.0,
+                    1.0,
+                );
                 let baseline = text_baseline(chip, 10.5, tr);
-                text(scene, tr, tf, label, 10.5, c.semantic.warning, chip.x0 + 7.0, baseline);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    label,
+                    10.5,
+                    c.semantic.warning,
+                    chip.x0 + 7.0,
+                    baseline,
+                );
             }
         }
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
@@ -9945,10 +10768,27 @@ impl VideoEditorApp {
         if let Some(notice) = &self.import_notice {
             let failed = self.import_notice_is_error();
             let strip = Rect::new(r.bin.x0, r.bin.y1 - 34.0, r.bin.x1, r.bin.y1);
-            let tint = if failed { c.semantic.danger } else { c.accent[5] };
+            let tint = if failed {
+                c.semantic.danger
+            } else {
+                c.accent[5]
+            };
             fill_rect(scene, tf, with_alpha(tint, 0.16), strip);
-            stroke_line(scene, tf, with_alpha(tint, 0.5), strip.x0, strip.y0, strip.x1, strip.y0, 1.0);
-            let col = if failed { c.semantic.danger } else { c.text_primary };
+            stroke_line(
+                scene,
+                tf,
+                with_alpha(tint, 0.5),
+                strip.x0,
+                strip.y0,
+                strip.x1,
+                strip.y0,
+                1.0,
+            );
+            let col = if failed {
+                c.semantic.danger
+            } else {
+                c.text_primary
+            };
             let shown = elide_w(notice, (strip.width() - 24.0) as f32, tr);
             let baseline = text_baseline(strip, 11.0, tr);
             text(scene, tr, tf, &shown, 11.0, col, strip.x0 + 12.0, baseline);
@@ -9973,7 +10813,14 @@ impl VideoEditorApp {
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
     /// the insertion point at the drop time, and float a ghost chip at the cursor.
-    fn draw_bin_drag(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_bin_drag(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let Some(bd) = self.bin_drag else { return };
         if !bd.active {
             return;
@@ -10002,8 +10849,15 @@ impl VideoEditorApp {
             let ghost_label = elide_w(&m.name, (gr.width() - 20.0) as f32, tr);
             let ghost_y = text_baseline(gr, 12.0, tr);
             text_w(
-                scene, tr, tf, &ghost_label, 12.0, on_fill(theme, ghost_fill).1,
-                gr.x0 + 10.0, ghost_y, TextWeight::Medium,
+                scene,
+                tr,
+                tf,
+                &ghost_label,
+                12.0,
+                on_fill(theme, ghost_fill).1,
+                gr.x0 + 10.0,
+                ghost_y,
+                TextWeight::Medium,
             );
         }
     }
@@ -10041,7 +10895,14 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_preview(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_preview(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.preview);
         let canvas = r.canvas;
@@ -10054,7 +10915,12 @@ impl VideoEditorApp {
             let area = Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0);
             if area.height() > 16.0 {
                 text(
-                    scene, tr, tf, msg, 11.5, c.text_dim,
+                    scene,
+                    tr,
+                    tf,
+                    msg,
+                    11.5,
+                    c.text_dim,
                     area.center().x - w as f64 / 2.0,
                     area.center().y - 7.0,
                 );
@@ -10107,12 +10973,20 @@ impl VideoEditorApp {
             // like every other empty surface in the fleet instead of like a
             // stray caption on a black rectangle.
             let (icon, title, hint) = if self.project.top_video_clip_at(self.playhead).is_none() {
-                (ui::icons::Icon::Film, PREVIEW_EMPTY_TITLE, PREVIEW_EMPTY_HINT)
+                (
+                    ui::icons::Icon::Film,
+                    PREVIEW_EMPTY_TITLE,
+                    PREVIEW_EMPTY_HINT,
+                )
             } else {
                 // Not an empty state — a capability the box does not have.
                 // Same treatment, different words, and it must not suggest
                 // there is anything to do about it here.
-                (ui::icons::Icon::Monitor, "Preview needs a GPU adapter", "The timeline and export still work")
+                (
+                    ui::icons::Icon::Monitor,
+                    "Preview needs a GPU adapter",
+                    "The timeline and export still work",
+                )
             };
             ui::widget::EmptyState::paint(
                 scene,
@@ -10150,7 +11024,17 @@ impl VideoEditorApp {
         if tc_chip.x1 < canvas.x1 {
             fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), tc_chip, 5.0);
             let baseline = text_baseline(tc_chip, 13.0, tr);
-            text_w(scene, tr, tf, &tc, 13.0, Color::WHITE, tc_chip.x0 + 7.0, baseline, TextWeight::Bold);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &tc,
+                13.0,
+                Color::WHITE,
+                tc_chip.x0 + 7.0,
+                baseline,
+                TextWeight::Bold,
+            );
         }
         // The clip under the playhead has no bytes on this device: say so on the
         // canvas, because the picture behind this line is a stand-in generated
@@ -10176,30 +11060,81 @@ impl VideoEditorApp {
                 stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.35), chip, 5.0, 1.0);
                 let baseline = text_baseline(chip, 12.0, tr);
                 text_w(
-                    scene, tr, tf, msg, 12.0, Color::WHITE,
-                    chip.x0 + pad, baseline,
+                    scene,
+                    tr,
+                    tf,
+                    msg,
+                    12.0,
+                    Color::WHITE,
+                    chip.x0 + pad,
+                    baseline,
                     TextWeight::Semibold,
                 );
             }
         }
         // Safe-area guide.
-        stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
+        stroke_rrect(
+            scene,
+            tf,
+            with_alpha(Color::WHITE, 0.12),
+            canvas.inset(-canvas.width() * 0.05),
+            0.0,
+            1.0,
+        );
         scene.pop_layer();
     }
 
-    fn draw_transport(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_transport(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.transport);
-        stroke_line(scene, tf, c.border_standard, r.transport.x0, r.transport.y0, r.transport.x1, r.transport.y0, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.transport.x0,
+            r.transport.y0,
+            r.transport.x1,
+            r.transport.y0,
+            1.0,
+        );
         // Everything below is clipped to the transport, so no control drawn
         // at a fixed offset can reach into the pane beside it.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.transport);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &r.transport,
+        );
         for (action, rect) in self.transport_buttons(r) {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
-            let bg = if is_play { c.accent[5] } else if hovered { c.surface_white_10 } else { c.neutral[3] };
-            scene.fill(Fill::NonZero, tf, bg, None, &Circle::new(rect.center(), rect.width() / 2.0));
-            let col = if is_play { on_fill(theme, bg).1 } else { c.text_primary };
+            let bg = if is_play {
+                c.accent[5]
+            } else if hovered {
+                c.surface_white_10
+            } else {
+                c.neutral[3]
+            };
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                bg,
+                None,
+                &Circle::new(rect.center(), rect.width() / 2.0),
+            );
+            let col = if is_play {
+                on_fill(theme, bg).1
+            } else {
+                c.text_primary
+            };
             self.draw_transport_icon(scene, tf, action, rect.center(), col);
         }
         // Undo / redo. Ghost squares rather than the transport's filled
@@ -10241,15 +11176,49 @@ impl VideoEditorApp {
         let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
         let (tw, _) = tr.measure(&total, 13.0, None);
         let (mw, _) = tr.measure(&meta, 11.5, None);
-        let fit = readout_fit(r.transport, self.transport_content_x(r), bw as f64, tw as f64, mw as f64);
+        let fit = readout_fit(
+            r.transport,
+            self.transport_content_x(r),
+            bw as f64,
+            tw as f64,
+            mw as f64,
+        );
         if let Some(x) = fit.big_x {
-            text_w(scene, tr, tf, &big, 18.0, c.text_primary, x, r.transport.y0 + 8.0, TextWeight::Bold);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &big,
+                18.0,
+                c.text_primary,
+                x,
+                r.transport.y0 + 8.0,
+                TextWeight::Bold,
+            );
         }
         if let Some(x) = fit.total_x {
-            text(scene, tr, tf, &total, 13.0, c.text_dim, x, r.transport.y0 + 13.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &total,
+                13.0,
+                c.text_dim,
+                x,
+                r.transport.y0 + 13.0,
+            );
         }
         if let Some(x) = fit.meta_x {
-            text(scene, tr, tf, &meta, 11.5, c.text_dim, x, r.transport.y0 + 14.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &meta,
+                11.5,
+                c.text_dim,
+                x,
+                r.transport.y0 + 14.0,
+            );
         }
         // Scrubber.
         let scrub = self.scrubber_rect(r);
@@ -10259,24 +11228,55 @@ impl VideoEditorApp {
         }
         fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
-        let filled = Rect::new(scrub.x0, scrub.y0, scrub.x0 + scrub.width() * frac, scrub.y1);
+        let filled = Rect::new(
+            scrub.x0,
+            scrub.y0,
+            scrub.x0 + scrub.width() * frac,
+            scrub.y1,
+        );
         fill_rrect(scene, tf, c.accent[5], filled, 4.0);
         let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0);
         scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &knob);
         scene.stroke(&Stroke::new(1.5), tf, c.border_focus, None, &knob);
         if self.playing {
-            text(scene, tr, tf, "PLAYING", 10.0, c.semantic.success, scrub.x0, scrub.y0 - 16.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "PLAYING",
+                10.0,
+                c.semantic.success,
+                scrub.x0,
+                scrub.y0 - 16.0,
+            );
         }
         scene.pop_layer();
     }
 
-    fn draw_transport_icon(&self, scene: &mut Scene, tf: Affine, action: TransportAction, ctr: Point, col: Color) {
+    fn draw_transport_icon(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        action: TransportAction,
+        ctr: Point,
+        col: Color,
+    ) {
         let s = 6.0;
         match action {
             TransportAction::PlayPause => {
                 if self.playing {
-                    fill_rect(scene, tf, col, Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0));
-                    fill_rect(scene, tf, col, Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0));
+                    fill_rect(
+                        scene,
+                        tf,
+                        col,
+                        Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0),
+                    );
+                    fill_rect(
+                        scene,
+                        tf,
+                        col,
+                        Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0),
+                    );
                 } else {
                     let mut p = BezPath::new();
                     p.move_to((ctr.x - 5.0, ctr.y - 7.0));
@@ -10310,7 +11310,12 @@ impl VideoEditorApp {
                 }
             }
             TransportAction::ToStart => {
-                fill_rect(scene, tf, col, Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 4.5, ctr.y + s));
+                fill_rect(
+                    scene,
+                    tf,
+                    col,
+                    Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 4.5, ctr.y + s),
+                );
                 let mut p = BezPath::new();
                 p.move_to((ctr.x + 7.0, ctr.y - s));
                 p.line_to((ctr.x - 3.0, ctr.y));
@@ -10319,7 +11324,12 @@ impl VideoEditorApp {
                 scene.fill(Fill::NonZero, tf, col, None, &p);
             }
             TransportAction::ToEnd => {
-                fill_rect(scene, tf, col, Rect::new(ctr.x + 4.5, ctr.y - s, ctr.x + 7.0, ctr.y + s));
+                fill_rect(
+                    scene,
+                    tf,
+                    col,
+                    Rect::new(ctr.x + 4.5, ctr.y - s, ctr.x + 7.0, ctr.y + s),
+                );
                 let mut p = BezPath::new();
                 p.move_to((ctr.x - 7.0, ctr.y - s));
                 p.line_to((ctr.x + 3.0, ctr.y));
@@ -10330,19 +11340,44 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_inspector(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_inspector(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.inspector);
-        stroke_line(scene, tf, c.border_standard, r.inspector.x0, r.inspector.y0, r.inspector.x0, r.inspector.y1, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.inspector.x0,
+            r.inspector.y0,
+            r.inspector.x0,
+            r.inspector.y1,
+            1.0,
+        );
         // Clip everything to the inspector rect so controls never bleed into
         // the timeline if the selected clip's control stack runs tall.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.inspector);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &r.inspector,
+        );
         self.draw_inspector_body(scene, tf, tr, theme, r);
         // A clip on a locked track has inert controls — every edit path checks
         // the lock — so they are veiled rather than left looking live. The
         // header above stays crisp, because that is where the reason is
         // written ("on V2 · locked").
-        let locked = self.selected().map(|id| !self.project.clip_editable(id)).unwrap_or(false);
+        let locked = self
+            .selected()
+            .map(|id| !self.project.clip_editable(id))
+            .unwrap_or(false);
         if locked {
             let l = self.inspector_layout(r);
             let top = l
@@ -10350,7 +11385,12 @@ impl VideoEditorApp {
                 .or(l.volume)
                 .map(|t| t.y0 - 24.0)
                 .unwrap_or(r.inspector.y0 + 170.0);
-            let veil = Rect::new(r.inspector.x0, top.max(r.inspector.y0), r.inspector.x1, r.inspector.y1);
+            let veil = Rect::new(
+                r.inspector.x0,
+                top.max(r.inspector.y0),
+                r.inspector.x1,
+                r.inspector.y1,
+            );
             fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
         }
         // Soft edges where the pane cuts its content. A row sliced in half by
@@ -10365,13 +11405,13 @@ impl VideoEditorApp {
                 let f = i as f64 / STEPS as f64;
                 let y0 = from_y + dir * H * f;
                 let y1 = y0 + dir * (H / STEPS as f64);
-                let band = Rect::new(
-                    r.inspector.x0,
-                    y0.min(y1),
-                    r.inspector.x1,
-                    y0.max(y1),
+                let band = Rect::new(r.inspector.x0, y0.min(y1), r.inspector.x1, y0.max(y1));
+                fill_rect(
+                    scene,
+                    tf,
+                    with_alpha(c.surfaces.raised, 0.10 + 0.9 * f),
+                    band,
                 );
-                fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.10 + 0.9 * f), band);
             }
         };
         if self.inspector_scroll > 0.5 {
@@ -10387,14 +11427,31 @@ impl VideoEditorApp {
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Inspector, r);
     }
 
-    fn draw_inspector_body(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_inspector_body(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         // The whole body scrolls together by `inspector_scroll` (clamped to 0
         // when nothing is selected, so the empty state stays put).
         let top = r.inspector.y0 - self.inspector_scroll;
-        text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, top + 14.0, TextWeight::Semibold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "INSPECTOR",
+            11.0,
+            c.text_dim,
+            x0,
+            top + 14.0,
+            TextWeight::Semibold,
+        );
         // With more than one clip selected, say so where the count matters —
         // every edit below applies to all of them.
         if self.selection.len() > 1 {
@@ -10402,10 +11459,22 @@ impl VideoEditorApp {
             let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
             let pillr = Rect::new(x1 - lw as f64 - 14.0, top + 4.0, x1, top + 22.0);
             fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 9.0);
-            text_w(scene, tr, tf, &label, 10.5, c.accent[5], pillr.x0 + 7.0, top + 8.0, TextWeight::Medium);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &label,
+                10.5,
+                c.accent[5],
+                pillr.x0 + 7.0,
+                top + 8.0,
+                TextWeight::Medium,
+            );
         }
 
-        let selected = self.selected().and_then(|id| self.project.clip(id).cloned());
+        let selected = self
+            .selected()
+            .and_then(|id| self.project.clip(id).cloned());
         let Some(clip) = selected else {
             // The markers still belong to the project, so they stay reachable
             // with nothing selected. Everything else here edits a clip.
@@ -10419,7 +11488,12 @@ impl VideoEditorApp {
                 .first()
                 .map(|(_, rect)| rect.y0 - 8.0)
                 .unwrap_or(r.inspector.y1);
-            let area = Rect::new(x0, top + INSPECTOR_HEADER_H, x1, floor.max(top + INSPECTOR_HEADER_H));
+            let area = Rect::new(
+                x0,
+                top + INSPECTOR_HEADER_H,
+                x1,
+                floor.max(top + INSPECTOR_HEADER_H),
+            );
             // The shared empty state, so this pane says nothing is selected in
             // the same voice — icon, title, one line of what to do — that the
             // rest of the fleet uses. It was a pair of bare left-aligned lines
@@ -10445,15 +11519,32 @@ impl VideoEditorApp {
         };
         let id = clip.id;
         let media = self.project.media(clip.media).cloned();
-        let is_video = media.as_ref().map(|m| m.kind.is_visual()).unwrap_or(true);
-        let track_name = self.project.track(clip.track).map(|t| t.name.clone()).unwrap_or_default();
+        let is_video = media.as_ref().is_none_or(|m| m.kind.is_visual());
+        let track_name = self
+            .project
+            .track(clip.track)
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
 
         // Header card with color tag + name (scrolls with the body).
         let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
         fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
-        let name = media.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "clip".into());
+        let name = media
+            .as_ref()
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| "clip".into());
         let shown_name = elide_w(&name, (x1 - x0 - 14.0) as f32, tr);
-        text_w(scene, tr, tf, &shown_name, 15.0, c.text_primary, x0 + 14.0, top + 38.0, TextWeight::Semibold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            &shown_name,
+            15.0,
+            c.text_primary,
+            x0 + 14.0,
+            top + 38.0,
+            TextWeight::Semibold,
+        );
         // Name the lane, and say plainly when it refuses edits — the same
         // reason the timeline hatches it.
         let sub = if self.selection_has_locked() {
@@ -10461,7 +11552,11 @@ impl VideoEditorApp {
         } else {
             format!("on {track_name}")
         };
-        let sub_col = if self.selection_has_locked() { c.semantic.warning } else { c.text_dim };
+        let sub_col = if self.selection_has_locked() {
+            c.semantic.warning
+        } else {
+            c.text_dim
+        };
         text(scene, tr, tf, &sub, 11.5, sub_col, x0 + 14.0, top + 58.0);
 
         // Property rows.
@@ -10470,36 +11565,74 @@ impl VideoEditorApp {
         let prop = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, value: &str, y: f64| {
             text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
             let (vw, _) = tr.measure_weighted(value, 12.0, None, TextWeight::Medium);
-            text_w(scene, tr, tf, value, 12.0, c.text_primary, x1 - vw as f64, y, TextWeight::Medium);
+            text_w(
+                scene,
+                tr,
+                tf,
+                value,
+                12.0,
+                c.text_primary,
+                x1 - f64::from(vw),
+                y,
+                TextWeight::Medium,
+            );
         };
-        prop(scene, tr, "Position", &timecode(clip.start, fps), y); y += 18.0;
-        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y); y += 18.0;
-        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y); y += 18.0;
+        prop(scene, tr, "Position", &timecode(clip.start, fps), y);
+        y += 18.0;
+        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y);
+        y += 18.0;
+        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y);
+        y += 18.0;
         prop(scene, tr, "Source Out", &timecode(clip.out_point, fps), y);
 
         let l = self.inspector_layout(r);
         // Every slider row: a label, a right-aligned readout measured like all
         // the others, and the shared slider face carrying hover / drag state.
         let row = |scene: &mut Scene,
-                       tr: &mut TextRenderer,
-                       track: Option<Rect>,
-                       label: &str,
-                       readout: String,
-                       v: f64,
-                       size: f32,
-                       drag: bool,
-                       // `Some` when this row carries a key control, whose box
-                       // the label starts after. The indent is unconditional
-                       // so keying a parameter does not shuffle its row
-                       // sideways; an animated one takes the accent instead.
-                       keyed: Option<bool>| {
+                   tr: &mut TextRenderer,
+                   track: Option<Rect>,
+                   label: &str,
+                   readout: String,
+                   v: f64,
+                   size: f32,
+                   drag: bool,
+                   // `Some` when this row carries a key control, whose box
+                   // the label starts after. The indent is unconditional
+                   // so keying a parameter does not shuffle its row
+                   // sideways; an animated one takes the accent instead.
+                   keyed: Option<bool>| {
             let Some(track) = track else { return };
-            let lx = if keyed.is_some() { track.x0 + KEY_BOX + 6.0 } else { track.x0 };
-            let col = if keyed == Some(true) { c.accent[5] } else { c.text_dim };
+            let lx = if keyed.is_some() {
+                track.x0 + KEY_BOX + 6.0
+            } else {
+                track.x0
+            };
+            let col = if keyed == Some(true) {
+                c.accent[5]
+            } else {
+                c.text_dim
+            };
             text(scene, tr, tf, label, size, col, lx, track.y0 - 20.0);
             let (pw, _) = tr.measure(&readout, size, None);
-            text(scene, tr, tf, &readout, size, c.text_primary, track.x1 - pw as f64, track.y0 - 20.0);
-            draw_track(scene, tf, theme, track, v, hit_slider(track, self.last_mouse), drag);
+            text(
+                scene,
+                tr,
+                tf,
+                &readout,
+                size,
+                c.text_primary,
+                track.x1 - pw as f64,
+                track.y0 - 20.0,
+            );
+            draw_track(
+                scene,
+                tf,
+                theme,
+                track,
+                v,
+                hit_slider(track, self.last_mouse),
+                drag,
+            );
         };
         let dragging = |d: Option<Drag>, want: Drag| d == Some(want);
         // Animatable rows read through `param_at`, the same door the
@@ -10508,33 +11641,97 @@ impl VideoEditorApp {
         let animated = |p: Param| self.key_state(p) != KeyState::Off;
         let at = self.playhead;
         let opacity = clip.param_at(Param::Opacity, at);
-        row(scene, tr, l.opacity, "Opacity", format!("{:.0}%", opacity * 100.0),
-            opacity, 12.0, dragging(self.drag, Drag::Opacity), Some(animated(Param::Opacity)));
+        row(
+            scene,
+            tr,
+            l.opacity,
+            "Opacity",
+            format!("{:.0}%", opacity * 100.0),
+            opacity,
+            12.0,
+            dragging(self.drag, Drag::Opacity),
+            Some(animated(Param::Opacity)),
+        );
         let volume = clip.param_at(Param::Volume, at);
-        row(scene, tr, l.volume, "Volume", format!("{:.0}%", volume * 100.0),
-            volume, 12.0, dragging(self.drag, Drag::Volume), Some(animated(Param::Volume)));
+        row(
+            scene,
+            tr,
+            l.volume,
+            "Volume",
+            format!("{:.0}%", volume * 100.0),
+            volume,
+            12.0,
+            dragging(self.drag, Drag::Volume),
+            Some(animated(Param::Volume)),
+        );
         // Colour-grade rows. The readout shows the multiplier (0.5 == 1.00×,
         // the identity).
         for (track, label, p, d) in [
-            (l.brightness, "Brightness", Param::Brightness, Drag::Brightness),
+            (
+                l.brightness,
+                "Brightness",
+                Param::Brightness,
+                Drag::Brightness,
+            ),
             (l.contrast, "Contrast", Param::Contrast, Drag::Contrast),
-            (l.saturation, "Saturation", Param::Saturation, Drag::Saturation),
+            (
+                l.saturation,
+                "Saturation",
+                Param::Saturation,
+                Drag::Saturation,
+            ),
         ] {
             let v = clip.param_at(p, at);
-            row(scene, tr, track, label, format!("{:.2}×", Filters::gain(v)), v, 12.0,
-                dragging(self.drag, d), Some(animated(p)));
+            row(
+                scene,
+                tr,
+                track,
+                label,
+                format!("{:.2}×", Filters::gain(v)),
+                v,
+                12.0,
+                dragging(self.drag, d),
+                Some(animated(p)),
+            );
         }
         // Fade in / out (seconds). Two half-width tracks share a row; their
         // readouts right-align by measurement like every other row, rather
         // than by a magic inset that only fitted one string.
         let cd = clip.duration().max(1e-6);
-        row(scene, tr, l.fade_in, "Fade In", format!("{:.1}s", clip.fade_in),
-            (clip.fade_in / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeIn), None);
-        row(scene, tr, l.fade_out, "Fade Out", format!("{:.1}s", clip.fade_out),
-            (clip.fade_out / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeOut), None);
+        row(
+            scene,
+            tr,
+            l.fade_in,
+            "Fade In",
+            format!("{:.1}s", clip.fade_in),
+            (clip.fade_in / cd).clamp(0.0, 1.0),
+            11.0,
+            dragging(self.drag, Drag::FadeIn),
+            None,
+        );
+        row(
+            scene,
+            tr,
+            l.fade_out,
+            "Fade Out",
+            format!("{:.1}s", clip.fade_out),
+            (clip.fade_out / cd).clamp(0.0, 1.0),
+            11.0,
+            dragging(self.drag, Drag::FadeOut),
+            None,
+        );
         // Transition segmented control, through the shared painter.
         if !l.transitions.is_empty() {
-            text(scene, tr, tf, "Transition", 12.0, c.text_dim, x0, l.transition_y - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Transition",
+                12.0,
+                c.text_dim,
+                x0,
+                l.transition_y - 20.0,
+            );
             let rects: Vec<Rect> = l.transitions.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.transitions.iter().map(|(t, _)| t.label()).collect();
             let sel = l
@@ -10548,15 +11745,29 @@ impl VideoEditorApp {
         if let Some(track) = l.transition_len {
             let max = clip.duration().max(0.01);
             row(
-                scene, tr, Some(track), "Transition length",
+                scene,
+                tr,
+                Some(track),
+                "Transition length",
                 format!("{:.2}s", clip.transition_len()),
-                (clip.transition_len() / max).clamp(0.0, 1.0), 11.0,
-                self.drag == Some(Drag::TransitionLen), None,
+                (clip.transition_len() / max).clamp(0.0, 1.0),
+                11.0,
+                self.drag == Some(Drag::TransitionLen),
+                None,
             );
         }
         // Colour swatches.
         if !l.colors.is_empty() {
-            text(scene, tr, tf, "Label", 12.0, c.text_dim, x0, l.colors_y - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Label",
+                12.0,
+                c.text_dim,
+                x0,
+                l.colors_y - 20.0,
+            );
             for (pal, rect) in &l.colors {
                 let sw = clip_color(theme, *pal);
                 fill_rrect(scene, tf, sw, *rect, 6.0);
@@ -10580,19 +11791,47 @@ impl VideoEditorApp {
         // size. Each reads its value back through `num_value`, so a keyframed
         // one tracks the playhead rather than showing a dead constant.
         for (f, track) in &l.nums {
-            let Some(v) = self.num_value(*f) else { continue };
+            let Some(v) = self.num_value(*f) else {
+                continue;
+            };
             let keyed = f
                 .param()
                 .map(|p| self.key_state(p) != KeyState::Off)
                 .unwrap_or(false);
-            let lx = if f.param().is_some() { track.x0 + KEY_BOX + 6.0 } else { track.x0 };
+            let lx = if f.param().is_some() {
+                track.x0 + KEY_BOX + 6.0
+            } else {
+                track.x0
+            };
             let label_col = if keyed { c.accent[5] } else { c.text_dim };
-            text(scene, tr, tf, f.label(), 11.5, label_col, lx, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                f.label(),
+                11.5,
+                label_col,
+                lx,
+                track.y0 - 20.0,
+            );
             let readout = f.readout(v);
             let (pw, _) = tr.measure(&readout, 11.5, None);
-            text(scene, tr, tf, &readout, 11.5, c.text_primary, track.x1 - pw as f64, track.y0 - 20.0);
+            text(
+                scene,
+                tr,
+                tf,
+                &readout,
+                11.5,
+                c.text_primary,
+                track.x1 - pw as f64,
+                track.y0 - 20.0,
+            );
             draw_track(
-                scene, tf, theme, *track, f.to_frac(v),
+                scene,
+                tf,
+                theme,
+                *track,
+                f.to_frac(v),
                 hit_slider(*track, self.last_mouse),
                 self.drag == Some(Drag::Num(*f)),
             );
@@ -10601,7 +11840,16 @@ impl VideoEditorApp {
         // picture in, which is the whole of what the button does.
         if !l.pip.is_empty() {
             let top = l.pip[0].2;
-            text(scene, tr, tf, "Picture in picture", 11.5, c.text_dim, x0, top.y0 - 16.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Picture in picture",
+                11.5,
+                c.text_dim,
+                x0,
+                top.y0 - 16.0,
+            );
             let inset = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
             let is_pip = (clip.transform.scale_x - inset.scale_x).abs() < 1e-6;
             for (_, corner, rect) in &l.pip {
@@ -10619,7 +11867,11 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, bg, *rect, 6.0);
                 stroke_rrect(scene, tf, c.border_standard, *rect, 6.0, 1.0);
                 // A miniature frame with the inset drawn in the named corner.
-                let fg = if on { on_fill(theme, bg).1 } else { c.text_primary };
+                let fg = if on {
+                    on_fill(theme, bg).1
+                } else {
+                    c.text_primary
+                };
                 let g = Rect::new(
                     rect.center().x - 11.0,
                     rect.center().y - 7.0,
@@ -10629,8 +11881,16 @@ impl VideoEditorApp {
                 stroke_rrect(scene, tf, with_alpha(fg, 0.5), g, 2.0, 1.0);
                 let iw = g.width() * 0.42;
                 let ih = g.height() * 0.42;
-                let ix = if corner.0 < 0.0 { g.x0 + 2.0 } else { g.x1 - 2.0 - iw };
-                let iy = if corner.1 < 0.0 { g.y0 + 2.0 } else { g.y1 - 2.0 - ih };
+                let ix = if corner.0 < 0.0 {
+                    g.x0 + 2.0
+                } else {
+                    g.x1 - 2.0 - iw
+                };
+                let iy = if corner.1 < 0.0 {
+                    g.y0 + 2.0
+                } else {
+                    g.y1 - 2.0 - ih
+                };
                 fill_rrect(scene, tf, fg, Rect::new(ix, iy, ix + iw, iy + ih), 1.5);
             }
         }
@@ -10638,7 +11898,16 @@ impl VideoEditorApp {
             text(scene, tr, tf, "Crop", 11.5, c.text_dim, x0, l.crop_label_y);
         }
         if l.anchor_label_y > 0.0 {
-            text(scene, tr, tf, "Anchor", 11.5, c.text_dim, x0, l.anchor_label_y);
+            text(
+                scene,
+                tr,
+                tf,
+                "Anchor",
+                11.5,
+                c.text_dim,
+                x0,
+                l.anchor_label_y,
+            );
         }
         // Three segmented rows make the 3×3 grid, so each row is a real
         // shared toggle group rather than nine hand-drawn cells.
@@ -10664,8 +11933,15 @@ impl VideoEditorApp {
         if let Some(rect) = l.reset_transform {
             let plain = clip.transform.is_identity();
             draw_button_enabled(
-                scene, tf, tr, theme, rect, "Fill frame", false,
-                rect.contains(self.last_mouse), !plain,
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                "Fill frame",
+                false,
+                rect.contains(self.last_mouse),
+                !plain,
             );
         }
         // Rate presets + the reverse toggle.
@@ -10696,9 +11972,18 @@ impl VideoEditorApp {
         if let Some(rect) = l.reverse {
             let on = clip.speed.reverse;
             draw_button(
-                scene, tf, tr, theme, rect,
-                if on { "Playing backwards" } else { "Play backwards" },
-                on, rect.contains(self.last_mouse),
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                if on {
+                    "Playing backwards"
+                } else {
+                    "Play backwards"
+                },
+                on,
+                rect.contains(self.last_mouse),
             );
         }
         // ---- tone curves ------------------------------------------------
@@ -10719,22 +12004,46 @@ impl VideoEditorApp {
             let ch = self.curve_channel;
             let shaped = !clip.curves.spline(ch).is_identity();
             draw_button_enabled(
-                scene, tf, tr, theme, rect,
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
                 &format!("Reset {}", ch.label()),
-                false, rect.contains(self.last_mouse), shaped,
+                false,
+                rect.contains(self.last_mouse),
+                shaped,
             );
         }
         // ---- colour key -----------------------------------------------
         if let Some(rect) = l.key_enable {
             let on = clip.key.enabled;
             draw_button(
-                scene, tf, tr, theme, rect,
-                if on { "Keying this colour out" } else { "Key a colour out" },
-                on, rect.contains(self.last_mouse),
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                if on {
+                    "Keying this colour out"
+                } else {
+                    "Key a colour out"
+                },
+                on,
+                rect.contains(self.last_mouse),
             );
         }
         if l.key_color_y > 0.0 {
-            text(scene, tr, tf, "Key colour", 11.5, c.text_dim, x0, l.key_color_y);
+            text(
+                scene,
+                tr,
+                tf,
+                "Key colour",
+                11.5,
+                c.text_dim,
+                x0,
+                l.key_color_y,
+            );
         }
         for (col, rect) in &l.key_colors {
             let on = clip
@@ -10759,9 +12068,19 @@ impl VideoEditorApp {
             // footage never had.
             let have = self.preview_pixel(0.5, 0.5).is_some();
             draw_button_enabled(
-                scene, tf, tr, theme, rect,
-                if have { "Sample centre" } else { "No frame to sample" },
-                false, rect.contains(self.last_mouse), have,
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                if have {
+                    "Sample centre"
+                } else {
+                    "No frame to sample"
+                },
+                false,
+                rect.contains(self.last_mouse),
+                have,
             );
         }
         // ---- mask -------------------------------------------------------
@@ -10777,28 +12096,61 @@ impl VideoEditorApp {
         }
         if let Some(rect) = l.mask_fit {
             draw_button(
-                scene, tf, tr, theme, rect, "Fit to picture", false,
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                "Fit to picture",
+                false,
                 rect.contains(self.last_mouse),
             );
         }
         if let Some(rect) = l.mask_invert {
             let on = clip.mask.invert;
             draw_button(
-                scene, tf, tr, theme, rect,
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
                 if on { "Keeping outside" } else { "Invert" },
-                on, rect.contains(self.last_mouse),
+                on,
+                rect.contains(self.last_mouse),
             );
         }
         // ---- title ----------------------------------------------------
         if let Some(rect) = l.title_text {
-            let text_src = media.as_ref().and_then(|m| m.text.clone()).unwrap_or_default();
-            text(scene, tr, tf, "Words", 11.5, c.text_dim, rect.x0, rect.y0 - 16.0);
-            let editing = self.title_edit.as_ref().map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
+            let text_src = media
+                .as_ref()
+                .and_then(|m| m.text.clone())
+                .unwrap_or_default();
+            text(
+                scene,
+                tr,
+                tf,
+                "Words",
+                11.5,
+                c.text_dim,
+                rect.x0,
+                rect.y0 - 16.0,
+            );
+            let editing = self
+                .title_edit
+                .as_ref()
+                .map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
             fill_rrect(scene, tf, c.surface_white_5, rect, 6.0);
             stroke_rrect(
-                scene, tf,
-                if editing == Some(true) { c.border_focus } else { c.border_standard },
-                rect, 6.0, 1.0,
+                scene,
+                tf,
+                if editing == Some(true) {
+                    c.border_focus
+                } else {
+                    c.border_standard
+                },
+                rect,
+                6.0,
+                1.0,
             );
             // While the inline editor owns this box it draws the words itself
             // (with a caret); otherwise show them, or say plainly that there
@@ -10807,8 +12159,14 @@ impl VideoEditorApp {
                 if text_src.content.trim().is_empty() {
                     let baseline = text_baseline(rect, 13.0, tr);
                     text(
-                        scene, tr, tf, "Click to type a title", 13.0, c.text_dim,
-                        rect.x0 + 10.0, baseline,
+                        scene,
+                        tr,
+                        tf,
+                        "Click to type a title",
+                        13.0,
+                        c.text_dim,
+                        rect.x0 + 10.0,
+                        baseline,
                     );
                 } else {
                     // Real line breaks, on their own lines. The field used to
@@ -10818,14 +12176,26 @@ impl VideoEditorApp {
                     for (i, line) in text_src.content.lines().take(3).enumerate() {
                         let shown = elide_w(line, (rect.width() - 20.0) as f32, tr);
                         text(
-                            scene, tr, tf, &shown, 13.0, c.text_primary,
-                            rect.x0 + 10.0, rect.y0 + 18.0 + i as f64 * 18.0,
+                            scene,
+                            tr,
+                            tf,
+                            &shown,
+                            13.0,
+                            c.text_primary,
+                            rect.x0 + 10.0,
+                            rect.y0 + 18.0 + i as f64 * 18.0,
                         );
                     }
                     if text_src.content.lines().count() > 3 {
                         text(
-                            scene, tr, tf, "…", 13.0, c.text_dim,
-                            rect.x0 + 10.0, rect.y0 + 18.0 + 3.0 * 18.0,
+                            scene,
+                            tr,
+                            tf,
+                            "…",
+                            13.0,
+                            c.text_dim,
+                            rect.x0 + 10.0,
+                            rect.y0 + 18.0 + 3.0 * 18.0,
                         );
                     }
                 }
@@ -10833,16 +12203,30 @@ impl VideoEditorApp {
                 // While the field is open, say what ends the edit — Enter is
                 // a line break here, so it cannot also be Accept.
                 text(
-                    scene, tr, tf, "Ctrl+Enter to accept · Esc to cancel", 10.5,
-                    c.text_dim, rect.x0, rect.y1 + 14.0,
+                    scene,
+                    tr,
+                    tf,
+                    "Ctrl+Enter to accept · Esc to cancel",
+                    10.5,
+                    c.text_dim,
+                    rect.x0,
+                    rect.y1 + 14.0,
                 );
             }
         }
         if !l.title_align.is_empty() {
-            let cur = media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.align).unwrap_or_default();
+            let cur = media
+                .as_ref()
+                .and_then(|m| m.text.as_ref())
+                .map(|t| t.align)
+                .unwrap_or_default();
             let rects: Vec<Rect> = l.title_align.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.title_align.iter().map(|(a, _)| a.label()).collect();
-            let sel = l.title_align.iter().position(|(a, _)| *a == cur).unwrap_or(0);
+            let sel = l
+                .title_align
+                .iter()
+                .position(|(a, _)| *a == cur)
+                .unwrap_or(0);
             draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
         }
         if let Some(rect) = l.title_font {
@@ -10851,7 +12235,16 @@ impl VideoEditorApp {
                 .and_then(|m| m.text.as_ref())
                 .map(|t| t.font.clone())
                 .unwrap_or_default();
-            text(scene, tr, tf, "Font", 11.5, c.text_dim, rect.x0, rect.y0 - 16.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "Font",
+                11.5,
+                c.text_dim,
+                rect.x0,
+                rect.y0 - 16.0,
+            );
             // The open list is drawn later, over the panel, because it floats
             // above everything under it. Here is the resting control: a
             // button naming the family in force. "The system's default sans"
@@ -10864,14 +12257,33 @@ impl VideoEditorApp {
                     current
                 };
                 draw_button(
-                    scene, tf, tr, theme, rect, &label, false,
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    rect,
+                    &label,
+                    false,
                     rect.contains(self.last_mouse),
                 );
             }
         }
         if !l.title_colors.is_empty() {
-            let cur = media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.color).unwrap_or([1.0; 4]);
-            text(scene, tr, tf, "Colour", 11.5, c.text_dim, x0, l.title_colors[0].1.y0 - 16.0);
+            let cur = media
+                .as_ref()
+                .and_then(|m| m.text.as_ref())
+                .map(|t| t.color)
+                .unwrap_or([1.0; 4]);
+            text(
+                scene,
+                tr,
+                tf,
+                "Colour",
+                11.5,
+                c.text_dim,
+                x0,
+                l.title_colors[0].1.y0 - 16.0,
+            );
             for (col, rect) in &l.title_colors {
                 let sw = title_color(*col);
                 // A swatch can be white, near-black or translucent, so it is
@@ -10881,7 +12293,11 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, c.neutral[3], *rect, 6.0);
                 fill_rrect(scene, tf, sw, *rect, 6.0);
                 stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.25), *rect, 6.0, 1.0);
-                if col.iter().zip(cur.iter()).all(|(a, b)| (a - b).abs() < 1e-6) {
+                if col
+                    .iter()
+                    .zip(cur.iter())
+                    .all(|(a, b)| (a - b).abs() < 1e-6)
+                {
                     stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
                 } else if rect.contains(self.last_mouse) {
                     stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.6), *rect, 6.0, 1.5);
@@ -10889,80 +12305,179 @@ impl VideoEditorApp {
             }
         }
         for (rect, on, label) in [
-            (l.title_bold, media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.bold).unwrap_or(false), "Bold"),
-            (l.title_italic, media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.italic).unwrap_or(false), "Italic"),
+            (
+                l.title_bold,
+                media
+                    .as_ref()
+                    .and_then(|m| m.text.as_ref())
+                    .map(|t| t.bold)
+                    .unwrap_or(false),
+                "Bold",
+            ),
+            (
+                l.title_italic,
+                media
+                    .as_ref()
+                    .and_then(|m| m.text.as_ref())
+                    .map(|t| t.italic)
+                    .unwrap_or(false),
+                "Italic",
+            ),
         ] {
             let Some(rect) = rect else { continue };
-            draw_button(scene, tf, tr, theme, rect, label, on, rect.contains(self.last_mouse));
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                label,
+                on,
+                rect.contains(self.last_mouse),
+            );
         }
         self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
         // ---- key controls ---------------------------------------------
         // Drawn last so a diamond sits over its row rather than under it.
         for (param, rect) in &l.keys {
-            draw_key_control(scene, tf, theme, *rect, self.key_state(*param), rect.contains(self.last_mouse));
+            draw_key_control(
+                scene,
+                tf,
+                theme,
+                *rect,
+                self.key_state(*param),
+                rect.contains(self.last_mouse),
+            );
         }
         // Effects stack (video only).
         if is_video {
-        for (i, row) in l.effect_rows.iter().enumerate() {
-            let Some(e) = clip.effects.get(i) else { continue };
-            let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
-            fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
-            // Reorder / remove: real icons on hover-lit hit targets, sized to
-            // the pointer rather than to the glyph. These were raw Unicode
-            // arrows in 16x18px boxes with no hover state at all.
-            let last = i + 1 == clip.effects.len();
-            for (rect, icon, enabled) in [
-                (up, ui::icons::Icon::ChevronUp, i > 0),
-                (down, ui::icons::Icon::ChevronDown, !last),
-            ] {
-                if enabled && rect.contains(self.last_mouse) {
-                    fill_rrect(scene, tf, c.overlay_medium, rect, 4.0);
+            for (i, row) in l.effect_rows.iter().enumerate() {
+                let Some(e) = clip.effects.get(i) else {
+                    continue;
+                };
+                let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
+                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+                // Reorder / remove: real icons on hover-lit hit targets, sized to
+                // the pointer rather than to the glyph. These were raw Unicode
+                // arrows in 16x18px boxes with no hover state at all.
+                let last = i + 1 == clip.effects.len();
+                for (rect, icon, enabled) in [
+                    (up, ui::icons::Icon::ChevronUp, i > 0),
+                    (down, ui::icons::Icon::ChevronDown, !last),
+                ] {
+                    if enabled && rect.contains(self.last_mouse) {
+                        fill_rrect(scene, tf, c.overlay_medium, rect, 4.0);
+                    }
+                    let col = if enabled {
+                        c.text_primary
+                    } else {
+                        c.text_tertiary
+                    };
+                    let g = 12.0;
+                    let box_ = Rect::new(
+                        rect.center().x - g / 2.0,
+                        rect.center().y - g / 2.0,
+                        rect.center().x + g / 2.0,
+                        rect.center().y + g / 2.0,
+                    );
+                    ui::icons::draw_icon(
+                        scene,
+                        tf,
+                        box_,
+                        icon,
+                        col,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
                 }
-                let col = if enabled { c.text_primary } else { c.text_tertiary };
-                let g = 12.0;
-                let box_ = Rect::new(
-                    rect.center().x - g / 2.0,
-                    rect.center().y - g / 2.0,
-                    rect.center().x + g / 2.0,
-                    rect.center().y + g / 2.0,
+                // Name.
+                let name_y = text_baseline(*row, 12.0, tr);
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    e.kind.label(),
+                    12.0,
+                    c.text_primary,
+                    down.x1 + 8.0,
+                    name_y,
+                    TextWeight::Medium,
                 );
-                ui::icons::draw_icon(scene, tf, box_, icon, col, ui::icons::LUCIDE_DEFAULT_STROKE_PX);
+                // Intensity slider.
+                draw_track(
+                    scene,
+                    tf,
+                    theme,
+                    slider,
+                    e.amount,
+                    hit_slider(slider, self.last_mouse),
+                    self.drag == Some(Drag::EffectAmount { idx: i }),
+                );
+                // Remove.
+                if remove.contains(self.last_mouse) {
+                    fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), remove, 4.0);
+                }
+                let g = 12.0;
+                let xbox = Rect::new(
+                    remove.center().x - g / 2.0,
+                    remove.center().y - g / 2.0,
+                    remove.center().x + g / 2.0,
+                    remove.center().y + g / 2.0,
+                );
+                ui::icons::draw_icon(
+                    scene,
+                    tf,
+                    xbox,
+                    ui::icons::Icon::X,
+                    c.semantic.danger,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
             }
-            // Name.
-            let name_y = text_baseline(*row, 12.0, tr);
-            text_w(scene, tr, tf, e.kind.label(), 12.0, c.text_primary, down.x1 + 8.0, name_y, TextWeight::Medium);
-            // Intensity slider.
-            draw_track(
-                scene, tf, theme, slider, e.amount,
-                hit_slider(slider, self.last_mouse),
-                self.drag == Some(Drag::EffectAmount { idx: i }),
+            // Add-effect button.
+            let add_hover = l.add_effect.contains(self.last_mouse);
+            fill_rrect(
+                scene,
+                tf,
+                if add_hover {
+                    c.surface_white_10
+                } else {
+                    c.neutral[3]
+                },
+                l.add_effect,
+                6.0,
             );
-            // Remove.
-            if remove.contains(self.last_mouse) {
-                fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), remove, 4.0);
-            }
-            let g = 12.0;
-            let xbox = Rect::new(
-                remove.center().x - g / 2.0,
-                remove.center().y - g / 2.0,
-                remove.center().x + g / 2.0,
-                remove.center().y + g / 2.0,
+            stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
+            text(
+                scene,
+                tr,
+                tf,
+                "+ Add effect",
+                12.0,
+                c.text_primary,
+                l.add_effect.x0 + 12.0,
+                l.add_effect.center().y - 8.0,
             );
-            ui::icons::draw_icon(
-                scene, tf, xbox, ui::icons::Icon::X, c.semantic.danger,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-        // Add-effect button.
-        let add_hover = l.add_effect.contains(self.last_mouse);
-        fill_rrect(scene, tf, if add_hover { c.surface_white_10 } else { c.neutral[3] }, l.add_effect, 6.0);
-        stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
-        text(scene, tr, tf, "+ Add effect", 12.0, c.text_primary, l.add_effect.x0 + 12.0, l.add_effect.center().y - 8.0);
         }
 
         if l.valid {
-            draw_button(scene, tf, tr, theme, l.split, "Split", false, l.split.contains(self.last_mouse));
-            draw_danger_button(scene, tf, tr, theme, l.delete, "Delete", l.delete.contains(self.last_mouse));
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                l.split,
+                "Split",
+                false,
+                l.split.contains(self.last_mouse),
+            );
+            draw_danger_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                l.delete,
+                "Delete",
+                l.delete.contains(self.last_mouse),
+            );
         }
     }
 
@@ -10997,24 +12512,48 @@ impl VideoEditorApp {
             rect.center().y + g / 2.0,
         );
         ui::icons::draw_icon(
-            scene, tf, arrow,
-            if open { ui::icons::Icon::ChevronDown } else { ui::icons::Icon::ChevronRight },
+            scene,
+            tf,
+            arrow,
+            if open {
+                ui::icons::Icon::ChevronDown
+            } else {
+                ui::icons::Icon::ChevronRight
+            },
             c.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let baseline = text_baseline(rect, 11.0, tr);
         text_w(
-            scene, tr, tf, section.label(), 11.0, c.text_dim,
-            rect.x0 + 18.0, baseline, TextWeight::Semibold,
+            scene,
+            tr,
+            tf,
+            section.label(),
+            11.0,
+            c.text_dim,
+            rect.x0 + 18.0,
+            baseline,
+            TextWeight::Semibold,
         );
         if open {
             return;
         }
-        let Some(summary) = self.section_summary(section, clip, media) else { return };
+        let Some(summary) = self.section_summary(section, clip, media) else {
+            return;
+        };
         let (w, _) = tr.measure(&summary, 11.0, None);
         // A summary that reports something other than the default is worth
         // reading, so it takes the accent rather than the dim tone.
-        text(scene, tr, tf, &summary, 11.0, c.accent[5], rect.x1 - w as f64, baseline);
+        text(
+            scene,
+            tr,
+            tf,
+            &summary,
+            11.0,
+            c.accent[5],
+            rect.x1 - w as f64,
+            baseline,
+        );
     }
 
     /// What a folded section reports about itself, or `None` when everything
@@ -11069,7 +12608,11 @@ impl VideoEditorApp {
             Section::Title => {
                 let t = media?.text.as_ref()?;
                 let first = t.content.lines().next().unwrap_or("").trim();
-                Some(if first.is_empty() { "no words yet".into() } else { first.to_string() })
+                Some(if first.is_empty() {
+                    "no words yet".into()
+                } else {
+                    first.to_string()
+                })
             }
             Section::Effects => (!clip.effects.is_empty()).then(|| {
                 if clip.effects.len() == 1 {
@@ -11080,15 +12623,38 @@ impl VideoEditorApp {
             }),
             Section::Markers => {
                 let n = self.project.all_markers().len();
-                (n > 0).then(|| if n == 1 { "1 marker".into() } else { format!("{n} markers") })
+                (n > 0).then(|| {
+                    if n == 1 {
+                        "1 marker".into()
+                    } else {
+                        format!("{n} markers")
+                    }
+                })
             }
         }
     }
 
-    fn draw_timeline(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx, r: &Regions) {
+    fn draw_timeline(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.timeline);
-        stroke_line(scene, tf, c.border_standard, r.timeline.x0, r.timeline.y0, r.timeline.x1, r.timeline.y0, 1.0);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.timeline.x0,
+            r.timeline.y0,
+            r.timeline.x1,
+            r.timeline.y0,
+            1.0,
+        );
 
         // --- ruler ticks ---
         fill_rect(scene, tf, c.surfaces.raised, r.ruler);
@@ -11099,11 +12665,38 @@ impl VideoEditorApp {
         while t <= end_t {
             let x = self.time_to_x(t, &r.lanes);
             if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
-                stroke_line(scene, tf, c.border_standard, x, r.ruler.y1 - 8.0, x, r.ruler.y1, 1.0);
+                stroke_line(
+                    scene,
+                    tf,
+                    c.border_standard,
+                    x,
+                    r.ruler.y1 - 8.0,
+                    x,
+                    r.ruler.y1,
+                    1.0,
+                );
                 let label = timecode(t, self.project.fps);
-                text(scene, tr, tf, &label, 10.0, c.text_dim, x + 4.0, r.ruler.y0 + 6.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &label,
+                    10.0,
+                    c.text_dim,
+                    x + 4.0,
+                    r.ruler.y0 + 6.0,
+                );
                 // faint grid line down the lanes
-                stroke_line(scene, tf, with_alpha(c.border_standard, 0.4), x, r.lanes.y0, x, r.timeline.y1, 1.0);
+                stroke_line(
+                    scene,
+                    tf,
+                    with_alpha(c.border_standard, 0.4),
+                    x,
+                    r.lanes.y0,
+                    x,
+                    r.timeline.y1,
+                    1.0,
+                );
             }
             t += tick_step;
         }
@@ -11119,14 +12712,32 @@ impl VideoEditorApp {
                 continue;
             }
             let col = clip_color(theme, marker.palette);
-            stroke_line(scene, tf, with_alpha(col, 0.55), x, r.lanes.y0, x, r.timeline.y1, 1.0);
+            stroke_line(
+                scene,
+                tf,
+                with_alpha(col, 0.55),
+                x,
+                r.lanes.y0,
+                x,
+                r.timeline.y1,
+                1.0,
+            );
             // A clip's marker is drawn as a smaller tick than a project
             // one: it belongs to the footage, not to the timeline.
             let h = if on_clip.is_some() { 6.0 } else { 10.0 };
             let flag = Rect::new(x, r.ruler.y1 - h, x + 3.0, r.ruler.y1);
             fill_rect(scene, tf, col, flag);
             if on_clip.is_none() && !marker.name.is_empty() {
-                text(scene, tr, tf, &marker.name, 9.0, col, x + 6.0, r.ruler.y1 - 11.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &marker.name,
+                    9.0,
+                    col,
+                    x + 6.0,
+                    r.ruler.y1 - 11.0,
+                );
             }
         }
 
@@ -11134,16 +12745,48 @@ impl VideoEditorApp {
         let lanes = self.lane_rects(r);
         for (tid, kind, lane) in &lanes {
             // lane background stripe
-            let stripe = if *kind == TrackKind::Video { c.surface_white_5 } else { with_alpha(c.semantic.success, 0.05) };
-            fill_rect(scene, tf, stripe, Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1));
+            let stripe = if *kind == TrackKind::Video {
+                c.surface_white_5
+            } else {
+                with_alpha(c.semantic.success, 0.05)
+            };
+            fill_rect(
+                scene,
+                tf,
+                stripe,
+                Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
+            );
             // header
             let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
             fill_rect(scene, tf, c.surfaces.raised, header);
             let track = self.project.track(*tid);
             let name = track.map(|t| t.name.as_str()).unwrap_or("?");
-            text_w(scene, tr, tf, name, 13.0, c.text_primary, header.x0 + 12.0, header.center().y - 8.0, TextWeight::Semibold);
-            let knd = if *kind == TrackKind::Video { "VIDEO" } else { "AUDIO" };
-            text(scene, tr, tf, knd, 9.0, c.text_dim, header.x0 + 12.0, header.center().y + 6.0);
+            text_w(
+                scene,
+                tr,
+                tf,
+                name,
+                13.0,
+                c.text_primary,
+                header.x0 + 12.0,
+                header.center().y - 8.0,
+                TextWeight::Semibold,
+            );
+            let knd = if *kind == TrackKind::Video {
+                "VIDEO"
+            } else {
+                "AUDIO"
+            };
+            text(
+                scene,
+                tr,
+                tf,
+                knd,
+                9.0,
+                c.text_dim,
+                header.x0 + 12.0,
+                header.center().y + 6.0,
+            );
             // mute + lock pills (clickable toggles)
             let muted = track.map(|t| t.muted).unwrap_or(false);
             let locked = track.map(|t| t.locked).unwrap_or(false);
@@ -11171,7 +12814,13 @@ impl VideoEditorApp {
         }
 
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1));
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+        );
         let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
         for (tid, kind, lane) in &lanes {
             for clip in self.project.clips_on(*tid) {
@@ -11201,7 +12850,16 @@ impl VideoEditorApp {
             let h = full.height();
             let mut x = full.x0 - h;
             while x < full.x1 {
-                stroke_line(scene, tf, with_alpha(c.text_dim, 0.16), x, full.y1, x + h, full.y0, 1.0);
+                stroke_line(
+                    scene,
+                    tf,
+                    with_alpha(c.text_dim, 0.16),
+                    x,
+                    full.y1,
+                    x + h,
+                    full.y0,
+                    1.0,
+                );
                 x += 12.0;
             }
         }
@@ -11229,17 +12887,43 @@ impl VideoEditorApp {
         // --- playhead ---
         let px = self.time_to_x(self.playhead, &r.lanes);
         if px >= r.lanes.x0 - 0.5 && px <= r.lanes.x1 + 0.5 {
-            stroke_line(scene, tf, c.accent[5], px, r.ruler.y0 + 4.0, px, r.timeline.y1, 1.5);
+            stroke_line(
+                scene,
+                tf,
+                c.accent[5],
+                px,
+                r.ruler.y0 + 4.0,
+                px,
+                r.timeline.y1,
+                1.5,
+            );
             let head = triangle_down(px, r.ruler.y0 + 4.0, 10.0);
             scene.fill(Fill::NonZero, tf, c.accent[5], None, &head);
         }
         // playhead timecode tag in ruler
         let tag = timecode(self.playhead, self.project.fps);
         let (tw, _) = tr.measure_weighted(&tag, 10.0, None, TextWeight::Bold);
-        let tagx = (px + 6.0).min(r.ruler.x1 - tw as f64 - 8.0).max(r.ruler.x0);
-        let tagrect = Rect::new(tagx - 3.0, r.ruler.y0 + 2.0, tagx + tw as f64 + 5.0, r.ruler.y0 + 16.0);
+        let tagx = (px + 6.0)
+            .min(r.ruler.x1 - f64::from(tw) - 8.0)
+            .max(r.ruler.x0);
+        let tagrect = Rect::new(
+            tagx - 3.0,
+            r.ruler.y0 + 2.0,
+            tagx + f64::from(tw) + 5.0,
+            r.ruler.y0 + 16.0,
+        );
         fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
-        text_w(scene, tr, tf, &tag, 10.0, on_fill(theme, c.accent[5]).1, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
+        text_w(
+            scene,
+            tr,
+            tf,
+            &tag,
+            10.0,
+            on_fill(theme, c.accent[5]).1,
+            tagx,
+            r.ruler.y0 + 3.0,
+            TextWeight::Bold,
+        );
 
         // Everyone else's playhead, after the local one so a peer parked on
         // the same frame reads as an addition to it rather than as something
@@ -11261,7 +12945,17 @@ impl VideoEditorApp {
         // to tell how far in you were, and no way back out but wheeling.
         let chip = self.zoom_chip_rect(r);
         let chip_hover = chip.contains(self.last_mouse);
-        fill_rrect(scene, tf, if chip_hover { c.overlay_medium } else { c.neutral[3] }, chip, 5.0);
+        fill_rrect(
+            scene,
+            tf,
+            if chip_hover {
+                c.overlay_medium
+            } else {
+                c.neutral[3]
+            },
+            chip,
+            5.0,
+        );
         stroke_rrect(scene, tf, c.border_standard, chip, 5.0, 1.0);
         let zl = if self.zoom >= 100.0 {
             format!("{:.0} px/s", self.zoom)
@@ -11279,7 +12973,10 @@ impl VideoEditorApp {
             let (title, hint) = if self.project.media.is_empty() {
                 ("Nothing on the timeline", "Import media, then drag it here")
             } else {
-                ("Nothing on the timeline", "Drag a clip from the media bin onto a track")
+                (
+                    "Nothing on the timeline",
+                    "Drag a clip from the media bin onto a track",
+                )
             };
             ui::widget::EmptyState::paint(
                 scene,
@@ -11298,9 +12995,23 @@ impl VideoEditorApp {
         // Add-track buttons in the gutter footer.
         for (kind, rect) in self.add_track_buttons(r) {
             let hover = rect.contains(self.last_mouse);
-            fill_rrect(scene, tf, if hover { c.surface_white_10 } else { c.neutral[3] }, rect, 6.0);
+            fill_rrect(
+                scene,
+                tf,
+                if hover {
+                    c.surface_white_10
+                } else {
+                    c.neutral[3]
+                },
+                rect,
+                6.0,
+            );
             stroke_rrect(scene, tf, c.border_standard, rect, 6.0, 1.0);
-            let label = if kind == TrackKind::Video { "+ Video" } else { "+ Audio" };
+            let label = if kind == TrackKind::Video {
+                "+ Video"
+            } else {
+                "+ Audio"
+            };
             let at = text_centre(rect, label, 11.0, TextWeight::Regular, tr);
             text(scene, tr, tf, label, 11.0, c.text_primary, at.x, at.y);
         }
@@ -11322,9 +13033,13 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        let Some((track, m)) = self.scroll_pane(pane, r) else { return };
+        let Some((track, m)) = self.scroll_pane(pane, r) else {
+            return;
+        };
         let bar = self.scroll_bar(pane);
-        let Some(thumb) = bar.thumb_rect(track, m) else { return };
+        let Some(thumb) = bar.thumb_rect(track, m) else {
+            return;
+        };
         let radius = SCROLLBAR_THICKNESS / 2.0;
         fill_rrect(scene, tf, with_alpha(c.surfaces.base, 0.55), track, radius);
         let col = if bar.is_active() {
@@ -11335,7 +13050,17 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, col, thumb, radius);
     }
 
-    fn draw_clip(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, clip: &Clip, lane: &Rect, kind: TrackKind, r: &Regions) {
+    fn draw_clip(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        clip: &Clip,
+        lane: &Rect,
+        kind: TrackKind,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         let cr = self.clip_rect(clip, lane, r);
         if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
@@ -11344,9 +13069,26 @@ impl VideoEditorApp {
         let base = clip_color(theme, clip.palette);
         let selected = self.selection.contains(clip.id);
         let hovered = self.hover_clip == Some(clip.id);
-        let body = if kind == TrackKind::Video { base } else { darken(base, 0.05) };
+        let body = if kind == TrackKind::Video {
+            base
+        } else {
+            darken(base, 0.05)
+        };
         let body = if hovered { lighten(body, 0.08) } else { body };
-        fill_rrect(scene, tf, with_alpha(body, if kind == TrackKind::Video { clip.opacity * 0.85 + 0.15 } else { 0.92 }), cr, 6.0);
+        fill_rrect(
+            scene,
+            tf,
+            with_alpha(
+                body,
+                if kind == TrackKind::Video {
+                    clip.opacity * 0.85 + 0.15
+                } else {
+                    0.92
+                },
+            ),
+            cr,
+            6.0,
+        );
         // header strip
         let strip = Rect::new(cr.x0, cr.y0, cr.x1, (cr.y0 + 18.0).min(cr.y1));
         fill_rrect(scene, tf, darken(base, 0.3), strip, 6.0);
@@ -11364,7 +13106,9 @@ impl VideoEditorApp {
                 let span = clip.out_point - clip.in_point;
                 for i in 0..n {
                     let bx = inner.x0 + 4.0 + i as f64 * (cell_w + 2.0);
-                    if bx + cell_w > inner.x1 { break; }
+                    if bx + cell_w > inner.x1 {
+                        break;
+                    }
                     let cell = Rect::new(bx, inner.y0 + 3.0, bx + cell_w, inner.y1 - 3.0);
                     let t = clip.in_point + ((i as f64 + 0.5) / n as f64) * span;
                     // `frame_at` already degrades exact → nearby-decoded →
@@ -11394,14 +13138,28 @@ impl VideoEditorApp {
                 }
             } else {
                 let color = lighten(base, 0.3);
-                let media_dur = self.project.media(clip.media).map(|m| m.duration).unwrap_or(0.0);
+                let media_dur = self
+                    .project
+                    .media(clip.media)
+                    .map(|m| m.duration)
+                    .unwrap_or(0.0);
                 // Only real peaks are drawn as a waveform. Every other state —
                 // still computing, never asked, or unreadable — draws the flat
                 // line, because none of them know what the audio looks like.
-                match (self.waveforms.state(clip.media), self.waveforms.peaks(clip.media)) {
+                match (
+                    self.waveforms.state(clip.media),
+                    self.waveforms.peaks(clip.media),
+                ) {
                     (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
-                        scene, tf, inner, peaks, clip.in_point, clip.out_point, media_dur,
-                        clip.volume, color,
+                        scene,
+                        tf,
+                        inner,
+                        peaks,
+                        clip.in_point,
+                        clip.out_point,
+                        media_dur,
+                        clip.volume,
+                        color,
                     ),
                     _ => draw_flat_signal(scene, tf, inner, color),
                 }
@@ -11429,7 +13187,11 @@ impl VideoEditorApp {
                 );
                 fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), pill, 4.0);
                 text(
-                    scene, tr, tf, msg, 10.0,
+                    scene,
+                    tr,
+                    tf,
+                    msg,
+                    10.0,
                     with_alpha(Color::WHITE, 0.95),
                     pill.x0 + 6.0,
                     pill.y0 + 2.0,
@@ -11437,13 +13199,19 @@ impl VideoEditorApp {
             }
         }
         // name label
-        let label = self.project.media(clip.media).map(|m| m.name.clone()).unwrap_or_default();
+        let label = self
+            .project
+            .media(clip.media)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
         // A re-timed clip carries a rate badge in the header's right end, so
         // the name has to elide before it rather than running underneath it.
         let badge_w = if clip.speed.is_normal() {
             0.0
         } else {
-            tr.measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold).0 as f64 + 18.0
+            tr.measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold)
+                .0 as f64
+                + 18.0
         };
         let avail = (cr.width() - 10.0 - badge_w).max(4.0) as f32;
         if cr.width() > 30.0 {
@@ -11452,12 +13220,28 @@ impl VideoEditorApp {
             // from the user's chosen label — so the text colour has to be
             // resolved against it rather than assumed white.
             let (_, name_col) = on_fill(theme, darken(base, 0.3));
-            text_w(scene, tr, tf, &shown, 11.0, name_col, cr.x0 + 5.0, cr.y0 + 3.0, TextWeight::Medium);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &shown,
+                11.0,
+                name_col,
+                cr.x0 + 5.0,
+                cr.y0 + 3.0,
+                TextWeight::Medium,
+            );
         }
         // transition marker at head
         if clip.transition != Transition::None && cr.width() > 16.0 {
             let mk = triangle_corner(cr.x0, cr.y0, 12.0);
-            scene.fill(Fill::NonZero, tf, with_alpha(on_fill(theme, base).1, 0.85), None, &mk);
+            scene.fill(
+                Fill::NonZero,
+                tf,
+                with_alpha(on_fill(theme, base).1, 0.85),
+                None,
+                &mk,
+            );
         }
         // A re-timed clip says its rate on its own body. Speed changes the
         // clip's *length*, so without a badge a 2x clip is indistinguishable
@@ -11465,14 +13249,26 @@ impl VideoEditorApp {
         if !clip.speed.is_normal() && cr.width() > 52.0 {
             let label = clip.speed.label();
             let (lw, _) = tr.measure_weighted(&label, 9.5, None, TextWeight::Bold);
-            let pill = Rect::new(cr.x1 - 8.0 - lw as f64 - 10.0, cr.y0 + 2.0, cr.x1 - 4.0, cr.y0 + 16.0);
+            let pill = Rect::new(
+                cr.x1 - 8.0 - lw as f64 - 10.0,
+                cr.y0 + 2.0,
+                cr.x1 - 4.0,
+                cr.y0 + 16.0,
+            );
             if pill.x0 > cr.x0 + 4.0 {
                 let bg = darken(base, 0.45);
                 fill_rrect(scene, tf, with_alpha(bg, 0.9), pill, 4.0);
                 let baseline = text_baseline(pill, 9.5, tr);
                 text_w(
-                    scene, tr, tf, &label, 9.5, on_fill(theme, bg).1,
-                    pill.x0 + 5.0, baseline, TextWeight::Bold,
+                    scene,
+                    tr,
+                    tf,
+                    &label,
+                    9.5,
+                    on_fill(theme, bg).1,
+                    pill.x0 + 5.0,
+                    baseline,
+                    TextWeight::Bold,
                 );
             }
         }
@@ -11489,8 +13285,14 @@ impl VideoEditorApp {
             let mark = on_fill(theme, base).1;
             let y = cr.y1 - 7.0;
             stroke_line(
-                scene, tf, with_alpha(darken(base, 0.45), 0.75),
-                (cr.x0 + 3.0).max(r.lanes.x0), y, (cr.x1 - 3.0).min(r.lanes.x1), y, 1.0,
+                scene,
+                tf,
+                with_alpha(darken(base, 0.45), 0.75),
+                (cr.x0 + 3.0).max(r.lanes.x0),
+                y,
+                (cr.x1 - 3.0).min(r.lanes.x1),
+                y,
+                1.0,
             );
             for t in key_times {
                 let x = self.time_to_x(t, &r.lanes);
@@ -11505,7 +13307,13 @@ impl VideoEditorApp {
                 d.line_to((x - s, y));
                 d.close_path();
                 scene.fill(Fill::NonZero, tf, with_alpha(mark, 0.95), None, &d);
-                scene.stroke(&Stroke::new(1.0), tf, with_alpha(darken(base, 0.5), 0.9), None, &d);
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    tf,
+                    with_alpha(darken(base, 0.5), 0.9),
+                    None,
+                    &d,
+                );
             }
         }
         // Selection. The primary (anchor) clip — the one the inspector edits —
@@ -11532,14 +13340,30 @@ impl VideoEditorApp {
     /// the product, so the only way to learn one was to be told. The sheet is
     /// also how a reader user learns the editor has shortcuts at all, which is
     /// why it is an accessibility affordance rather than a convenience.
-    fn draw_help_sheet(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, _r: &Regions) {
+    fn draw_help_sheet(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA), self.rect);
+        fill_rect(
+            scene,
+            tf,
+            with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA),
+            self.rect,
+        );
         // Two columns on anything wide enough, one on a narrow window, so the
         // sheet is readable rather than clipped at the phone-ish sizes the rest
         // of the editor already adapts to.
         let two_col = self.rect.width() >= 780.0;
-        let w = if two_col { 700.0 } else { (self.rect.width() - 48.0).max(280.0) };
+        let w = if two_col {
+            700.0
+        } else {
+            (self.rect.width() - 48.0).max(280.0)
+        };
         // Where the second column starts, and how tall the card has to be to
         // hold the taller of the two. Both are computed from the table rather
         // than fixed, because a fixed height and a fixed split silently *cut
@@ -11555,8 +13379,27 @@ impl VideoEditorApp {
         let card = Rect::from_center_size(self.rect.center(), (w, h));
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
         stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
-        text_w(scene, tr, tf, "Keyboard shortcuts", 18.0, c.text_primary, card.x0 + 24.0, card.y0 + 20.0, TextWeight::Bold);
-        text(scene, tr, tf, "Esc or ? to close", 12.0, c.text_dim, card.x0 + 24.0, card.y0 + 44.0);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "Keyboard shortcuts",
+            18.0,
+            c.text_primary,
+            card.x0 + 24.0,
+            card.y0 + 20.0,
+            TextWeight::Bold,
+        );
+        text(
+            scene,
+            tr,
+            tf,
+            "Esc or ? to close",
+            12.0,
+            c.text_dim,
+            card.x0 + 24.0,
+            card.y0 + 44.0,
+        );
 
         let col_w = if two_col { (w - 64.0) / 2.0 } else { w - 48.0 };
         let mut x = card.x0 + 24.0;
@@ -11567,14 +13410,43 @@ impl VideoEditorApp {
                 x = card.x0 + 24.0 + col_w + 16.0;
                 y = card.y0 + HELP_TOP;
             }
-            text_w(scene, tr, tf, group, 11.0, c.text_dim, x, y, TextWeight::Bold);
+            text_w(
+                scene,
+                tr,
+                tf,
+                group,
+                11.0,
+                c.text_dim,
+                x,
+                y,
+                TextWeight::Bold,
+            );
             y += 20.0;
             for (combo, what) in rows.iter() {
                 if y > bottom {
                     break;
                 }
-                text_w(scene, tr, tf, combo, 12.0, c.accent[6], x, y, TextWeight::Bold);
-                text(scene, tr, tf, what, 12.0, c.text_primary, x + 120.0_f64.min(col_w * 0.45), y);
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    combo,
+                    12.0,
+                    c.accent[6],
+                    x,
+                    y,
+                    TextWeight::Bold,
+                );
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    what,
+                    12.0,
+                    c.text_primary,
+                    x + 120.0_f64.min(col_w * 0.45),
+                    y,
+                );
                 y += 19.0;
             }
             y += 10.0;
@@ -11587,8 +13459,17 @@ impl VideoEditorApp {
     /// do it — the playhead could only be dragged or stepped. A value that
     /// cannot be read keeps the field open and says so, rather than closing and
     /// silently going nowhere.
-    fn draw_goto(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
-        let Some(entry) = self.goto_entry.as_ref() else { return };
+    fn draw_goto(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let Some(entry) = self.goto_entry.as_ref() else {
+            return;
+        };
         let c = &theme.tokens.colors;
         let w = 260.0_f64.min(self.rect.width() - 32.0);
         let card = Rect::from_center_size(
@@ -11599,15 +13480,46 @@ impl VideoEditorApp {
         stroke_rrect(
             scene,
             tf,
-            if self.goto_notice { c.semantic.danger } else { c.accent[6] },
+            if self.goto_notice {
+                c.semantic.danger
+            } else {
+                c.accent[6]
+            },
             card,
             12.0,
             1.5,
         );
-        text(scene, tr, tf, "Go to timecode", 11.0, c.text_dim, card.x0 + 16.0, card.y0 + 12.0);
-        let shown = if entry.is_empty() { "0:00" } else { entry.as_str() };
-        let col = if entry.is_empty() { c.text_dim } else { c.text_primary };
-        text_w(scene, tr, tf, shown, 20.0, col, card.x0 + 16.0, card.y0 + 32.0, TextWeight::Bold);
+        text(
+            scene,
+            tr,
+            tf,
+            "Go to timecode",
+            11.0,
+            c.text_dim,
+            card.x0 + 16.0,
+            card.y0 + 12.0,
+        );
+        let shown = if entry.is_empty() {
+            "0:00"
+        } else {
+            entry.as_str()
+        };
+        let col = if entry.is_empty() {
+            c.text_dim
+        } else {
+            c.text_primary
+        };
+        text_w(
+            scene,
+            tr,
+            tf,
+            shown,
+            20.0,
+            col,
+            card.x0 + 16.0,
+            card.y0 + 32.0,
+            TextWeight::Bold,
+        );
         // A caret, so an empty field reads as "type here" rather than as a
         // placeholder someone forgot to remove.
         let (tw, _) = tr.measure(shown, 20.0, None);
@@ -11616,7 +13528,12 @@ impl VideoEditorApp {
                 scene,
                 tf,
                 c.accent[6],
-                Rect::new(card.x0 + 18.0 + tw as f64, card.y0 + 32.0, card.x0 + 20.0 + tw as f64, card.y0 + 54.0),
+                Rect::new(
+                    card.x0 + 18.0 + tw as f64,
+                    card.y0 + 32.0,
+                    card.x0 + 20.0 + tw as f64,
+                    card.y0 + 54.0,
+                ),
             );
         }
         let hint = if self.goto_notice {
@@ -11624,41 +13541,128 @@ impl VideoEditorApp {
         } else {
             "Enter to jump, Esc to cancel"
         };
-        let hc = if self.goto_notice { c.semantic.danger } else { c.text_dim };
-        text(scene, tr, tf, hint, 10.0, hc, card.x0 + 16.0, card.y1 - 16.0);
+        let hc = if self.goto_notice {
+            c.semantic.danger
+        } else {
+            c.text_dim
+        };
+        text(
+            scene,
+            tr,
+            tf,
+            hint,
+            10.0,
+            hc,
+            card.x0 + 16.0,
+            card.y1 - 16.0,
+        );
     }
 
-    fn draw_export_modal(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_export_modal(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
         let c = &theme.tokens.colors;
         // Backdrop. `surfaces.overlay` is the opaque deep-menu surface — using
         // it here painted solid black and deleted the editor behind the dialog.
         // The scrim token carries the theme's hue; the strength is ours.
-        fill_rect(scene, tf, with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA), self.rect);
+        fill_rect(
+            scene,
+            tf,
+            with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA),
+            self.rect,
+        );
         let l = self.export_layout(r);
         let card = l.card;
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
         stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
         let x0 = card.x0 + 24.0;
-        text_w(scene, tr, tf, "Export Project", 18.0, c.text_primary, x0, card.y0 + 20.0, TextWeight::Bold);
-        text(scene, tr, tf, &self.export.suggested_filename(&self.project.name), 12.0, c.text_dim, x0, card.y0 + 44.0);
+        text_w(
+            scene,
+            tr,
+            tf,
+            "Export Project",
+            18.0,
+            c.text_primary,
+            x0,
+            card.y0 + 20.0,
+            TextWeight::Bold,
+        );
+        text(
+            scene,
+            tr,
+            tf,
+            &self.export.suggested_filename(&self.project.name),
+            12.0,
+            c.text_dim,
+            x0,
+            card.y0 + 44.0,
+        );
 
-        let seg_group = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, items: &[(String, Rect, bool)]| {
+        let seg_group = |scene: &mut Scene,
+                         tr: &mut TextRenderer,
+                         label: &str,
+                         items: &[(String, Rect, bool)]| {
             if let Some((_, first, _)) = items.first() {
-                text(scene, tr, tf, label, 11.0, c.text_dim, first.x0, first.y0 - 18.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    label,
+                    11.0,
+                    c.text_dim,
+                    first.x0,
+                    first.y0 - 18.0,
+                );
             }
             for (name, rect, on) in items {
                 let bg = if *on { c.accent[5] } else { c.neutral[3] };
                 fill_rrect(scene, tf, bg, *rect, 6.0);
-                let col = if *on { on_fill(theme, c.accent[5]).1 } else { c.text_dim };
+                let col = if *on {
+                    on_fill(theme, c.accent[5]).1
+                } else {
+                    c.text_dim
+                };
                 let (lw, _) = tr.measure(name, 12.0, None);
-                text(scene, tr, tf, name, 12.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    name,
+                    12.0,
+                    col,
+                    rect.center().x - f64::from(lw) / 2.0,
+                    rect.center().y - 7.0,
+                );
             }
         };
-        let res: Vec<_> = l.resolution.iter().map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution)).collect();
+        let res: Vec<_> = l
+            .resolution
+            .iter()
+            .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
+            .collect();
         seg_group(scene, tr, "RESOLUTION", &res);
-        let con: Vec<_> = l.container.iter().map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container)).collect();
+        let con: Vec<_> = l
+            .container
+            .iter()
+            .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
+            .collect();
         seg_group(scene, tr, "FORMAT", &con);
-        let fps: Vec<_> = l.fps.iter().map(|(v, r)| (format!("{} fps", v.label()), *r, *v == self.export.frame_rate)).collect();
+        let fps: Vec<_> = l
+            .fps
+            .iter()
+            .map(|(v, r)| {
+                (
+                    format!("{} fps", v.label()),
+                    *r,
+                    *v == self.export.frame_rate,
+                )
+            })
+            .collect();
         seg_group(scene, tr, "FRAME RATE", &fps);
 
         // Estimate + status.
@@ -11667,22 +13671,59 @@ impl VideoEditorApp {
         // from the rate it is given, which this dialog does not.
         let est = self.export.estimate_label(&self.project);
         let (w, h) = self.export.resolution.dims();
-        let info = format!("{est}   ·   {}×{}   ·   {}", w, h, timecode(self.project.duration(), self.project.fps));
+        let info = format!(
+            "{est}   ·   {}×{}   ·   {}",
+            w,
+            h,
+            timecode(self.project.duration(), self.project.fps)
+        );
         text(scene, tr, tf, &info, 12.0, c.text_dim, x0, card.y1 - 96.0);
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
                 let bar = Rect::new(x0, card.y1 - 74.0, card.x1 - 24.0, card.y1 - 66.0);
                 fill_rrect(scene, tf, c.neutral[3], bar, 4.0);
-                let f = Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * progress.max(0.04), bar.y1);
+                let f = Rect::new(
+                    bar.x0,
+                    bar.y0,
+                    bar.x0 + bar.width() * progress.max(0.04),
+                    bar.y1,
+                );
                 fill_rrect(scene, tf, c.accent[5], f, 4.0);
-                text(scene, tr, tf, "Rendering…", 10.5, c.text_dim, x0, card.y1 - 62.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    "Rendering…",
+                    10.5,
+                    c.text_dim,
+                    x0,
+                    card.y1 - 62.0,
+                );
             }
             ExportStatus::Done { path } => {
-                text(scene, tr, tf, &format!("Done: {path}"), 11.0, c.semantic.success, x0, card.y1 - 68.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &format!("Done: {path}"),
+                    11.0,
+                    c.semantic.success,
+                    x0,
+                    card.y1 - 68.0,
+                );
             }
             ExportStatus::Failed { reason } => {
                 // Danger, not warning: the export did not happen.
-                text(scene, tr, tf, reason, 10.5, c.semantic.danger, x0, card.y1 - 68.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    reason,
+                    10.5,
+                    c.semantic.danger,
+                    x0,
+                    card.y1 - 68.0,
+                );
             }
             ExportStatus::Idle => {
                 // One source of truth for the availability copy — the export
@@ -11701,18 +13742,29 @@ impl VideoEditorApp {
         // A render in flight turns Close into Cancel — the only way to stop it.
         let running = self.export_running();
         draw_button(
-            scene, tf, tr, theme, l.cancel,
+            scene,
+            tf,
+            tr,
+            theme,
+            l.cancel,
             if running { "Cancel" } else { "Close" },
-            false, l.cancel.contains(self.last_mouse),
+            false,
+            l.cancel.contains(self.last_mouse),
         );
         // Export is offered only when it can actually happen. The dialog used
         // to say "Export needs the GStreamer build" and put a bright, enabled
         // Export button directly underneath it.
         let can_export = self.export_is_offered();
         draw_button_enabled(
-            scene, tf, tr, theme, l.confirm,
+            scene,
+            tf,
+            tr,
+            theme,
+            l.confirm,
             if running { "Rendering…" } else { "Export" },
-            true, l.confirm.contains(self.last_mouse), can_export,
+            true,
+            l.confirm.contains(self.last_mouse),
+            can_export,
         );
     }
 }
@@ -11743,7 +13795,10 @@ fn text_baseline(rect: Rect, size: f32, tr: &mut TextRenderer) -> f64 {
 /// Top-left corner for `s` drawn centred both ways inside `rect`.
 fn text_centre(rect: Rect, s: &str, size: f32, weight: TextWeight, tr: &mut TextRenderer) -> Point {
     let (w, h) = tr.measure_weighted(s, size, None, weight);
-    Point::new(rect.center().x - w as f64 / 2.0, rect.center().y - h as f64 / 2.0)
+    Point::new(
+        rect.center().x - w as f64 / 2.0,
+        rect.center().y - h as f64 / 2.0,
+    )
 }
 
 /// Cell width and count for a filmstrip drawn across `inner`. Shared by the
@@ -11789,8 +13844,8 @@ fn import_summary(added: usize, total: usize) -> String {
 /// representative fills when it does not.
 fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas: Rect) {
     use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-    let iw = frame.width as f64;
-    let ih = frame.height as f64;
+    let iw = f64::from(frame.width);
+    let ih = f64::from(frame.height);
     if iw <= 0.0 || ih <= 0.0 || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
         return;
     }
@@ -11816,7 +13871,13 @@ fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas
 /// corners `radius`. Used for the bin swatch and timeline filmstrip cells; the
 /// same path shows the generated representative frame or (under decode) the real
 /// decoded frame.
-fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, dest: Rect, radius: f64) {
+fn blit_thumb(
+    scene: &mut Scene,
+    tf: Affine,
+    thumb: &crate::thumbnail::Thumb,
+    dest: Rect,
+    radius: f64,
+) {
     use vello::peniko::ImageBrush;
     let iw = thumb.width as f64;
     let ih = thumb.height as f64;
@@ -11835,7 +13896,13 @@ fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, de
     let dy = dest.y0 + (dest.height() - dh) * 0.5;
     let brush_tf = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
     let brush = ImageBrush::new(img);
-    scene.fill(Fill::NonZero, tf, &brush, Some(brush_tf), &RoundedRect::from_rect(dest, radius));
+    scene.fill(
+        Fill::NonZero,
+        tf,
+        &brush,
+        Some(brush_tf),
+        &RoundedRect::from_rect(dest, radius),
+    );
 }
 
 fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
@@ -11875,20 +13942,74 @@ fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f
 }
 
 fn fill_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
-    scene.fill(Fill::NonZero, tf, color, None, &RoundedRect::from_rect(rect, radius));
+    scene.fill(
+        Fill::NonZero,
+        tf,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
 }
 fn stroke_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64, w: f64) {
-    scene.stroke(&Stroke::new(w), tf, color, None, &RoundedRect::from_rect(rect, radius));
+    scene.stroke(
+        &Stroke::new(w),
+        tf,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
 }
-fn stroke_line(scene: &mut Scene, tf: Affine, color: Color, x0: f64, y0: f64, x1: f64, y1: f64, w: f64) {
-    scene.stroke(&Stroke::new(w), tf, color, None, &Line::new(Point::new(x0, y0), Point::new(x1, y1)));
+fn stroke_line(
+    scene: &mut Scene,
+    tf: Affine,
+    color: Color,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    w: f64,
+) {
+    scene.stroke(
+        &Stroke::new(w),
+        tf,
+        color,
+        None,
+        &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
+    );
 }
-fn text(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f32, color: Color, x: f64, y: f64) {
+fn text(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    tf: Affine,
+    s: &str,
+    size: f32,
+    color: Color,
+    x: f64,
+    y: f64,
+) {
     tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
 }
 #[allow(clippy::too_many_arguments)]
-fn text_w(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f32, color: Color, x: f64, y: f64, weight: TextWeight) {
-    tr.draw_text_weighted(scene, s, size, color, tf * Affine::translate((x, y)), None, weight);
+fn text_w(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    tf: Affine,
+    s: &str,
+    size: f32,
+    color: Color,
+    x: f64,
+    y: f64,
+    weight: TextWeight,
+) {
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        tf * Affine::translate((x, y)),
+        None,
+        weight,
+    );
 }
 
 /// A themed button face. Delegates to the toolkit's shared
@@ -11925,7 +14046,11 @@ fn draw_button_enabled(
 ) {
     use ui::widget::{Button, ButtonFace, ButtonStyle};
     let face = ButtonFace::new(rect, label)
-        .style(if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral })
+        .style(if primary {
+            ButtonStyle::Primary
+        } else {
+            ButtonStyle::Neutral
+        })
         .radius(7.0)
         .text_size(13.0)
         .hovered(hovered && enabled)
@@ -12057,7 +14182,14 @@ fn readout_fit(
 /// on the playhead is a filled accent diamond with a ring. A control that
 /// only changed hue would be unreadable to anyone who cannot separate those
 /// hues, and indistinguishable in a screenshot.
-fn draw_key_control(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, state: KeyState, hovered: bool) {
+fn draw_key_control(
+    scene: &mut Scene,
+    tf: Affine,
+    theme: &Theme,
+    rect: Rect,
+    state: KeyState,
+    hovered: bool,
+) {
     let c = &theme.tokens.colors;
     let ctr = rect.center();
     if hovered {
@@ -12078,7 +14210,13 @@ fn draw_key_control(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, st
         scene.fill(Fill::NonZero, tf, col, None, &d);
         // The ring says "the playhead is exactly here", which is what makes
         // this the state that edits a key rather than making one.
-        scene.stroke(&Stroke::new(1.0), tf, with_alpha(col, 0.5), None, &Circle::new(ctr, r + 3.0));
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            with_alpha(col, 0.5),
+            None,
+            &Circle::new(ctr, r + 3.0),
+        );
     } else {
         scene.stroke(&Stroke::new(1.4), tf, col, None, &d);
     }
@@ -12090,7 +14228,9 @@ fn draw_key_control(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, st
 /// handle the event itself. Kept out of the handler so the key contract is
 /// one readable thing that a test can drive directly.
 fn title_edit_verdict(event: &WindowEvent, modifiers: &winit::event::Modifiers) -> Option<bool> {
-    let WindowEvent::KeyboardInput { event: key, .. } = event else { return None };
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return None;
+    };
     if key.state != ElementState::Pressed {
         return None;
     }
@@ -12231,16 +14371,29 @@ fn rgb_to_color(c: Rgb) -> Color {
 }
 
 fn with_alpha(c: Color, a: f64) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), (a.clamp(0.0, 1.0) * 255.0).round() as u8)
+    Color::from_rgba8(
+        c.r(),
+        c.g(),
+        c.b(),
+        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
 }
 fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
-    (a as f64 + (b as f64 - a as f64) * t.clamp(0.0, 1.0)).round() as u8
+    (f64::from(a) + (f64::from(b) - f64::from(a)) * t.clamp(0.0, 1.0)).round() as u8
 }
 fn lighten(c: Color, t: f64) -> Color {
-    Color::from_rgb8(lerp_u8(c.r(), 255, t), lerp_u8(c.g(), 255, t), lerp_u8(c.b(), 255, t))
+    Color::from_rgb8(
+        lerp_u8(c.r(), 255, t),
+        lerp_u8(c.g(), 255, t),
+        lerp_u8(c.b(), 255, t),
+    )
 }
 fn darken(c: Color, t: f64) -> Color {
-    Color::from_rgb8(lerp_u8(c.r(), 0, t), lerp_u8(c.g(), 0, t), lerp_u8(c.b(), 0, t))
+    Color::from_rgb8(
+        lerp_u8(c.r(), 0, t),
+        lerp_u8(c.g(), 0, t),
+        lerp_u8(c.b(), 0, t),
+    )
 }
 
 /// Draw a real audio waveform from normalized `peaks` into `area`, mapping the
@@ -12272,8 +14425,13 @@ fn draw_waveform(
         let t = in_p + fx * (out_p - in_p);
         let frac = (t / dur).clamp(0.0, 1.0);
         let idx = ((frac * peaks.len() as f64) as usize).min(peaks.len() - 1);
-        let amp = (peaks[idx] as f64 * half * vscale).max(0.5);
-        fill_rect(scene, tf, color, Rect::new(x, midy - amp, x + 2.0, midy + amp));
+        let amp = (f64::from(peaks[idx]) * half * vscale).max(0.5);
+        fill_rect(
+            scene,
+            tf,
+            color,
+            Rect::new(x, midy - amp, x + 2.0, midy + amp),
+        );
     }
 }
 
@@ -12297,7 +14455,6 @@ fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color: Color) {
         Rect::new(area.x0 + 2.0, midy - 0.75, area.x1 - 2.0, midy + 0.75),
     );
 }
-
 
 /// Fit a w:h aspect rect centered inside `area`.
 fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
@@ -12447,8 +14604,14 @@ mod tests {
             .find(|(_, n)| n.value().map(|v| v.contains(" long, on ")).unwrap_or(false))
             .expect("a clip states its span, length and track");
         let v = sample.value().unwrap();
-        assert!(v.contains(" to "), "a clip states where it starts and ends: {v}");
-        assert!(sample.position_in_set().is_some(), "a clip knows its place in its track");
+        assert!(
+            v.contains(" to "),
+            "a clip states where it starts and ends: {v}"
+        );
+        assert!(
+            sample.position_in_set().is_some(),
+            "a clip knows its place in its track"
+        );
     }
 
     #[test]
@@ -12457,9 +14620,7 @@ mod tests {
         let toggles: Vec<_> = d
             .a11y_nodes()
             .into_iter()
-            .filter(|(_, n)| {
-                n.role() == ui::accesskit::Role::Button && n.toggled().is_some()
-            })
+            .filter(|(_, n)| n.role() == ui::accesskit::Role::Button && n.toggled().is_some())
             .collect();
         assert!(
             toggles.len() >= 6,
@@ -12479,8 +14640,11 @@ mod tests {
     fn an_assistive_technology_can_play_the_video() {
         // The proof that the tree is operable and not merely readable.
         let mut d = a11y_driver();
-        let play = d.a11y_node_named("Play").expect("the play button is addressable");
-        d.perform_a11y_action(play, &ui::a11y::Action::Activate).unwrap();
+        let play = d
+            .a11y_node_named("Play")
+            .expect("the play button is addressable");
+        d.perform_a11y_action(play, &ui::a11y::Action::Activate)
+            .unwrap();
         // Once playing, the same button renames itself so a reader hears what
         // pressing it will do NOW.
         assert!(
@@ -12505,7 +14669,8 @@ mod tests {
             .collect();
         let target = names.last().expect("clips exist").clone();
         let id = d.a11y_node_named(&target).unwrap();
-        d.perform_a11y_action(id, &ui::a11y::Action::Activate).unwrap();
+        d.perform_a11y_action(id, &ui::a11y::Action::Activate)
+            .unwrap();
 
         let (_, focused) = d.a11y_focus().expect("something is focused");
         assert_eq!(
@@ -12522,8 +14687,11 @@ mod tests {
             d.a11y_node_named("Rotation").is_some(),
             "an open Transform section lists its controls"
         );
-        let header = d.a11y_node_named("TRANSFORM").expect("the section header is addressable");
-        d.perform_a11y_action(header, &ui::a11y::Action::Activate).unwrap();
+        let header = d
+            .a11y_node_named("TRANSFORM")
+            .expect("the section header is addressable");
+        d.perform_a11y_action(header, &ui::a11y::Action::Activate)
+            .unwrap();
 
         assert!(
             d.a11y_node_named("Rotation").is_none(),
@@ -12535,7 +14703,11 @@ mod tests {
             .find(|(_, n)| n.label() == Some("TRANSFORM"))
             .map(|(_, n)| n)
             .unwrap();
-        assert_eq!(folded.is_expanded(), Some(false), "the header reports it is folded");
+        assert_eq!(
+            folded.is_expanded(),
+            Some(false),
+            "the header reports it is folded"
+        );
         let summary = folded.value().unwrap_or_default().to_string();
         assert!(
             summary.contains("scale") && summary.contains("rotation"),
@@ -12553,7 +14725,8 @@ mod tests {
             .and_then(|(_, n)| n.value().map(|v| v.to_string()))
             .expect("Rotation reports its value");
         let id = d.a11y_node_named("Rotation").unwrap();
-        d.perform_a11y_action(id, &ui::a11y::Action::Increment).unwrap();
+        d.perform_a11y_action(id, &ui::a11y::Action::Increment)
+            .unwrap();
         let after = d
             .a11y_nodes()
             .into_iter()
@@ -12596,13 +14769,15 @@ mod tests {
             .and_then(|(_, n)| n.value().map(|v| v.to_string()))
             .unwrap();
 
-        d.perform_a11y_action(first_id, &ui::a11y::Action::Activate).unwrap();
+        d.perform_a11y_action(first_id, &ui::a11y::Action::Activate)
+            .unwrap();
         d.key("Delete");
 
         let again = d
             .a11y_node_named(&last_name)
             .expect("the surviving clip is still addressable by name");
-        d.perform_a11y_action(again, &ui::a11y::Action::Activate).unwrap();
+        d.perform_a11y_action(again, &ui::a11y::Action::Activate)
+            .unwrap();
         let (_, focused) = d.a11y_focus().expect("something is focused");
         assert_eq!(
             focused.label(),
@@ -12635,18 +14810,22 @@ mod tests {
         // Every clip node, with the track its own spoken value names, so the
         // pair we pick is genuinely two clips on ONE track — which is the
         // arrangement where deleting the earlier one renumbers the later one.
-        let clip_nodes = |d: &ui::headless::Driver| -> Vec<(ui::accesskit::NodeId, String, String)> {
-            d.a11y_nodes()
-                .into_iter()
-                .filter_map(|(id, n)| {
-                    let v = n.value()?.to_string();
-                    (n.role() == ui::accesskit::Role::ListItem && v.contains(" long, on "))
-                        .then(|| (id, n.label().unwrap_or_default().to_string(), v))
-                })
-                .collect()
-        };
+        let clip_nodes =
+            |d: &ui::headless::Driver| -> Vec<(ui::accesskit::NodeId, String, String)> {
+                d.a11y_nodes()
+                    .into_iter()
+                    .filter_map(|(id, n)| {
+                        let v = n.value()?.to_string();
+                        (n.role() == ui::accesskit::Role::ListItem && v.contains(" long, on "))
+                            .then(|| (id, n.label().unwrap_or_default().to_string(), v))
+                    })
+                    .collect()
+            };
         let track_of = |value: &str| -> String {
-            value.rsplit_once(" long, on ").map(|(_, t)| t.to_string()).unwrap_or_default()
+            value
+                .rsplit_once(" long, on ")
+                .map(|(_, t)| t.to_string())
+                .unwrap_or_default()
         };
 
         let before = clip_nodes(&d);
@@ -12673,7 +14852,8 @@ mod tests {
         assert_ne!(earlier_name, held_name);
 
         // Delete the earlier clip. Every later clip on that track shifts up.
-        d.perform_a11y_action(earlier_id, &ui::a11y::Action::Activate).unwrap();
+        d.perform_a11y_action(earlier_id, &ui::a11y::Action::Activate)
+            .unwrap();
         d.key("Delete");
         let after = clip_nodes(&d);
         assert_eq!(
@@ -12718,7 +14898,10 @@ mod tests {
             .map(|(id, _)| id)
             .unwrap();
         let stale = ui::accesskit::NodeId(real.0 ^ 0x9e37_79b9);
-        assert!(d.perform_a11y_action(stale, &ui::a11y::Action::Activate).is_err());
+        assert!(
+            d.perform_a11y_action(stale, &ui::a11y::Action::Activate)
+                .is_err()
+        );
     }
 
     // ---- Keyboard navigation ---------------------------------------------
@@ -12794,7 +14977,10 @@ mod tests {
         let before = app.project.clip(id).unwrap().start;
         nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowRight), false);
         let after = app.project.clip(id).unwrap().start;
-        assert!(after > before, "Right still nudges the selection on the timeline");
+        assert!(
+            after > before,
+            "Right still nudges the selection on the timeline"
+        );
     }
 
     #[test]
@@ -12812,7 +14998,10 @@ mod tests {
             .filter(|t| !app.project.clips_on(t.id).is_empty())
             .map(|t| t.id)
             .collect();
-        assert!(populated.len() >= 2, "the sample project spans several tracks");
+        assert!(
+            populated.len() >= 2,
+            "the sample project spans several tracks"
+        );
         let first = app.project.clips_on(populated[0])[0].id;
         app.selection.select_only(first);
 
@@ -12822,7 +15011,10 @@ mod tests {
             .and_then(|id| app.project.clip(id))
             .map(|c| c.track)
             .unwrap();
-        assert_ne!(next_track, populated[0], "Down moves to a clip on another track");
+        assert_ne!(
+            next_track, populated[0],
+            "Down moves to a clip on another track"
+        );
 
         nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowUp), false);
         let back = app
@@ -12863,10 +15055,28 @@ mod tests {
     fn the_sheet_lists_every_shortcut_the_editor_answers_to() {
         // A sheet that quietly omits a binding is worse than none: it reads as
         // the complete list.
-        let flat: Vec<&str> = SHORTCUTS.iter().flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k)).collect();
+        let flat: Vec<&str> = SHORTCUTS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k))
+            .collect();
         for expected in [
-            "Space", "J / K / L", "I / O", "S", "M", "T", ", / .", "Z", "+ / -", "B",
-            "Ctrl+I", "Ctrl+D", "Ctrl+A", "Ctrl+Z", "Tab", "G", "?",
+            "Space",
+            "J / K / L",
+            "I / O",
+            "S",
+            "M",
+            "T",
+            ", / .",
+            "Z",
+            "+ / -",
+            "B",
+            "Ctrl+I",
+            "Ctrl+D",
+            "Ctrl+A",
+            "Ctrl+Z",
+            "Tab",
+            "G",
+            "?",
         ] {
             assert!(
                 flat.iter().any(|k| *k == expected),
@@ -12887,8 +15097,15 @@ mod tests {
         }
         assert_eq!(app.goto_entry.as_deref(), Some("1:30"));
         nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
-        assert!((app.playhead - 90.0).abs() < 1e-6, "landed at {}", app.playhead);
-        assert!(app.goto_entry.is_none(), "the field closes once it has jumped");
+        assert!(
+            (app.playhead - 90.0).abs() < 1e-6,
+            "landed at {}",
+            app.playhead
+        );
+        assert!(
+            app.goto_entry.is_none(),
+            "the field closes once it has jumped"
+        );
     }
 
     #[test]
@@ -12920,7 +15137,11 @@ mod tests {
         }
         assert_eq!(app.project.clips.len(), clips, "no clip was split");
         assert_eq!(app.project.markers.len(), markers, "no marker was dropped");
-        assert_eq!(app.goto_entry.as_deref(), Some(""), "and no letters entered the field");
+        assert_eq!(
+            app.goto_entry.as_deref(),
+            Some(""),
+            "and no letters entered the field"
+        );
     }
 
     #[test]
@@ -12964,9 +15185,18 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.project.clips.is_empty(), "no fabricated clips on the live path");
-        assert!(app.project.media.is_empty(), "no fabricated media on the live path");
-        assert!(app.selected().is_none(), "nothing selected in a blank project");
+        assert!(
+            app.project.clips.is_empty(),
+            "no fabricated clips on the live path"
+        );
+        assert!(
+            app.project.media.is_empty(),
+            "no fabricated media on the live path"
+        );
+        assert!(
+            app.selected().is_none(),
+            "nothing selected in a blank project"
+        );
     }
 
     #[test]
@@ -12976,8 +15206,14 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(!app.project.clips.is_empty(), "demo build seeds sample clips");
-        assert!(!app.project.media.is_empty(), "demo build seeds sample media");
+        assert!(
+            !app.project.clips.is_empty(),
+            "demo build seeds sample clips"
+        );
+        assert!(
+            !app.project.media.is_empty(),
+            "demo build seeds sample media"
+        );
     }
 
     /// Write a real PNG (crafted header, known dimensions) to a temp file so a
@@ -12990,8 +15226,11 @@ mod tests {
         png.extend_from_slice(&w.to_be_bytes());
         png.extend_from_slice(&h.to_be_bytes());
         png.extend_from_slice(&[8, 2, 0, 0, 0]);
-        let f = std::env::temp_dir()
-            .join(format!("qos-ve-import-app-{}-{}.png", std::process::id(), w));
+        let f = std::env::temp_dir().join(format!(
+            "qos-ve-import-app-{}-{}.png",
+            std::process::id(),
+            w
+        ));
         std::fs::write(&f, &png).unwrap();
         f
     }
@@ -13005,8 +15244,7 @@ mod tests {
         // this test deletes the file, which would pull it out from under any
         // sibling test that happened to pick the same size.
         let src = write_real_png(640, 360);
-        let f = std::env::temp_dir()
-            .join(format!("qos-ve-absent-{}.png", std::process::id()));
+        let f = std::env::temp_dir().join(format!("qos-ve-absent-{}.png", std::process::id()));
         std::fs::copy(&src, &f).unwrap();
         let mut app = VideoEditorApp::new_import(vec![f.clone()]);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -13058,8 +15296,7 @@ mod tests {
     #[test]
     fn a_loaded_document_says_unknown_rather_than_inventing_zeroes() {
         // Real bytes on disk that are not media — the actual failure mode.
-        let f = std::env::temp_dir()
-            .join(format!("qos-ve-notmedia-{}.mp4", std::process::id()));
+        let f = std::env::temp_dir().join(format!("qos-ve-notmedia-{}.mp4", std::process::id()));
         std::fs::write(&f, b"<!doctype html><html><body>not a video</body></html>").unwrap();
 
         // Seed the document directly: this is a LOAD, not an import.
@@ -13149,7 +15386,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
 
-        assert_eq!(app.project.media.len(), 1, "the picked file is now in the bin");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "the picked file is now in the bin"
+        );
         let m = &app.project.media[0];
         assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
         assert_eq!(m.kind, MediaKind::Image);
@@ -13158,7 +15399,10 @@ mod tests {
             (m.duration - crate::probe::DEFAULT_IMAGE_DURATION).abs() < 1e-9,
             "a still gets the default timeline duration",
         );
-        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+        assert!(
+            m.hydration.is_local(),
+            "the imported bytes are local/decodable"
+        );
         // It replicated through the document (a peer would load it).
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.media.len(), 1);
@@ -13177,25 +15421,44 @@ mod tests {
         let f = write_real_png(480, 270);
         let mut app = VideoEditorApp::new();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![f.clone()])));
+        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![
+            f.clone(),
+        ])));
 
         let mut doc = AutoCommit::new();
-        assert!(app.project.media.is_empty(), "blank project starts with no media");
+        assert!(
+            app.project.media.is_empty(),
+            "blank project starts with no media"
+        );
         app.sync(&mut doc, &automerge::ROOT);
 
         // The in-memory projection gained the clip with real, probed metadata…
-        assert_eq!(app.project.media.len(), 1, "the picked file landed in the bin");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "the picked file landed in the bin"
+        );
         let m = &app.project.media[0];
         assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
         assert_eq!((m.width, m.height), (480, 270), "real probed dimensions");
-        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+        assert!(
+            m.hydration.is_local(),
+            "the imported bytes are local/decodable"
+        );
 
         // …and, crucially, so did the CRDT the action wrote to: the import is a
         // document mutation dispatched through the action model, not a local-only
         // edit, so a second replica loading these bytes sees the same clip.
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.media.len(), 1, "import routed through the doc action");
-        assert_eq!(reloaded.media[0].width, 480, "real probed metadata replicated");
+        assert_eq!(
+            reloaded.media.len(),
+            1,
+            "import routed through the doc action"
+        );
+        assert_eq!(
+            reloaded.media[0].width, 480,
+            "real probed metadata replicated"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -13210,17 +15473,26 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(app.project.media.len(), 1);
-        assert_eq!(app.project.tracks.len(), 1, "a track was created for the clip");
+        assert_eq!(
+            app.project.tracks.len(),
+            1,
+            "a track was created for the clip"
+        );
         assert_eq!(app.project.clips.len(), 1, "the clip is on the timeline");
         let clip = &app.project.clips[0];
         assert!(
             app.playhead > clip.start && app.playhead < clip.end(),
             "playhead {} parked inside the clip [{}, {}]",
-            app.playhead, clip.start, clip.end(),
+            app.playhead,
+            clip.start,
+            clip.end(),
         );
         // The preview composites the placed clip (not Empty) at the playhead.
         assert!(
-            matches!(preview::composite(&app.project, app.playhead), CompositedFrame::Clip { .. }),
+            matches!(
+                preview::composite(&app.project, app.playhead),
+                CompositedFrame::Clip { .. }
+            ),
             "the preview has a clip to render",
         );
         std::fs::remove_file(&f).ok();
@@ -13292,11 +15564,20 @@ mod tests {
         app.advance_flap(); // first frame settles the bin to the width default
         assert_eq!(app.bin_layout(), SplitLayout::Overlay);
         let r = app.regions();
-        assert!(r.bin_overlay, "narrow window collapses the bin to an overlay");
-        assert!(r.menu_btn.width() > 0.0, "narrow window shows the hamburger");
+        assert!(
+            r.bin_overlay,
+            "narrow window collapses the bin to an overlay"
+        );
+        assert!(
+            r.menu_btn.width() > 0.0,
+            "narrow window shows the hamburger"
+        );
         // Closed by default: the bin sits fully off the left edge and the
         // preview reclaims the full editor width.
-        assert!(r.bin.x1 <= app.rect.x0 + 0.5, "closed overlay bin is off-screen left");
+        assert!(
+            r.bin.x1 <= app.rect.x0 + 0.5,
+            "closed overlay bin is off-screen left"
+        );
         assert!(
             (r.preview.x0 - app.rect.x0).abs() < 0.5,
             "narrow preview reclaims the bin's column"
@@ -13312,9 +15593,15 @@ mod tests {
         app.bin_flap.snap(true); // settle the slide deterministically
         let r = app.regions();
         assert!(app.bin_flap.is_open(SplitLayout::Overlay));
-        assert!(r.scrim.width() > 0.0, "open overlay bin dims the editor with a scrim");
+        assert!(
+            r.scrim.width() > 0.0,
+            "open overlay bin dims the editor with a scrim"
+        );
         // Fully revealed: the bin sits flush at the left edge.
-        assert!((r.bin.x0 - app.rect.x0).abs() < 0.5, "revealed bin is flush left");
+        assert!(
+            (r.bin.x0 - app.rect.x0).abs() < 0.5,
+            "revealed bin is flush left"
+        );
     }
 
     #[test]
@@ -13330,7 +15617,10 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.advance_flap();
         assert_eq!(app.bin_layout(), SplitLayout::Docked);
-        assert!(app.bin_flap.is_open(SplitLayout::Docked), "widening re-docks the open bin");
+        assert!(
+            app.bin_flap.is_open(SplitLayout::Docked),
+            "widening re-docks the open bin"
+        );
     }
 
     // ---- shortcut / edit-path tests --------------------------------------
@@ -13372,8 +15662,7 @@ mod tests {
     /// A scratch directory of this test's own, so nothing here can collide
     /// with another test's file or leave one behind.
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir()
-            .join(format!("qos-ve-app-{}-{tag}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("qos-ve-app-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -13385,7 +15674,12 @@ mod tests {
         mods: ModifiersState,
     ) -> bool {
         let r = app.regions();
-        app.handle_key(&WKey::Character(ch.into()), &winit::event::Modifiers::from(mods), doc, &r)
+        app.handle_key(
+            &WKey::Character(ch.into()),
+            &winit::event::Modifiers::from(mods),
+            doc,
+            &r,
+        )
     }
 
     #[test]
@@ -13437,7 +15731,12 @@ mod tests {
             ..Default::default()
         });
         let tid = uuid::Uuid::new_v4();
-        other.tracks.push(crate::model::Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        other.tracks.push(crate::model::Track {
+            id: tid,
+            name: "V1".into(),
+            index: 1,
+            ..Default::default()
+        });
         other.clips.push(Clip {
             id: uuid::Uuid::new_v4(),
             track: tid,
@@ -13453,9 +15752,17 @@ mod tests {
         app.load_project_file(&mut doc, small.clone());
 
         assert_eq!(app.project.clips.len(), 1, "only the opened project's clip");
-        assert_eq!(app.project.media.len(), 1, "only the opened project's source");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "only the opened project's source"
+        );
         assert_eq!(app.project.name, "Small");
-        assert_eq!(VideoDoc::load_project(&doc).clips.len(), 1, "and in the document too");
+        assert_eq!(
+            VideoDoc::load_project(&doc).clips.len(),
+            1,
+            "and in the document too"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -13490,7 +15797,10 @@ mod tests {
         let dir = scratch("dirty");
         let path = dir.join("D.qvp");
         let (mut app, mut doc) = app_and_doc();
-        assert!(app.project_is_dirty(), "a project with clips and no file is unsaved");
+        assert!(
+            app.project_is_dirty(),
+            "a project with clips and no file is unsaved"
+        );
 
         app.write_project_to(&mut doc, path.clone());
         assert!(!app.project_is_dirty(), "saving settles it");
@@ -13505,7 +15815,10 @@ mod tests {
         app.playhead = 12.0;
         key_press(&mut app, &mut doc, "s", false);
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.project_is_dirty(), "the document moved on, so the badge is back");
+        assert!(
+            app.project_is_dirty(),
+            "the document moved on, so the badge is back"
+        );
         assert!(app.project_status_line().contains("unsaved changes"));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -13535,7 +15848,10 @@ mod tests {
         // And the file really holds the edit, not the state before it.
         assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(!app.project_is_dirty(), "and it stays settled across the frame");
+        assert!(
+            !app.project_is_dirty(),
+            "and it stays settled across the frame"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -13611,12 +15927,21 @@ mod tests {
         app.resolve_pending_open(&mut doc, DiscardChoice::Save);
         // Save on a never-saved project opens the chooser; the destination
         // arriving is what completes both halves.
-        assert!(app.save_then_open.is_some(), "the open is remembered across the save");
+        assert!(
+            app.save_then_open.is_some(),
+            "the open is remembered across the save"
+        );
         app.write_project_to(&mut doc, kept.clone());
 
-        assert!(kept.is_file(), "the project that was at risk is now on disk");
+        assert!(
+            kept.is_file(),
+            "the project that was at risk is now on disk"
+        );
         assert_eq!(crate::project_file::load(&kept).unwrap().clips.len(), 7);
-        assert_eq!(app.project.name, "Target", "and the open it interrupted went through");
+        assert_eq!(
+            app.project.name, "Target",
+            "and the open it interrupted went through"
+        );
         assert_eq!(app.project_path.as_ref(), Some(&target));
         assert!(app.save_then_open.is_none() && app.pending_open.is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -13629,11 +15954,20 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let impossible = PathBuf::from("/definitely/not/a/directory/x.qvp");
         app.write_project_to(&mut doc, impossible.clone());
-        assert_eq!(app.project_path, None, "the project did not adopt a path it has not got");
+        assert_eq!(
+            app.project_path, None,
+            "the project did not adopt a path it has not got"
+        );
         assert!(app.project_is_dirty(), "and it is still unsaved");
-        let notice = app.project_notice.clone().expect("the failure is on screen");
+        let notice = app
+            .project_notice
+            .clone()
+            .expect("the failure is on screen");
         assert!(notice.starts_with("Could not save"), "{notice}");
-        assert!(app.project_notice_is_error(), "and it is tinted as a failure");
+        assert!(
+            app.project_notice_is_error(),
+            "and it is tinted as a failure"
+        );
     }
 
     #[test]
@@ -13646,7 +15980,11 @@ mod tests {
         app.project_path = Some(dir.join("Cur.qvp"));
 
         app.load_project_file(&mut doc, junk);
-        assert_eq!(app.project.clips.len(), before, "the open project is untouched");
+        assert_eq!(
+            app.project.clips.len(),
+            before,
+            "the open project is untouched"
+        );
         let notice = app.project_notice.clone().expect("it says what went wrong");
         assert_eq!(notice, "Not a video project file");
         assert!(app.project_notice_is_error());
@@ -13678,13 +16016,19 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         app.project_path = Some(dir.join("Cur.qvp"));
         app.load_project_file(&mut doc, path);
-        let notice = app.project_notice.clone().expect("the open reported something");
+        let notice = app
+            .project_notice
+            .clone()
+            .expect("the open reported something");
         assert!(notice.contains("Opened Moved"), "{notice}");
         assert!(
             notice.contains(MEDIA_NOT_LOCAL) && notice.contains("Drone.mov"),
             "it names the shared vocabulary and the source: {notice}",
         );
-        assert!(!app.project_notice_is_error(), "an absent source is not a failed open");
+        assert!(
+            !app.project_notice_is_error(),
+            "an absent source is not a failed open"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -13694,8 +16038,16 @@ mod tests {
         // person has used, so an editor with projects has to honour that —
         // and import has to remain reachable, not merely relocated.
         let (mut app, mut doc) = app_and_doc();
-        assert!(key_press_mods(&mut app, &mut doc, "o", ModifiersState::CONTROL));
-        assert!(app.project_rx.is_some(), "Ctrl+O opened the project chooser");
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "o",
+            ModifiersState::CONTROL
+        ));
+        assert!(
+            app.project_rx.is_some(),
+            "Ctrl+O opened the project chooser"
+        );
         assert!(app.import_rx.is_none(), "and not the media importer");
 
         let (mut app, mut doc) = app_and_doc();
@@ -13724,7 +16076,12 @@ mod tests {
 
         // Ctrl+S on a project that has a file writes straight back to it: no
         // chooser, no second copy the user did not ask for.
-        assert!(key_press_mods(&mut app, &mut doc, "s", ModifiersState::CONTROL));
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "s",
+            ModifiersState::CONTROL
+        ));
         assert!(app.project_rx.is_none(), "Ctrl+S did not open a chooser");
         assert!(!app.project_is_dirty(), "it saved");
         assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
@@ -13776,12 +16133,24 @@ mod tests {
         app.recents = vec![a.clone(), b.clone()];
         app.open_project_menu(Point::new(10.0, 50.0));
 
-        let labels: Vec<String> =
-            app.project_menu.items().iter().map(|i| i.label().unwrap_or("—").to_string()).collect();
-        assert_eq!(labels.len(), 6, "three actions, a separator, two recents: {labels:?}");
+        let labels: Vec<String> = app
+            .project_menu
+            .items()
+            .iter()
+            .map(|i| i.label().unwrap_or("—").to_string())
+            .collect();
+        assert_eq!(
+            labels.len(),
+            6,
+            "three actions, a separator, two recents: {labels:?}"
+        );
         assert_eq!(app.project_menu_intent(0), Some(ProjectMenuItem::Open));
         assert_eq!(app.project_menu_intent(2), Some(ProjectMenuItem::SaveAs));
-        assert_eq!(app.project_menu_intent(3), None, "the separator does nothing");
+        assert_eq!(
+            app.project_menu_intent(3),
+            None,
+            "the separator does nothing"
+        );
         assert_eq!(app.project_menu_intent(4), Some(ProjectMenuItem::Recent(a)));
         assert_eq!(app.project_menu_intent(5), Some(ProjectMenuItem::Recent(b)));
     }
@@ -13804,9 +16173,14 @@ mod tests {
             "and nothing overlapping Import",
         );
         let node = app.a11y_project();
-        assert!(!node.state.focusable, "a control that is not painted is not a stop");
         assert!(
-            node.description.as_deref().is_some_and(|d| d.contains("Ctrl+O")),
+            !node.state.focusable,
+            "a control that is not painted is not a stop"
+        );
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|d| d.contains("Ctrl+O")),
             "the reader is pointed at the keys instead: {:?}",
             node.description,
         );
@@ -13821,12 +16195,20 @@ mod tests {
         assert!(app.project_is_dirty());
         let node = app.a11y_project();
         assert_eq!(node.description.as_deref(), Some(PROJECT_UNSAVED));
-        assert!(node.value.as_deref().is_some_and(|v| v.contains("not saved to a file yet")));
+        assert!(
+            node.value
+                .as_deref()
+                .is_some_and(|v| v.contains("not saved to a file yet"))
+        );
 
         app.write_project_to(&mut doc, dir.join("A.qvp"));
         let node = app.a11y_project();
         assert_eq!(node.description, None, "saved: no unsaved claim");
-        assert!(node.value.as_deref().is_some_and(|v| v.contains("saved at")));
+        assert!(
+            node.value
+                .as_deref()
+                .is_some_and(|v| v.contains("saved at"))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -13855,10 +16237,15 @@ mod tests {
         let dir = scratch("portal");
         let path = dir.join("Portal.qvp");
         let (mut app, mut doc) = app_and_doc();
-        app.project_rx =
-            Some(portal::inject_project_for_test(portal::ProjectOutcome::Save(path.clone())));
+        app.project_rx = Some(portal::inject_project_for_test(
+            portal::ProjectOutcome::Save(path.clone()),
+        ));
         app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.project_path.as_ref(), Some(&path), "the save went where it was told");
+        assert_eq!(
+            app.project_path.as_ref(),
+            Some(&path),
+            "the save went where it was told"
+        );
         assert!(path.is_file());
 
         // And an Open arriving the same way loads it back.
@@ -13866,8 +16253,9 @@ mod tests {
         let mut fresh = VideoEditorApp::new();
         fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         fresh.sync(&mut fresh_doc, &automerge::ROOT);
-        fresh.project_rx =
-            Some(portal::inject_project_for_test(portal::ProjectOutcome::Open(path.clone())));
+        fresh.project_rx = Some(portal::inject_project_for_test(
+            portal::ProjectOutcome::Open(path.clone()),
+        ));
         fresh.sync(&mut fresh_doc, &automerge::ROOT);
         assert_eq!(fresh.project.clips.len(), 7, "the whole timeline arrived");
         std::fs::remove_dir_all(&dir).ok();
@@ -13878,11 +16266,18 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         app.save_then_open = Some(PathBuf::from("/p/Q.qvp"));
         app.project_notice = Some("Choose where to save…".into());
-        app.project_rx =
-            Some(portal::inject_project_for_test(portal::ProjectOutcome::Cancelled));
+        app.project_rx = Some(portal::inject_project_for_test(
+            portal::ProjectOutcome::Cancelled,
+        ));
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.project_notice.is_none(), "no stale 'choosing…' line left behind");
-        assert!(app.save_then_open.is_none(), "and the open it was gating is dropped");
+        assert!(
+            app.project_notice.is_none(),
+            "no stale 'choosing…' line left behind"
+        );
+        assert!(
+            app.save_then_open.is_none(),
+            "and the open it was gating is dropped"
+        );
     }
 
     #[test]
@@ -13894,13 +16289,14 @@ mod tests {
         // is missing shortcuts is worse than no sheet, because it is the one
         // place a user goes to find out what exists.
         let (split, content_h) = help_columns(true);
-        assert!(split > 0 && split < SHORTCUTS.len(), "both columns carry groups");
+        assert!(
+            split > 0 && split < SHORTCUTS.len(),
+            "both columns carry groups"
+        );
 
         // The card is sized from that, and every row must land above its foot.
         let card_h = HELP_TOP + content_h + 16.0;
-        for (col, groups) in
-            [(0, &SHORTCUTS[..split]), (1, &SHORTCUTS[split..])]
-        {
+        for (col, groups) in [(0, &SHORTCUTS[..split]), (1, &SHORTCUTS[split..])] {
             let mut y = HELP_TOP;
             for (group, rows) in groups {
                 y += HELP_HEADER_H;
@@ -13933,7 +16329,9 @@ mod tests {
         // Nothing is exported that the sheet does not paint.
         for (group, group_rows) in SHORTCUTS {
             assert!(
-                node.children.iter().any(|n| n.name.as_deref() == Some(group)),
+                node.children
+                    .iter()
+                    .any(|n| n.name.as_deref() == Some(group)),
                 "the {group} group reaches a reader",
             );
             for (combo, what) in group_rows.iter() {
@@ -13957,7 +16355,11 @@ mod tests {
         assert!(key_press(&mut app, &mut doc, "s", false), "S handled");
         // The new clip is in the *document*, not just the in-memory mirror.
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.clips.len(), before + 1, "split wrote a clip to the CRDT");
+        assert_eq!(
+            reloaded.clips.len(),
+            before + 1,
+            "split wrote a clip to the CRDT"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "split dispatched an action, arming one undo boundary",
@@ -13989,7 +16391,11 @@ mod tests {
         app.playhead = 30.0;
         assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V handled");
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.clips.len(), before + 1, "paste added a clip to the CRDT");
+        assert_eq!(
+            reloaded.clips.len(),
+            before + 1,
+            "paste added a clip to the CRDT"
+        );
         // The pasted clip is the new selection and sits at the playhead.
         let pasted = app.selected().unwrap();
         assert_ne!(pasted, id);
@@ -14006,7 +16412,10 @@ mod tests {
         app.playhead = 15.0;
         assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
         let reloaded = VideoDoc::load_project(&doc);
-        assert!((reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6, "O trims the tail to the playhead");
+        assert!(
+            (reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6,
+            "O trims the tail to the playhead"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "setting the out-point dispatched an action, arming one undo boundary",
@@ -14035,16 +16444,27 @@ mod tests {
         let track = v1_first.track;
         let first = v1_first.id;
         // Record the next clip on the same track and its start.
-        let next = app.project.clips_on(track).into_iter().find(|c| c.id != first).map(|c| (c.id, c.start));
+        let next = app
+            .project
+            .clips_on(track)
+            .into_iter()
+            .find(|c| c.id != first)
+            .map(|c| (c.id, c.start));
         app.selection.select_only(first);
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
         // Shift+Delete ripples.
         app.handle_key(&WKey::Named(NamedKey::Delete), &mods, &mut doc, &r);
         let reloaded = VideoDoc::load_project(&doc);
-        assert!(reloaded.clip(first).is_none(), "rippled clip removed from CRDT");
+        assert!(
+            reloaded.clip(first).is_none(),
+            "rippled clip removed from CRDT"
+        );
         if let Some((nid, old_start)) = next {
-            assert!(reloaded.clip(nid).unwrap().start < old_start, "later clip shifted left in the CRDT");
+            assert!(
+                reloaded.clip(nid).unwrap().start < old_start,
+                "later clip shifted left in the CRDT"
+            );
         }
     }
 
@@ -14059,7 +16479,10 @@ mod tests {
         let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
         app.handle_key(&WKey::Named(NamedKey::ArrowRight), &shift, &mut doc, &r);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().start;
-        assert!((after - before - 1.0).abs() < 1e-6, "Shift+Right nudges +1s in the CRDT");
+        assert!(
+            (after - before - 1.0).abs() < 1e-6,
+            "Shift+Right nudges +1s in the CRDT"
+        );
     }
 
     // ---- click-driven tests: drive the REAL handle_event pipeline --------
@@ -14078,63 +16501,99 @@ mod tests {
         let mut focus = None;
         let taffy = TaffyTree::<()>::new();
         let node = NodeId::new(0);
-        app.handle_event(&ev, 1.0, &winit::event::Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            &ev,
+            1.0,
+            &winit::event::Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
-        dispatch(app, doc, WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::CursorMoved {
+                device_id: fake_device_id(),
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            },
+        );
     }
     fn press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-        dispatch(app, doc, WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
     }
     fn release(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-        dispatch(app, doc, WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
     }
-    /// A full click at (x,y): move (sets last_mouse, as the live loop does),
+    /// A full click at (x,y): move (sets `last_mouse`, as the live loop does),
     /// then press.
     fn click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
         move_to(app, doc, x, y);
         press(app, doc);
     }
     fn right_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-        dispatch(app, doc, WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        });
+        dispatch(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            },
+        );
     }
     fn char_ev(s: &str) -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = WKey::Character(s.into());
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(s.into());
-        WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
     fn named_ev(k: NamedKey) -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = WKey::Named(k);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     /// Click the open context-menu row whose label is `label`, through the
@@ -14147,7 +16606,12 @@ mod tests {
             .iter()
             .position(|i| i.label() == Some(label))
             .unwrap_or_else(|| {
-                let have: Vec<&str> = app.bin_menu.items().iter().filter_map(|i| i.label()).collect();
+                let have: Vec<&str> = app
+                    .bin_menu
+                    .items()
+                    .iter()
+                    .filter_map(|i| i.label())
+                    .collect();
                 panic!("no menu row labelled {label:?}; menu has {have:?}")
             });
         let menu = app.bin_menu.get_rect();
@@ -14278,7 +16742,12 @@ mod tests {
         let (mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
-            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .find(|(m, _)| {
+                app.project
+                    .media(*m)
+                    .map(|mm| mm.kind.is_visual())
+                    .unwrap_or(false)
+            })
             .expect("a visual bin item");
         let name = app.bin_name_rect(row);
         // First click on the row, as a user browsing the bin would.
@@ -14294,13 +16763,19 @@ mod tests {
         // Press on the name band and drag to a lane.
         move_to(&mut app, &mut doc, name.center().x, name.center().y);
         press(&mut app, &mut doc);
-        assert!(app.bin_drag.is_some(), "the press armed a drag, not just a rename");
+        assert!(
+            app.bin_drag.is_some(),
+            "the press armed a drag, not just a rename"
+        );
         move_to(&mut app, &mut doc, lane.x0 + 220.0, lane.center().y);
         assert!(
             matches!(app.bin_drag, Some(BinDrag { active: true, .. })),
             "moving past the threshold promoted the drag",
         );
-        assert!(app.pending_rename.is_none(), "becoming a drag cancelled the rename intent");
+        assert!(
+            app.pending_rename.is_none(),
+            "becoming a drag cancelled the rename intent"
+        );
         release(&mut app, &mut doc);
         assert!(app.bin_rename.is_none(), "no rename field opened");
         let reloaded = VideoDoc::load_project(&doc);
@@ -14310,7 +16785,9 @@ mod tests {
             "the drag placed a clip on the drop lane in the CRDT",
         );
         assert_eq!(
-            app.selected().and_then(|id| reloaded.clip(id)).map(|c| c.media),
+            app.selected()
+                .and_then(|id| reloaded.clip(id))
+                .map(|c| c.media),
             Some(mid),
             "the placed clip references the dragged media",
         );
@@ -14332,7 +16809,11 @@ mod tests {
         // A second press that never moves.
         move_to(&mut app, &mut doc, name.center().x, name.center().y);
         press(&mut app, &mut doc);
-        assert_eq!(app.pending_rename, Some(mid), "the press armed a rename intent");
+        assert_eq!(
+            app.pending_rename,
+            Some(mid),
+            "the press armed a rename intent"
+        );
         release(&mut app, &mut doc);
         assert!(
             matches!(app.bin_rename.as_ref().map(|(m, _)| *m), Some(m) if m == mid),
@@ -14350,22 +16831,45 @@ mod tests {
         let (mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
-            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .find(|(m, _)| {
+                app.project
+                    .media(*m)
+                    .map(|mm| mm.kind.is_visual())
+                    .unwrap_or(false)
+            })
             .expect("a visual bin item");
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let track_end = app.project.clips_on(tid).last().map(|c| c.end()).unwrap_or(0.0);
-        assert!(track_end > 1.0, "the fixture track has content to append past");
+        let track_end = app
+            .project
+            .clips_on(tid)
+            .last()
+            .map(|c| c.end())
+            .unwrap_or(0.0);
+        assert!(
+            track_end > 1.0,
+            "the fixture track has content to append past"
+        );
         let before = app.project.clips_on(tid).len();
         // Straight down from the bin row into the gutter, level with the lane.
         let gutter_x = r.gutter.x0 + r.gutter.width() / 2.0;
-        assert!(gutter_x < r.lanes.x0, "the drop really is left of the lane area");
+        assert!(
+            gutter_x < r.lanes.x0,
+            "the drop really is left of the lane area"
+        );
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
         press(&mut app, &mut doc);
         move_to(&mut app, &mut doc, gutter_x, lane.center().y);
         release(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.clips_on(tid).len(), before + 1, "a clip was placed");
-        let placed = app.selected().and_then(|id| reloaded.clip(id)).expect("the placed clip");
+        assert_eq!(
+            reloaded.clips_on(tid).len(),
+            before + 1,
+            "a clip was placed"
+        );
+        let placed = app
+            .selected()
+            .and_then(|id| reloaded.clip(id))
+            .expect("the placed clip");
         assert_eq!(placed.media, mid);
         assert!(
             placed.start < 0.5,
@@ -14382,7 +16886,11 @@ mod tests {
         move_to(&mut app, &mut doc, 640.0, 700.0); // over the lanes
         assert_eq!(app.scroll, 0.0, "the timeline opens at the start");
         wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::SHIFT);
-        assert!(app.scroll > 0.0, "shift+wheel scrolled right, got {}", app.scroll);
+        assert!(
+            app.scroll > 0.0,
+            "shift+wheel scrolled right, got {}",
+            app.scroll
+        );
         let r = app.regions();
         let max = app.max_scroll(&r);
         // Far past the end: it stops at the content bound rather than running off.
@@ -14417,7 +16925,12 @@ mod tests {
         // everything past the viewport permanently out of reach.
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
-        let last_end = app.project.clips.iter().map(|c| c.end()).fold(0.0_f64, f64::max);
+        let last_end = app
+            .project
+            .clips
+            .iter()
+            .map(|c| c.end())
+            .fold(0.0_f64, f64::max);
         move_to(&mut app, &mut doc, r.lanes.x0 + 10.0, r.lanes.center().y);
         // Zoom right in, so the tail is far off-screen.
         for _ in 0..12 {
@@ -14442,12 +16955,17 @@ mod tests {
         // Zoom in so the content overflows and a bar appears.
         app.zoom = 160.0;
         let r = app.regions();
-        let track = app.hscroll_track(&r).expect("an overflowing timeline shows a bar");
+        let track = app
+            .hscroll_track(&r)
+            .expect("an overflowing timeline shows a bar");
         let thumb = app
             .hbar
             .thumb_rect(track, app.h_metrics(&r))
             .expect("a thumb inside the track");
-        assert!(thumb.width() < track.width(), "the thumb is shorter than its track");
+        assert!(
+            thumb.width() < track.width(),
+            "the thumb is shorter than its track"
+        );
         // Grab the thumb and drag it right.
         move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
         press(&mut app, &mut doc);
@@ -14455,12 +16973,20 @@ mod tests {
             matches!(app.drag, Some(Drag::Scrollbar(ScrollPane::Timeline))),
             "pressing the thumb began a bar drag",
         );
-        move_to(&mut app, &mut doc, thumb.center().x + 120.0, thumb.center().y);
+        move_to(
+            &mut app,
+            &mut doc,
+            thumb.center().x + 120.0,
+            thumb.center().y,
+        );
         assert!(app.scroll > 0.0, "dragging the thumb scrolled the timeline");
         let dragged = app.scroll;
         release(&mut app, &mut doc);
         assert!(app.drag.is_none(), "release ended the bar drag");
-        assert_eq!(app.scroll, dragged, "and left the scroll where the drag put it");
+        assert_eq!(
+            app.scroll, dragged,
+            "and left the scroll where the drag put it"
+        );
     }
 
     #[test]
@@ -14500,7 +17026,12 @@ mod tests {
         let (t1, _lane1) = lane_of(&app, &r, TrackKind::Video, 1);
         assert_ne!(t0, t1, "the fixture has two video tracks");
         // Grab a clip on the lower video lane and drag it up to the other one.
-        let cid = app.project.clips_on(t1).first().map(|c| c.id).expect("a clip on V-lower");
+        let cid = app
+            .project
+            .clips_on(t1)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip on V-lower");
         let cr = clip_screen_rect(&app, &r, cid);
         move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
         press(&mut app, &mut doc);
@@ -14524,7 +17055,12 @@ mod tests {
         let r = app.regions();
         let (vid, _vlane) = lane_of(&app, &r, TrackKind::Video, 0);
         let (_aid, alane) = lane_of(&app, &r, TrackKind::Audio, 0);
-        let cid = app.project.clips_on(vid).first().map(|c| c.id).expect("a video clip");
+        let cid = app
+            .project
+            .clips_on(vid)
+            .first()
+            .map(|c| c.id)
+            .expect("a video clip");
         let cr = clip_screen_rect(&app, &r, cid);
         move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
         press(&mut app, &mut doc);
@@ -14547,7 +17083,10 @@ mod tests {
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
         let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
         let pill = app.lock_pill_rect(header);
-        assert!(header.contains(pill.center()), "the lock pill sits inside the track header");
+        assert!(
+            header.contains(pill.center()),
+            "the lock pill sits inside the track header"
+        );
         assert!(
             pill.x1 <= app.mute_pill_rect(header).x0,
             "the lock pill sits clear of the mute pill",
@@ -14555,17 +17094,32 @@ mod tests {
         // Click the pill through the real press path.
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         assert!(
-            VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
+            VideoDoc::load_project(&doc)
+                .track(tid)
+                .map(|t| t.locked)
+                .unwrap_or(false),
             "the pill wrote the lock to the CRDT",
         );
         // A press on a clip of that track selects it but arms no edit drag.
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip on the track");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip on the track");
         let start_before = app.project.clip(cid).unwrap().start;
         let cr = clip_screen_rect(&app, &r, cid);
         move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
         press(&mut app, &mut doc);
-        assert_eq!(app.selected(), Some(cid), "a locked clip can still be selected");
-        assert!(app.drag.is_none(), "but no move/trim drag begins on a locked track");
+        assert_eq!(
+            app.selected(),
+            Some(cid),
+            "a locked clip can still be selected"
+        );
+        assert!(
+            app.drag.is_none(),
+            "but no move/trim drag begins on a locked track"
+        );
         move_to(&mut app, &mut doc, cr.center().x + 90.0, cr.center().y);
         release(&mut app, &mut doc);
         assert_eq!(
@@ -14605,7 +17159,12 @@ mod tests {
         let (_mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
-            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .find(|(m, _)| {
+                app.project
+                    .media(*m)
+                    .map(|mm| mm.kind.is_visual())
+                    .unwrap_or(false)
+            })
             .expect("a visual bin item");
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
         press(&mut app, &mut doc);
@@ -14617,7 +17176,10 @@ mod tests {
             before,
             "nothing was added to the locked track",
         );
-        let placed = app.selected().and_then(|id| reloaded.clip(id)).expect("it landed somewhere");
+        let placed = app
+            .selected()
+            .and_then(|id| reloaded.clip(id))
+            .expect("it landed somewhere");
         assert_ne!(placed.track, tid, "and it went to a track that accepts it");
     }
 
@@ -14628,8 +17190,13 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let ids: Vec<ClipId> =
-            app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        let ids: Vec<ClipId> = app
+            .project
+            .clips_on(tid)
+            .iter()
+            .take(2)
+            .map(|c| c.id)
+            .collect();
         assert_eq!(ids.len(), 2, "the fixture track has two clips to select");
         let a = clip_screen_rect(&app, &r, ids[0]);
         click(&mut app, &mut doc, a.center().x, a.center().y);
@@ -14639,13 +17206,19 @@ mod tests {
         shift_click(&mut app, &mut doc, b.center().x, b.center().y);
         assert_eq!(app.selection.len(), 2, "shift-click extended the selection");
         assert!(app.selection.contains(ids[0]) && app.selection.contains(ids[1]));
-        assert_eq!(app.selected(), Some(ids[1]), "the shift-clicked clip is the new anchor");
+        assert_eq!(
+            app.selected(),
+            Some(ids[1]),
+            "the shift-clicked clip is the new anchor"
+        );
         // Delete both, and prove it was one undo boundary.
         let _ = app.actions.take_committed();
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
         let reloaded = VideoDoc::load_project(&doc);
-        assert!(reloaded.clip(ids[0]).is_none() && reloaded.clip(ids[1]).is_none(),
-            "both selected clips were deleted from the CRDT");
+        assert!(
+            reloaded.clip(ids[0]).is_none() && reloaded.clip(ids[1]).is_none(),
+            "both selected clips were deleted from the CRDT"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "the multi-clip delete armed an undo boundary",
@@ -14661,15 +17234,29 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let ids: Vec<ClipId> = app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        let ids: Vec<ClipId> = app
+            .project
+            .clips_on(tid)
+            .iter()
+            .take(2)
+            .map(|c| c.id)
+            .collect();
         let a = clip_screen_rect(&app, &r, ids[0]);
         click(&mut app, &mut doc, a.center().x, a.center().y);
         release(&mut app, &mut doc);
         let b = clip_screen_rect(&app, &r, ids[1]);
         shift_click(&mut app, &mut doc, b.center().x, b.center().y);
         shift_click(&mut app, &mut doc, b.center().x, b.center().y);
-        assert_eq!(app.selection.len(), 1, "the second shift-click deselected it");
-        assert_eq!(app.selected(), Some(ids[0]), "the anchor fell back to what is left");
+        assert_eq!(
+            app.selection.len(),
+            1,
+            "the second shift-click deselected it"
+        );
+        assert_eq!(
+            app.selected(),
+            Some(ids[0]),
+            "the anchor fell back to what is left"
+        );
     }
 
     #[test]
@@ -14685,12 +17272,21 @@ mod tests {
         let start_x = (last.x1 + 30.0).min(r.lanes.x1 - 4.0);
         move_to(&mut app, &mut doc, start_x, lane.center().y);
         press(&mut app, &mut doc);
-        assert!(matches!(app.drag, Some(Drag::Marquee { .. })), "a press on empty lane space armed a band");
+        assert!(
+            matches!(app.drag, Some(Drag::Marquee { .. })),
+            "a press on empty lane space armed a band"
+        );
         move_to(&mut app, &mut doc, r.lanes.x0 + 2.0, lane.center().y);
-        assert!(app.marquee.is_some(), "moving past the threshold opened the band");
+        assert!(
+            app.marquee.is_some(),
+            "moving past the threshold opened the band"
+        );
         release(&mut app, &mut doc);
         for id in &clips {
-            assert!(app.selection.contains(*id), "the band selected every clip it crossed");
+            assert!(
+                app.selection.contains(*id),
+                "the band selected every clip it crossed"
+            );
         }
     }
 
@@ -14705,7 +17301,10 @@ mod tests {
         move_to(&mut app, &mut doc, x, lane.center().y);
         press(&mut app, &mut doc);
         release(&mut app, &mut doc);
-        assert!(app.selection.is_empty(), "clicking empty space cleared the selection");
+        assert!(
+            app.selection.is_empty(),
+            "clicking empty space cleared the selection"
+        );
         assert!(
             (app.playhead - expected).abs() < 0.2,
             "and scrubbed the playhead there ({} vs {expected})",
@@ -14718,8 +17317,17 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let ids: Vec<ClipId> = app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
-        let before: Vec<f64> = ids.iter().map(|id| app.project.clip(*id).unwrap().start).collect();
+        let ids: Vec<ClipId> = app
+            .project
+            .clips_on(tid)
+            .iter()
+            .take(2)
+            .map(|c| c.id)
+            .collect();
+        let before: Vec<f64> = ids
+            .iter()
+            .map(|id| app.project.clip(*id).unwrap().start)
+            .collect();
         let a = clip_screen_rect(&app, &r, ids[0]);
         click(&mut app, &mut doc, a.center().x, a.center().y);
         release(&mut app, &mut doc);
@@ -14729,11 +17337,18 @@ mod tests {
         let a = clip_screen_rect(&app, &r, ids[0]);
         move_to(&mut app, &mut doc, a.center().x, a.center().y);
         press(&mut app, &mut doc);
-        assert_eq!(app.selection.len(), 2, "pressing inside a multi-selection keeps it");
+        assert_eq!(
+            app.selection.len(),
+            2,
+            "pressing inside a multi-selection keeps it"
+        );
         move_to(&mut app, &mut doc, a.center().x + 60.0, a.center().y);
         release(&mut app, &mut doc);
         let reloaded = VideoDoc::load_project(&doc);
-        let after: Vec<f64> = ids.iter().map(|id| reloaded.clip(*id).unwrap().start).collect();
+        let after: Vec<f64> = ids
+            .iter()
+            .map(|id| reloaded.clip(*id).unwrap().start)
+            .collect();
         let d0 = after[0] - before[0];
         let d1 = after[1] - before[1];
         assert!(d0 > 0.1, "the grabbed clip moved right ({d0})");
@@ -14750,19 +17365,33 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip");
         let media = app.project.clip(cid).unwrap().media;
         let cr = clip_screen_rect(&app, &r, cid);
         click(&mut app, &mut doc, cr.center().x, cr.center().y);
         release(&mut app, &mut doc);
         let before = VideoDoc::load_project(&doc).clips.len();
-        assert!(key_press(&mut app, &mut doc, "x", true), "Ctrl+X is handled");
+        assert!(
+            key_press(&mut app, &mut doc, "x", true),
+            "Ctrl+X is handled"
+        );
         let cut = VideoDoc::load_project(&doc);
-        assert!(cut.clip(cid).is_none(), "Ctrl+X removed the clip from the CRDT");
+        assert!(
+            cut.clip(cid).is_none(),
+            "Ctrl+X removed the clip from the CRDT"
+        );
         assert_eq!(cut.clips.len(), before - 1);
         // And it is on the clipboard, so Ctrl+V brings it back.
         app.playhead = 1.0;
-        assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V is handled");
+        assert!(
+            key_press(&mut app, &mut doc, "v", true),
+            "Ctrl+V is handled"
+        );
         let pasted = VideoDoc::load_project(&doc);
         assert_eq!(pasted.clips.len(), before, "the cut clip pasted back");
         let new_id = app.selected().expect("the pasted clip is selected");
@@ -14774,7 +17403,13 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let ids: Vec<ClipId> = app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        let ids: Vec<ClipId> = app
+            .project
+            .clips_on(tid)
+            .iter()
+            .take(2)
+            .map(|c| c.id)
+            .collect();
         let a = clip_screen_rect(&app, &r, ids[0]);
         click(&mut app, &mut doc, a.center().x, a.center().y);
         release(&mut app, &mut doc);
@@ -14782,7 +17417,10 @@ mod tests {
         shift_click(&mut app, &mut doc, b.center().x, b.center().y);
         let before = VideoDoc::load_project(&doc).clips_on(tid).len();
         let _ = app.actions.take_committed();
-        assert!(key_press(&mut app, &mut doc, "d", true), "Ctrl+D is handled");
+        assert!(
+            key_press(&mut app, &mut doc, "d", true),
+            "Ctrl+D is handled"
+        );
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
             reloaded.clips_on(tid).len(),
@@ -14793,7 +17431,10 @@ mod tests {
         for id in app.selection.ids() {
             assert!(!ids.contains(id), "the selection moved to the new clips");
         }
-        assert!(app.actions.take_committed().is_some(), "one undo boundary for the duplicate");
+        assert!(
+            app.actions.take_committed().is_some(),
+            "one undo boundary for the duplicate"
+        );
         assert!(app.actions.take_committed().is_none(), "and only one");
     }
 
@@ -14802,13 +17443,25 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip");
         let cr = clip_screen_rect(&app, &r, cid);
         move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
         right_press(&mut app, &mut doc);
-        assert!(app.bin_menu.is_open(), "right-clicking a clip opens a context menu");
+        assert!(
+            app.bin_menu.is_open(),
+            "right-clicking a clip opens a context menu"
+        );
         assert!(matches!(app.menu_target, Some(MenuTarget::Clip(c)) if c == cid));
-        assert_eq!(app.selected(), Some(cid), "and re-targets the selection at it");
+        assert_eq!(
+            app.selected(),
+            Some(cid),
+            "and re-targets the selection at it"
+        );
         let before = VideoDoc::load_project(&doc).clips_on(tid).len();
         click_menu_item(&mut app, &mut doc, "Duplicate");
         assert_eq!(
@@ -14830,7 +17483,10 @@ mod tests {
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
         click_menu_item(&mut app, &mut doc, "Lock track");
         assert!(
-            VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
+            VideoDoc::load_project(&doc)
+                .track(tid)
+                .map(|t| t.locked)
+                .unwrap_or(false),
             "the menu entry locked the track in the CRDT",
         );
     }
@@ -14871,21 +17527,40 @@ mod tests {
         assert_eq!(app.cursor_shape(row.center()), Some(CursorIcon::Grab));
         // A clip body grabs; its edges resize.
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip");
         let cr = clip_screen_rect(&app, &r, cid);
         assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::Grab));
-        assert_eq!(app.cursor_shape(Point::new(cr.x0, cr.center().y)), Some(CursorIcon::EwResize));
+        assert_eq!(
+            app.cursor_shape(Point::new(cr.x0, cr.center().y)),
+            Some(CursorIcon::EwResize)
+        );
         // Empty lane space is where a marquee starts.
         assert_eq!(
             app.cursor_shape(Point::new(r.lanes.x1 - 4.0, cr.center().y)),
             Some(CursorIcon::Crosshair),
         );
         // The ruler scrubs.
-        assert_eq!(app.cursor_shape(r.ruler.center()), Some(CursorIcon::ColResize));
+        assert_eq!(
+            app.cursor_shape(r.ruler.center()),
+            Some(CursorIcon::ColResize)
+        );
         // Buttons are buttons.
-        assert_eq!(app.cursor_shape(r.export_btn.center()), Some(CursorIcon::Pointer));
+        assert_eq!(
+            app.cursor_shape(r.export_btn.center()),
+            Some(CursorIcon::Pointer)
+        );
         // A locked track refuses, and says so.
-        let lane = app.lane_rects(&r).into_iter().find(|(t, _, _)| *t == tid).unwrap().2;
+        let lane = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(t, _, _)| *t == tid)
+            .unwrap()
+            .2;
         let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
         let pill = app.lock_pill_rect(header);
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
@@ -14954,7 +17629,11 @@ mod tests {
             let r = app.regions();
             let scrub = app.scrubber_rect(&r);
             if !app.has_scrubber(&r) {
-                assert_eq!(scrub, Rect::ZERO, "a transport with no room draws no scrubber");
+                assert_eq!(
+                    scrub,
+                    Rect::ZERO,
+                    "a transport with no room draws no scrubber"
+                );
                 continue;
             }
             assert!(
@@ -15029,7 +17708,10 @@ mod tests {
                 matches!(app.export_status, ExportStatus::Idle),
                 "a refused Export must not move the status",
             );
-            assert!(!app.export_running(), "a refused Export must not start a job");
+            assert!(
+                !app.export_running(),
+                "a refused Export must not start a job"
+            );
         }
     }
 
@@ -15076,8 +17758,10 @@ mod tests {
             );
             for (name, btn) in [("cancel", l.cancel), ("confirm", l.confirm)] {
                 assert!(
-                    btn.x0 >= app.rect.x0 && btn.x1 <= app.rect.x1
-                        && btn.y0 >= app.rect.y0 && btn.y1 <= app.rect.y1,
+                    btn.x0 >= app.rect.x0
+                        && btn.x1 <= app.rect.x1
+                        && btn.y0 >= app.rect.y0
+                        && btn.y1 <= app.rect.y1,
                     "the {name} button is on screen at {w}x{h}: {btn:?}",
                 );
             }
@@ -15133,7 +17817,13 @@ mod tests {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         app.rect = Rect::new(0.0, 0.0, w as f64, h as f64);
-        app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &PresenceCtx::empty());
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
         ui::offscreen::OffscreenRenderer::new(w, h).render_rgba(&scene)
     }
 
@@ -15231,7 +17921,9 @@ mod tests {
     /// entirely, which is a worse trade than hiding two buttons.
     #[test]
     fn a_narrow_transport_gives_up_the_history_buttons_before_the_timecode() {
-        for w in [420.0_f64, 500.0, 640.0, 760.0, 900.0, 1100.0, 1280.0, 1920.0] {
+        for w in [
+            420.0_f64, 500.0, 640.0, 760.0, 900.0, 1100.0, 1280.0, 1920.0,
+        ] {
             let mut app = VideoEditorApp::new_demo();
             app.rect = Rect::new(0.0, 0.0, w, 800.0);
             let r = app.regions();
@@ -15265,7 +17957,12 @@ mod tests {
     /// left the transport ~200px and clipped its fifth button.
     #[test]
     fn a_narrow_window_collapses_the_inspector_and_gives_the_transport_its_width_back() {
-        for (w, h) in [(420.0_f64, 560.0_f64), (500.0, 640.0), (620.0, 700.0), (720.0, 820.0)] {
+        for (w, h) in [
+            (420.0_f64, 560.0_f64),
+            (500.0, 640.0),
+            (620.0, 700.0),
+            (720.0, 820.0),
+        ] {
             let (mut app, _doc) = app_sized(w, h);
             app.flap_settled = true;
             app.inspector_flap.snap(false);
@@ -15282,7 +17979,8 @@ mod tests {
                 assert!(
                     rect.x1 <= r.transport.x1,
                     "{w}x{h}: a transport button is cut off at {} (pane ends {})",
-                    rect.x1, r.transport.x1,
+                    rect.x1,
+                    r.transport.x1,
                 );
             }
         }
@@ -15304,7 +18002,10 @@ mod tests {
         app.flap_settled = true;
         app.inspector_flap.snap(false);
         let r = app.regions();
-        assert!(r.inspector_btn.width() > 0.0, "a collapsed inspector offers a toggle");
+        assert!(
+            r.inspector_btn.width() > 0.0,
+            "a collapsed inspector offers a toggle"
+        );
         assert!(!app.inspector_is_visible(&r));
         // Press the toggle: it opens.
         app.last_mouse = r.inspector_btn.center();
@@ -15354,13 +18055,14 @@ mod tests {
         // it, which is far brighter than anything the picture itself holds.
         let mut whites = 0;
         let (x0, y0) = (corner.x0 as u32, corner.y0 as u32);
-        let (x1, y1) = ((corner.x1 as u32).min(w as u32), (corner.y1 as u32).min(h as u32));
+        let (x1, y1) = (
+            (corner.x1 as u32).min(w as u32),
+            (corner.y1 as u32).min(h as u32),
+        );
         for y in y0..y1 {
             for x in x0..x1 {
                 let i = ((y * w as u32 + x) * 4) as usize;
-                if i + 2 < px.len()
-                    && px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200
-                {
+                if i + 2 < px.len() && px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200 {
                     whites += 1;
                 }
             }
@@ -15393,9 +18095,8 @@ mod tests {
                 // Sample the editor strictly to the right of the bin flap, so
                 // what we measure is the region the scrim covers and the bin
                 // does not.
-                let right = |rect: Rect| {
-                    Rect::new(rect.x0.max(r.bin.x1 + 4.0), rect.y0, rect.x1, rect.y1)
-                };
+                let right =
+                    |rect: Rect| Rect::new(rect.x0.max(r.bin.x1 + 4.0), rect.y0, rect.x1, rect.y1);
                 for (name, rect) in [
                     ("preview", right(r.preview)),
                     ("inspector", right(r.inspector)),
@@ -15425,20 +18126,33 @@ mod tests {
         // Select a video clip and give it enough effects to overflow the pane.
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip");
         app.selection.select_only(cid);
         for k in EffectKind::ALL {
             app.add_effect_to_selected(&mut doc, k);
         }
         render(&mut app);
         let r = app.regions();
-        assert!(app.inspector_max_scroll(&r) > 0.5, "the inspector content overflows");
-        let track = app.inspector_scroll_track(&r).expect("an overflowing pane shows a bar");
+        assert!(
+            app.inspector_max_scroll(&r) > 0.5,
+            "the inspector content overflows"
+        );
+        let track = app
+            .inspector_scroll_track(&r)
+            .expect("an overflowing pane shows a bar");
         let thumb = app
             .inspector_bar
             .thumb_rect(track, app.inspector_metrics(&r))
             .expect("a thumb");
-        assert!(thumb.height() < track.height(), "the thumb is shorter than its track");
+        assert!(
+            thumb.height() < track.height(),
+            "the thumb is shorter than its track"
+        );
         // Grab it and drag down.
         move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
         press(&mut app, &mut doc);
@@ -15446,8 +18160,16 @@ mod tests {
             matches!(app.drag, Some(Drag::Scrollbar(ScrollPane::Inspector))),
             "pressing the inspector thumb began a bar drag",
         );
-        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y + 400.0);
-        assert!(app.inspector_scroll > 0.5, "dragging scrolled the inspector");
+        move_to(
+            &mut app,
+            &mut doc,
+            thumb.center().x,
+            thumb.center().y + 400.0,
+        );
+        assert!(
+            app.inspector_scroll > 0.5,
+            "dragging scrolled the inspector"
+        );
         release(&mut app, &mut doc);
         // Scrolled to the end, the Add-effect button is inside the pane.
         app.inspector_scroll = app.inspector_max_scroll(&r);
@@ -15466,7 +18188,12 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip");
         app.selection.select_only(cid);
         for k in EffectKind::ALL {
             app.add_effect_to_selected(&mut doc, k);
@@ -15499,10 +18226,16 @@ mod tests {
         }
         render(&mut app);
         let r = app.regions();
-        assert!(app.bin_max_scroll(&r) > 0.5, "the bin list overflows its pane");
+        assert!(
+            app.bin_max_scroll(&r) > 0.5,
+            "the bin list overflows its pane"
+        );
         let last = *app.bin_order().last().expect("a last row");
         let row_of = |app: &VideoEditorApp, r: &Regions, mid: MediaId| {
-            app.bin_item_rects(r).into_iter().find(|(m, _)| *m == mid).map(|(_, rect)| rect)
+            app.bin_item_rects(r)
+                .into_iter()
+                .find(|(m, _)| *m == mid)
+                .map(|(_, rect)| rect)
         };
         let before = row_of(&app, &r, last).expect("the last row has a rect");
         assert!(
@@ -15515,7 +18248,10 @@ mod tests {
         for _ in 0..40 {
             wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::empty());
         }
-        assert_eq!(app.zoom, zoom, "a wheel over the bin does not zoom the timeline");
+        assert_eq!(
+            app.zoom, zoom,
+            "a wheel over the bin does not zoom the timeline"
+        );
         assert!(app.bin_scroll > 0.0, "it scrolls the bin instead");
         let after = row_of(&app, &r, last).expect("the last row still has a rect");
         assert!(
@@ -15528,7 +18264,11 @@ mod tests {
         move_to(&mut app, &mut doc, after.center().x, after.center().y);
         press(&mut app, &mut doc);
         release(&mut app, &mut doc);
-        assert_eq!(app.selected_media, Some(last), "the scrolled-to row selects on click");
+        assert_eq!(
+            app.selected_media,
+            Some(last),
+            "the scrolled-to row selects on click"
+        );
     }
 
     #[test]
@@ -15541,13 +18281,26 @@ mod tests {
         }
         render(&mut app);
         let r = app.regions();
-        let track = app.bin_scroll_track(&r).expect("an overflowing bin shows a bar");
-        let thumb = app.bin_bar.thumb_rect(track, app.bin_metrics(&r)).expect("a thumb");
+        let track = app
+            .bin_scroll_track(&r)
+            .expect("an overflowing bin shows a bar");
+        let thumb = app
+            .bin_bar
+            .thumb_rect(track, app.bin_metrics(&r))
+            .expect("a thumb");
         move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
         press(&mut app, &mut doc);
         assert!(matches!(app.drag, Some(Drag::Scrollbar(ScrollPane::Bin))));
-        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y + 300.0);
-        assert!(app.bin_scroll > 0.0, "dragging the bin thumb scrolled the list");
+        move_to(
+            &mut app,
+            &mut doc,
+            thumb.center().x,
+            thumb.center().y + 300.0,
+        );
+        assert!(
+            app.bin_scroll > 0.0,
+            "dragging the bin thumb scrolled the list"
+        );
         release(&mut app, &mut doc);
     }
 
@@ -15603,7 +18356,10 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 0, "the fixture actually has visible video cells to check");
+        assert!(
+            checked > 0,
+            "the fixture actually has visible video cells to check"
+        );
     }
 
     #[test]
@@ -15614,7 +18370,10 @@ mod tests {
         for (w, h) in [(60.0, 20.0), (300.0, 44.0), (1200.0, 60.0)] {
             let inner = Rect::new(0.0, 0.0, w, h);
             let (cell_w, n) = filmstrip_cells(inner);
-            assert!(cell_w >= 24.0 && cell_w <= 56.0, "cell width stays in range");
+            assert!(
+                cell_w >= 24.0 && cell_w <= 56.0,
+                "cell width stays in range"
+            );
             assert!(n >= 1, "there is always at least one cell");
             assert!(
                 (n as f64) * (cell_w + 2.0) <= w + cell_w + 2.0,
@@ -15632,7 +18391,10 @@ mod tests {
         std::fs::write(&path, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
         let before = app.project.media.len();
         assert!(!app.import_one(&mut doc, &path), "an HTML page is refused");
-        let notice = app.import_notice.clone().expect("a refusal explains itself");
+        let notice = app
+            .import_notice
+            .clone()
+            .expect("a refusal explains itself");
         assert!(
             notice.contains("not-a-video.mp4"),
             "the notice names the file: {notice}",
@@ -15641,7 +18403,11 @@ mod tests {
             notice.contains("not a media file"),
             "and carries the probe's own reason: {notice}",
         );
-        assert_eq!(app.project.media.len(), before, "nothing was added to the bin");
+        assert_eq!(
+            app.project.media.len(),
+            before,
+            "nothing was added to the bin"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -15659,8 +18425,14 @@ mod tests {
             .iter()
             .find(|m| m.name == want)
             .expect("the imported still is in the bin");
-        assert_eq!(added.fps, 0.0, "an unknown frame rate stays 0, not an invented 30");
-        assert_eq!(added.width, 24, "and the real dimensions came from the file");
+        assert_eq!(
+            added.fps, 0.0,
+            "an unknown frame rate stays 0, not an invented 30"
+        );
+        assert_eq!(
+            added.width, 24,
+            "and the real dimensions came from the file"
+        );
         std::fs::remove_file(&png).ok();
     }
 
@@ -15669,20 +18441,33 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cid = app
+            .project
+            .clips_on(tid)
+            .first()
+            .map(|c| c.id)
+            .expect("a clip");
         let cr = clip_screen_rect(&app, &r, cid);
         click(&mut app, &mut doc, cr.center().x, cr.center().y);
         release(&mut app, &mut doc);
-        assert!(key_press(&mut app, &mut doc, "c", true), "Ctrl+C is handled");
+        assert!(
+            key_press(&mut app, &mut doc, "c", true),
+            "Ctrl+C is handled"
+        );
         // Lock the source track, then paste.
         let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
         let pill = app.lock_pill_rect(header);
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         app.playhead = 2.0;
-        assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V is handled");
+        assert!(
+            key_press(&mut app, &mut doc, "v", true),
+            "Ctrl+V is handled"
+        );
         let reloaded = VideoDoc::load_project(&doc);
         let new_id = app.selected().expect("something was pasted");
-        let pasted = reloaded.clip(new_id).expect("the pasted clip is in the CRDT");
+        let pasted = reloaded
+            .clip(new_id)
+            .expect("the pasted clip is in the CRDT");
         assert_ne!(pasted.track, tid, "the paste avoided the locked track");
         assert_eq!(
             reloaded.track(pasted.track).map(|t| t.kind),
@@ -15699,15 +18484,25 @@ mod tests {
         // Right-click the row → the context menu opens targeting that media.
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
         right_press(&mut app, &mut doc);
-        assert!(app.bin_menu.is_open(), "right-click opens the bin context menu");
+        assert!(
+            app.bin_menu.is_open(),
+            "right-click opens the bin context menu"
+        );
         assert!(matches!(app.menu_target, Some(MenuTarget::Media(m)) if m == mid));
 
         let before = VideoDoc::load_project(&doc).media.len();
         click_menu_item(&mut app, &mut doc, "Delete");
         let after = VideoDoc::load_project(&doc);
-        assert_eq!(after.media.len(), before - 1, "Delete removed the media from the CRDT");
+        assert_eq!(
+            after.media.len(),
+            before - 1,
+            "Delete removed the media from the CRDT"
+        );
         assert!(after.media(mid).is_none(), "the deleted source is gone");
-        assert!(!app.bin_menu.is_open(), "the menu closed after choosing Delete");
+        assert!(
+            !app.bin_menu.is_open(),
+            "the menu closed after choosing Delete"
+        );
     }
 
     #[test]
@@ -15725,7 +18520,11 @@ mod tests {
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
         assert!(app.bin_rename.is_none(), "Enter ends the rename");
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.media(mid).unwrap().name, "Reel", "rename wrote through to the CRDT");
+        assert_eq!(
+            reloaded.media(mid).unwrap().name,
+            "Reel",
+            "rename wrote through to the CRDT"
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "the rename dispatched an action, arming one undo boundary",
@@ -15740,7 +18539,7 @@ mod tests {
         let (mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
-            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .find(|(m, _)| app.project.media(*m).is_some_and(|mm| mm.kind.is_visual()))
             .expect("a visual bin item");
         let (tid, _k, lane) = app
             .lane_rects(&r)
@@ -15765,8 +18564,14 @@ mod tests {
             before + 1,
             "a clip was placed on the drop track in the CRDT",
         );
-        let placed = app.selected().and_then(|id| reloaded.clip(id)).expect("placed clip selected");
-        assert_eq!(placed.media, mid, "the placed clip references the dragged media");
+        let placed = app
+            .selected()
+            .and_then(|id| reloaded.clip(id))
+            .expect("placed clip selected");
+        assert_eq!(
+            placed.media, mid,
+            "the placed clip references the dragged media"
+        );
         let expected_t = app.x_to_time(drop_x, &r.lanes);
         assert!(
             (placed.start - expected_t).abs() < 0.2,
@@ -15835,7 +18640,10 @@ mod tests {
         );
         let peaks = app.waveforms.peaks(mid).unwrap();
         assert_eq!(peaks.len(), crate::waveform::WAVE_BUCKETS);
-        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.9, "a real signal is present");
+        assert!(
+            peaks.iter().copied().fold(0.0, f32::max) > 0.9,
+            "a real signal is present"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -15856,7 +18664,11 @@ mod tests {
         click(&mut app, &mut doc, abtn.center().x, abtn.center().y);
         let after = VideoDoc::load_project(&doc);
         assert_eq!(
-            after.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count(),
+            after
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
             before + 1,
             "the add-audio-track button added a track to the CRDT",
         );
@@ -15881,10 +18693,17 @@ mod tests {
         let before = VideoDoc::load_project(&doc).tracks.len();
         click_menu_item(&mut app, &mut doc, "Delete track");
         let after = VideoDoc::load_project(&doc);
-        assert_eq!(after.tracks.len(), before - 1, "the track was removed from the CRDT");
+        assert_eq!(
+            after.tracks.len(),
+            before - 1,
+            "the track was removed from the CRDT"
+        );
         assert!(after.track(tid).is_none());
         for cid in clip_ids {
-            assert!(after.clip(cid).is_none(), "the track's clips were removed too");
+            assert!(
+                after.clip(cid).is_none(),
+                "the track's clips were removed too"
+            );
         }
     }
 
@@ -15924,7 +18743,11 @@ mod tests {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         assert!(
-            VideoDoc::load_project(&doc).clip(id).unwrap().transform.is_identity(),
+            VideoDoc::load_project(&doc)
+                .clip(id)
+                .unwrap()
+                .transform
+                .is_identity(),
             "starts as the plain aspect-fit",
         );
         // Drag Scale X to a quarter along its 0.05..4 span.
@@ -15936,15 +18759,25 @@ mod tests {
         let want = NumField::ScaleX.from_frac(0.25);
         assert!(
             (after.scale_x - want).abs() < 0.05,
-            "scale_x is {} not ~{want}", after.scale_x,
+            "scale_x is {} not ~{want}",
+            after.scale_x,
         );
         assert!(!after.is_identity(), "the clip is no longer plainly fitted");
         // Crop writes its own edge and leaves the others alone.
         let track = reveal(&mut app, |l| l.num(NumField::CropTop));
-        click(&mut app, &mut doc, track.x0 + track.width() * 0.5, track.center().y);
+        click(
+            &mut app,
+            &mut doc,
+            track.x0 + track.width() * 0.5,
+            track.center().y,
+        );
         release(&mut app, &mut doc);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
-        assert!(after.crop_top > 0.3 && after.crop_top < 0.6, "crop_top is {}", after.crop_top);
+        assert!(
+            after.crop_top > 0.3 && after.crop_top < 0.6,
+            "crop_top is {}",
+            after.crop_top
+        );
         assert_eq!(after.crop_bottom, 0.0, "only the dragged edge moved");
         assert!(after.is_cropped());
     }
@@ -15970,7 +18803,10 @@ mod tests {
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().duration();
         // Click the "2x" preset.
         let rect = reveal(&mut app, |l| {
-            l.speed_presets.iter().find(|(rate, _)| *rate == 2.0).map(|(_, r)| *r)
+            l.speed_presets
+                .iter()
+                .find(|(rate, _)| *rate == 2.0)
+                .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
@@ -15979,7 +18815,11 @@ mod tests {
             (after.duration() - before / 2.0).abs() < 1e-6,
             "2x halves the clip's length on the timeline",
         );
-        assert_eq!(after.source_span(), before, "and leaves its source window alone");
+        assert_eq!(
+            after.source_span(),
+            before,
+            "and leaves its source window alone"
+        );
         // A rate that is not on a preset highlights none of them. A segmented
         // control that always lit something would claim 1.37x was 1x.
         app.edit_selected(&mut doc, |c| {
@@ -15987,7 +18827,9 @@ mod tests {
         });
         let clip = app.project.clip(id).unwrap().clone();
         assert!(
-            !SPEED_PRESETS.iter().any(|p| (p - clip.speed.rate()).abs() < 1e-6),
+            !SPEED_PRESETS
+                .iter()
+                .any(|p| (p - clip.speed.rate()).abs() < 1e-6),
             "1.37x is deliberately off every preset",
         );
         app.edit_selected(&mut doc, |c| {
@@ -16013,14 +18855,21 @@ mod tests {
         let rect = reveal(&mut app, |l| l.pip.get(3).map(|(_, _, r)| *r));
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let t = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
-        assert!(t.scale_x < 0.5 && t.scale_y < 0.5, "the picture is inset, not full frame");
+        assert!(
+            t.scale_x < 0.5 && t.scale_y < 0.5,
+            "the picture is inset, not full frame"
+        );
         assert!(t.pos_x > 0.0, "bottom-right sits right of centre");
         assert!(t.pos_y > 0.0, "and below it");
         // And the way back.
         let rect = reveal(&mut app, |l| l.reset_transform);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert!(
-            VideoDoc::load_project(&doc).clip(id).unwrap().transform.is_identity(),
+            VideoDoc::load_project(&doc)
+                .clip(id)
+                .unwrap()
+                .transform
+                .is_identity(),
             "Fill frame restores the plain aspect-fit",
         );
     }
@@ -16039,11 +18888,17 @@ mod tests {
         // the parameter already reads — so keying never moves the picture.
         let before = app.project.clip(id).unwrap().opacity;
         let rect = reveal(&mut app, |l| {
-            l.keys.iter().find(|(p, _)| *p == Param::Opacity).map(|(_, r)| *r)
+            l.keys
+                .iter()
+                .find(|(p, _)| *p == Param::Opacity)
+                .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let clip = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
-        assert!(clip.anim.is_animated(Param::Opacity), "the first click keyed it");
+        assert!(
+            clip.anim.is_animated(Param::Opacity),
+            "the first click keyed it"
+        );
         assert!(
             (clip.param_at(Param::Opacity, 23.0) - before).abs() < 1e-9,
             "and planted the value it already had",
@@ -16055,11 +18910,17 @@ mod tests {
         // A second click at a keyed control opens the menu rather than
         // silently re-keying, because there is more than one thing to do.
         let rect = reveal(&mut app, |l| {
-            l.keys.iter().find(|(p, _)| *p == Param::Opacity).map(|(_, r)| *r)
+            l.keys
+                .iter()
+                .find(|(p, _)| *p == Param::Opacity)
+                .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert!(app.bin_menu.is_open());
-        assert!(matches!(app.menu_target, Some(MenuTarget::Keyframe(Param::Opacity))));
+        assert!(matches!(
+            app.menu_target,
+            Some(MenuTarget::Keyframe(Param::Opacity))
+        ));
     }
 
     /// Once a parameter is animated its constant is dead — every reader goes
@@ -16074,7 +18935,13 @@ mod tests {
         // Key it once at the head.
         app.key_here(&mut doc, Param::Opacity);
         let keys_before = VideoDoc::load_project(&doc)
-            .clip(id).unwrap().anim.track(Param::Opacity).unwrap().keys.len();
+            .clip(id)
+            .unwrap()
+            .anim
+            .track(Param::Opacity)
+            .unwrap()
+            .keys
+            .len();
         assert_eq!(keys_before, 1);
         // Move on and drag the opacity slider to a new value.
         app.playhead = 25.0;
@@ -16086,7 +18953,11 @@ mod tests {
         release(&mut app, &mut doc);
         let clip = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
         let keys = &clip.anim.track(Param::Opacity).unwrap().keys;
-        assert_eq!(keys.len(), 2, "the drag added a second key rather than writing a constant");
+        assert_eq!(
+            keys.len(),
+            2,
+            "the drag added a second key rather than writing a constant"
+        );
         assert!(
             (clip.param_at(Param::Opacity, 25.0) - 0.3).abs() < 0.06,
             "the curve reads the dragged value here, got {}",
@@ -16110,7 +18981,10 @@ mod tests {
         app.key_here(&mut doc, Param::Opacity);
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            app.project.clip(id).unwrap().key_interp_at(Param::Opacity, 23.0),
+            app.project
+                .clip(id)
+                .unwrap()
+                .key_interp_at(Param::Opacity, 23.0),
             Some(Interp::Linear),
         );
         // Row 3 is Hold: 0 remove, 1 separator, 2 Linear, 3 Hold, 4 Ease.
@@ -16118,7 +18992,10 @@ mod tests {
         app.key_menu_choose(&mut doc, Param::Opacity, 3);
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            app.project.clip(id).unwrap().key_interp_at(Param::Opacity, 23.0),
+            app.project
+                .clip(id)
+                .unwrap()
+                .key_interp_at(Param::Opacity, 23.0),
             Some(Interp::Hold),
             "the menu re-shaped the key it was opened on",
         );
@@ -16126,7 +19003,13 @@ mod tests {
         app.open_key_menu(Param::Opacity, Point::new(400.0, 400.0));
         app.key_menu_choose(&mut doc, Param::Opacity, 0);
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(!app.project.clip(id).unwrap().anim.is_animated(Param::Opacity));
+        assert!(
+            !app.project
+                .clip(id)
+                .unwrap()
+                .anim
+                .is_animated(Param::Opacity)
+        );
     }
 
     /// "+ Title" has to go all the way to an editable clip: a title with no
@@ -16143,17 +19026,30 @@ mod tests {
         click(&mut app, &mut doc, btn.center().x, btn.center().y);
         let p = VideoDoc::load_project(&doc);
         assert_eq!(p.media.len(), media_before + 1, "a source was made");
-        assert_eq!(p.clips.len(), clips_before + 1, "and placed on the timeline");
-        let item = p.media.iter().find(|m| m.kind == MediaKind::Text).expect("a title source");
+        assert_eq!(
+            p.clips.len(),
+            clips_before + 1,
+            "and placed on the timeline"
+        );
+        let item = p
+            .media
+            .iter()
+            .find(|m| m.kind == MediaKind::Text)
+            .expect("a title source");
         assert!(item.text.is_some(), "with a text body to edit");
         // A title has no bytes: nothing to fetch, so it is never "not on this
         // device" on any peer.
         assert!(item.path.is_empty());
         assert!(item.kind.is_generated());
-        let clip = p.clips.iter().find(|c| c.media == item.id).expect("its clip");
+        let clip = p
+            .clips
+            .iter()
+            .find(|c| c.media == item.id)
+            .expect("its clip");
         assert!(
             (clip.start - 12.0).abs() < 0.1,
-            "placed at the playhead, got {}", clip.start,
+            "placed at the playhead, got {}",
+            clip.start,
         );
         assert_eq!(app.selection.primary(), Some(clip.id), "and selected");
         assert!(app.title_edit.is_some(), "with the caret in its words");
@@ -16176,25 +19072,52 @@ mod tests {
         let mid = app.selected_media_item().unwrap().id;
         // Alignment.
         let rect = reveal(&mut app, |l| {
-            l.title_align.iter().find(|(a, _)| *a == TextAlign::Right).map(|(_, r)| *r)
+            l.title_align
+                .iter()
+                .find(|(a, _)| *a == TextAlign::Right)
+                .map(|(_, r)| *r)
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let t = VideoDoc::load_project(&doc)
-            .media(mid).unwrap().text.clone().unwrap();
+            .media(mid)
+            .unwrap()
+            .text
+            .clone()
+            .unwrap();
         assert_eq!(t.align, TextAlign::Right);
         // Colour: an authored value, not a palette slot, so it survives a
         // theme change.
         let rect = reveal(&mut app, |l| l.title_colors.get(2).map(|(_, r)| *r));
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        let t = VideoDoc::load_project(&doc).media(mid).unwrap().text.clone().unwrap();
+        let t = VideoDoc::load_project(&doc)
+            .media(mid)
+            .unwrap()
+            .text
+            .clone()
+            .unwrap();
         assert_eq!(t.color, TITLE_COLORS[2]);
         // Size is a fraction of the frame height, dragged.
         let track = reveal(&mut app, |l| l.num(NumField::TitleSize));
         let before = t.size;
-        click(&mut app, &mut doc, track.x0 + track.width() * 0.8, track.center().y);
+        click(
+            &mut app,
+            &mut doc,
+            track.x0 + track.width() * 0.8,
+            track.center().y,
+        );
         release(&mut app, &mut doc);
-        let t = VideoDoc::load_project(&doc).media(mid).unwrap().text.clone().unwrap();
-        assert!(t.size > before, "the size slider raised it: {} -> {}", before, t.size);
+        let t = VideoDoc::load_project(&doc)
+            .media(mid)
+            .unwrap()
+            .text
+            .clone()
+            .unwrap();
+        assert!(
+            t.size > before,
+            "the size slider raised it: {} -> {}",
+            before,
+            t.size
+        );
         assert!(t.size <= 0.4, "and stayed inside the offered range");
     }
 
@@ -16206,7 +19129,10 @@ mod tests {
         app.playhead = 8.0;
         // M marks the playhead and opens the name for typing.
         assert!(key_press(&mut app, &mut doc, "m", false));
-        assert!(app.marker_rename.is_some(), "an unnamed tick is a marker you cannot find");
+        assert!(
+            app.marker_rename.is_some(),
+            "an unnamed tick is a marker you cannot find"
+        );
         let target = app.marker_rename.as_ref().unwrap().0;
         app.commit_marker_rename(&mut doc, target, "act two");
         app.marker_rename = None;
@@ -16225,11 +19151,20 @@ mod tests {
         // , and . step between them and stop at the ends.
         app.playhead = 14.0;
         key_press(&mut app, &mut doc, ",", false);
-        assert!((app.playhead - 8.0).abs() < 1e-6, "stepped back to the first");
+        assert!(
+            (app.playhead - 8.0).abs() < 1e-6,
+            "stepped back to the first"
+        );
         key_press(&mut app, &mut doc, ".", false);
-        assert!((app.playhead - 20.0).abs() < 1e-6, "and forward past it to the second");
+        assert!(
+            (app.playhead - 20.0).abs() < 1e-6,
+            "and forward past it to the second"
+        );
         key_press(&mut app, &mut doc, ".", false);
-        assert!((app.playhead - 20.0).abs() < 1e-6, "navigation stops rather than wrapping");
+        assert!(
+            (app.playhead - 20.0).abs() < 1e-6,
+            "navigation stops rather than wrapping"
+        );
         // Clicking a row takes the playhead there; the cross removes it.
         let row = reveal(&mut app, |l| l.marker_rows.first().map(|(_, r)| *r));
         click(&mut app, &mut doc, row.center().x, row.center().y);
@@ -16250,7 +19185,10 @@ mod tests {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         let start = app.project.clip(id).unwrap().start;
         app.selection.select_only(id);
-        app.project.clip_mut(id).unwrap().add_marker(start + 1.0, "beat", 2);
+        app.project
+            .clip_mut(id)
+            .unwrap()
+            .add_marker(start + 1.0, "beat", 2);
         app.dispatch_clip(&mut doc, id);
         app.sync(&mut doc, &automerge::ROOT);
         app.playhead = 4.0;
@@ -16261,7 +19199,11 @@ mod tests {
         let r = app.regions();
         app.inspector_scroll = app.inspector_max_scroll(&r);
         let rows = app.inspector_layout(&r).marker_rows.clone();
-        assert_eq!(rows.len(), 2, "the clip's marker is listed with the timeline's");
+        assert_eq!(
+            rows.len(),
+            2,
+            "the clip's marker is listed with the timeline's"
+        );
         assert!(rows.iter().any(|(m, _)| m.clip == Some(id)));
         assert!(rows.iter().any(|(m, _)| m.clip.is_none()));
         // The clip one reports an absolute time even though it is stored local.
@@ -16284,14 +19226,23 @@ mod tests {
         app.playhead = 7.0;
         let r = app.regions();
         let l = app.inspector_layout(&r);
-        assert!(!l.valid, "no clip is selected, so no clip controls are laid out");
+        assert!(
+            !l.valid,
+            "no clip is selected, so no clip controls are laid out"
+        );
         assert!(l.num(NumField::ScaleX).is_none());
         assert!(l.split.width() == 0.0, "and no clip actions");
-        let add = l.add_marker.expect("but the markers section is still offered");
+        let add = l
+            .add_marker
+            .expect("but the markers section is still offered");
         assert!(r.inspector.contains(add.center()));
         // The button works from this state, not just the keyboard.
         click(&mut app, &mut doc, add.center().x, add.center().y);
-        assert_eq!(VideoDoc::load_project(&doc).markers.len(), 1, "a marker was added");
+        assert_eq!(
+            VideoDoc::load_project(&doc).markers.len(),
+            1,
+            "a marker was added"
+        );
         app.marker_rename = None;
         app.sync(&mut doc, &automerge::ROOT);
         // And the row it produced can be deleted from the same state.
@@ -16299,7 +19250,10 @@ mod tests {
         let row = l.marker_rows.first().expect("the marker is listed").1;
         let (_, _, _, del) = marker_row_parts(row);
         click(&mut app, &mut doc, del.center().x, del.center().y);
-        assert!(VideoDoc::load_project(&doc).markers.is_empty(), "and removed");
+        assert!(
+            VideoDoc::load_project(&doc).markers.is_empty(),
+            "and removed"
+        );
     }
 
     /// A folded section may hide controls; it must never hide state.
@@ -16319,9 +19273,16 @@ mod tests {
             c.transform.crop_left = 0.1;
         });
         let clip = app.project.clip(id).unwrap().clone();
-        let speed = app.section_summary(Section::Speed, &clip, None).expect("a rate to report");
-        assert!(speed.contains('2') && speed.contains("rev"), "speed summary was {speed:?}");
-        let geom = app.section_summary(Section::Transform, &clip, None).expect("a placement");
+        let speed = app
+            .section_summary(Section::Speed, &clip, None)
+            .expect("a rate to report");
+        assert!(
+            speed.contains('2') && speed.contains("rev"),
+            "speed summary was {speed:?}"
+        );
+        let geom = app
+            .section_summary(Section::Transform, &clip, None)
+            .expect("a placement");
         assert!(geom.contains("cropped"), "transform summary was {geom:?}");
         // Folding is a property of the panel, not of the clip: it survives
         // selecting something else.
@@ -16333,7 +19294,10 @@ mod tests {
         assert!(app.collapsed.contains(&Section::Transform));
         let r = app.regions();
         let l = app.inspector_layout(&r);
-        assert!(l.num(NumField::ScaleX).is_none(), "a folded section lays out no controls");
+        assert!(
+            l.num(NumField::ScaleX).is_none(),
+            "a folded section lays out no controls"
+        );
         assert!(
             l.sections.iter().any(|(s, _)| *s == Section::Transform),
             "but keeps its header, so it can be unfolded again",
@@ -16352,7 +19316,10 @@ mod tests {
         assert_eq!(rects.len(), 2, "undo and redo both get a slot");
         // Nothing published yet: an empty history, so neither can act.
         for (which, rect) in &rects {
-            assert!(!app.undo.status().can(*which), "{which:?} starts unavailable");
+            assert!(
+                !app.undo.status().can(*which),
+                "{which:?} starts unavailable"
+            );
             assert!(
                 r.transport.contains(rect.center()),
                 "{which:?} is inside the transport strip: {rect:?}",
@@ -16369,7 +19336,10 @@ mod tests {
         }
         let scrub = app.scrubber_rect(&r);
         for (_, h) in &rects {
-            assert!(h.x1 <= scrub.x0, "the scrubber starts clear of them: {h:?} {scrub:?}");
+            assert!(
+                h.x1 <= scrub.x0,
+                "the scrubber starts clear of them: {h:?} {scrub:?}"
+            );
         }
     }
 
@@ -16392,7 +19362,11 @@ mod tests {
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
-        assert_eq!(app.take_undo_request(), None, "and the request is taken once");
+        assert_eq!(
+            app.take_undo_request(),
+            None,
+            "and the request is taken once"
+        );
         // Redo is still unavailable, and its button still refuses.
         let (_, redo) = app.history_buttons(&r)[1];
         click(&mut app, &mut doc, redo.center().x, redo.center().y);
@@ -16438,7 +19412,10 @@ mod tests {
         assert!(!node.state.disabled);
         assert!(node.state.focusable);
         let d = node.description.clone().unwrap_or_default().to_string();
-        assert!(d.contains("2 fields"), "and hears what it would revert: {d:?}");
+        assert!(
+            d.contains("2 fields"),
+            "and hears what it would revert: {d:?}"
+        );
         // Redo has not become available just because undo did.
         assert!(find(&app, "Redo").state.disabled);
     }
@@ -16446,7 +19423,10 @@ mod tests {
     #[test]
     fn activating_the_undo_node_raises_the_same_request_a_click_does() {
         let (mut app, _doc) = app_and_doc();
-        app.set_undo_status(&ui::UndoStatus { can_undo: true, ..Default::default() });
+        app.set_undo_status(&ui::UndoStatus {
+            can_undo: true,
+            ..Default::default()
+        });
         let key = ui::a11y::hash_key(&ui::UndoRequest::Undo.verb());
         assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
         assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
@@ -16472,17 +19452,17 @@ mod tests {
         app.selection.select_only(id);
         let r = app.regions();
         let l = app.inspector_layout(&r);
+        assert!(l.key_enable.is_some(), "the key can always be switched on",);
         assert!(
-            l.key_enable.is_some(),
-            "the key can always be switched on",
+            l.num(NumField::KeyTolerance).is_none(),
+            "but has no sliders yet"
         );
-        assert!(l.num(NumField::KeyTolerance).is_none(), "but has no sliders yet");
         assert!(l.key_colors.is_empty(), "and no colour to pick");
+        assert!(!l.mask_shapes.is_empty(), "a shape can always be chosen",);
         assert!(
-            !l.mask_shapes.is_empty(),
-            "a shape can always be chosen",
+            l.num(NumField::MaskW).is_none(),
+            "but there is no shape to size"
         );
-        assert!(l.num(NumField::MaskW).is_none(), "but there is no shape to size");
         assert!(l.mask_invert.is_none());
 
         // Switch the key on through the button, as a user would.
@@ -16493,7 +19473,11 @@ mod tests {
             "the toggle reaches the document, not just the preview",
         );
         let l = app.inspector_layout(&app.regions());
-        for f in [NumField::KeyTolerance, NumField::KeySoftness, NumField::KeySpill] {
+        for f in [
+            NumField::KeyTolerance,
+            NumField::KeySoftness,
+            NumField::KeySpill,
+        ] {
             assert!(l.num(f).is_some(), "{f:?} is laid out once the key is on");
         }
         assert_eq!(l.key_colors.len(), crate::model::KEY_PRESETS.len());
@@ -16517,7 +19501,10 @@ mod tests {
             NumField::MaskRotation,
             NumField::MaskFeather,
         ] {
-            assert!(l.num(f).is_some(), "{f:?} is laid out once a shape is chosen");
+            assert!(
+                l.num(f).is_some(),
+                "{f:?} is laid out once a shape is chosen"
+            );
         }
         assert!(l.mask_invert.is_some());
     }
@@ -16534,7 +19521,10 @@ mod tests {
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let key = VideoDoc::load_project(&doc).clip(id).unwrap().key;
         assert!(key.enabled);
-        assert!(key.is_active(), "on, and actually removing something: {key:?}");
+        assert!(
+            key.is_active(),
+            "on, and actually removing something: {key:?}"
+        );
     }
 
     /// Choosing a shape lands the mask on the picture rather than in the
@@ -16557,9 +19547,15 @@ mod tests {
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let m = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
-        assert!((m.x - placed.pos_x).abs() < 1e-9, "centred on the inset: {m:?}");
+        assert!(
+            (m.x - placed.pos_x).abs() < 1e-9,
+            "centred on the inset: {m:?}"
+        );
         assert!((m.y - placed.pos_y).abs() < 1e-9);
-        assert!(m.w < 0.5 && m.h < 0.5, "and sized to it, not to the frame: {m:?}");
+        assert!(
+            m.w < 0.5 && m.h < 0.5,
+            "and sized to it, not to the frame: {m:?}"
+        );
 
         // Changing the shape afterwards keeps the geometry the user has by
         // then adjusted — only the first choice seeds it.
@@ -16573,7 +19569,10 @@ mod tests {
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let m = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
         assert_eq!(m.shape, crate::model::MaskShape::Rect);
-        assert!((m.w - 0.123).abs() < 1e-9, "the width the user set survived: {m:?}");
+        assert!(
+            (m.w - 0.123).abs() < 1e-9,
+            "the width the user set survived: {m:?}"
+        );
     }
 
     #[test]
@@ -16586,7 +19585,10 @@ mod tests {
             c.mask.shape = crate::model::MaskShape::Rect;
         });
         for (f, read) in [
-            (NumField::KeyTolerance, (|c: &Clip| c.key.tolerance) as fn(&Clip) -> f64),
+            (
+                NumField::KeyTolerance,
+                (|c: &Clip| c.key.tolerance) as fn(&Clip) -> f64,
+            ),
             (NumField::KeySoftness, |c: &Clip| c.key.softness),
             (NumField::KeySpill, |c: &Clip| c.key.spill),
             (NumField::MaskW, |c: &Clip| c.mask.w),
@@ -16595,7 +19597,12 @@ mod tests {
         ] {
             let track = reveal(&mut app, |l| l.num(f));
             let frac = 0.7;
-            click(&mut app, &mut doc, track.x0 + track.width() * frac, track.center().y);
+            click(
+                &mut app,
+                &mut doc,
+                track.x0 + track.width() * frac,
+                track.center().y,
+            );
             release(&mut app, &mut doc);
             let want = f.from_frac(frac);
             let got = read(VideoDoc::load_project(&doc).clip(id).unwrap());
@@ -16682,9 +19689,7 @@ mod tests {
                         .filter(|f| {
                             matches!(
                                 f,
-                                NumField::KeyTolerance
-                                    | NumField::KeySoftness
-                                    | NumField::KeySpill
+                                NumField::KeyTolerance | NumField::KeySoftness | NumField::KeySpill
                             ) == (*s == Section::Key)
                                 && matches!(
                                     f,
@@ -16700,7 +19705,10 @@ mod tests {
                                 )
                         })
                         .collect();
-                    assert_eq!(drawn, spoken, "{note}: {s:?} draws and speaks the same rows");
+                    assert_eq!(
+                        drawn, spoken,
+                        "{note}: {s:?} draws and speaks the same rows"
+                    );
                 }
             }
         };
@@ -16738,7 +19746,11 @@ mod tests {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         let clip = app.project.clip(id).unwrap().clone();
-        assert_eq!(app.section_summary(Section::Key, &clip, None), None, "nothing on");
+        assert_eq!(
+            app.section_summary(Section::Key, &clip, None),
+            None,
+            "nothing on"
+        );
         assert_eq!(app.section_summary(Section::Mask, &clip, None), None);
 
         app.edit_selected(&mut doc, |c| {
@@ -16748,9 +19760,16 @@ mod tests {
             c.mask.invert = true;
         });
         let clip = app.project.clip(id).unwrap().clone();
-        let key = app.section_summary(Section::Key, &clip, None).expect("a key to report");
-        assert!(key.contains("40"), "the folded key states its tolerance: {key:?}");
-        let mask = app.section_summary(Section::Mask, &clip, None).expect("a mask to report");
+        let key = app
+            .section_summary(Section::Key, &clip, None)
+            .expect("a key to report");
+        assert!(
+            key.contains("40"),
+            "the folded key states its tolerance: {key:?}"
+        );
+        let mask = app
+            .section_summary(Section::Mask, &clip, None)
+            .expect("a mask to report");
         assert!(
             mask.contains("ellipse") && mask.contains("invert"),
             "the folded mask states its shape and that it is inverted: {mask:?}",
@@ -16760,8 +19779,13 @@ mod tests {
         // and a fold that reported neither would hide both.
         app.edit_selected(&mut doc, |c| c.key.tolerance = 0.0);
         let clip = app.project.clip(id).unwrap().clone();
-        let key = app.section_summary(Section::Key, &clip, None).expect("still on");
-        assert!(key.contains("keys nothing"), "and says it is doing nothing: {key:?}");
+        let key = app
+            .section_summary(Section::Key, &clip, None)
+            .expect("still on");
+        assert!(
+            key.contains("keys nothing"),
+            "and says it is doing nothing: {key:?}"
+        );
     }
 
     #[test]
@@ -16779,7 +19803,12 @@ mod tests {
             "the add-effect button is visible when scrolled",
         );
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
-        click(&mut app, &mut doc, l.add_effect.center().x, l.add_effect.center().y);
+        click(
+            &mut app,
+            &mut doc,
+            l.add_effect.center().x,
+            l.add_effect.center().y,
+        );
         assert!(app.bin_menu.is_open(), "add-effect opens the picker");
         assert!(matches!(app.menu_target, Some(MenuTarget::AddEffect)));
         // Choose the first effect kind (Grayscale, idx 0).
@@ -16791,8 +19820,16 @@ mod tests {
             .unwrap();
         move_to(&mut app, &mut doc, cx, ry);
         press(&mut app, &mut doc);
-        let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.clone();
-        assert_eq!(after.len(), before + 1, "an effect was added through the inspector");
+        let after = VideoDoc::load_project(&doc)
+            .clip(id)
+            .unwrap()
+            .effects
+            .clone();
+        assert_eq!(
+            after.len(),
+            before + 1,
+            "an effect was added through the inspector"
+        );
         assert_eq!(after.last().unwrap().kind, EffectKind::Grayscale);
     }
 
@@ -16815,7 +19852,10 @@ mod tests {
         let l = app.inspector_layout(&r);
         // Move the second effect up via its ▲.
         let (_k, up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
-        assert!(r.inspector.contains(up.center()), "the reorder control is visible");
+        assert!(
+            r.inspector.contains(up.center()),
+            "the reorder control is visible"
+        );
         click(&mut app, &mut doc, up.center().x, up.center().y);
         let kinds1: Vec<_> = VideoDoc::load_project(&doc)
             .clip(id)
@@ -16831,7 +19871,11 @@ mod tests {
         let (_k, _u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
         click(&mut app, &mut doc, remove.center().x, remove.center().y);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
-        assert_eq!(after, kinds0.len() - 1, "the ✕ removed one effect from the CRDT");
+        assert_eq!(
+            after,
+            kinds0.len() - 1,
+            "the ✕ removed one effect from the CRDT"
+        );
     }
 
     #[test]
@@ -16844,9 +19888,17 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project.media.is_empty(), "blank project starts empty");
         dispatch(&mut app, &mut doc, WindowEvent::DroppedFile(f.clone()));
-        assert_eq!(app.project.media.len(), 1, "the dropped file landed in the bin");
+        assert_eq!(
+            app.project.media.len(),
+            1,
+            "the dropped file landed in the bin"
+        );
         let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(reloaded.media.len(), 1, "and replicated through the document");
+        assert_eq!(
+            reloaded.media.len(),
+            1,
+            "and replicated through the document"
+        );
         assert_eq!(reloaded.media[0].width, 200, "with real probed metadata");
         std::fs::remove_file(&f).ok();
     }
@@ -16861,14 +19913,21 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.project.media.len(), 1);
-        assert!(app.project.tracks.is_empty(), "blank project starts with no tracks");
+        assert!(
+            app.project.tracks.is_empty(),
+            "blank project starts with no tracks"
+        );
         let r = app.regions();
         let (_mid, rect) = app.bin_item_rects(&r)[0];
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.tracks.len(), 1, "a matching track was created");
-        assert_eq!(reloaded.clips.len(), 1, "the clip was placed on the timeline");
+        assert_eq!(
+            reloaded.clips.len(),
+            1,
+            "the clip was placed on the timeline"
+        );
         std::fs::remove_file(&f).ok();
     }
 
@@ -16882,7 +19941,11 @@ mod tests {
         let y = r.ruler.center().y;
         let expected = app.x_to_time(x, &r.lanes);
         click(&mut app, &mut doc, x, y);
-        assert!((app.playhead - expected).abs() < 0.1, "ruler click scrubs playhead to {expected}, got {}", app.playhead);
+        assert!(
+            (app.playhead - expected).abs() < 0.1,
+            "ruler click scrubs playhead to {expected}, got {}",
+            app.playhead
+        );
     }
 
     #[test]
@@ -16896,7 +19959,11 @@ mod tests {
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         let after = VideoDoc::load_project(&doc).clips.len();
-        assert_eq!(after, before + 1, "double-click on a bin item appends a clip to the CRDT");
+        assert_eq!(
+            after,
+            before + 1,
+            "double-click on a bin item appends a clip to the CRDT"
+        );
     }
 
     #[test]
@@ -16905,8 +19972,11 @@ mod tests {
         let r = app.regions();
         // Find the drone clip's on-screen rect on V1 (the first video lane row).
         let clip = app.project.top_video_clip_at(3.0).unwrap().clone();
-        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
-            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let (_tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
         let start_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
         // Grab the body (avoid the ±8px trim edges), drag right ~2 seconds.
@@ -16918,7 +19988,10 @@ mod tests {
         move_to(&mut app, &mut doc, drop_x, grab_y);
         release(&mut app, &mut doc);
         let start_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().start;
-        assert!(start_after > start_before + 1.0, "dragging moved the clip right in the CRDT ({start_before} -> {start_after})");
+        assert!(
+            start_after > start_before + 1.0,
+            "dragging moved the clip right in the CRDT ({start_before} -> {start_after})"
+        );
     }
 
     #[test]
@@ -16926,21 +19999,36 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let clip = app.project.top_video_clip_at(3.0).unwrap().clone();
-        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
-            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let (_tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
-        let out_before = VideoDoc::load_project(&doc).clip(clip.id).unwrap().out_point;
+        let out_before = VideoDoc::load_project(&doc)
+            .clip(clip.id)
+            .unwrap()
+            .out_point;
         // Grab within TRIM_HIT of the right edge and drag left ~1.5s.
         let grab_x = cr.x1 - 1.0;
         let grab_y = cr.center().y;
         let drop_x = grab_x - 1.5 * app.zoom;
         move_to(&mut app, &mut doc, grab_x, grab_y);
         press(&mut app, &mut doc);
-        assert!(matches!(app.drag, Some(Drag::TrimOut { .. })), "grabbing the right edge starts a trim-out drag");
+        assert!(
+            matches!(app.drag, Some(Drag::TrimOut { .. })),
+            "grabbing the right edge starts a trim-out drag"
+        );
         move_to(&mut app, &mut doc, drop_x, grab_y);
         release(&mut app, &mut doc);
-        let out_after = VideoDoc::load_project(&doc).clip(clip.id).unwrap().out_point;
-        assert!(out_after < out_before, "trimming the right edge shortened out_point in the CRDT ({out_before} -> {out_after})");
+        let out_after = VideoDoc::load_project(&doc)
+            .clip(clip.id)
+            .unwrap()
+            .out_point;
+        assert!(
+            out_after < out_before,
+            "trimming the right edge shortened out_point in the CRDT ({out_before} -> {out_after})"
+        );
     }
 
     #[test]
@@ -16950,8 +20038,11 @@ mod tests {
         let r = app.regions();
         // The market cutaway on V1 sits around t=22.
         let clip = app.project.top_video_clip_at(22.0).unwrap().clone();
-        let (_tid, _k, lane) = app.lane_rects(&r).into_iter()
-            .find(|(tid, _, _)| *tid == clip.track).unwrap();
+        let (_tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
         click(&mut app, &mut doc, cr.center().x, cr.center().y);
         assert_eq!(app.selected(), Some(clip.id), "clicking a clip selects it");
@@ -16978,7 +20069,10 @@ mod tests {
             CompositedFrame::Clip { base, .. } => base.luma(),
             _ => panic!("expected clip"),
         };
-        assert!(after > before, "raising brightness brightens the composite ({before} -> {after})");
+        assert!(
+            after > before,
+            "raising brightness brightens the composite ({before} -> {after})"
+        );
     }
 
     // ---- tone curves -----------------------------------------------------
@@ -16987,7 +20081,11 @@ mod tests {
     /// panel scrolled so the editor's box is really on screen.
     fn app_with_curve_editor() -> (VideoEditorApp, AutoCommit, Rect) {
         let (mut app, mut doc) = app_and_doc();
-        let cid = app.project.top_video_clip_at(23.0).expect("a clip at 23s").id;
+        let cid = app
+            .project
+            .top_video_clip_at(23.0)
+            .expect("a clip at 23s")
+            .id;
         app.selection.select_only(cid);
         app.playhead = 23.0;
         app.collapsed.remove(&Section::Curves);
@@ -17025,9 +20123,17 @@ mod tests {
         let at = curve_point(canvas, 0.25, 0.75);
         app.press_curve(&mut doc, canvas, at);
         let s = &app.project.clip(cid).unwrap().curves.master;
-        assert_eq!(s.points.len(), 3, "a point was added between the ends: {:?}", s.points);
+        assert_eq!(
+            s.points.len(),
+            3,
+            "a point was added between the ends: {:?}",
+            s.points
+        );
         let p = s.points[1];
-        assert!((p.x - 0.25).abs() < 0.02 && (p.y - 0.75).abs() < 0.02, "{p:?}");
+        assert!(
+            (p.x - 0.25).abs() < 0.02 && (p.y - 0.75).abs() < 0.02,
+            "{p:?}"
+        );
         // And the curve really passes through it.
         assert!((s.eval(0.25) - 0.75).abs() < 1e-6, "{}", s.eval(0.25));
         assert!(
@@ -17109,7 +20215,11 @@ mod tests {
         app.drag = None;
         let s = &app.project.clip(cid).unwrap().curves.master;
         assert_eq!(s.points.len(), 3, "still there: {:?}", s.points);
-        assert!(s.points[1].y > 0.98, "and pinned to the top: {:?}", s.points[1]);
+        assert!(
+            s.points[1].y > 0.98,
+            "and pinned to the top: {:?}",
+            s.points[1]
+        );
     }
 
     #[test]
@@ -17128,11 +20238,17 @@ mod tests {
         assert_eq!(app.curve_channel, crate::curve::Channel::Blue);
 
         // The canvas moves with the layout, so re-read it before clicking in.
-        let canvas = app.inspector_layout(&app.regions()).curve_canvas.unwrap_or(canvas);
+        let canvas = app
+            .inspector_layout(&app.regions())
+            .curve_canvas
+            .unwrap_or(canvas);
         app.press_curve(&mut doc, canvas, curve_point(canvas, 0.5, 0.8));
         let c = app.project.clip(cid).unwrap();
         assert!(!c.curves.blue.is_identity(), "blue was shaped");
-        assert!(c.curves.master.is_identity(), "and the master was left alone");
+        assert!(
+            c.curves.master.is_identity(),
+            "and the master was left alone"
+        );
         assert!(c.curves.red.is_identity() && c.curves.green.is_identity());
     }
 
@@ -17145,7 +20261,10 @@ mod tests {
             c.curves.red.set_point(0.5, 0.2);
         });
         let r = app.regions();
-        let reset = app.inspector_layout(&r).curve_reset.expect("a reset button");
+        let reset = app
+            .inspector_layout(&r)
+            .curve_reset
+            .expect("a reset button");
         app.press_inspector(&mut doc, &r, reset.center());
         let c = app.project.clip(cid).unwrap();
         assert!(c.curves.master.is_identity(), "the shown channel was reset");
@@ -17180,14 +20299,19 @@ mod tests {
             .section_summary(Section::Curves, &clip, None)
             .expect("a shaped curve reports itself");
         assert_eq!(seen, app.a11y_section_summary(Section::Curves));
-        assert!(seen.contains("RGB") && seen.contains('B'), "it names the channels: {seen}");
+        assert!(
+            seen.contains("RGB") && seen.contains('B'),
+            "it names the channels: {seen}"
+        );
         assert!(seen.contains("50%"), "and says it is turned down: {seen}");
 
         // A curve that is shaped but mixed all the way out is a different
         // state from one at full strength, and both have to be reported.
         app.edit_selected(&mut doc, |c| c.curves.mix = 0.0);
         let clip = app.project.clip(cid).unwrap().clone();
-        let off = app.section_summary(Section::Curves, &clip, None).expect("still reported");
+        let off = app
+            .section_summary(Section::Curves, &clip, None)
+            .expect("still reported");
         assert!(off.contains("bypassed"), "a bypassed curve says so: {off}");
         assert_eq!(off, app.a11y_section_summary(Section::Curves));
     }
@@ -17236,9 +20360,14 @@ mod tests {
             KeyState::OnKey,
             "one click plants a key at the playhead",
         );
-        assert!(app.project.clip(cid).unwrap().anim.is_animated(Param::CurveMix));
+        assert!(
+            app.project
+                .clip(cid)
+                .unwrap()
+                .anim
+                .is_animated(Param::CurveMix)
+        );
     }
-
 
     // ---- the rest of the inspector's animatable / authored controls -------
 
@@ -17267,7 +20396,9 @@ mod tests {
             );
         }
         assert!(
-            l.keys.iter().any(|(p, rect)| *p == Param::EffectAmount(0) && *rect == key),
+            l.keys
+                .iter()
+                .any(|(p, rect)| *p == Param::EffectAmount(0) && *rect == key),
             "and it is in the panel's own list of key controls",
         );
 
@@ -17286,7 +20417,10 @@ mod tests {
         let clip = app.project.clip(cid).unwrap();
         let early = clip.effects_at(23.0)[0].amount;
         let late = clip.effects_at(25.0)[0].amount;
-        assert!(late > early + 0.5, "the keyed intensity moves: {early} -> {late}");
+        assert!(
+            late > early + 0.5,
+            "the keyed intensity moves: {early} -> {late}"
+        );
     }
 
     #[test]
@@ -17334,11 +20468,18 @@ mod tests {
         let plain_h = row.height();
         let (_, note_btn, rename, del) = marker_row_parts(row);
         for other in [rename, del] {
-            assert!(note_btn.x1 <= other.x0 + 1.0, "the note control has its own target");
+            assert!(
+                note_btn.x1 <= other.x0 + 1.0,
+                "the note control has its own target"
+            );
         }
 
         app.press_inspector(&mut doc, &r, note_btn.center());
-        assert_eq!(app.marker_field, MarkerField::Note, "the editor opened on the note");
+        assert_eq!(
+            app.marker_field,
+            MarkerField::Note,
+            "the editor opened on the note"
+        );
         // The row grew for the note being typed into it, or the field would
         // open over the row beneath.
         let grown = app
@@ -17357,10 +20498,16 @@ mod tests {
             .find(|k| k.id == m.id)
             .map(|k| k.note.clone())
             .expect("the marker survived");
-        assert_eq!(note, "check the horizon line", "the note reached the document");
+        assert_eq!(
+            note, "check the horizon line",
+            "the note reached the document"
+        );
         // The name is untouched — the two fields are not one field.
         assert_eq!(
-            back.markers.iter().find(|k| k.id == m.id).map(|k| k.name.as_str()),
+            back.markers
+                .iter()
+                .find(|k| k.id == m.id)
+                .map(|k| k.name.as_str()),
             Some("Marker"),
         );
     }
@@ -17375,19 +20522,31 @@ mod tests {
             .project
             .markers
             .first()
-            .map(|k| MarkerRef { id: k.id, clip: None, at: k.t })
+            .map(|k| MarkerRef {
+                id: k.id,
+                clip: None,
+                at: k.t,
+            })
             .expect("a marker");
 
         app.commit_marker_text(&mut doc, m, MarkerField::Note, "a note");
         app.commit_marker_text(&mut doc, m, MarkerField::Note, "");
         assert_eq!(
-            app.project.markers.iter().find(|k| k.id == m.id).map(|k| k.note.as_str()),
+            app.project
+                .markers
+                .iter()
+                .find(|k| k.id == m.id)
+                .map(|k| k.note.as_str()),
             Some(""),
             "an empty note is how a note is taken back off",
         );
         app.commit_marker_text(&mut doc, m, MarkerField::Name, "   ");
         assert_eq!(
-            app.project.markers.iter().find(|k| k.id == m.id).map(|k| k.name.as_str()),
+            app.project
+                .markers
+                .iter()
+                .find(|k| k.id == m.id)
+                .map(|k| k.name.as_str()),
             Some("Marker"),
             "an empty name is refused — a nameless marker is a dot nobody can find",
         );
@@ -17500,7 +20659,13 @@ mod tests {
     #[test]
     fn a_reader_is_told_a_markers_name_time_and_note() {
         let (mut app, mut doc) = app_and_doc();
-        let m = marker_at(&mut app, &mut doc, 12.0, "act two", "check the horizon line");
+        let m = marker_at(
+            &mut app,
+            &mut doc,
+            12.0,
+            "act two",
+            "check the horizon line",
+        );
 
         let found = a11y_find(&app.a11y_inspector(), "act two");
         assert_eq!(found.len(), 1, "the marker is one node in the tree");
@@ -17512,7 +20677,10 @@ mod tests {
             value.contains(&crate::timecode::timecode(12.0, app.project.fps)),
             "the row's timecode is spoken: {value}",
         );
-        assert!(value.contains("check the horizon line"), "the note is spoken: {value}");
+        assert!(
+            value.contains("check the horizon line"),
+            "the note is spoken: {value}"
+        );
         assert!(node.state.focusable, "and it can be landed on");
         // The three controls the row carries. They are painted only under the
         // pointer, and a reader has no pointer, so the tree is the only place
@@ -17520,9 +20688,14 @@ mod tests {
         for verb in MARKER_VERBS {
             let want = format!("{verb} act two");
             assert!(
-                node.children.iter().any(|k| k.name.as_deref() == Some(want.as_str())),
+                node.children
+                    .iter()
+                    .any(|k| k.name.as_deref() == Some(want.as_str())),
                 "the row offers {want:?}, has {:?}",
-                node.children.iter().filter_map(|k| k.name.clone()).collect::<Vec<_>>(),
+                node.children
+                    .iter()
+                    .filter_map(|k| k.name.clone())
+                    .collect::<Vec<_>>(),
             );
         }
     }
@@ -17537,8 +20710,15 @@ mod tests {
         marker_at(&mut app, &mut doc, 4.0, "cold open", "the quiet bit");
         // A marker pinned to a clip travels with the footage and is listed on
         // the same timeline as the project's own.
-        let clip = app.project.top_video_clip_at(23.0).expect("a clip under the playhead").id;
-        app.project.clip_mut(clip).unwrap().add_marker(23.5, "on the clip", 2);
+        let clip = app
+            .project
+            .top_video_clip_at(23.0)
+            .expect("a clip under the playhead")
+            .id;
+        app.project
+            .clip_mut(clip)
+            .unwrap()
+            .add_marker(23.5, "on the clip", 2);
 
         let drawn: Vec<u64> = app
             .inspector_layout(&app.regions())
@@ -17546,7 +20726,11 @@ mod tests {
             .iter()
             .map(|(m, _)| ui::a11y::hash_key(&m.id))
             .collect();
-        assert!(drawn.len() >= 3, "three marked instants are drawn, got {}", drawn.len());
+        assert!(
+            drawn.len() >= 3,
+            "three marked instants are drawn, got {}",
+            drawn.len()
+        );
         assert_eq!(
             spoken_marker_keys(&app),
             drawn,
@@ -17576,11 +20760,23 @@ mod tests {
             ui::a11y::hash_key(&m.id),
         ];
         assert!(
-            app.perform_action_at(&ui::a11y::Action::Activate, &path, &mut doc, &automerge::ROOT),
+            app.perform_action_at(
+                &ui::a11y::Action::Activate,
+                &path,
+                &mut doc,
+                &automerge::ROOT
+            ),
             "the marker node is addressable",
         );
-        assert!((app.playhead - 12.0).abs() < 1e-6, "playhead at {}", app.playhead);
-        assert!(!app.playing, "seeking to a mark stops playback, as the click does");
+        assert!(
+            (app.playhead - 12.0).abs() < 1e-6,
+            "playhead at {}",
+            app.playhead
+        );
+        assert!(
+            !app.playing,
+            "seeking to a mark stops playback, as the click does"
+        );
     }
 
     /// The row's three controls, driven the way an assistive technology drives
@@ -17608,7 +20804,9 @@ mod tests {
             &root,
         ));
         assert_eq!(
-            VideoDoc::load_project(&mut doc).marker(m.id).map(|k| k.note.clone()),
+            VideoDoc::load_project(&mut doc)
+                .marker(m.id)
+                .map(|k| k.note.clone()),
             Some("mind the skyline".to_string()),
             "the note reached the document",
         );
@@ -17621,7 +20819,9 @@ mod tests {
             &root,
         ));
         assert_eq!(
-            VideoDoc::load_project(&mut doc).marker(m.id).map(|k| k.name.clone()),
+            VideoDoc::load_project(&mut doc)
+                .marker(m.id)
+                .map(|k| k.name.clone()),
             Some("act three".to_string()),
         );
         // An empty name is refused at the commit, so the verb reports the
@@ -17698,10 +20898,18 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         marker_at(&mut app, &mut doc, 12.0, "act two", "");
         let clip = app.project.top_video_clip_at(23.0).expect("a clip").id;
-        app.project.clip_mut(clip).unwrap().add_marker(23.5, "on the clip", 2);
+        app.project
+            .clip_mut(clip)
+            .unwrap()
+            .add_marker(23.5, "on the clip", 2);
         let drawn_rows = app.inspector_layout(&app.regions()).marker_rows.len();
 
-        let any = app.project.clips.first().cloned().expect("a clip to pass in");
+        let any = app
+            .project
+            .clips
+            .first()
+            .cloned()
+            .expect("a clip to pass in");
         let painted = app
             .section_summary(Section::Markers, &any, None)
             .expect("the panel summarises a non-empty list");
@@ -17727,11 +20935,24 @@ mod tests {
         let mut app = VideoEditorApp::new();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.project.clips.is_empty(), "the fixture is a blank project");
-        let m = marker_at(&mut app, &mut doc, 3.0, "start here", "before anything is cut");
+        assert!(
+            app.project.clips.is_empty(),
+            "the fixture is a blank project"
+        );
+        let m = marker_at(
+            &mut app,
+            &mut doc,
+            3.0,
+            "start here",
+            "before anything is cut",
+        );
 
         let node = app.a11y_inspector();
-        let spoken = node.children.iter().filter_map(|n| n.name.clone()).collect::<Vec<_>>();
+        let spoken = node
+            .children
+            .iter()
+            .filter_map(|n| n.name.clone())
+            .collect::<Vec<_>>();
         assert!(
             spoken.iter().any(|n| n.contains(INSPECTOR_EMPTY_TITLE)),
             "the empty state is still spoken: {spoken:?}",
@@ -17765,12 +20986,19 @@ mod tests {
         app.focus.pane = Pane::Inspector;
         app.focus.inspector = at;
         let focused = a11y_find(&app.a11y_inspector(), "act two");
-        assert!(focused[0].state.focused, "the cursor's marker carries focus");
+        assert!(
+            focused[0].state.focused,
+            "the cursor's marker carries focus"
+        );
 
         // And Enter on it runs the row's own verb.
         app.playhead = 0.0;
         assert!(app.activate_focused(&mut doc), "Enter is answered");
-        assert!((app.playhead - 12.0).abs() < 1e-6, "playhead at {}", app.playhead);
+        assert!(
+            (app.playhead - 12.0).abs() < 1e-6,
+            "playhead at {}",
+            app.playhead
+        );
     }
 
     #[test]
@@ -17803,7 +21031,10 @@ mod tests {
             .and_then(|m| m.text.as_ref())
             .map(|t| t.content.clone())
             .expect("the title survived");
-        assert_eq!(words, "COASTLINE\nepisode two", "the break is real, not a glyph");
+        assert_eq!(
+            words, "COASTLINE\nepisode two",
+            "the break is real, not a glyph"
+        );
         // The bin row takes the first line, which is what a one-line list can
         // honestly show of a two-line title.
         let name = VideoDoc::load_project(&mut doc)
@@ -17841,8 +21072,14 @@ mod tests {
         // Enter on its own is a line break, so the field keeps the event.
         assert_eq!(title_edit_verdict(&named_ev(NamedKey::Enter), &plain), None);
         // With Ctrl it accepts, and Escape cancels.
-        assert_eq!(title_edit_verdict(&named_ev(NamedKey::Enter), &ctrl), Some(true));
-        assert_eq!(title_edit_verdict(&named_ev(NamedKey::Escape), &plain), Some(false));
+        assert_eq!(
+            title_edit_verdict(&named_ev(NamedKey::Enter), &ctrl),
+            Some(true)
+        );
+        assert_eq!(
+            title_edit_verdict(&named_ev(NamedKey::Escape), &plain),
+            Some(false)
+        );
         // A key going up ends nothing — otherwise the release of the very
         // chord that accepted would immediately re-fire.
         assert_eq!(title_edit_verdict(&released(NamedKey::Enter), &ctrl), None);
@@ -17900,6 +21137,4 @@ mod tests {
             .expect("the title survived");
         assert_eq!(font, "Beta Serif");
     }
-
 }
-

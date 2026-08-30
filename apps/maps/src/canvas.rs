@@ -155,7 +155,7 @@ impl MapPalette {
 
 /// The signal colour for a congestion level, resolved from the palette.
 pub fn traffic_color(pal: &MapPalette, level: crate::traffic::Congestion) -> Color {
-    use crate::traffic::Congestion::*;
+    use crate::traffic::Congestion::{Free, Heavy, Moderate, Severe};
     match level {
         Free => pal.traffic_free,
         Moderate => pal.traffic_moderate,
@@ -294,7 +294,13 @@ pub fn draw_tiles(
 ) -> bool {
     let visible = TileLayer::visible_tiles(model.center, model.zoom, view_center, clip);
     // Clip the whole tile pass to the viewport so edge tiles don't bleed.
-    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        t,
+        &clip,
+    );
 
     let mut painted_any = false;
     let mut pending: Vec<crate::tiles::TileId> = Vec::new();
@@ -306,11 +312,11 @@ pub fn draw_tiles(
         let have_exact = tiles_layer.get(*id).is_some();
         if !have_exact {
             // (2) ancestor placeholder (blurry lower-z fill for zoom-in / pan).
-            if let Some((anc_id, levels)) = tiles_layer.ancestor_placeholder(*id) {
-                if let Some(anc_img) = tiles_layer.get(anc_id).cloned() {
-                    tiles::paint_ancestor(scene, t, &anc_img, anc_id, *id, levels, *rect);
-                    painted_any = true;
-                }
+            if let Some((anc_id, levels)) = tiles_layer.ancestor_placeholder(*id)
+                && let Some(anc_img) = tiles_layer.get(anc_id).cloned()
+            {
+                tiles::paint_ancestor(scene, t, &anc_img, anc_id, *id, levels, *rect);
+                painted_any = true;
             }
             // (3) descendant placeholder (sharp higher-z fill for zoom-out).
             if tiles::paint_descendants(scene, t, tiles_layer, *id, *rect, 2) {
@@ -355,18 +361,52 @@ pub fn draw_grid_substrate(
     let tiles = TileLayer::visible_tiles(model.center, model.zoom, view_center, clip);
     let major = draw::mix(pal.substrate, pal.substrate_grid, 0.85);
     let minor = draw::mix(pal.substrate, pal.substrate_grid, 0.4);
-    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        t,
+        &clip,
+    );
     for (_, rect) in &tiles {
         // Quarter-tile minor grid for a paper-like texture.
         for k in 1..4 {
-            let fx = rect.x0 + rect.width() * k as f64 / 4.0;
-            let fy = rect.y0 + rect.height() * k as f64 / 4.0;
-            draw::line(scene, t, Point::new(fx, rect.y0), Point::new(fx, rect.y1), 0.5, minor);
-            draw::line(scene, t, Point::new(rect.x0, fy), Point::new(rect.x1, fy), 0.5, minor);
+            let fx = rect.x0 + rect.width() * f64::from(k) / 4.0;
+            let fy = rect.y0 + rect.height() * f64::from(k) / 4.0;
+            draw::line(
+                scene,
+                t,
+                Point::new(fx, rect.y0),
+                Point::new(fx, rect.y1),
+                0.5,
+                minor,
+            );
+            draw::line(
+                scene,
+                t,
+                Point::new(rect.x0, fy),
+                Point::new(rect.x1, fy),
+                0.5,
+                minor,
+            );
         }
         // Major tile boundary (top + left edge; neighbours cover the rest).
-        draw::line(scene, t, Point::new(rect.x0, rect.y0), Point::new(rect.x0, rect.y1), 1.0, major);
-        draw::line(scene, t, Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y0), 1.0, major);
+        draw::line(
+            scene,
+            t,
+            Point::new(rect.x0, rect.y0),
+            Point::new(rect.x0, rect.y1),
+            1.0,
+            major,
+        );
+        draw::line(
+            scene,
+            t,
+            Point::new(rect.x0, rect.y0),
+            Point::new(rect.x1, rect.y0),
+            1.0,
+            major,
+        );
     }
     scene.pop_layer();
 }
@@ -393,7 +433,13 @@ pub fn draw_basemap(
 
     // River: a thick water-coloured stroke.
     let river_pts = project_pts(proj, &base.river);
-    draw::polyline(scene, t, &river_pts, road_width(RoadClass::Primary, proj.zoom()) * 3.2, pal.water);
+    draw::polyline(
+        scene,
+        t,
+        &river_pts,
+        road_width(RoadClass::Primary, proj.zoom()) * 3.2,
+        pal.water,
+    );
 
     for a in base.areas.iter().filter(|a| a.kind == AreaKind::Building) {
         draw_area(scene, t, proj, a, pal.building, Some(pal.building_edge));
@@ -405,7 +451,13 @@ pub fn draw_basemap(
             continue;
         }
         let pts = project_pts(proj, &r.pts);
-        draw::polyline(scene, t, &pts, road_width(r.class, proj.zoom()) + 2.0, pal.road_res_casing);
+        draw::polyline(
+            scene,
+            t,
+            &pts,
+            road_width(r.class, proj.zoom()) + 2.0,
+            pal.road_res_casing,
+        );
     }
     for r in &base.roads {
         let pts = project_pts(proj, &r.pts);
@@ -418,7 +470,14 @@ pub fn draw_basemap(
     }
 }
 
-fn draw_area(scene: &mut Scene, t: Affine, proj: &Projection, a: &Area, fill: Color, edge: Option<Color>) {
+fn draw_area(
+    scene: &mut Scene,
+    t: Affine,
+    proj: &Projection,
+    a: &Area,
+    fill: Color,
+    edge: Option<Color>,
+) {
     let pts = project_pts(proj, &a.ring);
     draw::polygon(scene, t, &pts, fill);
     if let Some(e) = edge {
@@ -493,7 +552,13 @@ pub fn draw_traffic(
         if pts.len() < 2 {
             continue;
         }
-        draw::polyline(scene, t, &pts, width(seg.level), traffic_color(pal, seg.level));
+        draw::polyline(
+            scene,
+            t,
+            &pts,
+            width(seg.level),
+            traffic_color(pal, seg.level),
+        );
     }
 }
 
@@ -538,7 +603,13 @@ pub fn draw_transit(
     pal: &MapPalette,
     clip: Rect,
 ) {
-    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        t,
+        &clip,
+    );
     // Lines first (casings under surfaces), then boundary pucks on top.
     for leg in &journey.legs {
         if leg.geometry.len() < 2 {
@@ -572,7 +643,15 @@ pub fn draw_transit(
 }
 
 /// Stroke a polyline as evenly-spaced dashes (`dash` on, `gap` off).
-fn draw_dashed(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: Color, dash: f64, gap: f64) {
+fn draw_dashed(
+    scene: &mut Scene,
+    t: Affine,
+    pts: &[Point],
+    width: f64,
+    color: Color,
+    dash: f64,
+    gap: f64,
+) {
     if pts.len() < 2 {
         return;
     }
@@ -610,12 +689,24 @@ pub fn draw_markers(
     // Clip the whole marker layer to the map area so pins and their labels never
     // bleed out from under an overlay drawer (the caller passes the visible map
     // region as `clip` when the narrow drawer is open).
-    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        t,
+        &clip,
+    );
     // Origin marker, if a route/origin is set.
     if let Some(o) = model.origin {
         let p = proj.project(o);
         if clip.contains(p) {
-            draw::fill_circle(scene, t, Point::new(p.x, p.y + 1.0), 6.5, Color::from_rgba8(0, 0, 0, 60));
+            draw::fill_circle(
+                scene,
+                t,
+                Point::new(p.x, p.y + 1.0),
+                6.5,
+                Color::from_rgba8(0, 0, 0, 60),
+            );
             draw::fill_circle(scene, t, p, 6.0, theme.tokens.colors.surfaces.base);
             draw::stroke_circle(scene, t, p, 6.0, 3.0, theme.accent_primary);
             draw::fill_circle(scene, t, p, 2.2, theme.accent_primary);
@@ -631,7 +722,14 @@ pub fn draw_markers(
         if !clip.contains(p) {
             continue;
         }
-        draw_pin(scene, t, p, category_color(theme, place.category), pal, false);
+        draw_pin(
+            scene,
+            t,
+            p,
+            category_color(theme, place.category),
+            pal,
+            false,
+        );
     }
 
     if let Some(sel) = model.selected_place() {
@@ -700,7 +798,13 @@ pub fn draw_pois(
 ) {
     let icons = proj.zoom() >= POI_ICON_ZOOM;
     let show_labels = proj.zoom() >= 16.5;
-    scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        t,
+        &clip,
+    );
     for &i in visible {
         let poi = &pois[i];
         if selected == Some(poi.id.as_str()) {
@@ -710,14 +814,26 @@ pub fn draw_pois(
         if !clip.contains(p) {
             continue;
         }
-        draw_poi_dot(scene, t, tr, p, poi, theme, pal, false, show_labels, icons, clip);
+        draw_poi_dot(
+            scene,
+            t,
+            tr,
+            p,
+            poi,
+            theme,
+            pal,
+            false,
+            show_labels,
+            icons,
+            clip,
+        );
     }
-    if let Some(sel) = selected {
-        if let Some(poi) = pois.iter().find(|p| p.id == sel) {
-            let p = proj.project(poi.pos);
-            if clip.contains(p) {
-                draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
-            }
+    if let Some(sel) = selected
+        && let Some(poi) = pois.iter().find(|p| p.id == sel)
+    {
+        let p = proj.project(poi.pos);
+        if clip.contains(p) {
+            draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
         }
     }
     scene.pop_layer();
@@ -744,9 +860,22 @@ fn draw_poi_dot(
         (false, true) => 8.5,
         (false, false) => 4.5,
     };
-    draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.9), r + 1.3, draw::alpha(Color::BLACK, 0.32));
+    draw::fill_circle(
+        scene,
+        t,
+        Point::new(p.x, p.y + 0.9),
+        r + 1.3,
+        draw::alpha(Color::BLACK, 0.32),
+    );
     draw::fill_circle(scene, t, p, r, col);
-    draw::stroke_circle(scene, t, p, r, if selected { 2.5 } else { 1.6 }, pal.marker_ring);
+    draw::stroke_circle(
+        scene,
+        t,
+        p,
+        r,
+        if selected { 2.5 } else { 1.6 },
+        pal.marker_ring,
+    );
     if icons {
         // White category pictogram on the disc; the disc colour shows through
         // any cut-outs (train windows, etc.).
@@ -759,14 +888,35 @@ fn draw_poi_dot(
         let size = if selected { 12.0 } else { 11.0 };
         let tw = draw::measure_w(tr, &poi.name, size);
         let lx = p.x + r + 6.0;
-        let ly = p.y - size as f64 * 0.72;
-        let plate = Rect::new(lx - 4.0, ly - 1.0, lx + tw + 6.0, ly + size as f64 + 3.0);
+        let ly = p.y - f64::from(size) * 0.72;
+        let plate = Rect::new(
+            lx - 4.0,
+            ly - 1.0,
+            lx + tw + 6.0,
+            ly + f64::from(size) + 3.0,
+        );
         // Only draw the name plate when it fits in the map area, so it is never
         // sliced at the drawer / screen edge into an unreadable fragment. The
         // marker still shows; the info card / list already carries the name.
         if plate.x0 >= clip.x0 && plate.x1 <= clip.x1 && plate.y0 >= clip.y0 {
-            draw::fill_rrect(scene, t, plate, 4.0, draw::alpha(theme.tokens.colors.surfaces.base, 0.74));
-            draw::text_w(scene, tr, t, &poi.name, lx, ly, size, theme.text_primary, TextWeight::Medium);
+            draw::fill_rrect(
+                scene,
+                t,
+                plate,
+                4.0,
+                draw::alpha(theme.tokens.colors.surfaces.base, 0.74),
+            );
+            draw::text_w(
+                scene,
+                tr,
+                t,
+                &poi.name,
+                lx,
+                ly,
+                size,
+                theme.text_primary,
+                TextWeight::Medium,
+            );
         }
     }
 }
@@ -792,13 +942,25 @@ pub fn draw_category_icon(
     };
     match cat {
         Category::Hospital => {
-            draw::fill_rrect(scene, t, Rect::new(c.x - s, c.y - s * 0.32, c.x + s, c.y + s * 0.32), 1.5, fg);
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.32, c.y - s, c.x + s * 0.32, c.y + s), 1.5, fg);
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(c.x - s, c.y - s * 0.32, c.x + s, c.y + s * 0.32),
+                1.5,
+                fg,
+            );
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(c.x - s * 0.32, c.y - s, c.x + s * 0.32, c.y + s),
+                1.5,
+                fg,
+            );
         }
         Category::Landmark => {
             let mut pts = Vec::with_capacity(10);
             for k in 0..10 {
-                let ang = -std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI / 5.0;
+                let ang = -std::f64::consts::FRAC_PI_2 + f64::from(k) * std::f64::consts::PI / 5.0;
                 let rad = if k % 2 == 0 { s } else { s * 0.45 };
                 pts.push(Point::new(c.x + rad * ang.cos(), c.y + rad * ang.sin()));
             }
@@ -809,18 +971,64 @@ pub fn draw_category_icon(
             draw::fill_circle(scene, t, Point::new(c.x, c.y - s * 0.2), s * 0.62, fg);
         }
         Category::Cafe => {
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.6, c.y - s * 0.35, c.x + s * 0.35, c.y + s * 0.45), 2.0, fg);
-            draw::stroke_circle(scene, t, Point::new(c.x + s * 0.5, c.y + s * 0.02), s * 0.3, lw, fg);
-            ln(scene, c.x - s * 0.8, c.y + s * 0.68, c.x + s * 0.6, c.y + s * 0.68, lw);
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(
+                    c.x - s * 0.6,
+                    c.y - s * 0.35,
+                    c.x + s * 0.35,
+                    c.y + s * 0.45,
+                ),
+                2.0,
+                fg,
+            );
+            draw::stroke_circle(
+                scene,
+                t,
+                Point::new(c.x + s * 0.5, c.y + s * 0.02),
+                s * 0.3,
+                lw,
+                fg,
+            );
+            ln(
+                scene,
+                c.x - s * 0.8,
+                c.y + s * 0.68,
+                c.x + s * 0.6,
+                c.y + s * 0.68,
+                lw,
+            );
         }
         Category::Restaurant => {
             // Fork (left): three short prongs onto a stem.
             for dx in [-0.68, -0.45, -0.22] {
-                ln(scene, c.x + dx * s, c.y - s * 0.7, c.x + dx * s, c.y - s * 0.18, lw);
+                ln(
+                    scene,
+                    c.x + dx * s,
+                    c.y - s * 0.7,
+                    c.x + dx * s,
+                    c.y - s * 0.18,
+                    lw,
+                );
             }
-            ln(scene, c.x - s * 0.45, c.y - s * 0.18, c.x - s * 0.45, c.y + s * 0.82, lw * 1.5);
+            ln(
+                scene,
+                c.x - s * 0.45,
+                c.y - s * 0.18,
+                c.x - s * 0.45,
+                c.y + s * 0.82,
+                lw * 1.5,
+            );
             // Knife (right): a single tapering blade+handle.
-            ln(scene, c.x + s * 0.5, c.y - s * 0.7, c.x + s * 0.5, c.y + s * 0.82, lw * 1.7);
+            ln(
+                scene,
+                c.x + s * 0.5,
+                c.y - s * 0.7,
+                c.x + s * 0.5,
+                c.y + s * 0.82,
+                lw * 1.7,
+            );
         }
         Category::Bar => {
             let bowl = [
@@ -830,7 +1038,14 @@ pub fn draw_category_icon(
             ];
             draw::polygon(scene, t, &bowl, fg);
             ln(scene, c.x, c.y + s * 0.18, c.x, c.y + s * 0.72, lw);
-            ln(scene, c.x - s * 0.4, c.y + s * 0.72, c.x + s * 0.4, c.y + s * 0.72, lw);
+            ln(
+                scene,
+                c.x - s * 0.4,
+                c.y + s * 0.72,
+                c.x + s * 0.4,
+                c.y + s * 0.72,
+                lw,
+            );
         }
         Category::Museum => {
             let roof = [
@@ -840,26 +1055,110 @@ pub fn draw_category_icon(
             ];
             draw::polygon(scene, t, &roof, fg);
             for dx in [-0.45, 0.0, 0.45] {
-                ln(scene, c.x + dx * s, c.y - s * 0.12, c.x + dx * s, c.y + s * 0.55, lw * 1.2);
+                ln(
+                    scene,
+                    c.x + dx * s,
+                    c.y - s * 0.12,
+                    c.x + dx * s,
+                    c.y + s * 0.55,
+                    lw * 1.2,
+                );
             }
-            ln(scene, c.x - s * 0.78, c.y + s * 0.66, c.x + s * 0.78, c.y + s * 0.66, lw * 1.3);
+            ln(
+                scene,
+                c.x - s * 0.78,
+                c.y + s * 0.66,
+                c.x + s * 0.78,
+                c.y + s * 0.66,
+                lw * 1.3,
+            );
         }
         Category::Transit => {
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.6, c.y - s * 0.72, c.x + s * 0.6, c.y + s * 0.5), 2.5, fg);
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(c.x - s * 0.6, c.y - s * 0.72, c.x + s * 0.6, c.y + s * 0.5),
+                2.5,
+                fg,
+            );
             // Two windows cut out of the body (disc colour).
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.42, c.y - s * 0.5, c.x - s * 0.06, c.y - s * 0.06), 1.5, bg);
-            draw::fill_rrect(scene, t, Rect::new(c.x + s * 0.06, c.y - s * 0.5, c.x + s * 0.42, c.y - s * 0.06), 1.5, bg);
-            draw::fill_circle(scene, t, Point::new(c.x - s * 0.32, c.y + s * 0.62), s * 0.16, fg);
-            draw::fill_circle(scene, t, Point::new(c.x + s * 0.32, c.y + s * 0.62), s * 0.16, fg);
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(
+                    c.x - s * 0.42,
+                    c.y - s * 0.5,
+                    c.x - s * 0.06,
+                    c.y - s * 0.06,
+                ),
+                1.5,
+                bg,
+            );
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(
+                    c.x + s * 0.06,
+                    c.y - s * 0.5,
+                    c.x + s * 0.42,
+                    c.y - s * 0.06,
+                ),
+                1.5,
+                bg,
+            );
+            draw::fill_circle(
+                scene,
+                t,
+                Point::new(c.x - s * 0.32, c.y + s * 0.62),
+                s * 0.16,
+                fg,
+            );
+            draw::fill_circle(
+                scene,
+                t,
+                Point::new(c.x + s * 0.32, c.y + s * 0.62),
+                s * 0.16,
+                fg,
+            );
         }
         Category::Hotel => {
-            ln(scene, c.x - s * 0.72, c.y - s * 0.5, c.x - s * 0.72, c.y + s * 0.5, lw * 1.4);
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.72, c.y + s * 0.08, c.x + s * 0.78, c.y + s * 0.46), 2.0, fg);
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.5, c.y - s * 0.2, c.x - s * 0.08, c.y + s * 0.12), 2.0, fg);
+            ln(
+                scene,
+                c.x - s * 0.72,
+                c.y - s * 0.5,
+                c.x - s * 0.72,
+                c.y + s * 0.5,
+                lw * 1.4,
+            );
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(
+                    c.x - s * 0.72,
+                    c.y + s * 0.08,
+                    c.x + s * 0.78,
+                    c.y + s * 0.46,
+                ),
+                2.0,
+                fg,
+            );
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(c.x - s * 0.5, c.y - s * 0.2, c.x - s * 0.08, c.y + s * 0.12),
+                2.0,
+                fg,
+            );
         }
         Category::Shop => {
             draw::stroke_circle(scene, t, Point::new(c.x, c.y - s * 0.22), s * 0.32, lw, fg);
-            draw::fill_rrect(scene, t, Rect::new(c.x - s * 0.6, c.y - s * 0.18, c.x + s * 0.6, c.y + s * 0.72), 2.5, fg);
+            draw::fill_rrect(
+                scene,
+                t,
+                Rect::new(c.x - s * 0.6, c.y - s * 0.18, c.x + s * 0.6, c.y + s * 0.72),
+                2.5,
+                fg,
+            );
         }
         Category::Other => {
             draw::fill_circle(scene, t, c, s * 0.4, fg);
@@ -885,7 +1184,7 @@ fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
     p.line_to(pt(theta_r));
     let n = 32;
     for i in 1..=n {
-        p.line_to(pt(theta_r + sweep * (i as f64 / n as f64)));
+        p.line_to(pt(theta_r + sweep * (f64::from(i) / f64::from(n))));
     }
     p.line_to(anchor);
     p.close_path();
@@ -896,7 +1195,14 @@ fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
 /// category-coloured drop with a crisp light outline (so it reads on any basemap
 /// tone), and a light "eye". The selected pin is larger and wears a soft accent
 /// halo. All colours come from the `Theme`-derived palette / category colour.
-fn draw_pin(scene: &mut Scene, t: Affine, anchor: Point, color: Color, pal: &MapPalette, selected: bool) {
+fn draw_pin(
+    scene: &mut Scene,
+    t: Affine,
+    anchor: Point,
+    color: Color,
+    pal: &MapPalette,
+    selected: bool,
+) {
     let r = if selected { 11.0 } else { 8.0 };
     let h = if selected { 30.0 } else { 22.0 };
     let center = Point::new(anchor.x, anchor.y - h);
@@ -920,7 +1226,13 @@ fn draw_pin(scene: &mut Scene, t: Affine, anchor: Point, color: Color, pal: &Map
     // The teardrop: stroke the light outline first, then fill the colour over
     // its inner half — leaving a clean light ring around the drop on any tone.
     let body = pin_path(anchor, r, h);
-    draw::stroke_path(scene, t, &body, if selected { 3.0 } else { 2.4 }, pal.marker_ring);
+    draw::stroke_path(
+        scene,
+        t,
+        &body,
+        if selected { 3.0 } else { 2.4 },
+        pal.marker_ring,
+    );
     draw::fill_path(scene, t, &body, color);
 
     // The classic pin "eye": a light disc with a small tinted centre.
@@ -954,9 +1266,30 @@ pub fn draw_scale_bar(
         4.0,
         bar_bg,
     );
-    draw::line(scene, t, Point::new(x0, y), Point::new(x1, y), 2.0, theme.text_primary);
-    draw::line(scene, t, Point::new(x0, y - 3.0), Point::new(x0, y + 3.0), 2.0, theme.text_primary);
-    draw::line(scene, t, Point::new(x1, y - 3.0), Point::new(x1, y + 3.0), 2.0, theme.text_primary);
+    draw::line(
+        scene,
+        t,
+        Point::new(x0, y),
+        Point::new(x1, y),
+        2.0,
+        theme.text_primary,
+    );
+    draw::line(
+        scene,
+        t,
+        Point::new(x0, y - 3.0),
+        Point::new(x0, y + 3.0),
+        2.0,
+        theme.text_primary,
+    );
+    draw::line(
+        scene,
+        t,
+        Point::new(x1, y - 3.0),
+        Point::new(x1, y + 3.0),
+        2.0,
+        theme.text_primary,
+    );
     draw::text_center(scene, tr, t, &label, x0, x1, y + 2.0, 10.0, theme.text_dim);
 }
 
@@ -1002,9 +1335,18 @@ mod tests {
         // Transit stop; the far Cafe always survives.
         let kept = declutter_indices(&proj, &pois, 24.0, None);
         let ids: Vec<&str> = kept.iter().map(|&i| pois[i].id.as_str()).collect();
-        assert!(ids.contains(&"transit"), "salient category wins the contested cell: {ids:?}");
-        assert!(!ids.contains(&"shop"), "the overlapped lower-priority marker is dropped: {ids:?}");
-        assert!(ids.contains(&"cafe-far"), "a well-separated marker is always kept: {ids:?}");
+        assert!(
+            ids.contains(&"transit"),
+            "salient category wins the contested cell: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"shop"),
+            "the overlapped lower-priority marker is dropped: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"cafe-far"),
+            "a well-separated marker is always kept: {ids:?}"
+        );
 
         // Returned indices stay in input order (stable draw order).
         let mut sorted = kept.clone();
@@ -1015,7 +1357,10 @@ mod tests {
         // card is open, so its marker must be on screen and clickable).
         let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
         let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
-        assert!(ids_sel.contains(&"shop"), "the selected POI is always kept: {ids_sel:?}");
+        assert!(
+            ids_sel.contains(&"shop"),
+            "the selected POI is always kept: {ids_sel:?}"
+        );
     }
 
     /// The cartography follows the theme: a light map under a light theme, a
@@ -1026,12 +1371,20 @@ mod tests {
     fn map_palette_follows_theme() {
         let lum = |c: Color| {
             let c = c.to_rgba8();
-            0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
+            0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
         };
         let dark = MapPalette::from_theme(&Theme::dark());
-        assert!(lum(dark.land) < 70.0, "dark theme => a dark basemap land, got {}", lum(dark.land));
+        assert!(
+            lum(dark.land) < 70.0,
+            "dark theme => a dark basemap land, got {}",
+            lum(dark.land)
+        );
         let light = MapPalette::from_theme(&Theme::light());
-        assert!(lum(light.land) > 220.0, "light theme => near-white land, got {}", lum(light.land));
+        assert!(
+            lum(light.land) > 220.0,
+            "light theme => near-white land, got {}",
+            lum(light.land)
+        );
         // Roads stay legible against the land in either theme (real contrast):
         // dark uses light ribbons on dark land; light uses coloured arterials.
         assert!(
@@ -1052,7 +1405,7 @@ mod tests {
     fn loading_substrate_matches_land_tone() {
         let lum = |c: Color| {
             let c = c.to_rgba8();
-            0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
+            0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
         };
         for theme in [Theme::dark(), Theme::light()] {
             let p = MapPalette::from_theme(&theme);
@@ -1076,7 +1429,11 @@ mod tests {
         let (r, h) = (8.0, 22.0);
         let bb = pin_path(anchor, r, h).bounding_box();
         // The tip is the lowest point, at the anchor.
-        assert!((bb.y1 - anchor.y).abs() < 0.5, "pin tip on the anchor, got y1={}", bb.y1);
+        assert!(
+            (bb.y1 - anchor.y).abs() < 0.5,
+            "pin tip on the anchor, got y1={}",
+            bb.y1
+        );
         // The head reaches up to about anchor.y - h - r.
         assert!(
             (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
@@ -1084,7 +1441,11 @@ mod tests {
             bb.y0
         );
         // Width is about the head diameter, centred on the anchor x.
-        assert!((bb.width() - 2.0 * r).abs() < 2.0, "width ~ head diameter, got {}", bb.width());
+        assert!(
+            (bb.width() - 2.0 * r).abs() < 2.0,
+            "width ~ head diameter, got {}",
+            bb.width()
+        );
         assert!(
             (0.5 * (bb.x0 + bb.x1) - anchor.x).abs() < 0.5,
             "the pin is centred on the anchor x"
@@ -1103,14 +1464,32 @@ mod tests {
         let mut model = MapModel::default();
         model.center = LatLon::new(48.14, 11.58);
         model.zoom = 16.0;
-        model.places = vec![Place::new("a", "Alpha", Category::Cafe, "1 Main St", model.center)];
+        model.places = vec![Place::new(
+            "a",
+            "Alpha",
+            Category::Cafe,
+            "1 Main St",
+            model.center,
+        )];
         model.selected = Some("a".to_string());
         let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
         let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut scene = Scene::new();
-        draw_markers(&mut scene, Affine::IDENTITY, &mut tr, &proj, &model, &theme, &pal, clip);
+        draw_markers(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &proj,
+            &model,
+            &theme,
+            &pal,
+            clip,
+        );
         // The selected place projects into the clip, so the pin path was emitted.
-        assert!(clip.contains(proj.project(model.center)), "the marker is on screen");
+        assert!(
+            clip.contains(proj.project(model.center)),
+            "the marker is on screen"
+        );
     }
 
     /// `draw_tiles` must NOT fetch or decode synchronously: when given an
@@ -1128,8 +1507,15 @@ mod tests {
 
         let mut scene = Scene::new();
         let t0 = std::time::Instant::now();
-        let painted_exact =
-            draw_tiles(&mut scene, Affine::IDENTITY, clip, &mut layer, &model, view_center, &pal);
+        let painted_exact = draw_tiles(
+            &mut scene,
+            Affine::IDENTITY,
+            clip,
+            &mut layer,
+            &model,
+            view_center,
+            &pal,
+        );
 
         // Fast (no I/O), no real tile painted, and crucially nothing was
         // synchronously fetched/decoded into the resident store.
@@ -1202,19 +1588,37 @@ mod tests {
             arr: String::new(),
             duration_min: 5,
             num_stops: 2,
-            geometry: vec![crate::model::LatLon::new(0.0, 0.0), crate::model::LatLon::new(0.1, 0.1)],
+            geometry: vec![
+                crate::model::LatLon::new(0.0, 0.0),
+                crate::model::LatLon::new(0.1, 0.1),
+            ],
             color: Some("eb690b".into()),
             text_color: Some("ffffff".into()),
             agency: "MVG".into(),
             realtime: true,
         };
         // Feed colour wins.
-        assert_eq!(leg_color(&theme, &base), Color::from_rgba8(0xeb, 0x69, 0x0b, 255));
+        assert_eq!(
+            leg_color(&theme, &base),
+            Color::from_rgba8(0xeb, 0x69, 0x0b, 255)
+        );
         // No feed colour → theme per-mode fallback (not the feed hex).
-        let no_color = TransitLeg { color: None, ..base.clone() };
-        assert_eq!(leg_color(&theme, &no_color), transit_leg_color(&theme, TransitMode::Subway));
+        let no_color = TransitLeg {
+            color: None,
+            ..base.clone()
+        };
+        assert_eq!(
+            leg_color(&theme, &no_color),
+            transit_leg_color(&theme, TransitMode::Subway)
+        );
         // A malformed hex also falls back rather than panicking.
-        let bad = TransitLeg { color: Some("nothex".into()), ..base };
-        assert_eq!(leg_color(&theme, &bad), transit_leg_color(&theme, TransitMode::Subway));
+        let bad = TransitLeg {
+            color: Some("nothex".into()),
+            ..base
+        };
+        assert_eq!(
+            leg_color(&theme, &bad),
+            transit_leg_color(&theme, TransitMode::Subway)
+        );
     }
 }

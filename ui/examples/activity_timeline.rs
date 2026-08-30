@@ -2,8 +2,8 @@
 //! a **real** document's change graph.
 //!
 //! ```bash
-//! cargo run -p ui --example activity_timeline                  # interactive
-//! cargo run -p ui --example activity_timeline -- --shots o.png # headless frame
+//! cargo run -p ui --example ui-lab -- activity_timeline                  # interactive
+//! cargo run -p ui --example ui-lab -- activity_timeline --shots o.png    # headless frame
 //! ```
 //!
 //! Nothing here is hand-authored feed data. The example builds a document that
@@ -22,9 +22,9 @@ use ui::permissions::PermissionContext;
 use ui::text_render::TextRenderer;
 use ui::widget::{ActivityTimeline, Column, HistoryScrubber};
 use ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget};
+use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
-use vello::Scene;
 
 /// Edit a document as two people and hand back the resulting change graph.
 fn collaborated_document() -> AutoCommit {
@@ -35,7 +35,11 @@ fn collaborated_document() -> AutoCommit {
     qdoc::history::commit_stamped(&mut alice);
 
     let title = {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         let id = dm.insert_block(None, "heading");
         dm.splice_text(&id, 0, 0, "Quarterly report");
         id
@@ -43,7 +47,11 @@ fn collaborated_document() -> AutoCommit {
     qdoc::history::commit_stamped(&mut alice);
 
     let body = {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         let id = dm.insert_block(Some(&title), "paragraph");
         dm.splice_text(&id, 0, 0, "Revenue held steady through the quarter.");
         id
@@ -55,7 +63,11 @@ fn collaborated_document() -> AutoCommit {
     bob.set_actor(ActorId::from("bob".as_bytes()));
     {
         let mut bob_ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut bob, c: &c, ids: &mut bob_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut bob,
+            c: &c,
+            ids: &mut bob_ids,
+        };
         dm.splice_text(&body, 40, 0, " Costs fell by four percent.");
     }
     qdoc::history::commit_stamped(&mut bob);
@@ -63,13 +75,21 @@ fn collaborated_document() -> AutoCommit {
 
     // Alice renames the heading, adds a scratch note, then deletes it.
     {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         dm.splice_text(&title, 10, 6, "results");
     }
     qdoc::history::commit_stamped(&mut alice);
 
     let scratch = {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         let id = dm.insert_block(Some(&body), "paragraph");
         dm.splice_text(&id, 0, 0, "TODO: check the headcount figure.");
         id
@@ -77,7 +97,11 @@ fn collaborated_document() -> AutoCommit {
     qdoc::history::commit_stamped(&mut alice);
 
     {
-        let mut dm = qdoc::DocMut { doc: &mut alice, c: &c, ids: &mut alice_ids };
+        let mut dm = qdoc::DocMut {
+            doc: &mut alice,
+            c: &c,
+            ids: &mut alice_ids,
+        };
         dm.remove_block(&scratch);
     }
     qdoc::history::commit_stamped(&mut alice);
@@ -85,8 +109,7 @@ fn collaborated_document() -> AutoCommit {
     alice
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+pub fn run(args: &[String]) {
     let shot = args
         .iter()
         .position(|a| a == "--shots")
@@ -120,10 +143,10 @@ fn main() {
     }
 
     let timeline = ActivityTimeline::with_entries(entries.clone())
-        .on_revert(|id| eprintln!("revert clicked: {:?}", id));
+        .on_revert(|id| eprintln!("revert clicked: {id:?}"));
     let scrubber = HistoryScrubber::new(entries)
-        .on_preview(|id| eprintln!("preview tick: {:?}", id))
-        .on_restore(|id| eprintln!("restore tick: {:?}", id));
+        .on_preview(|id| eprintln!("preview tick: {id:?}"))
+        .on_restore(|id| eprintln!("restore tick: {id:?}"));
 
     let root_widget: Box<dyn Widget> = Box::new(
         Column::new()

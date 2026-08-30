@@ -18,19 +18,19 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use std::cell::Cell;
+use std::rc::Rc;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::icons::Icon;
-use ui::widget::{EmptyState, ModalDialog, Widget};
-use std::cell::Cell;
-use std::rc::Rc;
+use ui::widget::{EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
 
 use crate::actions::{self, VPN_ACTION_TYPE};
 use crate::config::{self, Backend, CommandPlan};
 use crate::doc::VpnDoc;
 use crate::model::{
-    human_ago, sample_vault, stub_connection, ConnId, ConnKind, ConnStatus, Connection, Vault,
+    ConnId, ConnKind, ConnStatus, Connection, Vault, human_ago, sample_vault, stub_connection,
 };
 use crate::net::{self, Transfer};
 use crate::portal::{self, ImportOutcome};
@@ -57,10 +57,10 @@ impl TransferHistory {
 
     fn push(&mut self, xfer: Transfer) {
         let now = Instant::now();
-        if let Some(last) = self.samples.last() {
-            if now.duration_since(last.at).as_secs_f64() < Self::MIN_DT {
-                return;
-            }
+        if let Some(last) = self.samples.last()
+            && now.duration_since(last.at).as_secs_f64() < Self::MIN_DT
+        {
+            return;
         }
         self.samples.push(RateSample { at: now, xfer });
         // Keep enough points to fill the chart, plus one for the leading edge.
@@ -166,7 +166,11 @@ struct ConfirmBody {
 
 impl ConfirmBody {
     fn new(summary: String, cmd: String) -> Self {
-        Self { summary, cmd, rect: Rect::ZERO }
+        Self {
+            summary,
+            cmd,
+            rect: Rect::ZERO,
+        }
     }
 }
 
@@ -188,17 +192,17 @@ impl Widget for ConfirmBody {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -212,14 +216,47 @@ impl Widget for ConfirmBody {
     ) {
         let x = self.rect.x0;
         let width = self.rect.width().max(1.0) as f32;
-        text_w(tr, scene, t, &self.summary, 13.0, theme.text_dim, x, self.rect.y0, TextWeight::Regular);
+        text_w(
+            tr,
+            scene,
+            t,
+            &self.summary,
+            13.0,
+            theme.text_dim,
+            x,
+            self.rect.y0,
+            TextWeight::Regular,
+        );
         let _ = width;
         // Command preview box below the summary.
         let box_top = self.rect.y0 + 36.0;
         let cmd_box = Rect::new(x, box_top, self.rect.x1, (box_top + 56.0).min(self.rect.y1));
-        fill_round(scene, t, cmd_box, theme.tokens.radii.md as f64, theme.tokens.colors.neutral[0]);
-        stroke_round(scene, t, cmd_box, theme.tokens.radii.md as f64, theme.tokens.colors.border_white_10, 1.0);
-        text_w(tr, scene, t, "Will run:", 10.0, theme.text_dim, cmd_box.x0 + 12.0, cmd_box.y0 + 8.0, TextWeight::Bold);
+        fill_round(
+            scene,
+            t,
+            cmd_box,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.neutral[0],
+        );
+        stroke_round(
+            scene,
+            t,
+            cmd_box,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.border_white_10,
+            1.0,
+        );
+        text_w(
+            tr,
+            scene,
+            t,
+            "Will run:",
+            10.0,
+            theme.text_dim,
+            cmd_box.x0 + 12.0,
+            cmd_box.y0 + 8.0,
+            TextWeight::Bold,
+        );
         tr.draw_text_styled(
             scene,
             &ellipsize(&self.cmd, 52),
@@ -247,7 +284,7 @@ impl Widget for ConfirmBody {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ConfirmBody"
     }
 
@@ -356,16 +393,16 @@ impl VpnApp {
         }
         self.vault = VpnDoc::read_vault(doc);
         self.reconcile_real_status(doc);
-        if self.vault.selected.is_none() {
-            if let Some(first) = self.vault.connections.first().map(|c| c.id) {
-                self.vault.selected = Some(first);
-                VpnDoc::set_selected(doc, Some(first));
-            }
+        if self.vault.selected.is_none()
+            && let Some(first) = self.vault.connections.first().map(|c| c.id)
+        {
+            self.vault.selected = Some(first);
+            VpnDoc::set_selected(doc, Some(first));
         }
     }
 
     /// Reconcile each tunnel's stored status against the REAL kernel/process
-    /// state (`ip link` for WireGuard, `pgrep` for OpenVPN). The stored toggle
+    /// state (`ip link` for `WireGuard`, `pgrep` for `OpenVPN`). The stored toggle
     /// never overrides reality: a tunnel that dropped out-of-band flips back to
     /// Disconnected, and one brought up elsewhere shows Connected. Gated on
     /// `QOS_VPN_ALLOW_EXEC` (so hermetic tests spawn no probes) and throttled
@@ -376,10 +413,10 @@ impl VpnApp {
             return;
         }
         let now = Instant::now();
-        if let Some(prev) = self.last_reconcile {
-            if now.duration_since(prev).as_secs_f64() < 1.0 {
-                return;
-            }
+        if let Some(prev) = self.last_reconcile
+            && now.duration_since(prev).as_secs_f64() < 1.0
+        {
+            return;
         }
         self.last_reconcile = Some(now);
 
@@ -389,7 +426,11 @@ impl VpnApp {
                 continue;
             }
             if let Some(up) = net::probe_status(c) {
-                let real = if up { ConnStatus::Connected } else { ConnStatus::Disconnected };
+                let real = if up {
+                    ConnStatus::Connected
+                } else {
+                    ConnStatus::Disconnected
+                };
                 if c.status != real {
                     changes.push((c.id, real));
                 }
@@ -421,10 +462,10 @@ impl VpnApp {
         // Forget history for tunnels that are no longer up.
         self.throughput.retain(|id, _| connected.contains(id));
         for id in connected {
-            if let Some(c) = self.vault.get(id) {
-                if let Some(xfer) = net::read_transfer(c) {
-                    self.throughput.entry(id).or_default().push(xfer);
-                }
+            if let Some(c) = self.vault.get(id)
+                && let Some(xfer) = net::read_transfer(c)
+            {
+                self.throughput.entry(id).or_default().push(xfer);
             }
         }
     }
@@ -528,7 +569,11 @@ impl VpnApp {
                 Ok(out) => {
                     // The routing command is the external side effect; flipping
                     // the stored preference is the action (undo + replay for free).
-                    self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::set_tor_global_action(on));
+                    self.actions.dispatch(
+                        doc,
+                        VPN_ACTION_TYPE,
+                        &actions::set_tor_global_action(on),
+                    );
                     self.log(format!("$ {}  → ok {}", plan.display(), out));
                 }
                 Err(e) => self.log(format!("$ {}  → failed: {}", plan.display(), e)),
@@ -586,7 +631,7 @@ impl VpnApp {
                         .unwrap_or("Imported")
                         .to_string();
                     let kind = config::kind_from_filename(
-                        &path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string(),
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
                     )
                     .unwrap_or(self.import_hint);
                     let mut conn = config::parse_config(&stem, kind, &text);
@@ -620,7 +665,11 @@ impl VpnApp {
                     // The parse/persist above is the external import side effect;
                     // adding the resulting profile to the shared document is the
                     // same action the add form dispatches — one source of truth.
-                    self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(conn));
+                    self.actions.dispatch(
+                        doc,
+                        VPN_ACTION_TYPE,
+                        &actions::add_connection_action(conn),
+                    );
                     self.refresh(doc);
                     self.select(doc, id);
                     true
@@ -639,8 +688,12 @@ impl VpnApp {
     }
 
     pub(crate) fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
-        let next = self.vault.get(id).map(|c| !c.tor).unwrap_or(true);
-        self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::set_conn_tor_action(id, next));
+        let next = self.vault.get(id).is_none_or(|c| !c.tor);
+        self.actions.dispatch(
+            doc,
+            VPN_ACTION_TYPE,
+            &actions::set_conn_tor_action(id, next),
+        );
         self.refresh(doc);
     }
 
@@ -660,16 +713,19 @@ impl VpnApp {
         let name = c.name.clone();
         let id = c.id;
         // Dispatch the SAME action the Ctrl+K "Add … connection" entry does.
-        self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(c));
+        self.actions
+            .dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(c));
         self.modal = Modal::None;
         self.refresh(doc);
         self.select(doc, id);
-        self.activity.push(format!("added {} '{}'", self.add_kind.badge(), name));
+        self.activity
+            .push(format!("added {} '{}'", self.add_kind.badge(), name));
     }
 
     /// The last [`qos_actions::EncodedAction`] an affordance dispatched, for the
     /// `affordance == ActionSpec` covenant test — an on-screen control and its
     /// Ctrl+K entry must build the byte-identical action.
+    #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -699,15 +755,30 @@ impl VpnApp {
         let mut y = list.y0 + 44.0; // leave room for the list section title
         for c in &self.vault.connections {
             let row = Rect::new(list.x0 + 12.0, y, list.x1 - 12.0, y + ROW_H);
-            let toggle = Rect::new(row.x1 - 16.0 - 46.0, row.center().y - 13.0, row.x1 - 16.0, row.center().y + 13.0);
+            let toggle = Rect::new(
+                row.x1 - 16.0 - 46.0,
+                row.center().y - 13.0,
+                row.x1 - 16.0,
+                row.center().y + 13.0,
+            );
             rows.push((c.id, row, toggle));
             y += ROW_H + ROW_GAP;
         }
 
         // Detail header + tabs + content.
         let dpad = 24.0;
-        let dinner = Rect::new(detail.x0 + dpad, detail.y0 + dpad, detail.x1 - dpad, detail.y1 - dpad);
-        let connect_btn = Rect::new(dinner.x1 - 150.0, dinner.y0 + 6.0, dinner.x1, dinner.y0 + 6.0 + 42.0);
+        let dinner = Rect::new(
+            detail.x0 + dpad,
+            detail.y0 + dpad,
+            detail.x1 - dpad,
+            detail.y1 - dpad,
+        );
+        let connect_btn = Rect::new(
+            dinner.x1 - 150.0,
+            dinner.y0 + 6.0,
+            dinner.x1,
+            dinner.y0 + 6.0 + 42.0,
+        );
         let tabs_y = dinner.y0 + 76.0;
         let mut tabs = Vec::new();
         let mut tx = dinner.x0;
@@ -770,7 +841,12 @@ fn kv_tor_rect(content: Rect) -> Rect {
     // 5th kv row; rows are 30px tall starting after the chart.
     let kv_top = content.y0 + 72.0 + 16.0 + 176.0 + 16.0;
     let row_y = kv_top + 4.0 * 30.0;
-    Rect::new(content.x1 - 84.0, row_y + 2.0, content.x1 - 84.0 + 64.0, row_y + 26.0)
+    Rect::new(
+        content.x1 - 84.0,
+        row_y + 2.0,
+        content.x1 - 84.0 + 64.0,
+        row_y + 26.0,
+    )
 }
 
 fn point_in(r: Rect, p: Point) -> bool {
@@ -782,10 +858,22 @@ fn point_in(r: Rect, p: Point) -> bool {
 // ----------------------------------------------------------------------
 
 fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(r, radius));
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(r, radius),
+    );
 }
 fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &RoundedRect::from_rect(r, radius));
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(r, radius),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -800,7 +888,15 @@ fn text_w(
     top: f64,
     weight: TextWeight,
 ) {
-    tr.draw_text_weighted(scene, s, size, color, t * Affine::translate((x, top)), None, weight);
+    tr.draw_text_weighted(
+        scene,
+        s,
+        size,
+        color,
+        t * Affine::translate((x, top)),
+        None,
+        weight,
+    );
 }
 
 /// Center text vertically within a box and left-align at `x`.
@@ -817,15 +913,24 @@ fn text_vc(
     box_h: f64,
     weight: TextWeight,
 ) {
-    let top = box_y0 + (box_h - size as f64) / 2.0;
+    let top = box_y0 + (box_h - f64::from(size)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
 /// Center text horizontally + vertically within a rect (button labels).
-fn text_center(tr: &mut TextRenderer, scene: &mut Scene, t: Affine, s: &str, size: f32, color: Color, r: Rect, weight: TextWeight) {
+fn text_center(
+    tr: &mut TextRenderer,
+    scene: &mut Scene,
+    t: Affine,
+    s: &str,
+    size: f32,
+    color: Color,
+    r: Rect,
+    weight: TextWeight,
+) {
     let (w, _) = tr.measure_weighted(s, size, None, weight);
-    let x = r.center().x - w as f64 / 2.0;
-    let top = r.y0 + (r.height() - size as f64) / 2.0;
+    let x = r.center().x - f64::from(w) / 2.0;
+    let top = r.y0 + (r.height() - f64::from(size)) / 2.0;
     text_w(tr, scene, t, s, size, color, x, top, weight);
 }
 
@@ -848,11 +953,20 @@ impl VpnApp {
         }
     }
 
-    fn draw_badge(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, x: f64, cy: f64, kind: ConnKind) -> f64 {
+    fn draw_badge(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        x: f64,
+        cy: f64,
+        kind: ConnKind,
+    ) -> f64 {
         let label = kind.badge();
         let (w, _) = tr.measure_weighted(label, 11.0, None, TextWeight::Bold);
         let pad = 8.0;
-        let bw = w as f64 + pad * 2.0;
+        let bw = f64::from(w) + pad * 2.0;
         let r = Rect::new(x, cy - 9.0, x + bw, cy + 9.0);
         let bg = match kind {
             ConnKind::WireGuard => theme.tokens.colors.accent[5].multiply_alpha(0.22),
@@ -867,9 +981,22 @@ impl VpnApp {
         bw
     }
 
-    fn draw_header(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+    ) {
         let h = lay.header;
-        fill_round(scene, t, Rect::new(h.x0, h.y0, h.x1, h.y1), 0.0, theme.tokens.colors.surfaces.raised);
+        fill_round(
+            scene,
+            t,
+            Rect::new(h.x0, h.y0, h.x1, h.y1),
+            0.0,
+            theme.tokens.colors.surfaces.raised,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -884,44 +1011,117 @@ impl VpnApp {
             self.vault.connections.len(),
             self.vault.active_count()
         );
-        text_vc(tr, scene, t, &sub, 14.0, theme.text_primary, h.x0 + 24.0, h.y0, h.height(), TextWeight::Semibold);
+        text_vc(
+            tr,
+            scene,
+            t,
+            &sub,
+            14.0,
+            theme.text_primary,
+            h.x0 + 24.0,
+            h.y0,
+            h.height(),
+            TextWeight::Semibold,
+        );
 
         // Compact import buttons.
         self.draw_secondary_button(scene, tr, t, theme, lay.imp_conf, "Import .conf");
         self.draw_secondary_button(scene, tr, t, theme, lay.imp_ovpn, "Import .ovpn");
 
         // Tor global pill.
-        self.draw_pill_toggle(scene, tr, t, theme, lay.tor_pill, "Tor", self.vault.tor_global);
+        self.draw_pill_toggle(
+            scene,
+            tr,
+            t,
+            theme,
+            lay.tor_pill,
+            "Tor",
+            self.vault.tor_global,
+        );
 
         // Add button (accent).
         let hov = point_in(lay.add_btn, self.last_mouse);
-        let bg = if hov { theme.tokens.colors.accent[4] } else { theme.tokens.colors.accent[5] };
-        fill_round(scene, t, lay.add_btn, theme.tokens.radii.md as f64, bg);
-        text_center(tr, scene, t, "+ Add tunnel", 13.0, Color::WHITE, lay.add_btn, TextWeight::Semibold);
+        let bg = if hov {
+            theme.tokens.colors.accent[4]
+        } else {
+            theme.tokens.colors.accent[5]
+        };
+        fill_round(scene, t, lay.add_btn, f64::from(theme.tokens.radii.md), bg);
+        text_center(
+            tr,
+            scene,
+            t,
+            "+ Add tunnel",
+            13.0,
+            Color::WHITE,
+            lay.add_btn,
+            TextWeight::Semibold,
+        );
     }
 
     /// A compact bordered secondary button (used by the header import actions).
-    fn draw_secondary_button(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, r: Rect, label: &str) {
+    fn draw_secondary_button(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        r: Rect,
+        label: &str,
+    ) {
         let hov = point_in(r, self.last_mouse);
-        let bg = if hov { theme.tokens.colors.surface_white_10 } else { theme.tokens.colors.surfaces.base };
-        fill_round(scene, t, r, theme.tokens.radii.md as f64, bg);
-        stroke_round(scene, t, r, theme.tokens.radii.md as f64, theme.tokens.colors.border_standard, 1.0);
-        text_center(tr, scene, t, label, 12.0, theme.text_primary, r, TextWeight::Medium);
+        let bg = if hov {
+            theme.tokens.colors.surface_white_10
+        } else {
+            theme.tokens.colors.surfaces.base
+        };
+        fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
+        stroke_round(
+            scene,
+            t,
+            r,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.border_standard,
+            1.0,
+        );
+        text_center(
+            tr,
+            scene,
+            t,
+            label,
+            12.0,
+            theme.text_primary,
+            r,
+            TextWeight::Medium,
+        );
     }
 
-    fn draw_pill_toggle(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, r: Rect, label: &str, on: bool) {
+    fn draw_pill_toggle(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        r: Rect,
+        label: &str,
+        on: bool,
+    ) {
         let bg = if on {
             theme.tokens.colors.accent[5].multiply_alpha(0.22)
         } else {
             theme.tokens.colors.surfaces.base
         };
-        fill_round(scene, t, r, theme.tokens.radii.full as f64, bg);
+        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), bg);
         stroke_round(
             scene,
             t,
             r,
-            theme.tokens.radii.full as f64,
-            if on { theme.tokens.colors.accent[5] } else { theme.tokens.colors.border_standard },
+            f64::from(theme.tokens.radii.full),
+            if on {
+                theme.tokens.colors.accent[5]
+            } else {
+                theme.tokens.colors.border_standard
+            },
             1.0,
         );
         // status dot
@@ -930,12 +1130,36 @@ impl VpnApp {
         } else {
             theme.tokens.colors.neutral[5]
         };
-        scene.fill(Fill::NonZero, t, dot, None, &Circle::new(Point::new(r.x0 + 18.0, r.center().y), 5.0));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            dot,
+            None,
+            &Circle::new(Point::new(r.x0 + 18.0, r.center().y), 5.0),
+        );
         let txt = format!("{label}  {}", if on { "On" } else { "Off" });
-        text_vc(tr, scene, t, &txt, 12.0, theme.text_primary, r.x0 + 32.0, r.y0, r.height(), TextWeight::Semibold);
+        text_vc(
+            tr,
+            scene,
+            t,
+            &txt,
+            12.0,
+            theme.text_primary,
+            r.x0 + 32.0,
+            r.y0,
+            r.height(),
+            TextWeight::Semibold,
+        );
     }
 
-    fn draw_list(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
+    fn draw_list(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+    ) {
         let l = lay.list;
         // pane bg
         fill_round(scene, t, l, 0.0, theme.tokens.colors.surfaces.base);
@@ -946,7 +1170,17 @@ impl VpnApp {
             None,
             &Line::new(Point::new(l.x1, l.y0), Point::new(l.x1, l.y1)),
         );
-        text_w(tr, scene, t, "CONNECTIONS", 11.0, theme.text_dim, l.x0 + 16.0, l.y0 + 18.0, TextWeight::Bold);
+        text_w(
+            tr,
+            scene,
+            t,
+            "CONNECTIONS",
+            11.0,
+            theme.text_dim,
+            l.x0 + 16.0,
+            l.y0 + 18.0,
+            TextWeight::Bold,
+        );
 
         for (id, row, toggle) in &lay.rows {
             let c = match self.vault.get(*id) {
@@ -955,17 +1189,36 @@ impl VpnApp {
             };
             let selected = self.vault.selected == Some(*id);
             let hovered = self.hovered_row == Some(*id);
-            let radius = theme.tokens.radii.lg as f64;
+            let radius = f64::from(theme.tokens.radii.lg);
             if selected {
-                fill_round(scene, t, *row, radius, theme.tokens.colors.accent[5].multiply_alpha(0.16));
-                stroke_round(scene, t, *row, radius, theme.tokens.colors.accent[5].multiply_alpha(0.7), 1.0);
+                fill_round(
+                    scene,
+                    t,
+                    *row,
+                    radius,
+                    theme.tokens.colors.accent[5].multiply_alpha(0.16),
+                );
+                stroke_round(
+                    scene,
+                    t,
+                    *row,
+                    radius,
+                    theme.tokens.colors.accent[5].multiply_alpha(0.7),
+                    1.0,
+                );
             } else if hovered {
                 fill_round(scene, t, *row, radius, theme.tokens.colors.surface_white_5);
             }
 
             // status dot
             let sc = Self::status_color(theme, c.status);
-            scene.fill(Fill::NonZero, t, sc, None, &Circle::new(Point::new(row.x0 + 22.0, row.y0 + 24.0), 5.0));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                sc,
+                None,
+                &Circle::new(Point::new(row.x0 + 22.0, row.y0 + 24.0), 5.0),
+            );
             if c.is_connected() {
                 scene.stroke(
                     &Stroke::new(1.5),
@@ -978,17 +1231,55 @@ impl VpnApp {
 
             // name + badge
             let name = ellipsize(&c.name, 18);
-            text_w(tr, scene, t, &name, 15.0, theme.text_primary, row.x0 + 38.0, row.y0 + 14.0, TextWeight::Semibold);
+            text_w(
+                tr,
+                scene,
+                t,
+                &name,
+                15.0,
+                theme.text_primary,
+                row.x0 + 38.0,
+                row.y0 + 14.0,
+                TextWeight::Semibold,
+            );
             let (nw, _) = tr.measure_weighted(&name, 15.0, None, TextWeight::Semibold);
-            self.draw_badge(scene, tr, t, theme, row.x0 + 38.0 + nw as f64 + 10.0, row.y0 + 24.0, c.kind);
+            self.draw_badge(
+                scene,
+                tr,
+                t,
+                theme,
+                row.x0 + 38.0 + f64::from(nw) + 10.0,
+                row.y0 + 24.0,
+                c.kind,
+            );
 
             // endpoint + last used
             let line2 = format!("{} · {}", ellipsize(&c.endpoint, 28), c.last_used);
-            text_w(tr, scene, t, &line2, 12.0, theme.text_dim, row.x0 + 38.0, row.y0 + 44.0, TextWeight::Regular);
+            text_w(
+                tr,
+                scene,
+                t,
+                &line2,
+                12.0,
+                theme.text_dim,
+                row.x0 + 38.0,
+                row.y0 + 44.0,
+                TextWeight::Regular,
+            );
 
             // per-tunnel tor flag mark
             if c.tor {
-                text_w(tr, scene, t, "tor", 10.0, theme.tokens.colors.accent[6], toggle.x0 - 36.0, row.y0 + 14.0, TextWeight::Bold);
+                text_w(
+                    tr,
+                    scene,
+                    t,
+                    "tor",
+                    10.0,
+                    theme.tokens.colors.accent[6],
+                    toggle.x0 - 36.0,
+                    row.y0 + 14.0,
+                    TextWeight::Bold,
+                );
             }
 
             // toggle switch
@@ -997,14 +1288,22 @@ impl VpnApp {
     }
 
     fn draw_switch(&self, scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
-        let track = if on { theme.tokens.colors.semantic.success } else { theme.tokens.colors.neutral[3] };
-        fill_round(scene, t, r, theme.tokens.radii.full as f64, track);
-        let kr = 9.0;
-        let kx = if on { r.x1 - kr - 3.0 } else { r.x0 + kr + 3.0 };
-        scene.fill(Fill::NonZero, t, Color::WHITE, None, &Circle::new(Point::new(kx, r.center().y), kr));
+        Toggle::paint(
+            scene,
+            t,
+            theme,
+            &ToggleFace::new(r, on).on_color(theme.tokens.colors.semantic.success),
+        );
     }
 
-    fn draw_detail(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
+    fn draw_detail(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+    ) {
         let d = lay.detail;
         fill_round(scene, t, d, 0.0, theme.tokens.colors.surfaces.base);
 
@@ -1014,50 +1313,177 @@ impl VpnApp {
             // "nothing selected" case. The add + import affordances already live
             // in the header, so this stays a non-interactive prompt.
             let (title, message): (&str, &str) = if self.vault.connections.is_empty() {
-                ("No VPN connections", "Add a tunnel or import a .conf / .ovpn file to connect.")
+                (
+                    "No VPN connections",
+                    "Add a tunnel or import a .conf / .ovpn file to connect.",
+                )
             } else {
-                ("Select a connection", "Choose a tunnel from the list to see its status and controls.")
+                (
+                    "Select a connection",
+                    "Choose a tunnel from the list to see its status and controls.",
+                )
             };
-            EmptyState::paint(scene, t, tr, theme, d, Some(Icon::Shield), title, Some(message), None, Point::ZERO);
+            EmptyState::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                d,
+                Some(Icon::Shield),
+                title,
+                Some(message),
+                None,
+                Point::ZERO,
+            );
             return;
         };
         let dinner = Rect::new(d.x0 + 24.0, d.y0 + 24.0, d.x1 - 24.0, d.y1 - 24.0);
 
         // Title + status badge.
-        text_w(tr, scene, t, &c.name, 24.0, theme.text_primary, dinner.x0, dinner.y0, TextWeight::Bold);
+        text_w(
+            tr,
+            scene,
+            t,
+            &c.name,
+            24.0,
+            theme.text_primary,
+            dinner.x0,
+            dinner.y0,
+            TextWeight::Bold,
+        );
         let (tw, _) = tr.measure_weighted(&c.name, 24.0, None, TextWeight::Bold);
         // status pill
         let sc = Self::status_color(theme, c.status);
-        let pill_x = dinner.x0 + tw as f64 + 14.0;
+        let pill_x = dinner.x0 + f64::from(tw) + 14.0;
         let plabel = c.status.label();
         let (pw, _) = tr.measure_weighted(plabel, 12.0, None, TextWeight::Semibold);
-        let pill = Rect::new(pill_x, dinner.y0 + 2.0, pill_x + pw as f64 + 28.0, dinner.y0 + 26.0);
-        fill_round(scene, t, pill, theme.tokens.radii.full as f64, sc.multiply_alpha(0.18));
-        scene.fill(Fill::NonZero, t, sc, None, &Circle::new(Point::new(pill.x0 + 12.0, pill.center().y), 4.0));
-        text_vc(tr, scene, t, plabel, 12.0, sc, pill.x0 + 22.0, pill.y0, pill.height(), TextWeight::Semibold);
+        let pill = Rect::new(
+            pill_x,
+            dinner.y0 + 2.0,
+            pill_x + f64::from(pw) + 28.0,
+            dinner.y0 + 26.0,
+        );
+        fill_round(
+            scene,
+            t,
+            pill,
+            f64::from(theme.tokens.radii.full),
+            sc.multiply_alpha(0.18),
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            sc,
+            None,
+            &Circle::new(Point::new(pill.x0 + 12.0, pill.center().y), 4.0),
+        );
+        text_vc(
+            tr,
+            scene,
+            t,
+            plabel,
+            12.0,
+            sc,
+            pill.x0 + 22.0,
+            pill.y0,
+            pill.height(),
+            TextWeight::Semibold,
+        );
 
         let sub = format!("{} · {}", c.kind.long_name(), ellipsize(&c.endpoint, 40));
-        text_w(tr, scene, t, &sub, 13.0, theme.text_dim, dinner.x0, dinner.y0 + 34.0, TextWeight::Regular);
+        text_w(
+            tr,
+            scene,
+            t,
+            &sub,
+            13.0,
+            theme.text_dim,
+            dinner.x0,
+            dinner.y0 + 34.0,
+            TextWeight::Regular,
+        );
 
         // Connect / Disconnect button.
         let hov = point_in(lay.connect_btn, self.last_mouse);
         let (bg, fg, label) = if c.is_connected() {
-            (theme.tokens.colors.semantic.danger.multiply_alpha(if hov { 1.0 } else { 0.9 }), Color::WHITE, "Disconnect")
+            (
+                theme
+                    .tokens
+                    .colors
+                    .semantic
+                    .danger
+                    .multiply_alpha(if hov { 1.0 } else { 0.9 }),
+                Color::WHITE,
+                "Disconnect",
+            )
         } else {
-            (if hov { theme.tokens.colors.accent[4] } else { theme.tokens.colors.accent[5] }, Color::WHITE, "Connect")
+            (
+                if hov {
+                    theme.tokens.colors.accent[4]
+                } else {
+                    theme.tokens.colors.accent[5]
+                },
+                Color::WHITE,
+                "Connect",
+            )
         };
-        fill_round(scene, t, lay.connect_btn, theme.tokens.radii.md as f64, bg);
-        text_center(tr, scene, t, label, 14.0, fg, lay.connect_btn, TextWeight::Semibold);
+        fill_round(
+            scene,
+            t,
+            lay.connect_btn,
+            f64::from(theme.tokens.radii.md),
+            bg,
+        );
+        text_center(
+            tr,
+            scene,
+            t,
+            label,
+            14.0,
+            fg,
+            lay.connect_btn,
+            TextWeight::Semibold,
+        );
 
         // Tabs.
         for (tab, r) in &lay.tabs {
             let active = *tab == self.detail_tab;
             if active {
-                fill_round(scene, t, *r, theme.tokens.radii.md as f64, theme.tokens.colors.surfaces.raised);
-                stroke_round(scene, t, *r, theme.tokens.radii.md as f64, theme.tokens.colors.border_white_10, 1.0);
+                fill_round(
+                    scene,
+                    t,
+                    *r,
+                    f64::from(theme.tokens.radii.md),
+                    theme.tokens.colors.surfaces.raised,
+                );
+                stroke_round(
+                    scene,
+                    t,
+                    *r,
+                    f64::from(theme.tokens.radii.md),
+                    theme.tokens.colors.border_white_10,
+                    1.0,
+                );
             }
-            let col = if active { theme.text_primary } else { theme.text_dim };
-            text_center(tr, scene, t, tab.label(), 13.0, col, *r, if active { TextWeight::Semibold } else { TextWeight::Regular });
+            let col = if active {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            };
+            text_center(
+                tr,
+                scene,
+                t,
+                tab.label(),
+                13.0,
+                col,
+                *r,
+                if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+            );
         }
 
         match self.detail_tab {
@@ -1067,16 +1493,24 @@ impl VpnApp {
         }
     }
 
-    fn draw_status_tab(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects, c: &Connection) {
+    fn draw_status_tab(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+        c: &Connection,
+    ) {
         let content = lay.content;
 
         // Real throughput, read from the kernel (`wg show transfer` / sysfs)
         // for this tunnel. `None`/empty until at least two real samples exist;
         // no value is ever synthesized.
         let hist = self.throughput.get(&c.id);
-        let (down_series, up_series) = hist.map(|h| h.rate_series()).unwrap_or_default();
-        let has_rate = hist.map(|h| h.has_rate()).unwrap_or(false) && c.is_connected();
-        let latest = hist.and_then(|h| h.latest());
+        let (down_series, up_series) = hist.map(TransferHistory::rate_series).unwrap_or_default();
+        let has_rate = hist.is_some_and(TransferHistory::has_rate) && c.is_connected();
+        let latest = hist.and_then(TransferHistory::latest);
         let down_now = down_series.last().copied();
         let up_now = up_series.last().copied();
 
@@ -1091,7 +1525,14 @@ impl VpnApp {
             _ => "—".to_string(),
         };
         let tile_vals = [
-            ("ASSIGNED IP", if c.address.is_empty() { "—".to_string() } else { c.address.clone() }),
+            (
+                "ASSIGNED IP",
+                if c.address.is_empty() {
+                    "—".to_string()
+                } else {
+                    c.address.clone()
+                },
+            ),
             (
                 "HANDSHAKE",
                 match c.last_handshake_secs {
@@ -1105,18 +1546,66 @@ impl VpnApp {
         for (i, (label, val)) in tile_vals.iter().enumerate() {
             let x = content.x0 + i as f64 * (tw + gap);
             let r = Rect::new(x, content.y0, x + tw, content.y0 + tiles_h);
-            fill_round(scene, t, r, theme.tokens.radii.lg as f64, theme.tokens.colors.surfaces.raised);
-            stroke_round(scene, t, r, theme.tokens.radii.lg as f64, theme.tokens.colors.border_white_10, 1.0);
-            text_w(tr, scene, t, label, 10.0, theme.text_dim, r.x0 + 14.0, r.y0 + 14.0, TextWeight::Bold);
-            text_w(tr, scene, t, &ellipsize(val, 16), 17.0, theme.text_primary, r.x0 + 14.0, r.y0 + 36.0, TextWeight::Semibold);
+            fill_round(
+                scene,
+                t,
+                r,
+                f64::from(theme.tokens.radii.lg),
+                theme.tokens.colors.surfaces.raised,
+            );
+            stroke_round(
+                scene,
+                t,
+                r,
+                f64::from(theme.tokens.radii.lg),
+                theme.tokens.colors.border_white_10,
+                1.0,
+            );
+            text_w(
+                tr,
+                scene,
+                t,
+                label,
+                10.0,
+                theme.text_dim,
+                r.x0 + 14.0,
+                r.y0 + 14.0,
+                TextWeight::Bold,
+            );
+            text_w(
+                tr,
+                scene,
+                t,
+                &ellipsize(val, 16),
+                17.0,
+                theme.text_primary,
+                r.x0 + 14.0,
+                r.y0 + 36.0,
+                TextWeight::Semibold,
+            );
         }
 
         // Throughput panel — plots the REAL measured rate series. When there
         // is no live data yet the plot stays empty with an honest note; the
         // app never draws a synthesized waveform.
-        let chart = Rect::new(content.x0, content.y0 + tiles_h + 16.0, content.x1, content.y0 + tiles_h + 16.0 + 176.0);
+        let chart = Rect::new(
+            content.x0,
+            content.y0 + tiles_h + 16.0,
+            content.x1,
+            content.y0 + tiles_h + 16.0 + 176.0,
+        );
         throughput::draw_chart(scene, t, chart, theme, &down_series, &up_series, has_rate);
-        text_w(tr, scene, t, "Throughput", 12.0, theme.text_dim, chart.x0 + 12.0, chart.y0 + 10.0, TextWeight::Bold);
+        text_w(
+            tr,
+            scene,
+            t,
+            "Throughput",
+            12.0,
+            theme.text_dim,
+            chart.x0 + 12.0,
+            chart.y0 + 10.0,
+            TextWeight::Bold,
+        );
         if let Some(x) = latest {
             // Real cumulative counters straight from the kernel.
             let legend = format!(
@@ -1125,7 +1614,17 @@ impl VpnApp {
                 ui::format::bytes(x.tx)
             );
             let (lw, _) = tr.measure_weighted(&legend, 11.0, None, TextWeight::Regular);
-            text_w(tr, scene, t, &legend, 11.0, theme.text_dim, chart.x1 - 12.0 - lw as f64, chart.y0 + 10.0, TextWeight::Regular);
+            text_w(
+                tr,
+                scene,
+                t,
+                &legend,
+                11.0,
+                theme.text_dim,
+                chart.x1 - 12.0 - f64::from(lw),
+                chart.y0 + 10.0,
+                TextWeight::Regular,
+            );
         }
         if !has_rate {
             let note = if !c.is_connected() {
@@ -1139,8 +1638,15 @@ impl VpnApp {
             };
             let (nw, _) = tr.measure_weighted(note, 12.0, None, TextWeight::Regular);
             text_w(
-                tr, scene, t, note, 12.0, theme.text_dim,
-                chart.center().x - nw as f64 / 2.0, chart.center().y - 8.0, TextWeight::Regular,
+                tr,
+                scene,
+                t,
+                note,
+                12.0,
+                theme.text_dim,
+                chart.center().x - f64::from(nw) / 2.0,
+                chart.center().y - 8.0,
+                TextWeight::Regular,
             );
         }
 
@@ -1154,27 +1660,86 @@ impl VpnApp {
         ];
         for (i, (k, v)) in rows.iter().enumerate() {
             let ry = kv_top + i as f64 * 30.0;
-            text_w(tr, scene, t, k, 12.0, theme.text_dim, content.x0, ry + 6.0, TextWeight::Regular);
-            text_w(tr, scene, t, v, 12.0, theme.text_primary, content.x0 + 130.0, ry + 6.0, TextWeight::Regular);
+            text_w(
+                tr,
+                scene,
+                t,
+                k,
+                12.0,
+                theme.text_dim,
+                content.x0,
+                ry + 6.0,
+                TextWeight::Regular,
+            );
+            text_w(
+                tr,
+                scene,
+                t,
+                v,
+                12.0,
+                theme.text_primary,
+                content.x0 + 130.0,
+                ry + 6.0,
+                TextWeight::Regular,
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 t,
                 theme.tokens.colors.border_white_10.multiply_alpha(0.5),
                 None,
-                &Line::new(Point::new(content.x0, ry + 30.0), Point::new(content.x1, ry + 30.0)),
+                &Line::new(
+                    Point::new(content.x0, ry + 30.0),
+                    Point::new(content.x1, ry + 30.0),
+                ),
             );
         }
         // Per-tunnel Tor row (with a small toggle).
         let ry = kv_top + 4.0 * 30.0;
-        text_w(tr, scene, t, "Route over Tor", 12.0, theme.text_dim, content.x0, ry + 6.0, TextWeight::Regular);
+        text_w(
+            tr,
+            scene,
+            t,
+            "Route over Tor",
+            12.0,
+            theme.text_dim,
+            content.x0,
+            ry + 6.0,
+            TextWeight::Regular,
+        );
         self.draw_switch(scene, t, theme, lay.tor_row, c.tor);
     }
 
-    fn draw_config_tab(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects, c: &Connection) {
+    fn draw_config_tab(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+        c: &Connection,
+    ) {
         let content = lay.content;
-        let card = Rect::new(content.x0, content.y0, content.x1, content.y1.min(content.y0 + 360.0));
-        fill_round(scene, t, card, theme.tokens.radii.lg as f64, theme.tokens.colors.neutral[0]);
-        stroke_round(scene, t, card, theme.tokens.radii.lg as f64, theme.tokens.colors.border_white_10, 1.0);
+        let card = Rect::new(
+            content.x0,
+            content.y0,
+            content.x1,
+            content.y1.min(content.y0 + 360.0),
+        );
+        fill_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            theme.tokens.colors.neutral[0],
+        );
+        stroke_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            theme.tokens.colors.border_white_10,
+            1.0,
+        );
         let text = render_config_text(c);
         let mut y = card.y0 + 14.0;
         for line in text.lines() {
@@ -1185,7 +1750,17 @@ impl VpnApp {
             } else {
                 theme.text_dim
             };
-            tr.draw_text_styled(scene, line, 12.5, col, t * Affine::translate((card.x0 + 16.0, y)), None, TextWeight::Regular, false, true);
+            tr.draw_text_styled(
+                scene,
+                line,
+                12.5,
+                col,
+                t * Affine::translate((card.x0 + 16.0, y)),
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
             y += 19.0;
             if y > card.y1 - 16.0 {
                 break;
@@ -1193,23 +1768,60 @@ impl VpnApp {
         }
     }
 
-    fn draw_logs_tab(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects, c: &Connection) {
+    fn draw_logs_tab(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+        c: &Connection,
+    ) {
         let content = lay.content;
-        let card = Rect::new(content.x0, content.y0, content.x1, content.y1.min(content.y0 + 360.0));
-        fill_round(scene, t, card, theme.tokens.radii.lg as f64, theme.tokens.colors.neutral[0]);
-        stroke_round(scene, t, card, theme.tokens.radii.lg as f64, theme.tokens.colors.border_white_10, 1.0);
-        let xfer = self.throughput.get(&c.id).and_then(|h| h.latest());
+        let card = Rect::new(
+            content.x0,
+            content.y0,
+            content.x1,
+            content.y1.min(content.y0 + 360.0),
+        );
+        fill_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            theme.tokens.colors.neutral[0],
+        );
+        stroke_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            theme.tokens.colors.border_white_10,
+            1.0,
+        );
+        let xfer = self.throughput.get(&c.id).and_then(TransferHistory::latest);
         let lines = synth_logs(c, &self.activity, xfer);
         let mut y = card.y0 + 14.0;
         for line in &lines {
-            let col = if line.contains("error") || line.contains("denied") || line.contains("disabled") {
-                theme.tokens.colors.semantic.warning
-            } else if line.contains("ok") || line.contains("up") || line.contains("handshake") {
-                theme.tokens.colors.semantic.success
-            } else {
-                theme.text_dim
-            };
-            tr.draw_text_styled(scene, &ellipsize(line, 78), 12.0, col, t * Affine::translate((card.x0 + 16.0, y)), None, TextWeight::Regular, false, true);
+            let col =
+                if line.contains("error") || line.contains("denied") || line.contains("disabled") {
+                    theme.tokens.colors.semantic.warning
+                } else if line.contains("ok") || line.contains("up") || line.contains("handshake") {
+                    theme.tokens.colors.semantic.success
+                } else {
+                    theme.text_dim
+                };
+            tr.draw_text_styled(
+                scene,
+                &ellipsize(line, 78),
+                12.0,
+                col,
+                t * Affine::translate((card.x0 + 16.0, y)),
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
             y += 19.0;
             if y > card.y1 - 16.0 {
                 break;
@@ -1219,63 +1831,277 @@ impl VpnApp {
 
     /// Draw the hand-rolled Add form modal (scrim + card + fields). The Confirm
     /// modal is drawn via the shared [`ModalDialog`] in `draw`.
-    fn draw_add_modal_overlay(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
+    fn draw_add_modal_overlay(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        lay: &LayoutRects,
+    ) {
         if self.modal != Modal::Add {
             return;
         }
         // Scrim.
-        scene.fill(Fill::NonZero, t, theme.tokens.colors.surfaces.overlay, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.tokens.colors.surfaces.overlay,
+            None,
+            &self.rect,
+        );
         let card = lay.modal_card;
-        fill_round(scene, t, card, theme.tokens.radii.xl as f64, theme.tokens.colors.surfaces.raised);
-        stroke_round(scene, t, card, theme.tokens.radii.xl as f64, theme.tokens.colors.border_white_20, 1.0);
+        fill_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.xl),
+            theme.tokens.colors.surfaces.raised,
+        );
+        stroke_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.xl),
+            theme.tokens.colors.border_white_20,
+            1.0,
+        );
         self.draw_add_modal(scene, tr, t, theme, card);
     }
 
-    fn draw_add_modal(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, card: Rect) {
+    fn draw_add_modal(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        card: Rect,
+    ) {
         let x = card.x0 + 28.0;
-        text_w(tr, scene, t, "Add / import connection", 18.0, theme.text_primary, x, card.y0 + 24.0, TextWeight::Bold);
-        text_w(tr, scene, t, "Protocol", 11.0, theme.text_dim, x, card.y0 + 60.0, TextWeight::Bold);
+        text_w(
+            tr,
+            scene,
+            t,
+            "Add / import connection",
+            18.0,
+            theme.text_primary,
+            x,
+            card.y0 + 24.0,
+            TextWeight::Bold,
+        );
+        text_w(
+            tr,
+            scene,
+            t,
+            "Protocol",
+            11.0,
+            theme.text_dim,
+            x,
+            card.y0 + 60.0,
+            TextWeight::Bold,
+        );
         // segmented kind selector
         let seg_y = card.y0 + 78.0;
-        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn].into_iter().enumerate() {
+        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn]
+            .into_iter()
+            .enumerate()
+        {
             let sx = x + i as f64 * 130.0;
             let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
             let active = self.add_kind == k;
-            let bg = if active { theme.tokens.colors.accent[5].multiply_alpha(0.22) } else { theme.tokens.colors.surfaces.base };
-            fill_round(scene, t, r, theme.tokens.radii.md as f64, bg);
-            stroke_round(scene, t, r, theme.tokens.radii.md as f64, if active { theme.tokens.colors.accent[5] } else { theme.tokens.colors.border_standard }, 1.0);
+            let bg = if active {
+                theme.tokens.colors.accent[5].multiply_alpha(0.22)
+            } else {
+                theme.tokens.colors.surfaces.base
+            };
+            fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
+            stroke_round(
+                scene,
+                t,
+                r,
+                f64::from(theme.tokens.radii.md),
+                if active {
+                    theme.tokens.colors.accent[5]
+                } else {
+                    theme.tokens.colors.border_standard
+                },
+                1.0,
+            );
             let lbl = format!("{} (.{})", k.long_name(), k.ext());
-            text_center(tr, scene, t, &lbl, 12.0, theme.text_primary, r, if active { TextWeight::Semibold } else { TextWeight::Regular });
+            text_center(
+                tr,
+                scene,
+                t,
+                &lbl,
+                12.0,
+                theme.text_primary,
+                r,
+                if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
+            );
         }
         // fields
-        self.draw_field(scene, tr, t, theme, "Name", &self.add_name, card.x0 + 28.0, card.y0 + 128.0, card.width() - 56.0, self.add_focus == AddField::Name);
-        self.draw_field(scene, tr, t, theme, "Endpoint (host:port)", &self.add_endpoint, card.x0 + 28.0, card.y0 + 186.0, card.width() - 56.0, self.add_focus == AddField::Endpoint);
+        self.draw_field(
+            scene,
+            tr,
+            t,
+            theme,
+            "Name",
+            &self.add_name,
+            card.x0 + 28.0,
+            card.y0 + 128.0,
+            card.width() - 56.0,
+            self.add_focus == AddField::Name,
+        );
+        self.draw_field(
+            scene,
+            tr,
+            t,
+            theme,
+            "Endpoint (host:port)",
+            &self.add_endpoint,
+            card.x0 + 28.0,
+            card.y0 + 186.0,
+            card.width() - 56.0,
+            self.add_focus == AddField::Endpoint,
+        );
         // buttons
         let by = card.y1 - 52.0;
-        let cancel = Rect::new(card.x1 - 28.0 - 200.0, by, card.x1 - 28.0 - 110.0, by + 36.0);
+        let cancel = Rect::new(
+            card.x1 - 28.0 - 200.0,
+            by,
+            card.x1 - 28.0 - 110.0,
+            by + 36.0,
+        );
         let save = Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0);
-        fill_round(scene, t, cancel, theme.tokens.radii.md as f64, theme.tokens.colors.surfaces.base);
-        stroke_round(scene, t, cancel, theme.tokens.radii.md as f64, theme.tokens.colors.border_standard, 1.0);
-        text_center(tr, scene, t, "Cancel", 13.0, theme.text_primary, cancel, TextWeight::Medium);
-        fill_round(scene, t, save, theme.tokens.radii.md as f64, theme.tokens.colors.accent[5]);
-        text_center(tr, scene, t, "Save", 13.0, Color::WHITE, save, TextWeight::Semibold);
-        text_w(tr, scene, t, "Tip: import a real .conf/.ovpn to auto-fill keys, DNS and routes.", 11.0, theme.text_dim, card.x0 + 28.0, by - 24.0, TextWeight::Regular);
+        fill_round(
+            scene,
+            t,
+            cancel,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.surfaces.base,
+        );
+        stroke_round(
+            scene,
+            t,
+            cancel,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.border_standard,
+            1.0,
+        );
+        text_center(
+            tr,
+            scene,
+            t,
+            "Cancel",
+            13.0,
+            theme.text_primary,
+            cancel,
+            TextWeight::Medium,
+        );
+        fill_round(
+            scene,
+            t,
+            save,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.accent[5],
+        );
+        text_center(
+            tr,
+            scene,
+            t,
+            "Save",
+            13.0,
+            Color::WHITE,
+            save,
+            TextWeight::Semibold,
+        );
+        text_w(
+            tr,
+            scene,
+            t,
+            "Tip: import a real .conf/.ovpn to auto-fill keys, DNS and routes.",
+            11.0,
+            theme.text_dim,
+            card.x0 + 28.0,
+            by - 24.0,
+            TextWeight::Regular,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_field(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, label: &str, value: &str, x: f64, y: f64, w: f64, focused: bool) {
-        text_w(tr, scene, t, label, 11.0, theme.text_dim, x, y, TextWeight::Bold);
+    fn draw_field(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        label: &str,
+        value: &str,
+        x: f64,
+        y: f64,
+        w: f64,
+        focused: bool,
+    ) {
+        text_w(
+            tr,
+            scene,
+            t,
+            label,
+            11.0,
+            theme.text_dim,
+            x,
+            y,
+            TextWeight::Bold,
+        );
         let r = Rect::new(x, y + 18.0, x + w, y + 18.0 + 34.0);
-        fill_round(scene, t, r, theme.tokens.radii.md as f64, theme.tokens.colors.surfaces.base);
-        stroke_round(scene, t, r, theme.tokens.radii.md as f64, if focused { theme.border_focus } else { theme.tokens.colors.border_standard }, if focused { 2.0 } else { 1.0 });
+        fill_round(
+            scene,
+            t,
+            r,
+            f64::from(theme.tokens.radii.md),
+            theme.tokens.colors.surfaces.base,
+        );
+        stroke_round(
+            scene,
+            t,
+            r,
+            f64::from(theme.tokens.radii.md),
+            if focused {
+                theme.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            },
+            if focused { 2.0 } else { 1.0 },
+        );
         let shown = if value.is_empty() { "" } else { value };
         let col = theme.text_primary;
-        text_vc(tr, scene, t, shown, 13.0, col, r.x0 + 12.0, r.y0, r.height(), TextWeight::Regular);
+        text_vc(
+            tr,
+            scene,
+            t,
+            shown,
+            13.0,
+            col,
+            r.x0 + 12.0,
+            r.y0,
+            r.height(),
+            TextWeight::Regular,
+        );
         if focused {
             // caret
             let (vw, _) = tr.measure(shown, 13.0, None);
-            let cx = r.x0 + 12.0 + vw as f64 + 1.0;
-            scene.stroke(&Stroke::new(1.5), t, theme.border_focus, None, &Line::new(Point::new(cx, r.y0 + 8.0), Point::new(cx, r.y1 - 8.0)));
+            let cx = r.x0 + 12.0 + f64::from(vw) + 1.0;
+            scene.stroke(
+                &Stroke::new(1.5),
+                t,
+                theme.border_focus,
+                None,
+                &Line::new(Point::new(cx, r.y0 + 8.0), Point::new(cx, r.y1 - 8.0)),
+            );
         }
     }
 
@@ -1283,8 +2109,12 @@ impl VpnApp {
     /// command that will run, and whether the affirmative is destructive.
     fn confirm_copy(&self) -> (&'static str, String, String, bool) {
         match &self.pending {
-            Some(Pending::Connect(_, p)) => ("Connect tunnel", p.summary.clone(), p.display(), false),
-            Some(Pending::Disconnect(_, p)) => ("Disconnect tunnel", p.summary.clone(), p.display(), true),
+            Some(Pending::Connect(_, p)) => {
+                ("Connect tunnel", p.summary.clone(), p.display(), false)
+            }
+            Some(Pending::Disconnect(_, p)) => {
+                ("Disconnect tunnel", p.summary.clone(), p.display(), true)
+            }
             Some(Pending::TorGlobal(on, p)) => (
                 if *on { "Enable Tor" } else { "Disable Tor" },
                 p.summary.clone(),
@@ -1317,7 +2147,11 @@ impl VpnApp {
                 let c = cancel.clone();
                 move || c.set(true)
             });
-        ConfirmDlg { dialog, confirm: ok, cancel }
+        ConfirmDlg {
+            dialog,
+            confirm: ok,
+            cancel,
+        }
     }
 
     fn ensure_confirm_dialog(&mut self) {
@@ -1333,7 +2167,9 @@ impl VpnApp {
             return;
         }
         let rect = self.rect;
-        let Some(cd) = self.confirm_dialog.as_mut() else { return };
+        let Some(cd) = self.confirm_dialog.as_mut() else {
+            return;
+        };
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1357,7 +2193,8 @@ impl VpnApp {
                 height: taffy::AvailableSpace::Definite(rect.height() as f32),
             },
         );
-        cd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        cd.dialog
+            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
     }
 
     /// Route an event into the open confirm dialog, then apply the flags its
@@ -1370,43 +2207,52 @@ impl VpnApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-            if ke.state == ElementState::Pressed {
-                match &ke.logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.confirm_pending(doc);
-                        self.confirm_dialog = None;
-                        *handled = true;
-                        return;
-                    }
-                    Key::Character(c) if c.as_str() == "y" => {
-                        self.confirm_pending(doc);
-                        self.confirm_dialog = None;
-                        *handled = true;
-                        return;
-                    }
-                    Key::Character(c) if c.as_str() == "n" => {
-                        self.pending = None;
-                        self.modal = Modal::None;
-                        self.confirm_dialog = None;
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+        {
+            match &ke.logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    self.confirm_pending(doc);
+                    self.confirm_dialog = None;
+                    *handled = true;
+                    return;
                 }
+                Key::Character(c) if c.as_str() == "y" => {
+                    self.confirm_pending(doc);
+                    self.confirm_dialog = None;
+                    *handled = true;
+                    return;
+                }
+                Key::Character(c) if c.as_str() == "n" => {
+                    self.pending = None;
+                    self.modal = Modal::None;
+                    self.confirm_dialog = None;
+                    *handled = true;
+                    return;
+                }
+                _ => {}
             }
         }
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
         let root = automerge::ROOT;
         let (ok, cancel) = {
-            let Some(cd) = self.confirm_dialog.as_mut() else { return };
+            let Some(cd) = self.confirm_dialog.as_mut() else {
+                return;
+            };
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut focus_target = None;
             cd.dialog.handle_event(
-                event, scale_factor, modifiers, doc, &root, handled,
-                &mut focus_target, node, &taffy,
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                &root,
+                handled,
+                &mut focus_target,
+                node,
+                &taffy,
             );
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
@@ -1427,11 +2273,21 @@ impl VpnApp {
         let by = card.y1 - 52.0;
         match self.modal {
             Modal::Add => (
-                Rect::new(card.x1 - 28.0 - 200.0, by, card.x1 - 28.0 - 110.0, by + 36.0),
+                Rect::new(
+                    card.x1 - 28.0 - 200.0,
+                    by,
+                    card.x1 - 28.0 - 110.0,
+                    by + 36.0,
+                ),
                 Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0),
             ),
             _ => (
-                Rect::new(card.x1 - 28.0 - 220.0, by, card.x1 - 28.0 - 120.0, by + 36.0),
+                Rect::new(
+                    card.x1 - 28.0 - 220.0,
+                    by,
+                    card.x1 - 28.0 - 120.0,
+                    by + 36.0,
+                ),
                 Rect::new(card.x1 - 28.0 - 110.0, by, card.x1 - 28.0, by + 36.0),
             ),
         }
@@ -1441,7 +2297,10 @@ impl VpnApp {
         let card = lay.modal_card;
         // kind segments
         let seg_y = card.y0 + 78.0;
-        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn].into_iter().enumerate() {
+        for (i, k) in [ConnKind::WireGuard, ConnKind::OpenVpn]
+            .into_iter()
+            .enumerate()
+        {
             let sx = card.x0 + 28.0 + i as f64 * 130.0;
             let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
             if point_in(r, p) {
@@ -1450,8 +2309,18 @@ impl VpnApp {
             }
         }
         // fields
-        let name_r = Rect::new(card.x0 + 28.0, card.y0 + 146.0, card.x1 - 28.0, card.y0 + 180.0);
-        let endp_r = Rect::new(card.x0 + 28.0, card.y0 + 204.0, card.x1 - 28.0, card.y0 + 238.0);
+        let name_r = Rect::new(
+            card.x0 + 28.0,
+            card.y0 + 146.0,
+            card.x1 - 28.0,
+            card.y0 + 180.0,
+        );
+        let endp_r = Rect::new(
+            card.x0 + 28.0,
+            card.y0 + 204.0,
+            card.x1 - 28.0,
+            card.y0 + 238.0,
+        );
         if point_in(name_r, p) {
             self.add_focus = AddField::Name;
             return;
@@ -1477,7 +2346,11 @@ fn render_config_text(c: &Connection) -> String {
         ),
         ConnKind::OpenVpn => format!(
             "client\ndev tun\nproto udp\nremote {}\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\n# pushed routes: {}\n# dns: {}\n<ca>\n  (certificate)\n</ca>",
-            c.endpoint.replace(':', " ").split(" (").next().unwrap_or(&c.endpoint),
+            c.endpoint
+                .replace(':', " ")
+                .split(" (")
+                .next()
+                .unwrap_or(&c.endpoint),
             c.allowed_ips,
             c.dns
         ),
@@ -1494,17 +2367,30 @@ fn synth_logs(c: &Connection, activity: &[String], xfer: Option<Transfer>) -> Ve
     if c.is_connected() {
         out.push(format!("[{}] interface up — assigned {}", iface, c.address));
         if !c.allowed_ips.is_empty() {
-            out.push(format!("[{}] routing {} via {}", iface, c.allowed_ips, iface));
+            out.push(format!(
+                "[{}] routing {} via {}",
+                iface, c.allowed_ips, iface
+            ));
         }
         if let Some(x) = xfer {
-            out.push(format!("[{}] received {} (kernel counter)", iface, ui::format::bytes(x.rx)));
-            out.push(format!("[{}] sent {} (kernel counter)", iface, ui::format::bytes(x.tx)));
+            out.push(format!(
+                "[{}] received {} (kernel counter)",
+                iface,
+                ui::format::bytes(x.rx)
+            ));
+            out.push(format!(
+                "[{}] sent {} (kernel counter)",
+                iface,
+                ui::format::bytes(x.tx)
+            ));
         }
         if c.tor {
-            out.push(format!("[{}] traffic chained over Tor SOCKS 127.0.0.1:9050", iface));
+            out.push(format!(
+                "[{iface}] traffic chained over Tor SOCKS 127.0.0.1:9050"
+            ));
         }
     } else {
-        out.push(format!("[{}] interface down", iface));
+        out.push(format!("[{iface}] interface down"));
     }
     // append global activity newest-last
     for a in activity.iter().rev().take(8) {
@@ -1537,7 +2423,7 @@ impl Widget for VpnApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
@@ -1545,16 +2431,29 @@ impl Widget for VpnApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
         // Background.
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.base, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
         let lay = self.layout();
         self.draw_list(scene, text_renderer, transform, theme, &lay);
         self.draw_detail(scene, text_renderer, transform, theme, &lay);
@@ -1567,7 +2466,8 @@ impl Widget for VpnApp {
                 self.ensure_confirm_dialog();
                 self.layout_confirm_dialog();
                 if let Some(cd) = self.confirm_dialog.as_mut() {
-                    cd.dialog.draw(scene, transform, text_renderer, theme, _presence);
+                    cd.dialog
+                        .draw(scene, transform, text_renderer, theme, _presence);
                 }
             }
             Modal::None => self.confirm_dialog = None,
@@ -1610,7 +2510,11 @@ impl Widget for VpnApp {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let p = self.last_mouse;
                 let lay = self.layout();
                 *handled = true;
@@ -1669,7 +2573,16 @@ impl Widget for VpnApp {
                     }
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. }, .. } => {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        text,
+                        ..
+                    },
+                ..
+            } => {
                 // Modal key handling.
                 if self.modal == Modal::Add {
                     *handled = true;
@@ -1692,7 +2605,7 @@ impl Widget for VpnApp {
                         _ => {
                             if let Some(txt) = text {
                                 let s = txt.as_str();
-                                if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
+                                if !s.is_empty() && !s.chars().any(char::is_control) {
                                     let f = match self.add_focus {
                                         AddField::Name => &mut self.add_name,
                                         AddField::Endpoint => &mut self.add_endpoint,
@@ -1720,17 +2633,33 @@ impl Widget for VpnApp {
                         }
                         *handled = true;
                     }
-                    Key::Character(c) => {
-                        match c.as_str() {
-                            "a" => { self.open_add(ConnKind::WireGuard); *handled = true; }
-                            "i" => { self.request_import(ConnKind::WireGuard); *handled = true; }
-                            "t" => { self.request_tor_global(); *handled = true; }
-                            "1" => { self.detail_tab = DetailTab::Status; *handled = true; }
-                            "2" => { self.detail_tab = DetailTab::Config; *handled = true; }
-                            "3" => { self.detail_tab = DetailTab::Logs; *handled = true; }
-                            _ => {}
+                    Key::Character(c) => match c.as_str() {
+                        "a" => {
+                            self.open_add(ConnKind::WireGuard);
+                            *handled = true;
                         }
-                    }
+                        "i" => {
+                            self.request_import(ConnKind::WireGuard);
+                            *handled = true;
+                        }
+                        "t" => {
+                            self.request_tor_global();
+                            *handled = true;
+                        }
+                        "1" => {
+                            self.detail_tab = DetailTab::Status;
+                            *handled = true;
+                        }
+                        "2" => {
+                            self.detail_tab = DetailTab::Config;
+                            *handled = true;
+                        }
+                        "3" => {
+                            self.detail_tab = DetailTab::Logs;
+                            *handled = true;
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -1738,7 +2667,7 @@ impl Widget for VpnApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "VpnApp"
     }
 
@@ -1779,7 +2708,12 @@ impl Widget for VpnApp {
         // counters keep refreshing. The rates shown are measured, never
         // fabricated — with execution disabled nothing polls at all.
         self.import_rx.is_some()
-            || (config::exec_allowed() && self.vault.connections.iter().any(|c| c.is_connected()))
+            || (config::exec_allowed()
+                && self
+                    .vault
+                    .connections
+                    .iter()
+                    .any(super::model::Connection::is_connected))
     }
 
     fn draw_with_presence(
@@ -1824,8 +2758,9 @@ mod tests {
     fn esc_key() -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Escape);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1842,7 +2777,14 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
-            ev, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus, node,
+            ev,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
             &taffy,
         );
     }
@@ -1856,7 +2798,13 @@ mod tests {
         unsafe { std::env::remove_var("QOS_VPN_ALLOW_EXEC") };
         let (mut app, mut doc) = demo_with_doc();
         app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-        let work = app.vault.connections.iter().find(|c| c.name == "Work").unwrap().id;
+        let work = app
+            .vault
+            .connections
+            .iter()
+            .find(|c| c.name == "Work")
+            .unwrap()
+            .id;
         app.select(&mut doc, work);
 
         // Arm a confirm, then Escape it — the dialog owns dismissal.
@@ -1874,8 +2822,15 @@ mod tests {
         let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
         dispatch(&mut app, &mut doc, &cursor_at(primary.center()));
         dispatch(&mut app, &mut doc, &press());
-        assert_eq!(app.modal, Modal::None, "the primary click resolved the confirm");
-        assert!(app.pending.is_none(), "confirming consumed the pending action");
+        assert_eq!(
+            app.modal,
+            Modal::None,
+            "the primary click resolved the confirm"
+        );
+        assert!(
+            app.pending.is_none(),
+            "confirming consumed the pending action"
+        );
         assert!(app.confirm_dialog.is_none());
     }
 
@@ -1919,7 +2874,13 @@ mod tests {
         // must NOT claim the tunnel is connected — the real command never ran.
         unsafe { std::env::remove_var("QOS_VPN_ALLOW_EXEC") };
         let (mut app, mut doc) = demo_with_doc();
-        let work = app.vault.connections.iter().find(|c| c.name == "Work").unwrap().id;
+        let work = app
+            .vault
+            .connections
+            .iter()
+            .find(|c| c.name == "Work")
+            .unwrap()
+            .id;
         assert!(!app.vault.get(work).unwrap().is_connected());
         app.select(&mut doc, work);
         app.request_toggle(work);
@@ -1927,7 +2888,12 @@ mod tests {
         app.confirm_pending(&mut doc);
         let back = VpnDoc::read_vault(&doc);
         assert!(
-            !back.connections.iter().find(|c| c.id == work).unwrap().is_connected(),
+            !back
+                .connections
+                .iter()
+                .find(|c| c.id == work)
+                .unwrap()
+                .is_connected(),
             "a refused command must never show as Connected"
         );
     }
@@ -1938,8 +2904,7 @@ mod tests {
         // The real import path end-to-end: a chosen .conf is read, parsed into
         // a tunnel, AND its raw bytes persisted so the real bring-up command
         // references the exact file. Redirect the data dir to a scratch space.
-        let scratch =
-            std::env::temp_dir().join(format!("qos-vpn-import-{}", uuid::Uuid::new_v4()));
+        let scratch = std::env::temp_dir().join(format!("qos-vpn-import-{}", uuid::Uuid::new_v4()));
         unsafe { std::env::set_var("XDG_DATA_HOME", &scratch) };
 
         let (mut app, mut doc) = demo_with_doc();
@@ -1964,9 +2929,18 @@ mod tests {
         assert_eq!(imported.dns, "9.9.9.9");
 
         // The raw config was persisted and wired as the bring-up target.
-        let cfg = imported.config_path().expect("import persists a runnable config");
-        assert!(cfg.starts_with(scratch.to_str().unwrap()), "config saved under data dir: {cfg}");
-        assert_eq!(std::fs::read_to_string(cfg).unwrap(), raw, "exact bytes preserved");
+        let cfg = imported
+            .config_path()
+            .expect("import persists a runnable config");
+        assert!(
+            cfg.starts_with(scratch.to_str().unwrap()),
+            "config saved under data dir: {cfg}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cfg).unwrap(),
+            raw,
+            "exact bytes preserved"
+        );
 
         // The REAL connect command references that persisted file.
         let plan = config::connect_plan(&imported, config::default_backend(imported.kind));

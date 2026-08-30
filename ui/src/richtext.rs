@@ -4,7 +4,13 @@
 //! rectangles, and point↔offset hit-testing. Render it with
 //! [`crate::text_render::TextRenderer::draw_rich`].
 
-use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, Weight, Wrap};
+use cosmic_text::{
+    Affinity, Align, Attrs, Buffer, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight,
+    Wrap,
+};
+
+use crate::text_break::OffsetMap;
+use crate::text_selection::{TextAffinity, TextPosition};
 
 /// A generic font family the toolkit can resolve from system fonts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -58,7 +64,6 @@ impl BaselineShift {
     /// Font-size multiplier applied to super/subscript runs (~0.7×).
     pub const SCALE: f32 = 0.7;
 
-    /// True for `Super`/`Sub` (i.e. anything that shifts off the baseline).
     pub fn is_shifted(self) -> bool {
         !matches!(self, BaselineShift::None)
     }
@@ -119,12 +124,10 @@ impl RichSpan {
         self.color = c;
         self
     }
-    /// Set a highlight / background colour (RGB) painted behind this run.
     pub fn background(mut self, c: Option<[u8; 3]>) -> Self {
         self.background = c;
         self
     }
-    /// Set a baseline shift (super/subscript) for this run.
     pub fn baseline(mut self, b: BaselineShift) -> Self {
         self.baseline = b;
         self
@@ -138,6 +141,7 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+    Justified,
 }
 
 impl TextAlign {
@@ -146,6 +150,7 @@ impl TextAlign {
             TextAlign::Left => None,
             TextAlign::Center => Some(Align::Center),
             TextAlign::Right => Some(Align::Right),
+            TextAlign::Justified => Some(Align::Justified),
         }
     }
 }
@@ -153,6 +158,14 @@ impl TextAlign {
 /// A laid-out block of attributed text.
 pub struct RichTextLayout {
     pub(crate) buffer: Buffer,
+    /// Global byte offset of every cosmic-text logical line. cosmic-text
+    /// cursors are `(line, byte-within-line)`; the public toolkit API uses a
+    /// single byte space over the complete paragraph/block.
+    line_starts: Vec<usize>,
+    /// Byte length of each logical line, excluding its trailing newline.
+    line_lens: Vec<usize>,
+    offset_map: OffsetMap,
+    text_len: usize,
     pub(crate) underlines: Vec<(usize, usize)>,
     pub(crate) strikes: Vec<(usize, usize)>,
     /// Highlight bands: `(start_byte, end_byte, rgb)`. Painted behind glyphs.
@@ -161,10 +174,90 @@ pub struct RichTextLayout {
     /// ranges are already shaped at the reduced size; the draw path applies the
     /// vertical offset.
     pub(crate) baselines: Vec<(usize, usize, BaselineShift)>,
+    discretionary_hyphen_width: f32,
     line_height: f32,
+    pub(crate) font_variations: Vec<crate::text_render::FontVariation>,
+    pub(crate) hanging_punctuation: crate::text_render::HangingPunctuation,
+    fragmentation: crate::text_render::Fragmentation,
 }
 
 impl RichTextLayout {
+    fn line_map(text: &str) -> (Vec<usize>, Vec<usize>) {
+        let mut line_starts = vec![0];
+        let mut line_lens = Vec::new();
+        let mut line_start = 0;
+        for (byte, ch) in text.char_indices() {
+            if ch == '\n' {
+                line_lens.push(byte - line_start);
+                line_start = byte + ch.len_utf8();
+                line_starts.push(line_start);
+            }
+        }
+        line_lens.push(text.len() - line_start);
+        (line_starts, line_lens)
+    }
+
+    /// Shape an un-attributed paragraph with the same complete style used by
+    /// [`crate::text_render::TextRenderer`]. `max_width = None` produces one
+    /// unwrapped line (form fields); a width enables Unicode word wrapping.
+    pub fn shape_plain(
+        fs: &mut FontSystem,
+        text: &str,
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+    ) -> Self {
+        let line_height = style.line_height_px();
+        let offset_map = if max_width.is_some() {
+            OffsetMap::for_text_with_hyphenation(text, style.hyphenation.language())
+        } else {
+            OffsetMap::default()
+        };
+        let discretionary_hyphen_width = if offset_map.has_discretionary_hyphens() {
+            crate::text_render::discretionary_hyphen_advance(fs, style)
+        } else {
+            0.0
+        };
+        let shaping_text = offset_map.shape_text(text);
+        let mut buffer = Buffer::new(fs, Metrics::new(style.size, line_height));
+        let attrs = style.cosmic_attrs();
+        buffer.set_text(
+            &shaping_text,
+            &attrs,
+            Shaping::Advanced,
+            style.align.to_cosmic(),
+        );
+        let layout_width = max_width.map(|width| (width - discretionary_hyphen_width).max(0.0));
+        buffer.set_size(layout_width, None);
+        buffer.set_wrap(if max_width.is_some() {
+            Wrap::Word
+        } else {
+            Wrap::None
+        });
+        buffer.shape_until_scroll(fs, false);
+        if style.wrap_mode == crate::text_render::TextWrapMode::Balance
+            && let Some(layout_width) = layout_width
+        {
+            crate::text_render::balance_buffer(&mut buffer, fs, layout_width);
+        }
+        let (line_starts, line_lens) = Self::line_map(&shaping_text);
+        Self {
+            buffer,
+            line_starts,
+            line_lens,
+            offset_map,
+            text_len: text.len(),
+            underlines: Vec::new(),
+            strikes: Vec::new(),
+            backgrounds: Vec::new(),
+            baselines: Vec::new(),
+            discretionary_hyphen_width,
+            line_height,
+            font_variations: style.resolved_variations(),
+            hanging_punctuation: style.hanging_punctuation,
+            fragmentation: style.fragmentation,
+        }
+    }
+
     /// Shape `spans` into `width`. `base_bold` makes the whole block bold
     /// (headings); `underlines` are byte ranges to underline; `align` sets
     /// horizontal alignment. `line_height_mult` scales the line advance
@@ -182,10 +275,58 @@ impl RichTextLayout {
         strikes: Vec<(usize, usize)>,
         line_height_mult: f32,
     ) -> Self {
-        let line_height = size * 1.4 * line_height_mult;
+        use crate::text_render::{FontChoice, TextStyle, TextWeight};
+
+        let family = match family {
+            FontFamily::Sans => FontChoice::SansSerif,
+            FontFamily::Serif => FontChoice::Serif,
+            FontFamily::Mono => FontChoice::Monospace,
+        };
+        let style = TextStyle::new(size)
+            .with_line_height(1.4 * line_height_mult)
+            .with_weight(if base_bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            })
+            .with_family(family);
+        Self::shape_styled(fs, spans, &style, Some(width), align, underlines, strikes)
+    }
+
+    /// Shape attributed spans with the same complete block style used by
+    /// plain application text. This is the preferred entry point for editors
+    /// and custom widgets: font family, weight, size, and leading remain one
+    /// value from measurement through painting.
+    #[allow(clippy::too_many_arguments)]
+    pub fn shape_styled(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+    ) -> Self {
+        let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
+        let offset_map = if max_width.is_some() {
+            OffsetMap::for_text_with_hyphenation(&full_text, style.hyphenation.language())
+        } else {
+            OffsetMap::default()
+        };
+        let discretionary_hyphen_width = if offset_map.has_discretionary_hyphens() {
+            crate::text_render::discretionary_hyphen_advance(fs, style)
+        } else {
+            0.0
+        };
+        let shaping_text = offset_map.shape_text(&full_text);
+        let (line_starts, line_lens) = Self::line_map(&shaping_text);
+
+        let size = style.size;
+        let line_height = style.line_height_px();
+        let line_height_mult = style.line_height;
         let mut buffer = Buffer::new(fs, Metrics::new(size, line_height));
-        let fam = family.to_cosmic();
-        let base = Attrs::new().family(fam).weight(if base_bold { Weight::BOLD } else { Weight::NORMAL });
+        let fam = style.family.to_cosmic();
+        let base = style.cosmic_attrs().family(fam);
 
         // Byte offsets accumulate over the *non-empty* spans (matching what gets
         // fed to cosmic-text), so backgrounds/baselines align with glyph
@@ -194,51 +335,100 @@ impl RichTextLayout {
         let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
         let mut cursor = 0usize;
 
-        let built: Vec<(&str, Attrs)> = if spans.iter().all(|r| r.text.is_empty()) {
-            vec![("", base.clone())]
-        } else {
-            spans
+        let built: Vec<(std::borrow::Cow<'_, str>, Attrs)> =
+            if spans.iter().all(|r| r.text.is_empty()) {
+                vec![(std::borrow::Cow::Borrowed(""), base.clone())]
+            } else {
+                spans
+                    .iter()
+                    .filter(|r| !r.text.is_empty())
+                    .map(|r| {
+                        let run_fam = match r.family {
+                            Some(family) => family.to_cosmic(),
+                            None => style.family.to_cosmic(),
+                        };
+                        let base_run_size = r.size.unwrap_or(size);
+                        // Super/subscript runs shape smaller so they advance narrower.
+                        let run_size = if r.baseline.is_shifted() {
+                            base_run_size * BaselineShift::SCALE
+                        } else {
+                            base_run_size
+                        };
+                        let start = cursor;
+                        let end = cursor + r.text.len();
+                        cursor = end;
+                        if let Some(bg) = r.background {
+                            backgrounds.push((start, end, bg));
+                        }
+                        if r.baseline.is_shifted() {
+                            baselines.push((start, end, r.baseline));
+                        }
+                        let mut a = style
+                            .cosmic_attrs()
+                            .family(run_fam)
+                            .weight(if r.bold {
+                                Weight::BOLD
+                            } else {
+                                style.effective_weight()
+                            })
+                            .metrics(Metrics::new(run_size, run_size * line_height_mult));
+                        if style.letter_spacing != 0.0 {
+                            a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
+                        }
+                        if r.italic || style.italic {
+                            a = a.style(Style::Italic);
+                        }
+                        if let Some([cr, cg, cb]) = r.color {
+                            a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
+                        }
+                        (offset_map.shape_fragment(&r.text, start), a)
+                    })
+                    .collect()
+            };
+
+        buffer.set_rich_text(
+            built
                 .iter()
-                .filter(|r| !r.text.is_empty())
-                .map(|r| {
-                    let run_fam = r.family.map(|f| f.to_cosmic()).unwrap_or(fam);
-                    let base_run_size = r.size.unwrap_or(size);
-                    // Super/subscript runs shape smaller so they advance narrower.
-                    let run_size = if r.baseline.is_shifted() {
-                        base_run_size * BaselineShift::SCALE
-                    } else {
-                        base_run_size
-                    };
-                    let start = cursor;
-                    let end = cursor + r.text.len();
-                    cursor = end;
-                    if let Some(bg) = r.background {
-                        backgrounds.push((start, end, bg));
-                    }
-                    if r.baseline.is_shifted() {
-                        baselines.push((start, end, r.baseline));
-                    }
-                    let mut a = Attrs::new()
-                        .family(run_fam)
-                        .weight(if r.bold || base_bold { Weight::BOLD } else { Weight::NORMAL })
-                        .metrics(Metrics::new(run_size, run_size * 1.4 * line_height_mult));
-                    if r.italic {
-                        a = a.style(Style::Italic);
-                    }
-                    if let Some([cr, cg, cb]) = r.color {
-                        a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
-                    }
-                    (r.text.as_str(), a)
-                })
-                .collect()
+                .map(|(text, attrs)| (text.as_ref(), attrs.clone())),
+            &base,
+            Shaping::Advanced,
+            align.to_cosmic(),
+        );
+        let reserved_hyphen_width = if align == TextAlign::Left {
+            discretionary_hyphen_width
+        } else {
+            0.0
         };
-
-        buffer.set_rich_text(built, &base, Shaping::Advanced, align.to_cosmic());
-        buffer.set_size(Some(width), None);
-        buffer.set_wrap(Wrap::Word);
+        let layout_width = max_width.map(|width| (width - reserved_hyphen_width).max(0.0));
+        buffer.set_size(layout_width, None);
+        buffer.set_wrap(if max_width.is_some() {
+            Wrap::Word
+        } else {
+            Wrap::None
+        });
         buffer.shape_until_scroll(fs, false);
+        if style.wrap_mode == crate::text_render::TextWrapMode::Balance
+            && let Some(layout_width) = layout_width
+        {
+            crate::text_render::balance_buffer(&mut buffer, fs, layout_width);
+        }
 
-        Self { buffer, underlines, strikes, backgrounds, baselines, line_height }
+        Self {
+            buffer,
+            line_starts,
+            line_lens,
+            offset_map,
+            text_len: full_text.len(),
+            underlines,
+            strikes,
+            backgrounds,
+            baselines,
+            discretionary_hyphen_width,
+            line_height,
+            font_variations: style.resolved_variations(),
+            hanging_punctuation: style.hanging_punctuation,
+            fragmentation: style.fragmentation,
+        }
     }
 
     /// Total laid-out height (at least one line tall).
@@ -250,26 +440,302 @@ impl RichTextLayout {
             .max(self.line_height)
     }
 
-    /// Map a local point to a byte offset (click → caret).
-    pub fn hit(&self, x: f32, y: f32) -> usize {
-        self.buffer.hit(x, y).map(|c| c.index).unwrap_or(0)
+    /// Return the number of lines that may be placed in the current fragment
+    /// without stranding fewer than the configured orphan/widow counts.
+    pub fn fragment_line_count(&self, available_lines: usize) -> usize {
+        self.fragment_line_count_from(0, available_lines)
     }
 
-    /// Caret geometry for a byte offset: `(x, top_y, height)`.
-    pub fn caret_geometry(&self, byte: usize) -> (f32, f32, f32) {
-        let mut last: Option<(f32, f32, f32)> = None;
+    /// As [`Self::fragment_line_count`], starting at `first_line` for a
+    /// paragraph that already spans one or more earlier fragments.
+    pub fn fragment_line_count_from(&self, first_line: usize, available_lines: usize) -> usize {
+        let total = self.buffer.layout_runs().count();
+        let remaining = total.saturating_sub(first_line);
+        if remaining <= available_lines {
+            return remaining;
+        }
+        let orphans = usize::from(self.fragmentation.orphans);
+        let widows = usize::from(self.fragmentation.widows);
+        let take = available_lines.min(remaining.saturating_sub(widows));
+        if take < orphans { 0 } else { take }
+    }
+
+    /// Widest laid-out visual line.
+    pub fn width(&self) -> f32 {
+        self.buffer
+            .layout_runs()
+            .map(|run| {
+                let exercised_hyphen = run
+                    .glyphs
+                    .last()
+                    .is_some_and(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
+                run.line_w
+                    + if exercised_hyphen {
+                        self.discretionary_hyphen_width
+                    } else {
+                        0.0
+                    }
+            })
+            .fold(0.0f32, f32::max)
+    }
+
+    /// Add an underline decoration in this layout's global byte space. This
+    /// is used for IME preedit, where the composition is shaped and painted
+    /// but has not yet entered the document model.
+    pub fn add_underline(&mut self, range: std::ops::Range<usize>) {
+        if range.start < range.end && range.end <= self.text_len {
+            self.underlines.push((range.start, range.end));
+        }
+    }
+
+    /// Map a local point to a byte offset and its visual boundary affinity.
+    pub fn hit_position(&self, x: f32, y: f32) -> TextPosition {
+        self.buffer.hit(x, y).map_or_else(
+            || TextPosition::new(0),
+            |cursor| self.global_position(cursor),
+        )
+    }
+
+    /// Map a local point to a byte offset (click → caret).
+    ///
+    /// Prefer [`Self::hit_position`] in an editor so a mixed-BiDi boundary
+    /// keeps the side that was clicked.
+    pub fn hit(&self, x: f32, y: f32) -> usize {
+        self.hit_position(x, y).byte
+    }
+
+    /// Caret geometry for a byte offset and affinity: `(x, top_y, height)`.
+    pub fn caret_geometry_at(&self, position: TextPosition) -> (f32, f32, f32) {
+        let position = TextPosition {
+            byte: position.byte.min(self.text_len),
+            affinity: position.affinity,
+        };
+        let mut byte_fallback = None;
         for run in self.buffer.layout_runs() {
-            for g in run.glyphs.iter() {
-                if byte <= g.start {
-                    return (g.x, run.line_top, run.line_height);
+            for (x, stop) in self.caret_stops(&run) {
+                let geometry = (x, run.line_top, run.line_height);
+                if stop == position {
+                    return geometry;
                 }
-                last = Some((g.x + g.w, run.line_top, run.line_height));
-            }
-            if run.glyphs.is_empty() && last.is_none() {
-                last = Some((0.0, run.line_top, run.line_height));
+                if stop.byte == position.byte && byte_fallback.is_none() {
+                    byte_fallback = Some(geometry);
+                }
             }
         }
-        last.unwrap_or((0.0, 0.0, self.line_height))
+        byte_fallback.unwrap_or((0.0, 0.0, self.line_height))
+    }
+
+    /// Caret geometry for a conventional byte-only position.
+    pub fn caret_geometry(&self, byte: usize) -> (f32, f32, f32) {
+        self.caret_geometry_at(TextPosition::new(byte))
+    }
+
+    /// Logical byte positions reached by Home and End for the visual line
+    /// containing `byte`. Paragraph direction is respected: Home is the
+    /// right edge for an RTL line and the left edge for an LTR line.
+    pub fn visual_line_edges(&self, byte: usize) -> (usize, usize) {
+        let cursor = self.cursor_at(byte);
+        let mut fallback = None;
+        for run in self.buffer.layout_runs() {
+            if run.line_i != cursor.line || run.cursor_position(&cursor).is_none() {
+                continue;
+            }
+            let Some((first, last)) = run.glyphs.first().zip(run.glyphs.last()) else {
+                let at = self.global_byte(Cursor::new(run.line_i, 0));
+                return (at, at);
+            };
+            let left = run.cursor_from_glyph_left(first);
+            let right = run.cursor_from_glyph_right(last);
+            let edges = if run.rtl {
+                (self.global_byte(right), self.global_byte(left))
+            } else {
+                (self.global_byte(left), self.global_byte(right))
+            };
+            if run.glyphs.iter().any(|glyph| glyph.start == cursor.index) {
+                return edges;
+            }
+            fallback = Some(edges);
+        }
+        fallback.unwrap_or((byte.min(self.text_len), byte.min(self.text_len)))
+    }
+
+    /// Zero-based visual row containing `byte`, including soft-wrapped rows.
+    pub fn visual_line_index(&self, byte: usize) -> usize {
+        let cursor = self.cursor_at(byte);
+        let mut fallback = 0;
+        for (visual, run) in self.buffer.layout_runs().enumerate() {
+            if run.line_i != cursor.line || run.cursor_position(&cursor).is_none() {
+                continue;
+            }
+            if run.glyphs.iter().any(|glyph| glyph.start == cursor.index) {
+                return visual;
+            }
+            fallback = visual;
+        }
+        fallback
+    }
+
+    /// Vertical bands for every soft-wrapped visual row belonging to the
+    /// logical line that contains `byte`. Useful for editor chrome such as a
+    /// current-line background without rebuilding a second line model.
+    pub fn logical_line_bands(&self, byte: usize) -> Vec<(f32, f32)> {
+        let line = self.cursor_at(byte).line;
+        self.buffer
+            .layout_runs()
+            .filter(|run| run.line_i == line)
+            .map(|run| (run.line_top, run.line_height))
+            .collect()
+    }
+
+    /// Zero-based logical (hard-broken) line containing `byte`.
+    pub fn logical_line_index(&self, byte: usize) -> usize {
+        self.cursor_at(byte).line
+    }
+
+    /// The first visual row for each logical line as
+    /// `(zero_based_line, top, height)`. Line-number gutters consume this so
+    /// their baselines come from the authoritative shaped paragraph too.
+    pub fn logical_line_origins(&self) -> Vec<(usize, f32, f32)> {
+        let mut origins = Vec::new();
+        for run in self.buffer.layout_runs() {
+            if origins
+                .last()
+                .is_none_or(|(line, _, _)| *line != run.line_i)
+            {
+                origins.push((run.line_i, run.line_top, run.line_height));
+            }
+        }
+        origins
+    }
+
+    /// Move one shaped caret stop toward the visual left or right. Stops are
+    /// derived from grapheme boundaries inside each glyph cluster, so this
+    /// respects ligatures, combining sequences, and BiDi reordering.
+    pub fn visual_motion_position(&self, position: TextPosition, right: bool) -> TextPosition {
+        let position = TextPosition {
+            byte: position.byte.min(self.text_len),
+            affinity: position.affinity,
+        };
+        for run in self.buffer.layout_runs() {
+            let stops = self.caret_stops(&run);
+            let Some(index) = stops.iter().position(|(_, stop)| *stop == position) else {
+                continue;
+            };
+            let target = if right {
+                (index + 1).min(stops.len().saturating_sub(1))
+            } else {
+                index.saturating_sub(1)
+            };
+            return stops[target].1;
+        }
+
+        // Byte-only callers conventionally enter with Before affinity. At a
+        // boundary where only the other side exists, choose that stop and
+        // continue in the requested visual direction.
+        for run in self.buffer.layout_runs() {
+            let stops = self.caret_stops(&run);
+            let Some(index) = stops
+                .iter()
+                .position(|(_, stop)| stop.byte == position.byte)
+            else {
+                continue;
+            };
+            let target = if right {
+                (index + 1).min(stops.len().saturating_sub(1))
+            } else {
+                index.saturating_sub(1)
+            };
+            return stops[target].1;
+        }
+        position
+    }
+
+    /// Byte-only compatibility wrapper for visual caret motion.
+    pub fn visual_motion(&self, byte: usize, right: bool) -> usize {
+        self.visual_motion_position(TextPosition::new(byte), right)
+            .byte
+    }
+
+    fn caret_stops(&self, run: &cosmic_text::LayoutRun<'_>) -> Vec<(f32, TextPosition)> {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let mut stops = Vec::new();
+        for glyph in run.glyphs {
+            let cluster = &run.text[glyph.start..glyph.end];
+            let mut boundaries: Vec<usize> =
+                cluster.grapheme_indices(true).map(|(at, _)| at).collect();
+            boundaries.push(cluster.len());
+            let segments = boundaries.len().saturating_sub(1).max(1);
+            for visual in 0..=segments {
+                let logical = if glyph.level.is_rtl() {
+                    boundaries[segments - visual]
+                } else {
+                    boundaries[visual]
+                };
+                let shaped = glyph.start + logical;
+                let affinity = if shaped == glyph.end {
+                    TextAffinity::Before
+                } else {
+                    TextAffinity::After
+                };
+                stops.push((
+                    crate::text_render::hanging_glyph_x(run, glyph, self.hanging_punctuation)
+                        + glyph.w * visual as f32 / segments as f32,
+                    TextPosition::with_affinity(
+                        self.glyph_global_byte(run.line_i, shaped),
+                        affinity,
+                    ),
+                ));
+            }
+        }
+        if stops.is_empty() {
+            stops.push((
+                0.0,
+                TextPosition::with_affinity(
+                    self.global_byte(Cursor::new(run.line_i, 0)),
+                    TextAffinity::Before,
+                ),
+            ));
+        }
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        stops.dedup_by(|a, b| (a.0 - b.0).abs() < 0.01 && a.1 == b.1);
+        stops
+    }
+
+    fn cursor_at(&self, byte: usize) -> Cursor {
+        let byte = self.offset_map.source_to_shaped(byte.min(self.text_len));
+        let line = match self.line_starts.binary_search(&byte) {
+            Ok(line) => line,
+            Err(next) => next.saturating_sub(1),
+        }
+        .min(self.line_starts.len().saturating_sub(1));
+        let index = (byte - self.line_starts[line]).min(self.line_lens[line]);
+        Cursor::new(line, index)
+    }
+
+    fn global_byte(&self, cursor: Cursor) -> usize {
+        let line = cursor.line.min(self.line_starts.len().saturating_sub(1));
+        self.offset_map
+            .shaped_to_source(self.line_starts[line] + cursor.index.min(self.line_lens[line]))
+            .min(self.text_len)
+    }
+
+    fn global_position(&self, cursor: Cursor) -> TextPosition {
+        let affinity = match cursor.affinity {
+            Affinity::Before => TextAffinity::Before,
+            Affinity::After => TextAffinity::After,
+        };
+        TextPosition::with_affinity(self.global_byte(cursor), affinity)
+    }
+
+    pub(crate) fn glyph_global_byte(&self, line: usize, byte: usize) -> usize {
+        let shaped = self
+            .line_starts
+            .get(line)
+            .copied()
+            .unwrap_or_else(|| self.offset_map.source_to_shaped(self.text_len))
+            .saturating_add(byte);
+        self.offset_map.shaped_to_source(shaped).min(self.text_len)
     }
 
     /// Baseline shift in effect at byte offset `byte`, if any range covers it.
@@ -289,19 +755,14 @@ impl RichTextLayout {
         if start >= end {
             return rects;
         }
+        let cursor_start = self.cursor_at(start);
+        let cursor_end = self.cursor_at(end);
         for run in self.buffer.layout_runs() {
-            let mut x0: Option<f32> = None;
-            let mut x1 = 0.0f32;
-            for g in run.glyphs.iter() {
-                if g.end > start && g.start < end {
-                    if x0.is_none() {
-                        x0 = Some(g.x);
-                    }
-                    x1 = g.x + g.w;
-                }
+            if run.line_i < cursor_start.line || run.line_i > cursor_end.line {
+                continue;
             }
-            if let Some(x0) = x0 {
-                rects.push((x0, run.line_top, x1, run.line_top + run.line_height));
+            for (x, width) in run.highlight(cursor_start, cursor_end) {
+                rects.push((x, run.line_top, x + width, run.line_top + run.line_height));
             }
         }
         rects
@@ -311,6 +772,22 @@ impl RichTextLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layout(text: &str, width: f32) -> RichTextLayout {
+        let mut fs = crate::configured_font_system();
+        RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new(text)],
+            false,
+            18.0,
+            width,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        )
+    }
 
     #[test]
     fn shapes_caret_hit_and_selection() {
@@ -339,22 +816,422 @@ mod tests {
     }
 
     #[test]
+    fn rtl_caret_geometry_follows_visual_direction() {
+        let text = "שלום";
+        let layout = layout(text, 400.0);
+        let (start_x, top, height) = layout.caret_geometry(0);
+        let (end_x, _, _) = layout.caret_geometry(text.len());
+
+        assert!(
+            start_x > end_x,
+            "the logical start of an RTL paragraph is its visual right edge: start={start_x}, end={end_x}"
+        );
+        assert_eq!(layout.hit(start_x + 1.0, top + height * 0.5), 0);
+        assert_eq!(
+            layout.hit((end_x - 1.0).max(0.0), top + height * 0.5),
+            text.len()
+        );
+    }
+
+    #[test]
+    fn multiline_hit_and_caret_use_global_byte_offsets() {
+        let text = "first\nשני";
+        let second_line = "first\n".len();
+        let layout = layout(text, 400.0);
+        let (_, first_top, first_h) = layout.caret_geometry(0);
+        let (second_x, second_top, second_h) = layout.caret_geometry(second_line);
+
+        assert!(second_top >= first_top + first_h * 0.9);
+        assert_eq!(
+            layout.hit(second_x + 1.0, second_top + second_h * 0.5),
+            second_line,
+            "a hit on line two must include the preceding line and newline bytes"
+        );
+        let rects = layout.selection_rects(0, text.len());
+        assert!(rects.len() >= 2, "a cross-line selection paints each line");
+    }
+
+    #[test]
+    fn mixed_bidi_selection_can_produce_disjoint_visual_bands() {
+        let text = "abc אבג xyz";
+        // Logically select the Latin prefix plus the first Hebrew character.
+        // Visually that Hebrew character sits at the far side of its RTL run,
+        // so an unselected gap separates it from the Latin prefix.
+        let selected_end = "abc א".len();
+        let layout = layout(text, 400.0);
+        let rects = layout.selection_rects(0, selected_end);
+
+        assert_eq!(
+            rects.len(),
+            2,
+            "mixed-direction selection must preserve disjoint visual ranges: {rects:?}"
+        );
+        assert!(rects.iter().all(|(x0, y0, x1, y1)| x1 > x0 && y1 > y0));
+    }
+
+    #[test]
+    fn mixed_bidi_boundary_preserves_both_visual_affinities() {
+        let layout = layout("abc אבג xyz", 400.0);
+        let (_, top, height) = layout.caret_geometry(0);
+        let y = top + height * 0.5;
+        let mut positions = Vec::new();
+        for x in 0..=layout.width().ceil() as usize {
+            let position = layout.hit_position(x as f32, y);
+            if positions.last() != Some(&position) {
+                positions.push(position);
+            }
+        }
+        let pair = positions.iter().find_map(|before| {
+            let before_x = layout.caret_geometry_at(*before).0;
+            positions
+                .iter()
+                .find(|after| {
+                    before.byte == after.byte
+                        && before.affinity != after.affinity
+                        && (before_x - layout.caret_geometry_at(**after).0).abs() > 1.0
+                })
+                .map(|after| (*before, *after))
+        });
+        let (a, b) = pair.expect("mixed BiDi exposes two sides of one logical byte boundary");
+        let ax = layout.caret_geometry_at(a).0;
+        let bx = layout.caret_geometry_at(b).0;
+        assert!(
+            (ax - bx).abs() > 1.0,
+            "the two affinities occupy distinct visual positions: {a:?}={ax}, {b:?}={bx}"
+        );
+
+        let (left, right) = if ax < bx { (a, b) } else { (b, a) };
+        let mut walked = left;
+        for _ in 0..16 {
+            if walked == right {
+                break;
+            }
+            let next = layout.visual_motion_position(walked, true);
+            assert_ne!(
+                next, walked,
+                "visual motion must not stall inside a BiDi run"
+            );
+            walked = next;
+        }
+        assert_eq!(
+            walked, right,
+            "walking across the intervening visual run reaches the other side of the same byte"
+        );
+    }
+
+    #[test]
     fn center_alignment_offsets_text() {
         let mut fs = FontSystem::new();
-        let left = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
-        let center = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Center, FontFamily::Sans, vec![], vec![], 1.0);
+        let left = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new("hi")],
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        let center = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new("hi")],
+            false,
+            16.0,
+            400.0,
+            TextAlign::Center,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
         let lx = left.caret_geometry(0).0;
         let cx = center.caret_geometry(0).0;
-        assert!(cx > lx + 50.0, "centered text should start further right: left={lx} center={cx}");
+        assert!(
+            cx > lx + 50.0,
+            "centered text should start further right: left={lx} center={cx}"
+        );
     }
 
     #[test]
     fn wrapping_produces_multiple_lines() {
         let mut fs = FontSystem::new();
         let long = "word ".repeat(60);
-        let one = RichTextLayout::shape(&mut fs, &[RichSpan::new("word")], false, 16.0, 1000.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
-        let wrapped = RichTextLayout::shape(&mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
+        let one = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new("word")],
+            false,
+            16.0,
+            1000.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        let wrapped = RichTextLayout::shape(
+            &mut fs,
+            &[RichSpan::new(long)],
+            false,
+            16.0,
+            120.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
         assert!(wrapped.height() > one.height() * 3.0);
+    }
+
+    #[test]
+    fn paragraph_controls_shape_and_fragment_the_authoritative_layout() {
+        let mut fs = crate::configured_font_system();
+        let text = "Good typography makes a paragraph feel even before it is read. Spacing supports the argument without calling attention to itself.";
+        let justified = RichTextLayout::shape_plain(
+            &mut fs,
+            text,
+            &crate::TextStyle::new(16.0)
+                .with_align(crate::ParagraphAlign::Justified)
+                .with_fragmentation(2, 2),
+            Some(260.0),
+        );
+        let widths: Vec<_> = justified
+            .buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .collect();
+        assert!(widths.len() >= 3);
+        assert!(
+            widths[..widths.len() - 1]
+                .iter()
+                .all(|width| (*width - 260.0).abs() < 1.0),
+            "every eligible line should fill the justified measure: {widths:?}"
+        );
+        assert_eq!(justified.fragment_line_count(1), 0);
+        assert_eq!(justified.fragment_line_count(2), 2);
+        assert_eq!(justified.fragment_line_count(widths.len()), widths.len());
+        let widow_safe = widths.len().saturating_sub(2);
+        assert_eq!(
+            justified.fragment_line_count(widths.len() - 1),
+            if widow_safe >= 2 { widow_safe } else { 0 }
+        );
+        assert_eq!(
+            justified.fragment_line_count_from(2, widths.len()),
+            widths.len() - 2
+        );
+    }
+
+    #[test]
+    fn balanced_wrap_avoids_a_short_final_line_without_adding_lines() {
+        let mut fs = crate::configured_font_system();
+        let text = "A balanced heading wraps its thought into lines of comparable visual weight.";
+        let ordinary =
+            RichTextLayout::shape_plain(&mut fs, text, &crate::TextStyle::new(21.0), Some(520.0));
+        let balanced = RichTextLayout::shape_plain(
+            &mut fs,
+            text,
+            &crate::TextStyle::new(21.0).with_wrap_mode(crate::TextWrapMode::Balance),
+            Some(520.0),
+        );
+        let ordinary_widths: Vec<_> = ordinary
+            .buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .collect();
+        let balanced_widths: Vec<_> = balanced
+            .buffer
+            .layout_runs()
+            .map(|run| run.line_w)
+            .collect();
+        assert_eq!(balanced_widths.len(), ordinary_widths.len());
+        let ordinary_range = ordinary_widths.iter().copied().fold(0.0, f32::max)
+            - ordinary_widths.iter().copied().fold(f32::MAX, f32::min);
+        let balanced_range = balanced_widths.iter().copied().fold(0.0, f32::max)
+            - balanced_widths.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            balanced_range < ordinary_range,
+            "balanced widths {balanced_widths:?} should improve {ordinary_widths:?}"
+        );
+    }
+
+    #[test]
+    fn offset_map_round_trips_document_boundaries_around_virtual_breaks() {
+        let text = "ทุกสองสัปดาห์";
+        let map = OffsetMap::for_text_with_hyphenation(text, None);
+        assert_eq!(
+            map.insertions
+                .iter()
+                .map(|insertion| insertion.source)
+                .collect::<Vec<_>>(),
+            vec![9, 18]
+        );
+
+        for source in text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(text.len()))
+        {
+            assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+        }
+        for insertion in &map.insertions {
+            let source = insertion.source;
+            let len = insertion.ch.len_utf8();
+            let before = map.source_to_shaped(source) - len;
+            assert_eq!(map.shaped_to_source(before), source);
+            assert_eq!(map.shaped_to_source(before + 1), source);
+            assert_eq!(map.shaped_to_source(before + len), source);
+        }
+    }
+
+    #[test]
+    fn attributed_thai_wraps_at_dictionary_boundaries_in_document_byte_space() {
+        let text = "ทุกสองสัปดาห์";
+        let first = &text[..9];
+        let second = &text[9..18];
+        let third = &text[18..];
+        let width = [first, second, third]
+            .into_iter()
+            .map(|word| layout(word, 400.0).width())
+            .fold(0.0f32, f32::max)
+            + 0.5;
+
+        let mut fs = crate::configured_font_system();
+        let layout = RichTextLayout::shape(
+            &mut fs,
+            &[
+                RichSpan::new(first).background(Some([240, 220, 80])),
+                RichSpan::new(format!("{second}{third}")).bold(true),
+            ],
+            false,
+            18.0,
+            width,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![(9, 18)],
+            vec![],
+            1.0,
+        );
+
+        assert_eq!(layout.visual_line_index(0), 0);
+        assert_eq!(layout.visual_line_index(9), 1);
+        assert_eq!(layout.visual_line_index(18), 2);
+        assert_eq!(layout.visual_line_index(text.len()), 2);
+        assert_eq!(layout.backgrounds[0].0..layout.backgrounds[0].1, 0..9);
+        assert_eq!(layout.selection_rects(9, 18).len(), 1);
+
+        for source in [0, 9, 18, text.len()] {
+            let (x, top, height) = layout.caret_geometry(source);
+            assert_eq!(
+                layout.hit(x, top + height * 0.5),
+                source,
+                "hit testing must never expose a virtual-break byte"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_thai_layout_uses_the_same_dictionary_wrapping() {
+        use crate::text_render::TextStyle;
+
+        let text = "ทุกสองสัปดาห์";
+        let style = TextStyle::new(18.0);
+        let mut fs = crate::configured_font_system();
+        let probe = RichTextLayout::shape_plain(&mut fs, &text[..9], &style, None);
+        let width = probe.width() + 0.5;
+        let layout = RichTextLayout::shape_plain(&mut fs, text, &style, Some(width));
+
+        assert_eq!(layout.visual_line_index(0), 0);
+        assert_eq!(layout.visual_line_index(9), 1);
+        assert_eq!(layout.visual_line_index(18), 2);
+        assert_eq!(
+            layout.hit(layout.caret_geometry(18).0, layout.caret_geometry(18).1),
+            18
+        );
+    }
+
+    #[test]
+    fn virtual_dictionary_hints_have_no_visible_advance() {
+        use crate::text_render::TextStyle;
+
+        let text = "ทุกสองสัปดาห์";
+        let style = TextStyle::new(18.0);
+        let mut fs = crate::configured_font_system();
+        let source = RichTextLayout::shape_plain(&mut fs, text, &style, None);
+        let hinted = RichTextLayout::shape_plain(&mut fs, text, &style, Some(10_000.0));
+
+        assert!(
+            (source.width() - hinted.width()).abs() < 0.01,
+            "zero-width break hints must not alter visible text metrics"
+        );
+    }
+
+    #[test]
+    fn real_layout_wraps_cjk_but_preserves_nbsp_and_emoji_zwj_clusters() {
+        use crate::text_render::TextStyle;
+
+        let style = TextStyle::new(18.0);
+        let mut fs = crate::configured_font_system();
+
+        let cjk = "東京京都";
+        let cjk_probe = RichTextLayout::shape_plain(&mut fs, "東京", &style, None);
+        let cjk_layout =
+            RichTextLayout::shape_plain(&mut fs, cjk, &style, Some(cjk_probe.width() + 0.5));
+        assert_eq!(cjk_layout.visual_line_index(0), 0);
+        assert!(cjk_layout.visual_line_index("東京".len()) >= 1);
+
+        let nbsp = "10\u{a0}km away";
+        let narrow = RichTextLayout::shape_plain(&mut fs, "10", &style, None).width() + 0.5;
+        let nbsp_layout = RichTextLayout::shape_plain(&mut fs, nbsp, &style, Some(narrow));
+        let protected_end = "10\u{a0}km".len();
+        assert_eq!(nbsp_layout.visual_line_index(0), 0);
+        assert_eq!(nbsp_layout.visual_line_index(protected_end), 0);
+        assert!(nbsp_layout.visual_line_index(protected_end + 1) >= 1);
+
+        let family = "👨‍👩‍👧‍👦";
+        let emoji = format!("{family} {family}");
+        let emoji_width = RichTextLayout::shape_plain(&mut fs, family, &style, None).width() + 0.5;
+        let emoji_layout = RichTextLayout::shape_plain(&mut fs, &emoji, &style, Some(emoji_width));
+        for (byte, _) in family.char_indices() {
+            assert_eq!(emoji_layout.visual_line_index(byte), 0);
+        }
+        assert!(emoji_layout.visual_line_index(family.len() + 1) >= 1);
+    }
+
+    #[test]
+    fn hyphenated_attributed_layout_keeps_document_offsets_and_decorations() {
+        use crate::text_render::TextStyle;
+
+        let text = "extensive";
+        let style = TextStyle::new(20.0).with_auto_hyphenation("en-US");
+        let mut fs = crate::configured_font_system();
+        let probe = RichTextLayout::shape_plain(&mut fs, "exten-", &TextStyle::new(20.0), None);
+        let layout = RichTextLayout::shape_styled(
+            &mut fs,
+            &[
+                RichSpan::new("exten").background(Some([240, 220, 80])),
+                RichSpan::new("sive").bold(true),
+            ],
+            &style,
+            Some(probe.width() + 0.5),
+            TextAlign::Left,
+            vec![(2, 5)],
+            vec![],
+        );
+
+        assert!(layout.visual_line_index(text.len()) >= 1);
+        assert!(layout.width() <= probe.width() + 0.51);
+        assert_eq!(layout.backgrounds[0].0..layout.backgrounds[0].1, 0..5);
+        assert!(!layout.selection_rects(2, 5).is_empty());
+        for source in 0..=text.len() {
+            let (x, top, height) = layout.caret_geometry(source);
+            assert_eq!(
+                layout.hit(x, top + height * 0.5),
+                source,
+                "virtual soft-hyphen bytes must never escape into editor state"
+            );
+        }
     }
 
     #[test]
@@ -367,7 +1244,16 @@ mod tests {
             RichSpan::new("CCC"),
         ];
         let layout = RichTextLayout::shape(
-            &mut fs, &spans, false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &spans,
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         // Exactly one background band, covering the "BBB" byte range [3, 6).
         assert_eq!(layout.backgrounds.len(), 1);
@@ -383,7 +1269,16 @@ mod tests {
         assert!(y1 > y0, "highlight band must have positive height");
         // A span without a background contributes no band.
         let plain = RichTextLayout::shape(
-            &mut fs, &[RichSpan::new("AAA")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &[RichSpan::new("AAA")],
+            false,
+            16.0,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         assert!(plain.backgrounds.is_empty());
     }
@@ -398,7 +1293,16 @@ mod tests {
             RichSpan::new("2").baseline(BaselineShift::Super),
         ];
         let layout = RichTextLayout::shape(
-            &mut fs, &spans, false, base_size, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &spans,
+            false,
+            base_size,
+            400.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         // Recorded as a baseline range over the "2" byte [1, 2).
         assert_eq!(layout.baselines.len(), 1);
@@ -422,14 +1326,26 @@ mod tests {
         }
         let bg = base_glyph_size.expect("base glyph present");
         let sg = super_glyph_size.expect("super glyph present");
-        assert!((bg - base_size).abs() < 0.01, "base run keeps full size: {bg}");
+        assert!(
+            (bg - base_size).abs() < 0.01,
+            "base run keeps full size: {bg}"
+        );
         assert!(sg < bg, "super run shapes smaller: super={sg} base={bg}");
-        assert!((sg - base_size * BaselineShift::SCALE).abs() < 0.5, "super ~0.7x: {sg}");
+        assert!(
+            (sg - base_size * BaselineShift::SCALE).abs() < 0.5,
+            "super ~0.7x: {sg}"
+        );
 
         // The draw-time vertical offset moves super UP (negative screen-y) and
         // sub DOWN (positive screen-y); None never moves.
-        assert!(BaselineShift::Super.offset(sg) < 0.0, "super lifts above baseline");
-        assert!(BaselineShift::Sub.offset(sg) > 0.0, "sub drops below baseline");
+        assert!(
+            BaselineShift::Super.offset(sg) < 0.0,
+            "super lifts above baseline"
+        );
+        assert!(
+            BaselineShift::Sub.offset(sg) > 0.0,
+            "sub drops below baseline"
+        );
         assert_eq!(BaselineShift::None.offset(sg), 0.0);
     }
 
@@ -439,14 +1355,35 @@ mod tests {
         // Force two lines so the gap between line tops reflects the line advance.
         let long = "word ".repeat(40);
         let single = RichTextLayout::shape(
-            &mut fs, &[RichSpan::new(long.clone())], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0,
+            &mut fs,
+            &[RichSpan::new(long.clone())],
+            false,
+            16.0,
+            120.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
         );
         let doubled = RichTextLayout::shape(
-            &mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![], 2.0,
+            &mut fs,
+            &[RichSpan::new(long)],
+            false,
+            16.0,
+            120.0,
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            2.0,
         );
         let advance = |layout: &RichTextLayout| -> f32 {
             let tops: Vec<f32> = layout.buffer.layout_runs().map(|r| r.line_top).collect();
-            assert!(tops.len() >= 2, "need at least two lines to measure advance");
+            assert!(
+                tops.len() >= 2,
+                "need at least two lines to measure advance"
+            );
             tops[1] - tops[0]
         };
         let a1 = advance(&single);

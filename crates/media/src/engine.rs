@@ -1,11 +1,11 @@
 //! The playback engine: one control surface, two interchangeable backends.
 //!
-//! * **Real decode** (`--features decode`) drives the GStreamer pipeline in
+//! * **Real decode** (`--features decode`) drives the `GStreamer` pipeline in
 //!   [`crate::gst_backend`]: `playbin3` with hardware decoders ranked above
 //!   software ones, a sink that negotiates the best memory the consumer
 //!   declared it can take (dmabuf → planar → RGBA), frame-exact `ACCURATE`
 //!   seeking that reads the preroll without ever starting the audio sink, and
-//!   real clock-driven playback. It decodes any codec GStreamer can plug from
+//!   real clock-driven playback. It decodes any codec `GStreamer` can plug from
 //!   a local file, the FUSE workspace, or a stream URL.
 //! * **Synthesized fallback** (default) produces a deterministic RGBA test
 //!   pattern driven by a real playhead clock, plus genuine buffering progress
@@ -24,7 +24,7 @@ use crate::frame::{Frame, FrameAcceptance, FramePayload};
 use crate::hw::{HwPolicy, HwReport};
 use crate::ring::{PrefetchProgress, Prefetcher};
 use crate::source::Source;
-use crate::transport::{correction, Correction, TransportState};
+use crate::transport::{Correction, TransportState, correction};
 
 #[cfg(feature = "decode")]
 pub use crate::gst_backend::SeekMode;
@@ -68,7 +68,10 @@ impl EngineConfig {
     /// The configuration a GPU-side consumer wants: frames stay in whatever
     /// memory the decoder produced them in, ready for a zero-copy import.
     pub fn gpu() -> Self {
-        Self { acceptance: FrameAcceptance::Native, ..Self::default() }
+        Self {
+            acceptance: FrameAcceptance::Native,
+            ..Self::default()
+        }
     }
 
     /// Start muted — the editor's preview and every thumbnail decode, which
@@ -131,7 +134,7 @@ enum Backend {
 impl MediaEngine {
     /// Build an engine with the default configuration: system-memory RGBA
     /// frames, hardware decode per `QOS_MEDIA_HWDEC`. With `--features decode`
-    /// this stands up a real GStreamer pipeline; if GStreamer can't initialise
+    /// this stands up a real `GStreamer` pipeline; if `GStreamer` can't initialise
     /// (or the feature is off) it transparently falls back to the synthesized
     /// backend. Never fails.
     pub fn new() -> Self {
@@ -205,7 +208,7 @@ impl MediaEngine {
         }
     }
 
-    /// Whether this engine is decoding through a real GStreamer pipeline (vs.
+    /// Whether this engine is decoding through a real `GStreamer` pipeline (vs.
     /// the synthesized fallback).
     pub fn is_real_decode(&self) -> bool {
         match &self.backend {
@@ -578,10 +581,9 @@ impl SynthState {
         // Derive a plausible placeholder duration from the file size when we
         // have one (~125 KB/s), clamped to a sane range; real decode replaces
         // this entirely. Remote / unknown sources get the default.
-        self.duration = source
-            .byte_len()
-            .map(|b| (b / 125).clamp(3_000, 3_600_000))
-            .unwrap_or(DEFAULT_SYNTH_DURATION_MS);
+        self.duration = source.byte_len().map_or(DEFAULT_SYNTH_DURATION_MS, |b| {
+            (b / 125).clamp(3_000, 3_600_000)
+        });
         // Prefetch a file source through the ring so buffering is real
         // hydration progress. Remote sources have no local reader here.
         self.prefetch = match source.open_reader() {
@@ -615,7 +617,9 @@ impl SynthState {
     }
 
     fn buffering_percent(&self) -> u8 {
-        self.prefetch.as_ref().map(|p| p.percent()).unwrap_or(100)
+        self.prefetch
+            .as_ref()
+            .map_or(100, super::ring::PrefetchProgress::percent)
     }
 
     fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
@@ -688,7 +692,11 @@ impl SynthState {
                 let g = ((y * 255) / h) as u8;
                 let b = (((x + y + hue_shift) * 255) / (w + h)) as u8;
                 // Diagonal content stripes for texture.
-                let stripe = if ((x + y + hue_shift) / 24) % 2 == 0 { 24 } else { 0 };
+                let stripe = if ((x + y + hue_shift) / 24).is_multiple_of(2) {
+                    24
+                } else {
+                    0
+                };
                 rgba[i] = r.saturating_add(stripe);
                 rgba[i + 1] = g;
                 rgba[i + 2] = b;
@@ -720,29 +728,49 @@ mod tests {
     #[test]
     fn opens_and_orders_duration_before_position() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.play();
 
         // First poll: DurationKnown must precede any Position.
         let evts = e.poll_at(0);
-        let dur_idx = evts.iter().position(|x| matches!(x, MediaEvent::DurationKnown { .. }));
-        assert!(dur_idx.is_some(), "duration announced on first poll: {evts:?}");
-        if let Some(pos_idx) = evts.iter().position(|x| matches!(x, MediaEvent::Position { .. })) {
+        let dur_idx = evts
+            .iter()
+            .position(|x| matches!(x, MediaEvent::DurationKnown { .. }));
+        assert!(
+            dur_idx.is_some(),
+            "duration announced on first poll: {evts:?}"
+        );
+        if let Some(pos_idx) = evts
+            .iter()
+            .position(|x| matches!(x, MediaEvent::Position { .. }))
+        {
             assert!(dur_idx.unwrap() < pos_idx, "DurationKnown before Position");
         }
         // Duration announced exactly once.
         let evts2 = e.poll_at(50);
-        assert!(!evts2.iter().any(|x| matches!(x, MediaEvent::DurationKnown { .. })));
+        assert!(
+            !evts2
+                .iter()
+                .any(|x| matches!(x, MediaEvent::DurationKnown { .. }))
+        );
     }
 
     #[test]
     fn playhead_advances_with_virtual_time() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.play();
         e.poll_at(0); // baseline
         e.poll_at(1_000);
-        assert_eq!(e.position_ms(), 1_000, "1s of virtual time advanced the playhead 1s");
+        assert_eq!(
+            e.position_ms(),
+            1_000,
+            "1s of virtual time advanced the playhead 1s"
+        );
         e.pause();
         e.poll_at(2_000);
         e.poll_at(3_000);
@@ -752,13 +780,22 @@ mod tests {
     #[test]
     fn reaching_duration_emits_position_then_ended_last() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.seek_ms(e.duration_ms().unwrap() - 10);
         e.play();
         e.poll_at(0); // baseline
         let evts = e.poll_at(1_000); // jumps past the end
-        assert_eq!(evts.last(), Some(&MediaEvent::Ended), "Ended is the final event");
-        assert!(evts.iter().any(|x| matches!(x, MediaEvent::Position { .. })));
+        assert_eq!(
+            evts.last(),
+            Some(&MediaEvent::Ended),
+            "Ended is the final event"
+        );
+        assert!(
+            evts.iter()
+                .any(|x| matches!(x, MediaEvent::Position { .. }))
+        );
         assert!(!e.is_playing(), "stopped at the end");
         assert_eq!(e.position_ms(), e.duration_ms().unwrap());
     }
@@ -766,7 +803,9 @@ mod tests {
     #[test]
     fn synthesized_engine_produces_a_frame() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         let f = e.latest_frame().expect("a seed frame exists after open");
         assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
         assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
@@ -779,33 +818,58 @@ mod tests {
         // player's empty state stays a clean surface, not a test pattern.
         e.poll_at(0);
         e.poll_at(100);
-        assert!(e.latest_frame().is_none(), "empty state carries no synthesized frame");
+        assert!(
+            e.latest_frame().is_none(),
+            "empty state carries no synthesized frame"
+        );
         // Opening a source seeds the first frame.
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
-        assert!(e.latest_frame().is_some(), "a frame appears once media is opened");
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        assert!(
+            e.latest_frame().is_some(),
+            "a frame appears once media is opened"
+        );
     }
 
     #[test]
     fn follower_applies_host_transport_and_seeks_on_large_drift() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.poll_at(0);
         // Host is playing, well ahead of us — a corrective seek must fire.
-        let host = TransportState { playing: true, position_ms: 30_000, rate: 1.0, epoch_ms: 0 };
+        let host = TransportState {
+            playing: true,
+            position_ms: 30_000,
+            rate: 1.0,
+            epoch_ms: 0,
+        };
         let seeked = e.apply_transport(&host, 0);
         assert!(seeked, "large drift triggers a seek");
         assert_eq!(e.position_ms(), 30_000);
         assert!(e.is_playing(), "adopted the host's playing state");
 
         // Now in sync: a matching host state issues no seek.
-        let host2 = TransportState { playing: true, position_ms: 30_000, rate: 1.0, epoch_ms: 0 };
-        assert!(!e.apply_transport(&host2, 0), "no seek when already aligned");
+        let host2 = TransportState {
+            playing: true,
+            position_ms: 30_000,
+            rate: 1.0,
+            epoch_ms: 0,
+        };
+        assert!(
+            !e.apply_transport(&host2, 0),
+            "no seek when already aligned"
+        );
     }
 
     #[test]
     fn transport_state_snapshots_engine() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.seek_ms(5_000);
         e.play();
         let ts = e.transport_state(1_234);

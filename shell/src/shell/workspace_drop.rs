@@ -1,21 +1,16 @@
-//! Workspace-drop handling — port of the concept's `DesktopView.tsx`
-//! `handleDrop` path (lines 187–205).
+//! Workspace-drop handling.
 //!
 //! When a file or folder is dragged from the file explorer (or any
 //! source that emits `application/x-os-item`) and released onto the
-//! workspace area, the concept opens an appropriate app in the active
-//! strip:
+//! workspace area:
 //!
 //! - Folders → Files app.
 //! - Files whose extension is in `{js,ts,tsx,json,md,css,html}` → Editor.
 //! - Anything else → Files.
 //!
-//! This module exposes the two pieces needed for parity: a pure
-//! `decide_app_for_drop` selector and an `apply_workspace_drop` helper
-//! that splices a new `Tab` into the active workspace's first strip's
-//! first window group. Both are unit-testable without a winit event
-//! pump, so the behaviour can be locked in before the
-//! `WindowEvent::DroppedFile` wiring lands in `main.rs`.
+//! `decide_app_for_drop` is a pure selector; `apply_workspace_drop`
+//! splices a new `Tab` into the active workspace's first strip's first
+//! window group. Both are unit-testable without a winit event pump.
 
 use std::path::Path;
 
@@ -28,10 +23,8 @@ use crate::shell::tile::{
 };
 use ui::widget::AppKind as UiAppKind;
 
-/// Payload carried by a workspace drop. The concept's drag data payload
-/// has two fields (`name`, `type`); `is_folder` collapses the discrete
-/// `'folder' | 'file'` value to a bool because the shell only branches
-/// on that one bit.
+/// `is_folder` collapses the concept's `'folder' | 'file'` drag data
+/// to a bool, since the shell only branches on that one bit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DraggedItem {
     pub name: String,
@@ -53,10 +46,8 @@ impl DraggedItem {
         }
     }
 
-    /// Convenience for the `WindowEvent::DroppedFile` path — pulls the
-    /// filename segment out of the dropped `PathBuf` and classifies
-    /// folder-vs-file via `Path::is_dir`. Returns `None` if the path
-    /// has no filename (e.g. the root).
+    /// For `WindowEvent::DroppedFile`. `None` if the path has no
+    /// filename (e.g. the root).
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().into_owned();
         Some(Self {
@@ -66,13 +57,9 @@ impl DraggedItem {
     }
 }
 
-/// Extensions the concept's `DesktopView.tsx` routes to the Editor
-/// (line 199). Kept as a sorted `&[&str]` because the list is small and
-/// exhaustive — a lookup-table or regex would be overkill.
+/// Small and exhaustive; a lookup-table or regex would be overkill.
 pub const EDITOR_EXTENSIONS: &[&str] = &["css", "html", "js", "json", "md", "ts", "tsx"];
 
-/// Pure app-selector — given a dragged item, pick which app to open.
-/// Mirrors `DesktopView.tsx:195-204`.
 pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
     if item.is_folder {
         return AppKind::FileExplorer;
@@ -80,7 +67,7 @@ pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
     let ext = Path::new(&item.name)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     if EDITOR_EXTENSIONS.iter().any(|e| *e == ext) {
         AppKind::Other("Editor".into())
@@ -89,19 +76,9 @@ pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
     }
 }
 
-/// Apply a workspace-area drop to the tree. Splices a new `Tab` (with
-/// a freshly-minted id) into the active workspace's first strip's first
-/// window group, focuses it, and returns the new `Tab::id` so callers
-/// can route subsequent presence/focus events to it.
-///
-/// If the active workspace has no strips or the first strip has no
-/// window group, the function creates a new group in the first strip
-/// so the drop always lands somewhere — matching the concept's `onOpenApp`
-/// which takes the active strip id and has the app decide where inside
-/// that strip to live.
-///
-/// Returns `None` if the tree has no active workspace (shouldn't happen
-/// on a sanely-constructed tree, but the caller shouldn't panic).
+/// Splices a new `Tab` into the active workspace's first strip's first
+/// window group (creating one if none exists) and focuses it. `None`
+/// if the tree has no active workspace.
 pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Option<u64> {
     let kind = decide_app_for_drop(&item);
     let label = tab_label_for(&item, &kind);
@@ -111,7 +88,7 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
         tile: TileContent::AppPlaceholder { kind, label },
     };
     let tab_id = tab.id;
-    // Capture for the doc mirror before the cache `push` consumes the tab.
+    // Capture before the cache `push` consumes the tab.
     let doc_title = tab.title.clone();
     let doc_tile_blob = serde_json::to_vec(&tab.tile).unwrap_or_default();
 
@@ -129,27 +106,16 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
             maximized: false,
         });
     }
-    // Unit D: mirror the cache append into the automerge doc so peers
-    // observe the new tab on the next sync round. No-op if the active
-    // workspace isn't seeded into the doc.
+    // Mirror the cache append into the automerge doc so peers observe the
+    // new tab on the next sync round. No-op if the active workspace isn't
+    // seeded into the doc.
     tree.doc_append_tab_to_first_group_of_active_workspace(tab_id, doc_title, doc_tile_blob);
     Some(tab_id)
 }
 
-/// Cursor-targeted counterpart of [`apply_workspace_drop`]. Splices the
-/// new tab into the **specific** `(strip_id, group_id)` the pointer was
-/// over at drop time, rather than the active workspace's first group.
-/// This is the routing path the compositor takes for a real
-/// `WindowEvent::DroppedFile`: the caller resolves the group under the
-/// cursor via the same hit-test used for click-focus
-/// (`overlay_host::pick_group_at`) and passes the winner here.
-///
-/// Only the active workspace is rendered, so its strips are the only
-/// ones a cursor can be over — we look the strip/group up inside the
-/// active workspace and return `None` if either id is stale (e.g. the
-/// group closed between the pointer move and the drop). Returning `None`
-/// lets the caller treat an empty-area / stale-target drop as a defined
-/// no-op instead of dumping the file into an arbitrary window.
+/// Splices into the **specific** `(strip_id, group_id)` the pointer was
+/// over at drop time. `None` if either id is stale — a defined no-op
+/// instead of dumping the file into an arbitrary window.
 pub fn apply_workspace_drop_at(
     tree: &mut WorkspaceTree,
     item: DraggedItem,
@@ -164,7 +130,7 @@ pub fn apply_workspace_drop_at(
         tile: TileContent::AppPlaceholder { kind, label },
     };
     let tab_id = tab.id;
-    // Capture for the doc mirror before the cache `push` consumes the tab.
+    // Capture before the cache `push` consumes the tab.
     let doc_title = tab.title.clone();
     let doc_tile_blob = serde_json::to_vec(&tab.tile).unwrap_or_default();
 
@@ -174,17 +140,11 @@ pub fn apply_workspace_drop_at(
     group.tabs.push(tab);
     group.active_tab = tab_id;
 
-    // Mirror the cache append into the automerge doc so peers observe the
-    // new tab on the next sync round. No-op if the active workspace / the
-    // target group isn't seeded into the doc yet.
+    // Mirror the cache append into the automerge doc, as above.
     tree.doc_append_tab_to_group_of_active_workspace(group_id, tab_id, doc_title, doc_tile_blob);
     Some(tab_id)
 }
 
-/// [`apply_workspace_drop_at`] overload that takes a `Path` and does the
-/// [`DraggedItem::from_path`] conversion. Used by
-/// [`super::chrome_state::ChromeState::handle_file_drop_at`] on the real
-/// `WindowEvent::DroppedFile` path.
 pub fn apply_workspace_drop_at_from_path(
     tree: &mut WorkspaceTree,
     path: &Path,
@@ -195,12 +155,8 @@ pub fn apply_workspace_drop_at_from_path(
     apply_workspace_drop_at(tree, item, strip_id, group_id)
 }
 
-/// Map a persisted-state [`AppKind`] onto a UI-layer [`UiAppKind`]. The
-/// runtime tile uses the UI vocabulary (`UiAppKind::{Files,Terminal,…}`)
-/// while the persisted vocabulary carries `FileExplorer` and the
-/// open-ended `Other(String)` bucket — so we fold the `"Editor"` variant
-/// onto `UiAppKind::Settings` as a temporary parking spot until an
-/// `Editor` variant lands on the UI enum (spec §7 follow-up).
+/// Folds `"Editor"` onto `UiAppKind::Settings` as a temporary parking
+/// spot until an `Editor` variant lands on the UI enum.
 fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
     match kind {
         AppKind::Terminal => UiAppKind::Terminal,
@@ -212,16 +168,8 @@ fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
     }
 }
 
-/// Runtime-tree mirror of [`apply_workspace_drop`]. Appends a Stub tile
-/// (classified via [`decide_app_for_drop`]) to the first strip's first
-/// window group of the active workspace. A Stub — not a live
-/// `Box<dyn AppWidget>` — because drops happen outside the app
-/// boot-time allocation window: materialising an AppWidget synchronously
-/// could spawn subprocesses, and the expected UX is "tab appears
-/// immediately; its content hydrates when the user focuses it."
-///
-/// Returns the new `Tab::id` or `None` if the tree has no active
-/// workspace.
+/// Appends a Stub tile, not a live `Box<dyn AppWidget>` — materialising
+/// one synchronously could spawn subprocesses; content hydrates on focus.
 pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -> Option<u64> {
     let kind = decide_app_for_drop(&item);
     let label = tab_label_for(&item, &kind);
@@ -249,20 +197,11 @@ pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -
     Some(tab_id)
 }
 
-/// `apply_runtime_workspace_drop` overload that takes a `Path` and does
-/// the `DraggedItem::from_path` conversion. Convenience wrapper used by
-/// the winit `WindowEvent::DroppedFile` path — the event carries a
-/// `PathBuf` directly.
 pub fn apply_runtime_workspace_drop_from_path(tree: &mut RuntimeTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_runtime_workspace_drop(tree, item)
 }
 
-/// `apply_workspace_drop` overload that takes a `Path` and does the
-/// `DraggedItem::from_path` conversion. Persisted-tree counterpart of
-/// [`apply_runtime_workspace_drop_from_path`]; used by
-/// [`super::chrome_state::ChromeState::handle_file_drop`] which holds a
-/// `WorkspaceTree` (not a runtime one).
 pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_workspace_drop(tree, item)
@@ -273,9 +212,8 @@ pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> 
 /// reworks of the module don't have to re-add the import.
 fn _use_runtime_strip(_s: &RuntimeStrip) {}
 
-/// Pick a tab label for a dropped item. Mirrors the concept's
-/// `onOpenApp` defaults: folders get "Files — <name>", code files keep
-/// their filename, others get "Files — <name>" too.
+/// Pick a tab label for a dropped item: folders get "Files — <name>",
+/// code files keep their filename, others get "Files — <name>" too.
 fn tab_label_for(item: &DraggedItem, kind: &AppKind) -> String {
     match kind {
         AppKind::Other(s) if s == "Editor" => item.name.clone(),
@@ -355,7 +293,7 @@ mod tests {
             TileContent::AppPlaceholder { kind, .. } => {
                 assert_eq!(kind, &AppKind::Other("Editor".into()));
             }
-            other => panic!("expected AppPlaceholder, got {:?}", other),
+            other => panic!("expected AppPlaceholder, got {other:?}"),
         }
     }
 

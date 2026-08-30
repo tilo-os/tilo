@@ -42,10 +42,10 @@ fn main() {
             println!("  identity : connected (pubkey={hex})");
         }
         Err(runtime::NotAvailable::ServiceFdMissing) => {
-            println!("  identity : unavailable (env var unset — graceful)")
+            println!("  identity : unavailable (env var unset — graceful)");
         }
         Err(runtime::NotAvailable::ConnectionFailed(e)) => {
-            println!("  identity : unavailable (load failed: {e})")
+            println!("  identity : unavailable (load failed: {e})");
         }
         Err(other) => println!("  identity : unavailable ({other:?})"),
     }
@@ -95,7 +95,10 @@ fn main() {
     // Landlock — but Landlock adds defence-in-depth.
     match std::fs::write("/var/qos-apps/probe", b"hello") {
         Ok(()) => println!("  write(/var/qos-apps/probe): OK — unexpected!"),
-        Err(e) => println!("  write(/var/qos-apps/probe): {} — blocked (bwrap or Landlock)", e.kind()),
+        Err(e) => println!(
+            "  write(/var/qos-apps/probe): {} — blocked (bwrap or Landlock)",
+            e.kind()
+        ),
     }
     println!();
 
@@ -140,13 +143,10 @@ fn main() {
 
 /// Run a fallible closure on a worker thread with a deadline. If it
 /// finishes in time we return its result; otherwise we return
-/// `Cancelled` (the closest existing PortalError variant meaning
+/// `Cancelled` (the closest existing `PortalError` variant meaning
 /// "no answer from the portal") — the worker thread is left running,
 /// which is fine for a short-lived probe.
-fn with_timeout<F>(
-    dur: std::time::Duration,
-    f: F,
-) -> Result<(), portal_xdg::PortalError>
+fn with_timeout<F>(dur: std::time::Duration, f: F) -> Result<(), portal_xdg::PortalError>
 where
     F: FnOnce() -> Result<(), portal_xdg::PortalError> + Send + 'static,
 {
@@ -164,13 +164,15 @@ fn report_portal(name: &str, result: Result<(), portal_xdg::PortalError>) {
     match result {
         Ok(()) => println!("  {name:14}: OK"),
         Err(portal_xdg::PortalError::NotAvailable) => {
-            println!("  {name:14}: unavailable — graceful (no bus / launcher didn't plumb)")
+            println!("  {name:14}: unavailable — graceful (no bus / launcher didn't plumb)");
         }
         Err(portal_xdg::PortalError::PortalNotFound) => {
-            println!("  {name:14}: bus reachable but no portal frontend installed")
+            println!("  {name:14}: bus reachable but no portal frontend installed");
         }
         Err(portal_xdg::PortalError::Cancelled) => {
-            println!("  {name:14}: no answer within timeout (portal likely blocking on user consent)")
+            println!(
+                "  {name:14}: no answer within timeout (portal likely blocking on user consent)"
+            );
         }
         Err(other) => println!("  {name:14}: error ({other})"),
     }
@@ -193,10 +195,14 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn report(name: &str, result: Result<(), runtime::NotAvailable>) {
     match result {
         Ok(()) => println!("  {name}: connected"),
-        Err(runtime::NotAvailable::ServiceFdMissing) => println!("  {name}: unavailable (no fd — graceful)"),
-        Err(runtime::NotAvailable::ConnectionFailed(e)) => println!("  {name}: unavailable (connect failed: {e})"),
+        Err(runtime::NotAvailable::ServiceFdMissing) => {
+            println!("  {name}: unavailable (no fd — graceful)");
+        }
+        Err(runtime::NotAvailable::ConnectionFailed(e)) => {
+            println!("  {name}: unavailable (connect failed: {e})");
+        }
         Err(runtime::NotAvailable::ProtocolMismatch { expected, got }) => {
-            println!("  {name}: protocol mismatch (want v{expected}, got v{got})")
+            println!("  {name}: protocol mismatch (want v{expected}, got v{got})");
         }
         Err(other) => println!("  {name}: unavailable ({other:?})"),
     }

@@ -1,33 +1,19 @@
 //! The word processor's exported **actions** and the **resource tree** it
 //! publishes to Ctrl+K.
 //!
-//! Every document-mutating operation the editor performs on its shared `qdoc`
-//! rich-text document — a text splice, a formatting mark, a paragraph attribute,
-//! a structural insert/delete — is a [`WordProcessorAction`]: a small
-//! serializable value that deterministically mutates the CRDT. Because the
-//! document already lives in the shared `AutoCommit` (the canonical `qdoc`
-//! schema under `ROOT` — see [`crate::EditorDoc`]), an action replicates and
-//! replays for free, and the exact same [`EncodedAction`] is what the on-screen
-//! affordances (the formatting toolbar, the paragraph panel, the structure
-//! menus) dispatch and what the Ctrl+K palette dispatches — one source of truth,
-//! one replay path.
+//! Every document-mutating operation — a text splice, a formatting mark, a
+//! paragraph attribute, a structural insert/delete — is a [`WordProcessorAction`]:
+//! a small serializable value that deterministically mutates the shared `qdoc`
+//! document. The same [`EncodedAction`] is what toolbar/panel/menu affordances
+//! dispatch and what Ctrl+K dispatches — one source of truth, one replay path.
+//! Presentation (caret, selection, scroll/zoom, open panel) stays out of the
+//! document and never becomes an action.
 //!
-//! Presentation — the caret, the selection, scroll/zoom, which tool or panel is
-//! open, the live per-keystroke edit buffer before it is committed — stays out
-//! of the document and never becomes an action.
-//!
-//! ## Determinism contract
-//!
-//! [`Action::apply`] is pure with respect to its payload: it never reads the
-//! wall-clock or the RNG. Every offset, id and value the mutation needs is
-//! carried in the payload, minted at *authoring* time. Newly-created block ids
-//! (a table's cells, an inserted image, a page break's fresh paragraph) are
-//! minted **inside** `apply` from a [`seeded_id_gen`](qdoc::model::seeded_id_gen)
-//! — deterministic because the executor pins the Automerge actor from the
-//! action's id, so `{actor}.{counter}` reproduces byte-identically on every
-//! replica. Sets of blocks/spans are sorted before iterating, so a replay emits
-//! the identical op sequence. A malformed payload (an unknown block id) is a
-//! **no-op**, not an error, so a bad replay can't wedge a peer.
+//! **Determinism contract**: [`Action::apply`] never reads the wall-clock or the
+//! RNG. New block ids are minted *inside* `apply` from a deterministic
+//! [`seeded_id_gen`](qdoc::model::seeded_id_gen); sets of blocks/spans are sorted
+//! before iterating, so a replay emits the identical op sequence. A malformed
+//! payload is a **no-op**, never an error, so a bad replay can't wedge a peer.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -36,9 +22,11 @@ use serde::{Deserialize, Serialize};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut};
 
+use crate::num;
+
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 /// Registry `type_id` for every word-processor action.
@@ -103,12 +91,10 @@ pub struct Span {
 
 /// Every collaborative, document-mutating operation the word processor exports.
 ///
-/// The set is deliberately positional: each variant names the exact block ids
-/// and character offsets it touches, so [`Action::apply`] is a pure write and a
-/// replay reproduces the identical change. Live per-keystroke typing is *not*
-/// here — it splices directly into the per-block CRDT `Text` (the ephemeral
-/// live-edit path); a discrete text edit (Find & Replace, a scripted splice) is
-/// [`Self::SpliceText`].
+/// Deliberately positional: each variant names the exact block ids and offsets
+/// it touches, so [`Action::apply`] is a pure, replayable write. Live per-
+/// keystroke typing is *not* here (it splices directly into the CRDT `Text`); a
+/// discrete text edit (Find & Replace, a scripted splice) is [`Self::SpliceText`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WordProcessorAction {
     /// Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete =
@@ -141,11 +127,9 @@ pub enum WordProcessorAction {
         level: Option<i64>,
         ordered: Option<bool>,
     },
-    /// Apply a named paragraph style to each of `blocks`: set the `style` attr,
-    /// and — when the style implies a structural kind (a built-in) — the block
-    /// `kind` / `level` / `ordered` too. One action so a style pick is a single
-    /// replayable operation / one undo boundary (rather than a kind write and a
-    /// style write racing as two changes).
+    /// Apply a named paragraph style to `blocks`: set the `style` attr, and — for
+    /// a built-in style — the structural `kind`/`level`/`ordered` too, as one
+    /// action/undo boundary (not a kind write racing a separate style write).
     ApplyNamedStyle {
         blocks: Vec<String>,
         style: String,
@@ -181,10 +165,7 @@ pub enum WordProcessorAction {
     },
     /// Insert a manual page break at `(block, at)`: split the block like Enter and
     /// mark the new block to start on a fresh page.
-    InsertPageBreak {
-        block: String,
-        at: usize,
-    },
+    InsertPageBreak { block: String, at: usize },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
     /// The action-level way to add a line: Enter is a live-edit path, not an
     /// action, so a headless participant (an agent, a script) had no way to
@@ -192,15 +173,11 @@ pub enum WordProcessorAction {
     InsertParagraph { after: String, text: String },
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
-    RemoveBlocks {
-        blocks: Vec<String>,
-    },
+    RemoveBlocks { blocks: Vec<String> },
     /// Replace the whole document body with `markdown` (re-import a template /
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
-    ReplaceBody {
-        markdown: String,
-    },
+    ReplaceBody { markdown: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +218,9 @@ fn add_mark_region(dm: &mut DocMut, region: Region, span: &Span, name: &str, val
         r => match value {
             MarkVal::Bool(v) => dm.add_mark_in(r, &span.block, span.start, span.end, name, *v),
             MarkVal::Int(n) => dm.add_mark_in(r, &span.block, span.start, span.end, name, *n),
-            MarkVal::Str(s) => dm.add_mark_in(r, &span.block, span.start, span.end, name, s.as_str()),
+            MarkVal::Str(s) => {
+                dm.add_mark_in(r, &span.block, span.start, span.end, name, s.as_str());
+            }
         },
     }
 }
@@ -254,20 +233,18 @@ fn remove_mark_region(dm: &mut DocMut, c: &Containers, region: Region, span: &Sp
     // Header/Footer: no `remove_mark_in` op — clear the mark directly on the
     // region block's Text object (mirrors the body `remove_mark`'s
     // `unmark(.., ExpandMark::After)`).
-    if let Some(container) = region_container_obj(dm.doc, c, region) {
-        if let Some(obj) = region_block_obj(dm.doc, &container, &span.block) {
-            if let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-                dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
-            {
-                let _ = dm.doc.unmark(
-                    &tid,
-                    name,
-                    span.start,
-                    span.end,
-                    automerge::marks::ExpandMark::After,
-                );
-            }
-        }
+    if let Some(container) = region_container_obj(dm.doc, c, region)
+        && let Some(obj) = region_block_obj(dm.doc, &container, &span.block)
+        && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
+            dm.doc.get(&obj, qdoc::schema::BLOCK_TEXT)
+    {
+        let _ = dm.doc.unmark(
+            &tid,
+            name,
+            span.start,
+            span.end,
+            automerge::marks::ExpandMark::After,
+        );
     }
 }
 
@@ -309,8 +286,18 @@ impl Action for WordProcessorAction {
                 del,
                 ins,
             } => {
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
-                dm.splice_text_in(region.to_region(), block, *at, *del as isize, ins);
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
+                dm.splice_text_in(
+                    region.to_region(),
+                    block,
+                    *at,
+                    num::isize_of_usize(*del),
+                    ins,
+                );
             }
 
             WordProcessorAction::SetMark {
@@ -325,7 +312,11 @@ impl Action for WordProcessorAction {
                 sorted.sort_by(|a, b| {
                     (a.block.as_str(), a.start, a.end).cmp(&(b.block.as_str(), b.start, b.end))
                 });
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for span in &sorted {
                     if span.start >= span.end {
                         continue;
@@ -353,7 +344,11 @@ impl Action for WordProcessorAction {
             } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     dm.set_kind(block, kind);
                     if let Some(l) = level {
@@ -374,7 +369,11 @@ impl Action for WordProcessorAction {
             } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     if let Some(k) = kind {
                         dm.set_kind(block, k);
@@ -398,22 +397,30 @@ impl Action for WordProcessorAction {
                 let r = region.to_region();
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     set_attr_region(&mut dm, r, block, key, value);
                 }
             }
 
             WordProcessorAction::InsertTable { after, rows, cols } => {
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 let table_id = dm.ids.mint(); // one id shared by every cell
                 let mut prev = Some(after.clone());
                 for row in 0..*rows {
                     for col in 0..*cols {
                         let id = dm.insert_block(prev.as_deref(), "cell");
                         dm.set_attr(&id, "table", table_id.as_str());
-                        dm.set_attr(&id, "row", row as i64);
-                        dm.set_attr(&id, "col", col as i64);
+                        dm.set_attr(&id, "row", num::i64_of_usize(row));
+                        dm.set_attr(&id, "col", num::i64_of_usize(col));
                         prev = Some(id);
                     }
                 }
@@ -429,10 +436,14 @@ impl Action for WordProcessorAction {
                 let text = qdoc::model::block_text(doc, &c, block).unwrap_or_default();
                 let char_count = text.chars().count();
                 let tail: String = text.chars().skip(*at).collect();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 let hash = dm.put_blob(bytes);
-                if *at < char_count {
-                    dm.splice_text(block, *at, (char_count - *at) as isize, "");
+                if let Some(tail) = char_count.checked_sub(*at).filter(|n| *n > 0) {
+                    dm.splice_text(block, *at, num::isize_of_usize(tail), "");
                 }
                 let img = dm.insert_block(Some(block), "image");
                 dm.set_attr(&img, "blob", hash.as_str());
@@ -454,9 +465,13 @@ impl Action for WordProcessorAction {
                 let text = qdoc::model::block_text(doc, &c, block).unwrap_or_default();
                 let char_count = text.chars().count();
                 let tail: String = text.chars().skip(*at).collect();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
-                if *at < char_count {
-                    dm.splice_text(block, *at, (char_count - *at) as isize, "");
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
+                if let Some(tail) = char_count.checked_sub(*at).filter(|n| *n > 0) {
+                    dm.splice_text(block, *at, num::isize_of_usize(tail), "");
                 }
                 let new = dm.insert_block(Some(block), "paragraph");
                 if !tail.is_empty() {
@@ -466,7 +481,11 @@ impl Action for WordProcessorAction {
             }
 
             WordProcessorAction::InsertParagraph { after, text } => {
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 let new = dm.insert_block(Some(after), "paragraph");
                 if !text.is_empty() {
                     dm.splice_text(&new, 0, 0, text);
@@ -476,7 +495,11 @@ impl Action for WordProcessorAction {
             WordProcessorAction::RemoveBlocks { blocks } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for block in &sorted {
                     dm.remove_block(block);
                 }
@@ -485,7 +508,11 @@ impl Action for WordProcessorAction {
             WordProcessorAction::ReplaceBody { markdown } => {
                 use qdoc::FormatProvider;
                 let existing = qdoc::model::blocks_in_order(doc, &c);
-                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let mut dm = DocMut {
+                    doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
                 for id in &existing {
                     dm.remove_block(id);
                 }
@@ -512,8 +539,13 @@ pub fn register(registry: &mut ActionRegistry) {
 /// on-screen affordances both dispatch. The single point that turns an action
 /// into a replayable envelope.
 pub fn encode(action: &WordProcessorAction) -> EncodedAction {
-    EncodedAction::encode(WORD_PROCESSOR_ACTION_TYPE, action)
-        .expect("WordProcessorAction is always serializable")
+    // The action is a plain serde enum over owned data, so the JSON encode
+    // cannot fail. Were it ever to, an empty payload simply fails to decode
+    // at the far end — a no-op — instead of aborting the process.
+    EncodedAction::encode(WORD_PROCESSOR_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: WORD_PROCESSOR_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -555,7 +587,12 @@ pub fn set_block_attr_action(
 
 /// Set alignment (`left`/`center`/`right`/`justify`) on `blocks`.
 pub fn set_align_action(blocks: Vec<String>, align: &str) -> WordProcessorAction {
-    set_block_attr_action(RegionKind::Body, blocks, "align", AttrVal::Str(align.to_string()))
+    set_block_attr_action(
+        RegionKind::Body,
+        blocks,
+        "align",
+        AttrVal::Str(align.to_string()),
+    )
 }
 
 /// Apply a named paragraph style (and, for a built-in, its structural kind) to
@@ -570,7 +607,7 @@ pub fn apply_named_style_action(
     WordProcessorAction::ApplyNamedStyle {
         blocks,
         style: style.to_string(),
-        kind: kind.map(|k| k.to_string()),
+        kind: kind.map(std::string::ToString::to_string),
         level,
         ordered,
     }
@@ -681,8 +718,13 @@ pub struct WpResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, WORD_PROCESSOR_ACTION_TYPE, action)
-        .expect("encode word-processor action")
+    // Built from `encode`, which is total, rather than the fallible
+    // `ActionSpec::immediate` — the two produce the same spec.
+    //
+    // Through the constructor rather than a struct literal: `ActionSpec`
+    // carries private `params`/`build` fields, so a literal cannot name
+    // them and the shared defaults would be bypassed if it could.
+    ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
 }
 
 /// A short label for a structural block in the palette.
@@ -703,7 +745,11 @@ fn short(text: &str, fallback: &str) -> String {
 /// target blocks) and a child resource per image, table and heading, each
 /// exporting the document-mutating operations the data model implies.
 pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("word-processor.document", "word_processor.document", "Document");
+    let mut root = Resource::new(
+        "word-processor.document",
+        "word_processor.document",
+        "Document",
+    );
 
     // Document-level structural inserts, anchored on the caret.
     root = root.with_action(immediate_spec(
@@ -756,10 +802,10 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     // a resource each, deleting every cell of the table.
     let mut table_ids: Vec<String> = Vec::new();
     for b in snap.blocks.iter().filter(|b| b.kind == "cell") {
-        if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table") {
-            if !table_ids.contains(tid) {
-                table_ids.push(tid.clone());
-            }
+        if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table")
+            && !table_ids.contains(tid)
+        {
+            table_ids.push(tid.clone());
         }
     }
     for tid in &table_ids {
@@ -822,7 +868,7 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::{ActionInput, LocalTransport};
+    use qos_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -833,7 +879,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
@@ -845,7 +891,9 @@ mod tests {
         {
             use qdoc::FormatProvider;
             let mut dm = ed.edit(&mut state.doc);
-            qdoc::MarkdownCodec.import(markdown.as_bytes(), &mut dm).unwrap();
+            qdoc::MarkdownCodec
+                .import(markdown.as_bytes(), &mut dm)
+                .unwrap();
         }
         let ids = qdoc::model::blocks_in_order(&state.doc, &ed.containers);
         (state, ids)
@@ -878,7 +926,11 @@ mod tests {
         a.doc.commit();
         let bytes = a.save();
         let mut b = ui::State::load(&bytes).unwrap();
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "precondition: same base state"
+        );
 
         // Replace "world" with "there".
         let action = splice_text_action(RegionKind::Body, &block, 6, 11, "there");
@@ -906,7 +958,11 @@ mod tests {
 
         let action = set_mark_action(
             RegionKind::Body,
-            vec![Span { block: block.clone(), start: 0, end: 5 }],
+            vec![Span {
+                block: block.clone(),
+                start: 0,
+                end: 5,
+            }],
             "strong",
             Some(MarkVal::Bool(true)),
             vec![],
@@ -915,14 +971,20 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "mark replayed identically");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "mark replayed identically"
+        );
         let marks = body_blocks(&b.doc)
             .into_iter()
             .find(|x| x.id == block)
             .map(|x| x.marks)
             .unwrap_or_default();
         assert!(
-            marks.iter().any(|m| m.name == "strong" && m.start == 0 && m.end == 5),
+            marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 0 && m.end == 5),
             "the bold run is present on the peer: {marks:?}"
         );
     }
@@ -941,9 +1003,17 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "style replayed identically");
         assert_eq!(
-            body_blocks(&b.doc).into_iter().find(|x| x.id == block).unwrap().kind,
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "style replayed identically"
+        );
+        assert_eq!(
+            body_blocks(&b.doc)
+                .into_iter()
+                .find(|x| x.id == block)
+                .unwrap()
+                .kind,
             "heading",
             "the block became a heading on the peer"
         );
@@ -965,9 +1035,19 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "table replayed identically");
-        let cells_a = body_blocks(&a.doc).into_iter().filter(|x| x.kind == "cell").count();
-        let cells_b = body_blocks(&b.doc).into_iter().filter(|x| x.kind == "cell").count();
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "table replayed identically"
+        );
+        let cells_a = body_blocks(&a.doc)
+            .into_iter()
+            .filter(|x| x.kind == "cell")
+            .count();
+        let cells_b = body_blocks(&b.doc)
+            .into_iter()
+            .filter(|x| x.kind == "cell")
+            .count();
         assert_eq!(cells_a, 6, "2x3 = six cells");
         assert_eq!(cells_a, cells_b, "the same cells on both replicas");
     }
@@ -988,10 +1068,22 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "page break replayed identically");
-        assert_eq!(text_of(&a.doc, &block), "one", "head keeps the pre-caret text");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "page break replayed identically"
+        );
+        assert_eq!(
+            text_of(&a.doc, &block),
+            "one",
+            "head keeps the pre-caret text"
+        );
         let broke = body_blocks(&a.doc).into_iter().any(|x| {
-            x.text == "two" && matches!(x.attrs.get("page_break_before"), Some(qdoc::AttrVal::Bool(true)))
+            x.text == "two"
+                && matches!(
+                    x.attrs.get("page_break_before"),
+                    Some(qdoc::AttrVal::Bool(true))
+                )
         });
         assert!(broke, "the tail block starts on a fresh page");
     }
@@ -1010,18 +1102,20 @@ mod tests {
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "body replace replayed identically");
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "body replace replayed identically"
+        );
         let first = body_blocks(&a.doc).into_iter().next().unwrap();
         assert_eq!(first.kind, "heading");
         assert_eq!(first.text, "Fresh");
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action. Uses a paragraph-style
-    /// change — a structural `kind` write the host's snapshot-diff undo reverts
-    /// (inline formatting *marks* are, by design, not undo-tracked by the
-    /// toolkit, so a bold toggle would not round-trip through Ctrl+Z).
+    /// mutates the document and records exactly one undo boundary, reverted
+    /// precisely by Ctrl+Z. Uses a paragraph-style change (a structural `kind`
+    /// write) since inline formatting *marks* are, by design, not undo-tracked.
     #[test]
     fn action_records_one_undo_boundary_and_reverts() {
         let (mut state, ids) = seeded("Title\n");
@@ -1029,29 +1123,32 @@ mod tests {
         let before_heads = state.doc.get_heads();
 
         let kind_of = |doc: &AutoCommit| {
-            body_blocks(doc).into_iter().find(|x| x.id == block).map(|x| x.kind)
+            body_blocks(doc)
+                .into_iter()
+                .find(|x| x.id == block)
+                .map(|x| x.kind)
         };
-        assert_eq!(kind_of(&state.doc).as_deref(), Some("paragraph"), "starts as a paragraph");
+        assert_eq!(
+            kind_of(&state.doc).as_deref(),
+            Some("paragraph"),
+            "starts as a paragraph"
+        );
 
         let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
         dispatch(&mut state.doc, &action);
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
+        state.record_committed_action(before_heads, None, None);
+
+        assert_eq!(
+            kind_of(&state.doc).as_deref(),
+            Some("heading"),
+            "the action made it a heading"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
         );
 
-        assert_eq!(kind_of(&state.doc).as_deref(), Some("heading"), "the action made it a heading");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             kind_of(&state.doc).as_deref(),
             Some("paragraph"),
@@ -1075,17 +1172,31 @@ mod tests {
         assert_eq!(doc_res.kind, "word_processor.document");
 
         // Insert-table spec == insert_table builder.
-        let spec = doc_res.actions.iter().find(|a| a.id == "insert-table").unwrap();
+        let spec = doc_res
+            .actions
+            .iter()
+            .find(|a| a.id == "insert-table")
+            .unwrap();
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&insert_table_action(&block, 2, 2));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "insert-table is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "insert-table is one source of truth"
+        );
 
         // Align-center spec == set_align builder over the same target blocks.
-        let spec = doc_res.actions.iter().find(|a| a.id == "align-center").unwrap();
+        let spec = doc_res
+            .actions
+            .iter()
+            .find(|a| a.id == "align-center")
+            .unwrap();
         let from_spec = immediate_encode(spec);
-        let from_builder = encode(&set_align_action(vec![block.clone()], "center"));
-        assert_eq!(from_spec.payload, from_builder.payload, "align is one source of truth");
+        let from_builder = encode(&set_align_action(vec![block], "center"));
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "align is one source of truth"
+        );
     }
 
     /// Ctrl+K publishes the document resource with its structural children: an
@@ -1100,7 +1211,10 @@ mod tests {
             &mut state.doc,
             &insert_image_action(&para, 0, vec![1, 2, 3, 4], Some(20), Some(10)),
         );
-        let after_img = qdoc::model::blocks_in_order(&state.doc, &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap());
+        let after_img = qdoc::model::blocks_in_order(
+            &state.doc,
+            &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap(),
+        );
         let last = after_img.last().cloned().unwrap();
         dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
 
@@ -1112,20 +1226,30 @@ mod tests {
         let resources = provide_resources(&ctx, &state.doc);
         assert_eq!(resources.len(), 1, "one document root");
         let root = &resources[0];
-        let ids_of = |kind: &str| {
-            root.children.iter().filter(|r| r.kind == kind).count()
-        };
+        let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
         assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
         assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
-        assert!(ids_of("word_processor.section") >= 1, "a heading section resource");
+        assert!(
+            ids_of("word_processor.section") >= 1,
+            "a heading section resource"
+        );
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Insert table")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete image")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete table")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Insert table")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete image")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Delete table")),
+            "{labels:?}"
+        );
     }
 }

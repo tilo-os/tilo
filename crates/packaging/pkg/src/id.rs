@@ -80,8 +80,8 @@ impl FromStr for PackageId {
 }
 
 mod serde_id_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
     use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(bytes: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
         // serialise as hex string so the manifest's `package.id`
@@ -94,7 +94,10 @@ mod serde_id_bytes {
         let s: String = Deserialize::deserialize(d)?;
         let v = hex::decode(&s).map_err(D::Error::custom)?;
         if v.len() != 32 {
-            return Err(D::Error::custom(format!("expected 32 bytes, got {}", v.len())));
+            return Err(D::Error::custom(format!(
+                "expected 32 bytes, got {}",
+                v.len()
+            )));
         }
         let mut out = [0u8; 32];
         out.copy_from_slice(&v);

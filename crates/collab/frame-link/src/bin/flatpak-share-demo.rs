@@ -1,25 +1,21 @@
 //! `flatpak-share-demo` — a self-contained visual demo of the
 //! flatpak-share pipeline.
 //!
-//! For each frame:
-//!
-//! 1. Synthesise a source RGBA frame (moving text stamp of the current
-//!    `t=NNNNms`, bouncing shapes, rotating gradient).
-//! 2. Feed it through the production [`shell::network::encoder::H264Encoder`].
-//! 3. Push the NALU payload through a [`frame_link::FrameLink`] shim
-//!    configured with the `--latency-ms` + `--throughput-kbps` flags.
-//! 4. Drain the shim; feed anything ready into the production
-//!    [`shell::network::decoder::H264Decoder`].
-//! 5. Composite source-on-left + decoded-on-right into a 2W×H canvas.
-//! 6. Encode the composite via a second `H264Encoder` and write the
-//!    Annex-B stream through `ffmpeg -f h264 -i - -c copy out.mp4`.
+//! For each frame: synthesise a source RGBA frame (moving text stamp,
+//! bouncing shapes, rotating gradient); feed it through the production
+//! [`shell::network::encoder::H264Encoder`]; push the NALU payload
+//! through a [`frame_link::FrameLink`] shim configured with
+//! `--latency-ms`/`--throughput-kbps`; drain the shim and feed anything
+//! ready into the production [`shell::network::decoder::H264Decoder`];
+//! composite source-on-left + decoded-on-right into a 2W×H canvas;
+//! encode the composite via a second `H264Encoder` and write the Annex-B
+//! stream through `ffmpeg -f h264 -i - -c copy out.mp4`.
 //!
 //! Nothing is mocked — the encoder and decoder are the same code paths
-//! the compositor runs in production. The only synthetic piece is the
-//! shim, which is the *point* of the demo (dial a network in). A
-//! `tracing`-subscriber accumulates per-span duration and dumps a text
-//! profile summary to `target/latency-profile.txt`, so the reader can
-//! see where the wall-clock budget is spent.
+//! the compositor runs in production; the only synthetic piece is the
+//! shim, the *point* of the demo. A `tracing`-subscriber accumulates
+//! per-span duration and dumps a profile summary to
+//! `target/latency-profile.txt`.
 //!
 //! ## CLI
 //!
@@ -33,12 +29,11 @@
 //!
 //! ## Why the demo re-encodes
 //!
-//! The user wants to *watch* the demo; the frames the shim delivers are
-//! only meaningful side-by-side with the source. Recomposing the two
-//! into a single wide frame and re-encoding produces an MP4 that plays
-//! anywhere. The re-encode is honest about its overhead — the profile
-//! summary breaks out `compose+reencode` as its own span so the reader
-//! can attribute it separately from the production pipeline.
+//! The shim's delivered frames are only meaningful side-by-side with the
+//! source. Recomposing the two into one wide frame and re-encoding
+//! produces an MP4 that plays anywhere; the profile summary breaks out
+//! `compose+reencode` as its own span so the reader can attribute the
+//! overhead separately from the production pipeline.
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -53,11 +48,11 @@ use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use frame_link::{FrameLink, LinkConfig, LinkStats};
 use shell::network::decoder::H264Decoder;
 use shell::network::encoder::H264Encoder;
-use tracing::{Level, span, Subscriber};
-use tracing_subscriber::{layer::Context, prelude::*, registry::LookupSpan, Layer};
+use tracing::{Level, Subscriber, span};
+use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
-/// Command-line surface. `Default` picks numbers that match the task
-/// spec so `flatpak-share-demo` with no flags produces a working demo.
+/// Command-line surface. `Default` picks numbers matching the task spec
+/// so `flatpak-share-demo` with no flags produces a working demo.
 #[derive(Debug, Clone)]
 struct Args {
     duration_secs: u32,
@@ -71,9 +66,9 @@ struct Args {
     source: Source,
 }
 
-/// Source content selector. `Pattern` is the built-in generative
-/// content; `Video(path)` decodes an existing MP4 for the demo. Both
-/// are RGBA-normalised to the target `width × height × fps`.
+/// Source content selector. `Pattern` is built-in generative content;
+/// `Video(path)` decodes an existing MP4 for the demo. Both are
+/// RGBA-normalised to the target `width × height × fps`.
 #[derive(Debug, Clone)]
 enum Source {
     Pattern,
@@ -120,47 +115,49 @@ fn parse_args() -> Result<Args, String> {
                 args.duration_secs = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--duration expects <secs>".to_string())?
+                    .ok_or_else(|| "--duration expects <secs>".to_string())?;
             }
             "--width" => {
                 args.width = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--width expects <px>".to_string())?
+                    .ok_or_else(|| "--width expects <px>".to_string())?;
             }
             "--height" => {
                 args.height = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--height expects <px>".to_string())?
+                    .ok_or_else(|| "--height expects <px>".to_string())?;
             }
             "--fps" => {
                 args.fps = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--fps expects <n>".to_string())?
+                    .ok_or_else(|| "--fps expects <n>".to_string())?;
             }
             "--latency-ms" => {
                 args.latency_ms = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--latency-ms expects <n>".to_string())?
+                    .ok_or_else(|| "--latency-ms expects <n>".to_string())?;
             }
             "--throughput-kbps" => {
                 args.throughput_kbps = it
                     .next()
                     .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| "--throughput-kbps expects <n>".to_string())?
+                    .ok_or_else(|| "--throughput-kbps expects <n>".to_string())?;
             }
             "--out" => {
-                args.out = it.next().map(PathBuf::from).ok_or_else(|| {
-                    "--out expects <path.mp4>".to_string()
-                })?
+                args.out = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--out expects <path.mp4>".to_string())?;
             }
             "--profile" => {
-                args.profile = it.next().map(PathBuf::from).ok_or_else(|| {
-                    "--profile expects <path.txt>".to_string()
-                })?
+                args.profile = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--profile expects <path.txt>".to_string())?;
             }
             "--source" => {
                 let v = it
@@ -173,9 +170,10 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--source-video" => {
-                let v = it.next().map(PathBuf::from).ok_or_else(|| {
-                    "--source-video expects <path.mp4>".to_string()
-                })?;
+                let v = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--source-video expects <path.mp4>".to_string())?;
                 args.source = Source::Video(v);
             }
             "-h" | "--help" => {
@@ -202,9 +200,8 @@ fn parse_args() -> Result<Args, String> {
 }
 
 /// Minimal tracing layer that accumulates per-span-name wall-clock
-/// duration + call count. Writes a text summary on drop. Good enough
-/// for the profile-pass deliverable without pulling in `tracing-tree`
-/// or `tracing-flame` (which the workspace doesn't currently have).
+/// duration + call count, writing a text summary on drop — good enough
+/// without pulling in `tracing-tree`/`tracing-flame`.
 #[derive(Default)]
 struct ProfileLayer {
     inner: Arc<Mutex<ProfileInner>>,
@@ -212,11 +209,11 @@ struct ProfileLayer {
 
 #[derive(Default)]
 struct ProfileInner {
-    // Per-span name → accumulated stats. BTreeMap so the report reads
-    // in a stable order.
+    // Per-span name → accumulated stats; BTreeMap so the report reads in
+    // a stable order.
     per_span: BTreeMap<String, SpanStats>,
-    // Entry timestamps keyed on the span id. `span::Id` isn't `Ord`
-    // (it's opaque), but it *is* hashable, so we use a HashMap here.
+    // Entry timestamps keyed on the span id. `span::Id` isn't `Ord` but
+    // is hashable, hence a HashMap here.
     entered_at: HashMap<u64, Instant>,
 }
 
@@ -229,7 +226,11 @@ struct SpanStats {
 impl ProfileLayer {
     fn snapshot(&self) -> Vec<(String, SpanStats)> {
         let inner = self.inner.lock().expect("profile lock");
-        inner.per_span.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        inner
+            .per_span
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect()
     }
 }
 
@@ -261,10 +262,9 @@ where
 
 /// The demo's per-frame source RGBA canvas + text overlay.
 ///
-/// Produces `width × height × 4` bytes. Uses the built-in generative
-/// scene (bouncing coloured discs + rotating gradient background) with
-/// a monospace `t=NNNNms` stamp so latency is directly visible from a
-/// still frame.
+/// Produces `width × height × 4` bytes: bouncing coloured discs +
+/// rotating gradient background with a monospace `t=NNNNms` stamp so
+/// latency is directly visible from a still frame.
 struct SourceRenderer {
     width: u32,
     height: u32,
@@ -274,9 +274,9 @@ struct SourceRenderer {
 
 impl SourceRenderer {
     fn new(width: u32, height: u32) -> Result<Self, String> {
-        // Font search: distrobox is Fedora-flavoured so Noto Sans lives
-        // at a well-known path. Fall back to Adwaita Mono and a bundled
-        // last-resort so an unusual environment still runs.
+        // Font search: distrobox is Fedora-flavoured so Noto Sans lives at a
+        // well-known path; fall back to Adwaita Mono and a bundled
+        // last-resort for unusual environments.
         let font_paths = [
             "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
             "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
@@ -289,14 +289,8 @@ impl SourceRenderer {
         let bytes = font_paths
             .iter()
             .find_map(|p| fs::read(p).ok())
-            .ok_or_else(|| {
-                format!(
-                    "no font found — tried {:?}",
-                    font_paths
-                )
-            })?;
-        let font = FontVec::try_from_vec(bytes)
-            .map_err(|e| format!("font parse failed: {e:?}"))?;
+            .ok_or_else(|| format!("no font found — tried {font_paths:?}"))?;
+        let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let rgba = vec![0u8; (width as usize) * (height as usize) * 4];
         Ok(Self {
             width,
@@ -309,8 +303,8 @@ impl SourceRenderer {
     /// Render a fresh frame at millisecond `t_ms` into the internal
     /// buffer. `frame_index` is used for animation phase.
     fn render(&mut self, t_ms: u64, frame_index: u32) -> &[u8] {
-        // Rotating gradient background: hue rotates through the frame
-        // index so compression artifacts on smooth-motion are obvious.
+        // Rotating gradient background: hue rotates through the frame index
+        // so compression artifacts on smooth-motion are obvious.
         let phase = (frame_index as f32) * 0.02;
         for y in 0..self.height {
             for x in 0..self.width {
@@ -338,7 +332,7 @@ impl SourceRenderer {
             self.draw_disc(x as i32, y as i32, radius as i32, color);
         }
         // Text stamp — top-left, "SOURCE t=NNNNms".
-        let text = format!("t={t_ms:>5}ms   frame #{:>4}", frame_index);
+        let text = format!("t={t_ms:>5}ms   frame #{frame_index:>4}");
         self.draw_text(24, 24, 48.0, &text, (255, 255, 255));
         &self.rgba
     }
@@ -388,15 +382,10 @@ impl SourceRenderer {
                 outlined.draw(|dx, dy, cov| {
                     let px = ox as i32 + dx as i32;
                     let py = oy as i32 + dy as i32;
-                    if px < 0
-                        || py < 0
-                        || px >= self.width as i32
-                        || py >= self.height as i32
-                    {
+                    if px < 0 || py < 0 || px >= self.width as i32 || py >= self.height as i32 {
                         return;
                     }
-                    let i =
-                        ((py as usize) * (self.width as usize) + px as usize) * 4;
+                    let i = ((py as usize) * (self.width as usize) + px as usize) * 4;
                     let a = cov.min(1.0);
                     self.rgba[i] = blend(self.rgba[i], color.0, a);
                     self.rgba[i + 1] = blend(self.rgba[i + 1], color.1, a);
@@ -410,8 +399,8 @@ impl SourceRenderer {
 }
 
 fn blend(bg: u8, fg: u8, alpha: f32) -> u8 {
-    let bg = bg as f32;
-    let fg = fg as f32;
+    let bg = f32::from(bg);
+    let fg = f32::from(fg);
     (bg + (fg - bg) * alpha).clamp(0.0, 255.0) as u8
 }
 
@@ -442,18 +431,16 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
 }
 
 /// Compose the side-by-side canvas — source on the left half, streamed
-/// on the right half — into `out_rgba` (2W × H).
-///
-/// Also stamps the two column headers + a bottom stats strip.
+/// on the right half — into `out_rgba` (2W × H), stamping the two column
+/// headers + a bottom stats strip.
 struct CompositeRenderer {
     src_w: u32,
     src_h: u32,
     canvas_w: u32,
     canvas_h: u32,
     header_h: u32,
-    // Retained for parity with the layout math; not read from
-    // `compose` because the footer text position is fixed relative to
-    // `header_h + src_h`.
+    // Retained for parity with the layout math; not read from `compose`
+    // since the footer text position is fixed relative to `header_h + src_h`.
     #[allow(dead_code)]
     footer_h: u32,
     out: Vec<u8>,
@@ -482,13 +469,10 @@ impl CompositeRenderer {
             .iter()
             .find_map(|p| fs::read(p).ok())
             .ok_or_else(|| "no font found for composite text".to_string())?;
-        let font = FontVec::try_from_vec(bytes)
-            .map_err(|e| format!("font parse failed: {e:?}"))?;
+        let font = FontVec::try_from_vec(bytes).map_err(|e| format!("font parse failed: {e:?}"))?;
         let header_left = "SOURCE".to_string();
-        let header_right = format!(
-            "STREAMED · {}ms latency · {} kbps throttle",
-            latency_ms, throughput_kbps
-        );
+        let header_right =
+            format!("STREAMED · {latency_ms}ms latency · {throughput_kbps} kbps throttle");
         Ok(Self {
             src_w,
             src_h,
@@ -507,9 +491,9 @@ impl CompositeRenderer {
         (self.canvas_w, self.canvas_h)
     }
 
-    /// Compose one output frame. `src_rgba` is the source
-    /// `src_w × src_h × 4`; `decoded_rgba` is the shim-passed reconstruction
-    /// (same dimensions) or `None` if none was ready yet.
+    /// Compose one output frame. `src_rgba` is the source `src_w × src_h ×
+    /// 4`; `decoded_rgba` is the shim-passed reconstruction (same
+    /// dimensions) or `None` if none was ready yet.
     #[tracing::instrument(level = "trace", skip(self, src_rgba, decoded_rgba, footer))]
     fn compose(&mut self, src_rgba: &[u8], decoded_rgba: Option<&[u8]>, footer: &str) -> &[u8] {
         // Wipe canvas to dark grey.
@@ -522,7 +506,8 @@ impl CompositeRenderer {
         // Left half — source.
         let y0 = self.header_h as usize;
         for y in 0..self.src_h as usize {
-            let src_row = &src_rgba[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
+            let src_row =
+                &src_rgba[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
             let dst_row_start = (y + y0) * (self.canvas_w as usize) * 4;
             let dst_row_end = dst_row_start + (self.src_w as usize) * 4;
             self.out[dst_row_start..dst_row_end].copy_from_slice(src_row);
@@ -531,15 +516,15 @@ impl CompositeRenderer {
         let x0 = self.src_w as usize;
         if let Some(dec) = decoded_rgba {
             for y in 0..self.src_h as usize {
-                let src_row = &dec[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
-                let dst_row_start =
-                    (y + y0) * (self.canvas_w as usize) * 4 + x0 * 4;
+                let src_row =
+                    &dec[y * (self.src_w as usize) * 4..(y + 1) * (self.src_w as usize) * 4];
+                let dst_row_start = (y + y0) * (self.canvas_w as usize) * 4 + x0 * 4;
                 let dst_row_end = dst_row_start + (self.src_w as usize) * 4;
                 self.out[dst_row_start..dst_row_end].copy_from_slice(src_row);
             }
         } else {
-            // Fill with a distinct dark-red so the "waiting on the
-            // shim" phase is obvious.
+            // Fill with a distinct dark-red so the "waiting on the shim" phase
+            // is obvious.
             for y in 0..self.src_h as usize {
                 for x in 0..self.src_w as usize {
                     let i = ((y + y0) * (self.canvas_w as usize) + (x + x0)) * 4;
@@ -550,10 +535,9 @@ impl CompositeRenderer {
                 }
             }
         }
-        // Headers. Clone the strings out first so we don't hold an
-        // immutable borrow on `self` across the mutable-borrow of
-        // `draw_text`. Cheap — the strings are short and static across
-        // the demo's lifetime.
+        // Headers. Clone the strings out first so we don't hold an immutable
+        // borrow on `self` across the mutable-borrow of `draw_text` — cheap,
+        // the strings are short and static.
         let header_left = self.header_left.clone();
         let header_right = self.header_right.clone();
         self.draw_text(
@@ -601,15 +585,11 @@ impl CompositeRenderer {
                 outlined.draw(|dx, dy, cov| {
                     let px = ox as i32 + dx as i32;
                     let py = oy as i32 + dy as i32;
-                    if px < 0
-                        || py < 0
-                        || px >= self.canvas_w as i32
-                        || py >= self.canvas_h as i32
+                    if px < 0 || py < 0 || px >= self.canvas_w as i32 || py >= self.canvas_h as i32
                     {
                         return;
                     }
-                    let i =
-                        ((py as usize) * (self.canvas_w as usize) + px as usize) * 4;
+                    let i = ((py as usize) * (self.canvas_w as usize) + px as usize) * 4;
                     let a = cov.min(1.0);
                     self.out[i] = blend(self.out[i], color.0, a);
                     self.out[i + 1] = blend(self.out[i + 1], color.1, a);
@@ -623,36 +603,39 @@ impl CompositeRenderer {
 }
 
 fn round_even(v: u32) -> u32 {
-    if v % 2 == 0 { v } else { v + 1 }
+    if v.is_multiple_of(2) { v } else { v + 1 }
 }
 
 /// Spawn `ffmpeg` to mux the raw H.264 Annex-B stream we're writing to
-/// its stdin into a playable MP4. The user's default video player then
-/// opens `--out` and sees the demo.
-fn spawn_muxer(out: &Path, fps: u32, _width: u32, _height: u32) -> Result<std::process::Child, String> {
+/// its stdin into a playable MP4, which the user's default video player
+/// then opens.
+fn spawn_muxer(
+    out: &Path,
+    fps: u32,
+    _width: u32,
+    _height: u32,
+) -> Result<std::process::Child, String> {
     // Ensure the destination directory exists.
     if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     let child = Command::new("ffmpeg")
         .arg("-y")
         .arg("-loglevel")
         .arg("error")
-        // Input: raw H.264 Annex-B on stdin at the caller's framerate.
-        // The H.264 demuxer picks width/height straight out of the SPS.
+        // Input: raw H.264 Annex-B on stdin at the caller's framerate; the
+        // demuxer picks width/height straight out of the SPS.
         .arg("-f")
         .arg("h264")
         .arg("-framerate")
         .arg(format!("{fps}"))
         .arg("-i")
         .arg("-")
-        // Re-encode at the caller's fps. `-c:v copy` would preserve
-        // openh264's embedded 60 fps SPS timing hint and make the mp4
-        // play at 2× speed regardless of `-r`. libopenh264 is always
-        // available on the ffmpeg build we ship against (Fedora's
-        // build enables it explicitly); libx264 is not universally
-        // present so we don't reach for it.
+        // Re-encode at the caller's fps: `-c:v copy` would preserve
+        // openh264's embedded 60 fps SPS timing hint and make the mp4 play
+        // at 2× speed regardless of `-r`. libopenh264 is always available on
+        // the ffmpeg build we ship against; libx264 is not, so we don't
+        // reach for it.
         .arg("-c:v")
         .arg("libopenh264")
         .arg("-b:v")
@@ -681,10 +664,12 @@ fn write_profile_report(
         total_wall.as_secs_f64()
     ));
     lines.push(
-        "span                                            calls      total_ms     mean_us   %wall\n".to_string(),
+        "span                                            calls      total_ms     mean_us   %wall\n"
+            .to_string(),
     );
     lines.push(
-        "---------------------------------------------- ------  ------------  ----------  ------\n".to_string(),
+        "---------------------------------------------- ------  ------------  ----------  ------\n"
+            .to_string(),
     );
     let mut rows = layer.snapshot();
     rows.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
@@ -718,7 +703,13 @@ fn write_profile_report(
     Ok(())
 }
 
-fn format_footer(stats: &LinkStats, elapsed: Duration, sent: u64, decoded: u64, dropped: u64) -> String {
+fn format_footer(
+    stats: &LinkStats,
+    elapsed: Duration,
+    sent: u64,
+    decoded: u64,
+    dropped: u64,
+) -> String {
     let bps = stats.effective_bps(elapsed);
     let mbps = bps / 1_000_000.0;
     let mean_delay = stats.mean_delay_ms();
@@ -730,18 +721,17 @@ fn format_footer(stats: &LinkStats, elapsed: Duration, sent: u64, decoded: u64, 
 
 /// A minimal H.264 Annex-B parser: chops a `Vec<u8>` back into
 /// individual NAL units so the shim can throttle at the correct
-/// granularity (one NAL == one "packet" for our purposes).
+/// granularity.
 ///
-/// The encoder emits Annex-B (start code `00 00 00 01` or `00 00 01`).
-/// Splitting at start codes and re-emitting them keeps the bytes
+/// The encoder emits Annex-B (start code `00 00 00 01` or `00 00 01`);
+/// splitting at start codes and re-emitting them keeps the bytes
 /// bit-identical for the decoder.
 ///
-/// Not currently called from the demo — we push the whole per-frame
-/// NAL blob into the shim as one payload so the throttle sees a
-/// realistic per-frame packet size (real streaming stacks bundle SPS +
-/// PPS + IDR together on keyframes). Kept in the file because it's a
-/// natural fit for downstream callers who want a finer-grained
-/// throttle.
+/// Not currently called from the demo — the whole per-frame NAL blob is
+/// pushed into the shim as one payload so the throttle sees a realistic
+/// per-frame packet size (real streaming stacks bundle SPS+PPS+IDR
+/// together on keyframes). Kept for downstream callers wanting a
+/// finer-grained throttle.
 #[allow(dead_code)]
 fn split_annex_b(nalus: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
@@ -783,26 +773,27 @@ fn find_start_codes(bytes: &[u8]) -> Vec<usize> {
 
 fn main() -> Result<(), String> {
     // Install the tracing subscriber early so every span from the shell
-    // encoder / decoder / shim is captured.
-    let profile_layer: Arc<Mutex<Option<ProfileLayer>>> = Arc::new(Mutex::new(Some(ProfileLayer::default())));
+    // encoder/decoder/shim is captured.
+    let profile_layer: Arc<Mutex<Option<ProfileLayer>>> =
+        Arc::new(Mutex::new(Some(ProfileLayer::default())));
     let inner = {
         let slot = profile_layer.lock().unwrap();
         slot.as_ref().unwrap().inner.clone()
     };
-    // Build a `ProfileLayer` variant that references the shared `Arc`
-    // so we can snapshot it after `tracing_subscriber::set_global_default`.
+    // Build a `ProfileLayer` variant referencing the shared `Arc` so it
+    // can be snapshotted after `tracing_subscriber::set_global_default`.
     let shared_layer = ProfileLayer {
         inner: inner.clone(),
     };
     tracing_subscriber::registry()
         .with(shared_layer)
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| tracing_subscriber::EnvFilter::new("trace"),
-        ))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace")),
+        )
         .init();
-    let args = parse_args().map_err(|e| {
+    let args = parse_args().inspect_err(|_e| {
         print_usage();
-        e
     })?;
     eprintln!(
         "flatpak-share-demo: {}x{} @ {}fps for {}s, shim latency={}ms throttle={}kbps → {}",
@@ -816,28 +807,27 @@ fn main() -> Result<(), String> {
     );
 
     let total_frames = args.duration_secs * args.fps;
-    let frame_interval = Duration::from_micros(1_000_000 / args.fps as u64);
+    let frame_interval = Duration::from_micros(1_000_000 / u64::from(args.fps));
 
     // Production encoder — same crate the compositor uses to publish.
-    // Sized to a comfortable 4 Mbps so 720p content has enough budget
-    // for detail; the `FrameLink` shim then throttles this down to the
-    // caller's requested `--throughput-kbps`.
+    // Sized to 4 Mbps so 720p content has budget for detail; `FrameLink`
+    // then throttles down to `--throughput-kbps`.
     let mut send_encoder =
         H264Encoder::new_with_bitrate_bps(args.width, args.height, args.fps, 4_000_000)
             .map_err(|e| format!("H264Encoder(send): {e:?}"))?;
     // Production decoder — same crate PeerView constructs.
     let mut recv_decoder = H264Decoder::new();
 
-    // The shim in the middle. Payload is `Vec<u8>` (one NAL unit) so
-    // the throttle sees individual-NAL granularity.
+    // The shim in the middle. Payload is `Vec<u8>` (one NAL unit) so the
+    // throttle sees individual-NAL granularity.
     let mut shim: FrameLink<Vec<u8>> = FrameLink::with_config(LinkConfig {
         latency_ms: args.latency_ms,
         jitter_ms: 5,
         throughput_kbps: args.throughput_kbps,
         queue_capacity: 512,
         jitter_seed: 0xC0DE,
-        // Sized to a couple of frames worth of budget; keyframes still
-        // fit through via the oversize-drain rule.
+        // Sized to a couple of frames' budget; keyframes still fit through
+        // via the oversize-drain rule.
         token_bucket_bytes: (args.throughput_kbps.max(1) * 1000 / 8 / 2).max(64 * 1024),
     });
 
@@ -850,21 +840,22 @@ fn main() -> Result<(), String> {
     )?;
     let (canvas_w, canvas_h) = composite.dimensions();
 
-    // Encoder for the side-by-side canvas. Bigger canvas → bigger
-    // bitrate so the recording itself doesn't blur into mush; the
-    // composite is 2×W×H so give it 2× the send-side budget.
+    // Encoder for the side-by-side canvas: bigger canvas → bigger
+    // bitrate (composite is 2×W×H, so 2× the send-side budget).
     let mut composite_encoder =
         H264Encoder::new_with_bitrate_bps(canvas_w, canvas_h, args.fps, 8_000_000)
             .map_err(|e| format!("H264Encoder(composite): {e:?}"))?;
 
     // Spawn ffmpeg for muxing.
     let mut muxer = spawn_muxer(&args.out, args.fps, canvas_w, canvas_h)?;
-    let mut mux_stdin = muxer.stdin.take().ok_or_else(|| "ffmpeg stdin missing".to_string())?;
+    let mut mux_stdin = muxer
+        .stdin
+        .take()
+        .ok_or_else(|| "ffmpeg stdin missing".to_string())?;
 
     // Source video path (--source-video) — decode via ffmpeg piping raw
-    // RGBA into a channel. Kept simple: for the demo `--source pattern`
-    // is the default, and video-in is a future extension. Warn if the
-    // caller asked for it and fall back.
+    // RGBA into a channel. `--source pattern` is the default; video-in
+    // is a future extension, warned and falls back if requested.
     if let Source::Video(path) = &args.source {
         eprintln!(
             "warning: --source-video ({}) not yet wired to a raw-RGBA decoder in this demo; \
@@ -879,11 +870,11 @@ fn main() -> Result<(), String> {
     let mut dropped_frames: u64 = 0;
     // Rolling decoded-frame cache — the shim can hold a decoded frame
     // "in flight" for tens of ms, so we keep the last known-decoded to
-    // show while we wait for the next real one.
+    // show while waiting for the next real one.
     let mut last_decoded: Option<Vec<u8>> = None;
 
     for i in 0..total_frames {
-        let t_ms = ((i as u64) * 1000) / (args.fps as u64);
+        let t_ms = (u64::from(i) * 1000) / u64::from(args.fps);
         let src = source_renderer.render(t_ms, i);
 
         // Encode the source with the production encoder — same code
@@ -893,23 +884,26 @@ fn main() -> Result<(), String> {
             .map_err(|e| format!("send_encoder.encode: {e:?}"))?;
         sent_frames += 1;
 
-        // Push the full per-frame NAL blob as a single shim payload.
-        // The throttle sees per-frame granularity, which matches how a
-        // real streaming path bundles keyframe SPS+PPS+IDR together.
-        // Splitting them into individual NALs would let the throttle
-        // pace within a frame, which understates the burst behaviour
-        // real encoders exhibit.
+        // Push the full per-frame NAL blob as a single shim payload — the
+        // throttle sees per-frame granularity, matching how a real streaming
+        // path bundles keyframe SPS+PPS+IDR together. Splitting into
+        // individual NALs would let the throttle pace within a frame,
+        // understating real burst behaviour.
         let now = Instant::now();
         let size = nalus.len() as u64;
         shim.push(now, size, nalus);
 
-        // Drain everything the shim has decided is ready. Feed each
-        // frame's NAL blob into the decoder in the order the shim
-        // emits them. openh264's decoder may return `None` for the
-        // first few frames while it buffers SPS/PPS metadata; that's
-        // expected — the counter only advances on Some(frame).
+        // Drain everything the shim has decided is ready, feeding each
+        // frame's NAL blob into the decoder in emitted order. openh264's
+        // decoder may return `None` for the first few frames while
+        // buffering SPS/PPS metadata — expected; the counter only advances
+        // on Some(frame).
         for nal_blob in shim.drain_ready(now) {
-            let span = span!(Level::TRACE, "recv.decoder.decode", nal_bytes = nal_blob.len());
+            let span = span!(
+                Level::TRACE,
+                "recv.decoder.decode",
+                nal_bytes = nal_blob.len()
+            );
             let _entered = span.enter();
             if let Some(frame) = recv_decoder.decode(&nal_blob) {
                 // Post-HDR decoder now returns typed DecodedPixels; the
@@ -937,7 +931,7 @@ fn main() -> Result<(), String> {
 
         // Encode the composite via the second encoder + stream into
         // ffmpeg's stdin. `send_all` blocks until the write completes;
-        // ffmpeg keeps up because at 1280x720 @ 30 fps this is trivial.
+        // ffmpeg keeps up trivially at 1280x720 @ 30 fps.
         let composite_nalus = composite_encoder
             .encode(composite_rgba)
             .map_err(|e| format!("composite_encoder.encode: {e:?}"))?;
@@ -945,25 +939,24 @@ fn main() -> Result<(), String> {
             .write_all(&composite_nalus)
             .map_err(|e| format!("ffmpeg stdin write: {e}"))?;
 
-        // Real-time-ish: rest of the frame interval budget goes to
-        // sleep so the demo's wall clock reflects the streaming rate.
-        // Skip on the last frame (no point sleeping into an exit).
+        // Real-time-ish: rest of the frame interval budget goes to sleep so
+        // the demo's wall clock reflects the streaming rate. Skipped on the
+        // last frame.
         let elapsed_this_frame = now.elapsed();
         if elapsed_this_frame < frame_interval && i + 1 < total_frames {
-            std::thread::sleep(frame_interval - elapsed_this_frame);
+            std::thread::sleep(frame_interval.checked_sub(elapsed_this_frame).unwrap());
         }
     }
 
     // Drain anything still in the shim so late-arriving frames land in
-    // the composite tail. Give the shim a "far future" instant so
-    // everything queued is deliverable.
-    let flush_now = Instant::now() + Duration::from_secs(3600);
+    // the composite tail — given a "far future" instant so everything
+    // queued is deliverable.
+    let flush_now = Instant::now() + Duration::from_hours(1);
     for nal_blob in shim.drain_ready(flush_now) {
         if let Some(frame) = recv_decoder.decode(&nal_blob) {
-            // last_decoded is dropped at end of scope — the flush loop
-            // exists to count late-arriving decodes into `decoded_frames`
-            // for the summary line, not to display them (the composite
-            // has already been written).
+            // last_decoded is dropped at end of scope — the flush loop exists to
+            // count late-arriving decodes into `decoded_frames` for the summary
+            // line, not to display them.
             let _ = &last_decoded;
             if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
                 last_decoded = Some(rgba);
@@ -974,9 +967,7 @@ fn main() -> Result<(), String> {
 
     // Close ffmpeg stdin so it flushes + finalises the MP4.
     drop(mux_stdin);
-    let status = muxer
-        .wait()
-        .map_err(|e| format!("wait ffmpeg: {e}"))?;
+    let status = muxer.wait().map_err(|e| format!("wait ffmpeg: {e}"))?;
     if !status.success() {
         return Err(format!("ffmpeg exited non-zero: {status}"));
     }
@@ -995,9 +986,7 @@ fn main() -> Result<(), String> {
     );
 
     // Snapshot the profile-layer accumulator + write the report.
-    let layer_ref = ProfileLayer {
-        inner: inner.clone(),
-    };
+    let layer_ref = ProfileLayer { inner };
     write_profile_report(&args.profile, &layer_ref, total_wall)?;
 
     Ok(())

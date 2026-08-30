@@ -269,7 +269,12 @@ pub struct RetentionPolicy {
 
 impl Default for RetentionPolicy {
     fn default() -> Self {
-        Self { hourly: 24, daily: 7, weekly: 4, monthly: 12 }
+        Self {
+            hourly: 24,
+            daily: 7,
+            weekly: 4,
+            monthly: 12,
+        }
     }
 }
 
@@ -392,40 +397,244 @@ impl Catalog {
             });
         };
 
-        use Retention::*;
-        use SnapStatus::*;
-        use SnapType::*;
+        use Retention::{Daily, Hourly, Keep, Monthly, Weekly};
+        use SnapStatus::{Complete, Failed, Verifying};
+        use SnapType::{Auto, Manual};
 
         // --- Today (day 0) ---
-        push("w-0-1700", "workspace", "pool", 0, "17:00", Auto, Hourly, 9 * GB + 700 * MB, 240 * MB, 312, Verifying);
-        push("w-0-1600", "workspace", "pool", 0, "16:00", Auto, Hourly, 9 * GB + 500 * MB, 180 * MB, 211, Complete);
-        push("m-0-1422", "home", "pool", 0, "14:22", Manual, Keep, 48 * GB + 200 * MB, 1 * GB + 100 * MB, 1840, Complete);
-        push("w-0-1500", "workspace", "pool", 0, "15:00", Auto, Hourly, 9 * GB + 300 * MB, 96 * MB, 142, Complete);
-        push("h-0-0300", "home", "pool", 0, "03:00", Auto, Daily, 47 * GB + 800 * MB, 820 * MB, 1320, Complete);
+        push(
+            "w-0-1700",
+            "workspace",
+            "pool",
+            0,
+            "17:00",
+            Auto,
+            Hourly,
+            9 * GB + 700 * MB,
+            240 * MB,
+            312,
+            Verifying,
+        );
+        push(
+            "w-0-1600",
+            "workspace",
+            "pool",
+            0,
+            "16:00",
+            Auto,
+            Hourly,
+            9 * GB + 500 * MB,
+            180 * MB,
+            211,
+            Complete,
+        );
+        push(
+            "m-0-1422",
+            "home",
+            "pool",
+            0,
+            "14:22",
+            Manual,
+            Keep,
+            48 * GB + 200 * MB,
+            GB + 100 * MB,
+            1840,
+            Complete,
+        );
+        push(
+            "w-0-1500",
+            "workspace",
+            "pool",
+            0,
+            "15:00",
+            Auto,
+            Hourly,
+            9 * GB + 300 * MB,
+            96 * MB,
+            142,
+            Complete,
+        );
+        push(
+            "h-0-0300",
+            "home",
+            "pool",
+            0,
+            "03:00",
+            Auto,
+            Daily,
+            47 * GB + 800 * MB,
+            820 * MB,
+            1320,
+            Complete,
+        );
 
         // --- Yesterday (day 1) ---
-        push("h-1-0300", "home", "pool", 1, "03:00", Auto, Daily, 47 * GB, 640 * MB, 980, Complete);
-        push("w-1-0900", "workspace", "usb", 1, "09:00", Auto, Daily, 9 * GB, 120 * MB, 88, Complete);
-        push("e-1-0400", "etc", "pool", 1, "04:00", Auto, Daily, 220 * MB, 4 * MB, 23, Complete);
+        push(
+            "h-1-0300",
+            "home",
+            "pool",
+            1,
+            "03:00",
+            Auto,
+            Daily,
+            47 * GB,
+            640 * MB,
+            980,
+            Complete,
+        );
+        push(
+            "w-1-0900",
+            "workspace",
+            "usb",
+            1,
+            "09:00",
+            Auto,
+            Daily,
+            9 * GB,
+            120 * MB,
+            88,
+            Complete,
+        );
+        push(
+            "e-1-0400",
+            "etc",
+            "pool",
+            1,
+            "04:00",
+            Auto,
+            Daily,
+            220 * MB,
+            4 * MB,
+            23,
+            Complete,
+        );
 
         // --- 2 days ago ---
-        push("m-2-0910", "home", "usb", 2, "09:10", Manual, Keep, 46 * GB + 500 * MB, 2 * GB, 3210, Complete);
-        push("h-2-0300", "home", "pool", 2, "03:00", Auto, Daily, 46 * GB, 700 * MB, 1110, Complete);
+        push(
+            "m-2-0910",
+            "home",
+            "usb",
+            2,
+            "09:10",
+            Manual,
+            Keep,
+            46 * GB + 500 * MB,
+            2 * GB,
+            3210,
+            Complete,
+        );
+        push(
+            "h-2-0300",
+            "home",
+            "pool",
+            2,
+            "03:00",
+            Auto,
+            Daily,
+            46 * GB,
+            700 * MB,
+            1110,
+            Complete,
+        );
 
         // --- 3 days ago ---
-        push("h-3-0300", "home", "pool", 3, "03:00", Auto, Weekly, 45 * GB + 200 * MB, 590 * MB, 870, Complete);
-        push("e-3-0400", "etc", "b2", 3, "04:00", Auto, Weekly, 215 * MB, 11 * MB, 41, Complete);
+        push(
+            "h-3-0300",
+            "home",
+            "pool",
+            3,
+            "03:00",
+            Auto,
+            Weekly,
+            45 * GB + 200 * MB,
+            590 * MB,
+            870,
+            Complete,
+        );
+        push(
+            "e-3-0400",
+            "etc",
+            "b2",
+            3,
+            "04:00",
+            Auto,
+            Weekly,
+            215 * MB,
+            11 * MB,
+            41,
+            Complete,
+        );
 
         // --- 4 days ago ---
-        push("h-4-0300", "home", "pool", 4, "03:00", Auto, Weekly, 44 * GB + 900 * MB, 510 * MB, 760, Complete);
-        push("w-4-1200", "workspace", "b2", 4, "12:00", Auto, Daily, 8 * GB + 800 * MB, 70 * MB, 51, Failed);
+        push(
+            "h-4-0300",
+            "home",
+            "pool",
+            4,
+            "03:00",
+            Auto,
+            Weekly,
+            44 * GB + 900 * MB,
+            510 * MB,
+            760,
+            Complete,
+        );
+        push(
+            "w-4-1200",
+            "workspace",
+            "b2",
+            4,
+            "12:00",
+            Auto,
+            Daily,
+            8 * GB + 800 * MB,
+            70 * MB,
+            51,
+            Failed,
+        );
 
         // --- 5 days ago ---
-        push("h-5-0300", "home", "pool", 5, "03:00", Auto, Monthly, 44 * GB, 480 * MB, 690, Complete);
+        push(
+            "h-5-0300",
+            "home",
+            "pool",
+            5,
+            "03:00",
+            Auto,
+            Monthly,
+            44 * GB,
+            480 * MB,
+            690,
+            Complete,
+        );
 
         // --- 6 days ago ---
-        push("h-6-0300", "home", "usb", 6, "03:00", Auto, Monthly, 43 * GB + 600 * MB, 450 * MB, 610, Complete);
-        push("e-6-0400", "etc", "b2", 6, "04:00", Auto, Monthly, 210 * MB, 9 * MB, 33, Complete);
+        push(
+            "h-6-0300",
+            "home",
+            "usb",
+            6,
+            "03:00",
+            Auto,
+            Monthly,
+            43 * GB + 600 * MB,
+            450 * MB,
+            610,
+            Complete,
+        );
+        push(
+            "e-6-0400",
+            "etc",
+            "b2",
+            6,
+            "04:00",
+            Auto,
+            Monthly,
+            210 * MB,
+            9 * MB,
+            33,
+            Complete,
+        );
 
         // Attach a representative indexed listing per source, so the restore
         // browser has real (sample) contents to show in screenshots.
@@ -433,7 +642,11 @@ impl Catalog {
             s.files = sample_files(&s.source_id);
         }
 
-        Self { sources, snapshots: snaps, destinations }
+        Self {
+            sources,
+            snapshots: snaps,
+            destinations,
+        }
     }
 
     pub fn source(&self, id: &str) -> Option<&Source> {
@@ -454,14 +667,17 @@ impl Catalog {
         let mut v: Vec<&Snapshot> = self
             .snapshots
             .iter()
-            .filter(|s| source_id.map(|id| s.source_id == id).unwrap_or(true))
+            .filter(|s| source_id.is_none_or(|id| s.source_id == id))
             .collect();
         v.sort_by(|a, b| a.day.cmp(&b.day).then(b.time.cmp(&a.time)));
         v
     }
 
     pub fn count_for(&self, source_id: &str) -> usize {
-        self.snapshots.iter().filter(|s| s.source_id == source_id).count()
+        self.snapshots
+            .iter()
+            .filter(|s| s.source_id == source_id)
+            .count()
     }
 
     /// Total bytes pinned by the newest snapshot of a source (a proxy for the
@@ -480,7 +696,10 @@ impl Catalog {
     }
 
     pub fn total_protected(&self) -> u64 {
-        self.sources.iter().map(|s| self.protected_bytes(&s.id)).sum()
+        self.sources
+            .iter()
+            .map(|s| self.protected_bytes(&s.id))
+            .sum()
     }
 
     pub fn day_label(day: u32) -> String {
@@ -525,9 +744,7 @@ mod tests {
 
     #[test]
     fn snapshot_sizes_render_with_iec_binary_units() {
-        // Snapshot sizes are base-1024, so they must wear IEC binary units
-        // (KiB/MiB/GiB/TiB) — not the base-1000 KB/MB/GB labels this app used
-        // to print for the identical division.
+        // Base-1024, so labels must be IEC (KiB/MiB/GiB/TiB), not base-1000.
         assert_eq!(ui::format::bytes(4 * MB), "4.0 MiB");
         assert_eq!(ui::format::bytes(512 * GB), "512.0 GiB");
         assert_eq!(ui::format::bytes(2 * TB), "2.0 TiB");

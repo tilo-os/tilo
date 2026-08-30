@@ -12,118 +12,15 @@ exclude = ["crates/doc/qdoc-codec-markdown-wasm", "vendor/winit"]
 # `panic = "abort"` release profile. It is built only, and explicitly,
 # under `--profile thin-app` (`cargo build -p runtime-dylib --profile
 # thin-app`). See its Cargo.toml for the full rationale.
+# Keep bare developer builds on the load-bearing spine. CI's affected-package
+# selector and nightly full-workspace gate cover every member explicitly.
 default-members = [
-    "crates/system/tinker",
-    "crates/system/swipe",
-    "crates/system/tts",
-    "crates/system/accounts",
-    "crates/system/app-state",
-    "crates/system/settings-store",
-    "crates/system/atomic-file",
-    "crates/system/desktop-entry",
-    "crates/system/power",
-    "crates/system/qos-rollback",
-    "crates/system/qos-cli",
     "crates/doc/qdoc",
-    "crates/text/spellcheck",
-    "crates/doc/qdoc-pdf",
-    "crates/doc/qdoc-html",
-    "crates/doc/qdoc-rtf",
-    "crates/doc/qdoc-epub",
-    "apps/word-processor",
-    "apps/agent",
-    "apps/video-player",
-    "crates/media",
-    "crates/thumbnail",
     "fs",
     "shell",
     "ui",
-    "crates/system/os-actions",
-    "crates/system/qos-bluez",
-    "crates/collab/collab-types",
-    "crates/collab/collab-fixtures",
-    "crates/collab/actions",
-    "crates/collab/collab-bridge",
-    "crates/collab/threshold-identity",
-    "crates/collab/channel-crypto",
-    "crates/collab/collab-link",
-    "crates/collab/frame-link",
-    "crates/collab/relay",
-    "crates/collab/qos-callstream",
     "crates/packaging/pkg",
-    "crates/packaging/pkg-cli",
-    "crates/packaging/registry-types",
-    "crates/packaging/registry-server",
-    "crates/packaging/app-registry",
-    "crates/packaging/launcher",
-    "crates/packaging/app-catalogue",
-    "crates/packaging/app-fs",
-    "crates/packaging/app-host",
-    "crates/packaging/runtime-bundle",
     "crates/runtime/runtime",
-    "crates/runtime/runtime-portal",
-    "crates/runtime/runtime-portal-xdg",
-    "crates/runtime/runtime-collab",
-    "crates/runtime/runtime-fs",
-    "crates/runtime/runtime-identity",
-    "crates/runtime/ush",
-    "crates/runtime/cli",
-    "crates/format/format-provider-wit",
-    "crates/format/format-host",
-    "crates/packaging/hello",
-    "crates/packaging/install",
-    "crates/packaging/cli-shim",
-    "crates/packaging/notes-cli",
-    "crates/identity/qos-user-identity",
-    "crates/hosting/qos-relay",
-    "apps/file-explorer",
-    "apps/terminal",
-    "apps/browser",
-    "apps/notes",
-    "apps/osk",
-    "apps/settings",
-    "apps/api_tester",
-    "apps/backups",
-    "apps/calculator",
-    "apps/calendar",
-    "apps/camera",
-    "apps/chat",
-    "apps/code_editor",
-    "apps/contacts",
-    "apps/containers",
-    "apps/db_client",
-    "apps/diffmerge",
-    "apps/disks",
-    "apps/ebook",
-    "apps/feeds",
-    "apps/firewall",
-    "apps/git_client",
-    "apps/hex_editor",
-    "apps/imager",
-    "apps/logs",
-    "apps/mail",
-    "apps/maps",
-    "apps/monitor",
-    "apps/music",
-    "apps/pdf_viewer",
-    "apps/remote",
-    "apps/sheets",
-    "apps/slides",
-    "apps/snippets",
-    "apps/software_store",
-    "apps/store",
-    "apps/themes",
-    "apps/totp",
-    "apps/tube",
-    "apps/typst_editor",
-    "apps/video_editor",
-    "apps/vpn",
-    "apps/weather",
-    "crates/session/greeter",
-    "crates/session/qos-unlock-helper",
-    "crates/session/qos-power",
-    "crates/system/qos-startup-metrics",
-    "crates/session/installer",
 ]
 members = [
     "crates/system/qos-rollback",
@@ -140,6 +37,7 @@ members = [
     "crates/doc/qdoc-rtf",
     "crates/doc/qdoc-epub",
     "apps/word-processor",
+    "apps/photos",
     "apps/agent",
     "apps/video-player",
     "crates/media",
@@ -149,15 +47,18 @@ members = [
     "ui",
     "crates/system/os-actions",
     "crates/system/qos-bluez",
+    "crates/system/power",
     "crates/collab/collab-types",
-    "crates/collab/collab-bridge",
+    "crates/collab/actions",
+    "crates/collab/collab-fixtures",
+    "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/channel-crypto",
     "crates/collab/collab-link",
     "crates/collab/frame-link",
-    "crates/collab/relay",
     "crates/collab/qos-callstream",
     "crates/packaging/pkg",
+    "crates/packaging/collab-probe",
     "crates/packaging/pkg-cli",
     "crates/packaging/registry-types",
     "crates/packaging/registry-server",
@@ -217,7 +118,6 @@ members = [
     "apps/sheets",
     "apps/slides",
     "apps/snippets",
-    "apps/software_store",
     "apps/store",
     "apps/themes",
     "apps/totp",
@@ -230,6 +130,7 @@ members = [
     "crates/session/qos-unlock-helper",
     "crates/session/qos-power",
     "crates/system/qos-startup-metrics",
+    "crates/system/projector",
     "crates/session/installer",
     # Opt-in dynamic build of the runtime SDK. A member (shares lockfile
     # + target dir + crate SVHs) but excluded from default-members above,
@@ -258,6 +159,72 @@ resolver = "2"
 #     way: a member can turn defaults back **on** with `default-features = true`,
 #     but a member can never turn them off if this table leaves them on. So any
 #     dependency where even one member wants defaults off is declared off here.
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# `nursery` as a group is clippy's unstable channel: documented false positives,
+# behaviour that changes between releases, so a toolchain bump can turn CI red
+# with no code change. Measured here it was 10,873 violations, 96% of them four
+# style lints (use_self 3401, missing_const_for_fn 2511, redundant_pub_crate
+# 1443, suboptimal_flops 1224 — the last rewrites float expressions and changes
+# results, which a renderer should not accept from a lint).
+#
+# The nursery lints that find bugs rather than style are named individually
+# below: 431 violations, and each one is a defect.
+
+# Panics. clippy.toml exempts tests.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+
+# Nursery lints kept individually: each catches a defect, not a style.
+redundant_clone = "deny"                    # allocations that are never needed
+significant_drop_tightening = "deny"        # lock held longer than necessary
+significant_drop_in_scrutinee = "deny"      # lock held across a match arm
+needless_pass_by_ref_mut = "deny"           # &mut that never mutates
+future_not_send = "deny"                    # future that cannot cross threads
+while_float = "deny"                        # float loop counter accumulates error
+or_fun_call = "deny"                        # eager evaluation in unwrap_or
+needless_collect = "deny"                   # collect just to iterate
+suspicious_operation_groupings = "deny"     # a.x == b.x && a.y == b.x
+collection_is_never_read = "deny"
+iter_with_drain = "deny"
+unused_peekable = "deny"
+literal_string_with_formatting_args = "deny"
+as_ptr_cast_mut = "deny"
+path_buf_push_overwrite = "deny"
+read_zero_byte_vec = "deny"
+debug_assert_with_mut_call = "deny"
+non_send_fields_in_send_ty = "deny"
+transmute_undefined_repr = "deny"
+uninhabited_references = "deny"
+set_contains_or_insert = "deny"
+clear_with_drain = "deny"
+trailing_empty_array = "deny"
+
+# `as_conversions` fires on all 7,090 `as` uses, including provably-safe ones.
+# pedantic already denies the dangerous subset more precisely — cast_possible_
+# truncation (1,518), cast_precision_loss (872), cast_sign_loss (469),
+# cast_possible_wrap (301) — plus cast_lossless (3,388) which rewrites a safe
+# cast to `From`. Denying the blanket lint on top adds no safety and turns
+# bounded graphics casts into fallible conversions that cannot be discharged
+# with unwrap, since that is denied too.
+as_conversions = "allow"
+
+# `must_use_candidate` wants `#[must_use]` on every public value-returning
+# function: 6,746 attributes here. The bug it aims at — calling something and
+# discarding a result that mattered — is better caught by `#[must_use]` on the
+# *type*, the way Result and Option do it. Mark guards, builders returning Self
+# and tokens; a getter whose result is ignored is harmless.
+must_use_candidate = "allow"
+
 [workspace.dependencies]
 
 # ---------------------------------------------------------------------------
@@ -311,6 +278,7 @@ capnp-rpc = "0.26"
 capnp-futures = "0.26"
 capnpc = "0.26"
 base64 = "0.22.1"
+bs58 = "0.5.1"
 base32 = "0.5"
 hex = "0.4.3"
 bytes = "1.11.1"
@@ -343,24 +311,13 @@ zeroize = "1"
 bip39 = "2"
 
 # ---------------------------------------------------------------------------
-# Peer-to-peer transport and content addressing
+# Collaboration transport and content addressing
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
 iroh-blobs = "0.103.0"
 iroh-gossip = "0.101.0"
-libp2p = { version = "0.56", features = [
-    "dns",
-    "gossipsub",
-    "macros",
-    "mdns",
-    "noise",
-    "tcp",
-    "tokio",
-    "websocket",
-    "yamux",
-] }
-
+iroh-mdns-address-lookup = "0.5.0"
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback
 #
@@ -376,6 +333,10 @@ gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
+# Sender-side discovery and transports for FCast and Google Cast. Disable the
+# mobile FFI/logging defaults: qos-projector is a native Rust broker.
+fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
+mdns-sd = "=0.20.3"
 
 # ---------------------------------------------------------------------------
 # Desktop and platform integration
@@ -457,6 +418,23 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
+# Optimise the CRDT core even in a dev build. Every widget's state lives in an
+# `AutoCommit`, so almost every test touches this code, and unoptimised it is
+# not slow-but-workable — deleting ~3 KB from a text object takes 6.1 s in a
+# dev build against 6.9 ms in release, an 890x gap, because the column store is
+# built from deep generic iterator chains that only inlining makes sane. Seven
+# maps tests hit the 240 s timeout on that alone. These are dependencies, so
+# they are compiled once and cached; nothing here is our own code being
+# optimised out from under a debugger.
+[profile.dev.package.automerge]
+opt-level = 3
+[profile.dev.package.hexane]
+opt-level = 3
+[profile.test.package.automerge]
+opt-level = 3
+[profile.test.package.hexane]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -478,9 +456,16 @@ incremental = false
 # thin binaries stay as small + fast as the static ones. This profile is
 # how `runtime-dylib` and the thin apps that link it are compiled:
 #
-#   cargo build --profile thin-app -p runtime-dylib          # the .so
-#   RUSTFLAGS='-C prefer-dynamic' \
-#     cargo build --profile thin-app -p <app> --features thin
+#   cargo rustc --profile thin-app -p runtime-dylib -- -C prefer-dynamic
+#   cargo rustc --profile thin-app -p <app> --features thin \
+#     --bin <bin> -- -C prefer-dynamic
+#
+# Pass the flag after `--`, never as RUSTFLAGS. The environment variable
+# REPLACES `build.rustflags` from .cargo/config.toml rather than adding
+# to it, so `RUSTFLAGS='-C prefer-dynamic'` silently drops
+# target-cpu=x86-64-v3 and every link-time hardening flag -- full RELRO,
+# BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack mark. The `--`
+# form is additive and keeps them.
 #
 # It is opt-in: nothing builds under it unless `--profile thin-app` is
 # passed, so the default `panic = "abort"` release path is untouched.
@@ -523,3 +508,19 @@ debug-assertions = true
 # backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
 [patch.crates-io]
 winit = { path = "vendor/winit" }
+# vello reserves its scratch buffers for a 30,000-path stress scene, per
+# renderer and so per process -- about 165 MB a desktop never touches. Its
+# own source says as much: "hand picked to accommodate ... paris-30k ...
+# should instead get derived from the scene layout". On an integrated GPU
+# shared by a dozen clients that is the entire memory window, and it froze
+# this machine four times in one evening.
+#
+# The two vendored copies size those buffers from what frames actually
+# use instead: the GPU already writes the counts into `BumpAllocators`,
+# so the renderer reads them back and grows a `BumpBudget` to fit. That
+# is upstream's own TODO ("apply logic to determine whether we need to
+# rerun coarse") and is meant to go back to them rather than live here.
+# `vendor/vello/src/bump_budget.rs` is the whole of it; the rest of both
+# crates is upstream 0.9.0 with the call sites threaded through.
+vello_encoding = { path = "vendor/vello_encoding" }
+vello = { path = "vendor/vello" }

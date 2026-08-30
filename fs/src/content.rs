@@ -1,13 +1,9 @@
 //! Content-defined chunking + manifests.
 //!
-//! A file's bytes are split into content-defined chunks (a gear-hash rolling
-//! boundary, so an edit only shifts the boundaries *near* the edit). Each chunk
-//! is a content-addressed blob; the file is described by a [`Manifest`] (an
-//! ordered list of chunk hashes + lengths) which is itself stored as a blob. A
-//! file node's content hash points at its manifest.
-//!
-//! Win: editing part of a large file re-stores and re-transfers only the chunks
-//! that actually changed; peers hydrate only the chunks they're missing.
+//! A file's bytes are split into content-defined chunks (gear-hash rolling
+//! boundary, so an edit only shifts boundaries near the edit). Each chunk is
+//! a content-addressed blob, described by a [`Manifest`] (itself a blob) —
+//! so editing part of a large file only re-stores/re-transfers the changed chunks.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,14 +12,12 @@ const MAX_CHUNK: usize = 64 * 1024;
 /// ~8 KiB average chunk size (13 one-bits in the mask).
 const MASK: u64 = (1 << 13) - 1;
 
-/// A reference to one content-addressed chunk.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChunkRef {
     pub hash: [u8; 32],
     pub len: u32,
 }
 
-/// The chunk list describing a file's content.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Manifest {
     pub chunks: Vec<ChunkRef>,
@@ -31,7 +25,7 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn total_len(&self) -> u64 {
-        self.chunks.iter().map(|c| c.len as u64).sum()
+        self.chunks.iter().map(|c| u64::from(c.len)).sum()
     }
     pub fn encode(&self) -> Vec<u8> {
         postcard::to_allocvec(self).expect("serialize manifest")
@@ -46,7 +40,7 @@ impl Manifest {
 fn gear_table() -> [u64; 256] {
     let mut t = [0u64; 256];
     let mut x: u64 = 0x2545_F491_4F6C_DD1D;
-    for slot in t.iter_mut() {
+    for slot in &mut t {
         // xorshift64
         x ^= x << 13;
         x ^= x >> 7;
@@ -56,8 +50,7 @@ fn gear_table() -> [u64; 256] {
     t
 }
 
-/// Split `data` into content-defined chunks. Deterministic; empty input → no
-/// chunks.
+/// Split `data` into content-defined chunks. Deterministic; empty input → no chunks.
 pub fn split(data: &[u8]) -> Vec<&[u8]> {
     let table = gear_table();
     let mut chunks = Vec::new();
@@ -102,7 +95,10 @@ mod tests {
         assert_eq!(a.len(), b.len(), "chunking is deterministic");
         let reassembled: Vec<u8> = a.iter().flat_map(|c| c.iter().copied()).collect();
         assert_eq!(reassembled, data, "chunks reassemble to the original");
-        assert!(a.len() > 1, "a 200KB file should split into multiple chunks");
+        assert!(
+            a.len() > 1,
+            "a 200KB file should split into multiple chunks"
+        );
     }
 
     #[test]
@@ -120,12 +116,11 @@ mod tests {
 
     #[test]
     fn edit_only_changes_local_chunks() {
-        // Content-defined chunking: editing one byte mid-file must leave most
-        // chunk hashes identical (that's the dedup property).
+        // Content-defined chunking: editing one byte mid-file must leave most chunk hashes identical (the dedup property).
         let data = pseudo(200_000, 99);
         let before: Vec<Vec<u8>> = split(&data).iter().map(|c| c.to_vec()).collect();
 
-        let mut edited = data.clone();
+        let mut edited = data;
         edited[100_000] ^= 0xff; // flip a byte in the middle
         let after: Vec<Vec<u8>> = split(&edited).iter().map(|c| c.to_vec()).collect();
 
@@ -144,8 +139,14 @@ mod tests {
     fn manifest_roundtrips() {
         let m = Manifest {
             chunks: vec![
-                ChunkRef { hash: [1; 32], len: 10 },
-                ChunkRef { hash: [2; 32], len: 20 },
+                ChunkRef {
+                    hash: [1; 32],
+                    len: 10,
+                },
+                ChunkRef {
+                    hash: [2; 32],
+                    len: 20,
+                },
             ],
         };
         assert_eq!(m.total_len(), 30);

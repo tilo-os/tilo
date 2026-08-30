@@ -102,7 +102,11 @@ impl EventData {
             location: self.location.clone(),
             color: Palette::from_index(self.color),
             recurrence: Recurrence::from_rrule(&self.rrule),
-            reminder_min: if self.reminder < 0 { None } else { Some(self.reminder) },
+            reminder_min: if self.reminder < 0 {
+                None
+            } else {
+                Some(self.reminder)
+            },
             project: parse_opt_id(&self.project),
             calendar_id: if self.calendar_id.is_empty() {
                 None
@@ -133,7 +137,10 @@ impl TaskData {
             id: t.id.to_string(),
             title: t.title.clone(),
             done: t.done,
-            due: t.due.map(|d| d.format(DATE_FMT).to_string()).unwrap_or_default(),
+            due: t
+                .due
+                .map(|d| d.format(DATE_FMT).to_string())
+                .unwrap_or_default(),
             priority: t.priority.rank(),
             project: t.project.map(|p| p.to_string()).unwrap_or_default(),
             parent: t.parent.map(|p| p.to_string()).unwrap_or_default(),
@@ -176,12 +183,12 @@ pub enum CalendarAction {
     /// every field edit, and a move (a start/end change is just new datetimes).
     UpsertEvent(EventData),
     /// Retarget an event to a calendar: write the (already resolved) event
-    /// fields and update the CalDAV push queue — enqueue for a remote target,
+    /// fields and update the `CalDAV` push queue — enqueue for a remote target,
     /// dequeue for the local one. The colour is already folded into `event`.
     SetEventCalendar { event: EventData, enqueue: bool },
     /// Delete an event, clearing any queued upload. When the event was synced
     /// from a still-configured remote calendar, `remote_delete` carries that
-    /// calendar id so `apply` also queues a CalDAV delete of the server copy.
+    /// calendar id so `apply` also queues a `CalDAV` delete of the server copy.
     DeleteEvent {
         id: String,
         remote_delete: Option<String>,
@@ -194,10 +201,7 @@ pub enum CalendarAction {
     ToggleTask { id: String },
     /// Delete a task and each of its listed subtasks (resolved at authoring
     /// time from the model, carried here so `apply` needs no lookup).
-    DeleteTask {
-        id: String,
-        subtasks: Vec<String>,
-    },
+    DeleteTask { id: String, subtasks: Vec<String> },
 }
 
 impl Action for CalendarAction {
@@ -283,13 +287,19 @@ pub fn upsert_event_action(e: &Event) -> CalendarAction {
 
 /// File an event on a calendar and update the push queue accordingly.
 pub fn set_event_calendar_action(e: &Event, enqueue: bool) -> CalendarAction {
-    CalendarAction::SetEventCalendar { event: EventData::from_event(e), enqueue }
+    CalendarAction::SetEventCalendar {
+        event: EventData::from_event(e),
+        enqueue,
+    }
 }
 
-/// Delete an event; `remote_delete` names the source calendar when a CalDAV
+/// Delete an event; `remote_delete` names the source calendar when a `CalDAV`
 /// delete should be queued too.
 pub fn delete_event_action(id: impl Into<String>, remote_delete: Option<String>) -> CalendarAction {
-    CalendarAction::DeleteEvent { id: id.into(), remote_delete }
+    CalendarAction::DeleteEvent {
+        id: id.into(),
+        remote_delete,
+    }
 }
 
 /// Create or replace a task.
@@ -304,7 +314,10 @@ pub fn toggle_task_action(id: impl Into<String>) -> CalendarAction {
 
 /// Delete a task and its subtasks.
 pub fn delete_task_action(id: impl Into<String>, subtasks: Vec<String>) -> CalendarAction {
-    CalendarAction::DeleteTask { id: id.into(), subtasks }
+    CalendarAction::DeleteTask {
+        id: id.into(),
+        subtasks,
+    }
 }
 
 // ===========================================================================
@@ -313,7 +326,7 @@ pub fn delete_task_action(id: impl Into<String>, subtasks: Vec<String>) -> Calen
 
 /// One event surfaced as a resource, with its delete pre-resolved so the
 /// palette's "Delete event" builds the byte-identical action the trash button
-/// does (a synced event still queues its CalDAV delete).
+/// does (a synced event still queues its `CalDAV` delete).
 #[derive(Debug, Clone)]
 pub struct EventResource {
     pub data: EventData,
@@ -422,13 +435,21 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
 
     for tk in &ctx.tasks {
         let id = tk.data.id.clone();
-        let toggle_label = if tk.data.done { "Mark not done" } else { "Mark done" };
+        let toggle_label = if tk.data.done {
+            "Mark not done"
+        } else {
+            "Mark done"
+        };
         let child = Resource::new(
             format!("calendar.task:{id}"),
             "calendar.task",
             task_label(&tk.data),
         )
-        .with_action(immediate_spec("toggle", toggle_label, &toggle_task_action(id.clone())))
+        .with_action(immediate_spec(
+            "toggle",
+            toggle_label,
+            &toggle_task_action(id.clone()),
+        ))
         .with_action(immediate_spec(
             "delete",
             "Delete task",
@@ -526,7 +547,8 @@ mod tests {
         assert!(flat.contains(&"Delete event"), "{flat:?}");
         assert!(flat.contains(&"Delete task"), "{flat:?}");
         assert!(
-            flat.iter().any(|l| *l == "Mark done" || *l == "Mark not done"),
+            flat.iter()
+                .any(|l| *l == "Mark done" || *l == "Mark not done"),
             "a task toggle is exported: {flat:?}"
         );
 
@@ -535,8 +557,14 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New event")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete event")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Rename event")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Delete event")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Rename event")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -558,16 +586,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             CalDoc::read_model(&state.doc).events.len(),
@@ -575,21 +594,28 @@ mod tests {
             "the action deleted an event"
         );
         assert!(
-            !CalDoc::read_model(&state.doc).events.iter().any(|e| e.id == victim),
+            !CalDoc::read_model(&state.doc)
+                .events
+                .iter()
+                .any(|e| e.id == victim),
             "the right event is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             CalDoc::read_model(&state.doc).events.len(),
             before,
             "undo reverted the deletion and nothing else"
         );
         assert!(
-            CalDoc::read_model(&state.doc).events.iter().any(|e| e.id == victim),
+            CalDoc::read_model(&state.doc)
+                .events
+                .iter()
+                .any(|e| e.id == victim),
             "the event is back after undo"
         );
     }
@@ -604,18 +630,30 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Toggle a task: deterministic against the shared base (each replica reads
         // the stored value and negates it).
-        let task = CalDoc::read_model(&a).tasks.into_iter().find(|t| !t.done).unwrap();
+        let task = CalDoc::read_model(&a)
+            .tasks
+            .into_iter()
+            .find(|t| !t.done)
+            .unwrap();
         let action = toggle_task_action(task.id.to_string());
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert!(
             CalDoc::read_model(&a).task(task.id).unwrap().done,
             "the toggle landed on both replicas"
@@ -642,7 +680,10 @@ mod tests {
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
-        assert_eq!(CalDoc::read_model(&b).event(ev.id).unwrap().title, "Renamed via action");
+        assert_eq!(
+            CalDoc::read_model(&b).event(ev.id).unwrap().title,
+            "Renamed via action"
+        );
     }
 
     /// Single source of truth: the palette's "Delete event" spec and the builder
@@ -653,7 +694,11 @@ mod tests {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
         let cal = &resources[0];
-        let event = cal.children.iter().find(|r| r.kind == "calendar.event").unwrap();
+        let event = cal
+            .children
+            .iter()
+            .find(|r| r.kind == "calendar.event")
+            .unwrap();
         let id = event.id.as_str().trim_start_matches("calendar.event:");
 
         let delete_spec = event.actions.iter().find(|a| a.id == "delete").unwrap();
@@ -667,15 +712,24 @@ mod tests {
             .and_then(|e| e.remote_delete.clone());
         let from_builder = encode(&delete_event_action(id.to_string(), remote));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // And the rename spec matches the upsert builder for the same title.
-        let mut ev = CalDoc::read_model(&doc).event(id.parse().unwrap()).unwrap().clone();
+        let mut ev = CalDoc::read_model(&doc)
+            .event(id.parse().unwrap())
+            .unwrap()
+            .clone();
         let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "New title");
         ev.title = "New title".into();
         let from_builder = encode(&upsert_event_action(&ev));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
     }
 
     /// Dispatching the "New event" prompted action creates an event in the
@@ -684,7 +738,11 @@ mod tests {
     fn new_event_action_creates_an_event() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "new-event").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-event")
+            .unwrap();
         let before = CalDoc::read_model(&doc).events.len();
 
         let encoded = prompted_encode(spec, "Coffee with Dana");

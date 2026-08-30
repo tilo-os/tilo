@@ -37,7 +37,9 @@ pub struct SnippetSearchProvider {
 impl SnippetSearchProvider {
     /// Snapshot the current library into a provider.
     pub fn new(library: &Library) -> Self {
-        Self { snippets: library.snippets.clone() }
+        Self {
+            snippets: library.snippets.clone(),
+        }
     }
 
     /// The `action_id` for a snippet — what a chosen row hands back.
@@ -48,11 +50,17 @@ impl SnippetSearchProvider {
     /// Resolve an `action_id` produced by this provider back to a
     /// [`SnippetId`]. Returns `None` for an id this provider did not emit.
     pub fn parse_action_id(action_id: &str) -> Option<SnippetId> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<SnippetId>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<SnippetId>().ok())
     }
 
     fn display_title(s: &Snippet) -> &str {
-        if s.title.trim().is_empty() { UNTITLED } else { s.title.as_str() }
+        if s.title.trim().is_empty() {
+            UNTITLED
+        } else {
+            s.title.as_str()
+        }
     }
 
     /// Whether the snippet matches `q` (already lower-cased) across all its
@@ -86,9 +94,10 @@ impl SearchProvider for SnippetSearchProvider {
                 } else {
                     format!("{} · {}", s.language.label(), s.folder)
                 };
-                let mut r = SearchResult::new(SNIPPET_KIND, Self::display_title(s), Self::action_id(s.id))
-                    .with_subtitle(subtitle)
-                    .with_icon(Icon::Code);
+                let mut r =
+                    SearchResult::new(SNIPPET_KIND, Self::display_title(s), Self::action_id(s.id))
+                        .with_subtitle(subtitle)
+                        .with_icon(Icon::Code);
                 if s.favorite {
                     r = r.with_score(1);
                 }
@@ -104,17 +113,24 @@ mod tests {
     use ui::search::SearchRegistry;
 
     fn seeded() -> Library {
-        Library { snippets: crate::seed::starter_library() }
+        Library {
+            snippets: crate::seed::starter_library(),
+        }
     }
 
     #[test]
     fn provider_finds_a_snippet_by_title_or_body() {
         let lib = seeded();
         let provider = SnippetSearchProvider::new(&lib);
-        let some = lib.snippets.first().expect("starter library is populated").clone();
+        let some = lib
+            .snippets
+            .first()
+            .expect("starter library is populated")
+            .clone();
         let hits = provider.search(&some.title);
         assert!(
-            hits.iter().any(|r| r.title == SnippetSearchProvider::display_title(&some)),
+            hits.iter()
+                .any(|r| r.title == SnippetSearchProvider::display_title(&some)),
             "the provider surfaces the matching snippet"
         );
         assert!(hits.iter().all(|r| r.kind == SNIPPET_KIND));
@@ -140,7 +156,10 @@ mod tests {
             .find(|r| r.action_id == SnippetSearchProvider::action_id(some.id))
             .expect("the snippet is findable through the registry");
         let id = SnippetSearchProvider::parse_action_id(&hit.action_id).unwrap();
-        assert!(lib.get(id).is_some(), "the id resolves to a real stored snippet");
+        assert!(
+            lib.get(id).is_some(),
+            "the id resolves to a real stored snippet"
+        );
     }
 
     #[test]
@@ -161,14 +180,24 @@ mod tests {
         // Browse the app's OWN provider (its real ids) and take a hit.
         let (action_id, id) = {
             let providers = app.search_providers();
-            assert!(!providers.is_empty(), "snippets publishes a search provider");
+            assert!(
+                !providers.is_empty(),
+                "snippets publishes a search provider"
+            );
             let hits = providers[0].search("");
-            let hit = hits.first().expect("the seeded library is browsable through the real hook").clone();
+            let hit = hits
+                .first()
+                .expect("the seeded library is browsable through the real hook")
+                .clone();
             let id = SnippetSearchProvider::parse_action_id(&hit.action_id).unwrap();
             (hit.action_id, id)
         };
 
         app.activate_search_result(&action_id, &mut doc, &ROOT);
-        assert_eq!(app.open_id_for_test(), Some(id), "activation opened the chosen snippet");
+        assert_eq!(
+            app.open_id_for_test(),
+            Some(id),
+            "activation opened the chosen snippet"
+        );
     }
 }

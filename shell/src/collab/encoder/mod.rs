@@ -1,16 +1,14 @@
 //! Video encoder trait + runtime selection.
 //!
-//! The encoder abstraction lives here (instead of `network::encoder`
-//! which still hosts the openh264 wrapper for backwards compatibility)
-//! because the flatpak-share pipeline is the only caller today, and
-//! keeping the trait next to the session code makes the ownership graph
-//! obvious.
+//! Lives here rather than `network::encoder` (which still hosts the
+//! openh264 wrapper for backwards compatibility) because the
+//! flatpak-share pipeline is the only caller today.
 //!
 //! Three concrete backends × three codecs:
 //!
 //! - [`OpenH264Backend`] — pure-software Cisco openh264, always
 //!   available. H.264 8-bit only. Preferred fallback.
-//! - [`VaApiBackend`] — VA-API (Intel iGPU, AMD, some ARM SoCs). Gated
+//! - [`VaApiBackend`] — VA-API (Intel iGPU, AMD, some ARM `SoCs`). Gated
 //!   behind the `vaapi` cargo feature. Supports H.264 8-bit + HEVC
 //!   Main10 (10-bit) depending on the render node's capabilities.
 //! - [`NvEncBackend`] — NVENC via `ffmpeg-next`. Behind the `nvenc`
@@ -90,7 +88,7 @@ pub enum Codec {
 }
 
 impl Codec {
-    /// Wire label matching [`crate::network::protocol::SurfaceStreamStart::codec`].
+    /// Must match [`crate::network::protocol::SurfaceStreamStart::codec`].
     pub fn wire_label(self) -> &'static str {
         match self {
             Codec::H264 => "h264",
@@ -112,7 +110,6 @@ impl Codec {
         }
     }
 
-    /// Bit depth of the codec's target pixel format.
     pub fn bit_depth(self) -> u8 {
         match self {
             Codec::H264 => 8,
@@ -124,7 +121,6 @@ impl Codec {
 /// One frame's encoder stats — populated by every backend after `encode`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameStats {
-    /// Wall-clock time spent inside `encode`.
     pub encode_wallclock: Duration,
     /// Was this frame an IDR / keyframe?
     pub keyframe: bool,
@@ -201,7 +197,7 @@ pub enum FrameInput<'a> {
         plane_strides: [u32; 4],
         /// Count of valid plane entries (1..=4).
         num_planes: u8,
-        /// DRM_FORMAT_* fourcc code identifying the pixel layout.
+        /// `DRM_FORMAT`_* fourcc code identifying the pixel layout.
         drm_fourcc: u32,
         /// DRM format modifier (vendor tiling / compression); use
         /// `DRM_FORMAT_MOD_LINEAR = 0` for uncompressed linear.

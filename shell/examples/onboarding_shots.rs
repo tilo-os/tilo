@@ -15,18 +15,18 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use automerge::{transaction::Transactable, ScalarValue};
+use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
-use shell::onboarding_view::{OnboardingView, KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD};
+use shell::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use ui::State;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::State;
-use vello::kurbo::{Affine, Point};
 use vello::Scene;
+use vello::kurbo::{Affine, Point};
 
 const WIDTH: u32 = 1000;
 const HEIGHT: u32 = 720;
@@ -61,10 +61,9 @@ fn shoot(theme: &Theme, out: PathBuf, steps: &[&str]) {
                 height: AvailableSpace::Definite(HEIGHT as f32),
             },
             |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
             },
         )
         .unwrap();

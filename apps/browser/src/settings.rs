@@ -34,7 +34,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, Scrollable, ScrollAxis, Spacer, Text, TextInput, Toggle, Widget,
+    Button, Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Toggle, Widget,
 };
 
 /// Boxed-widget currency the `ui` tree speaks.
@@ -70,7 +70,7 @@ pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 
 /// Durable browser preferences, persisted as JSON.
 ///
-/// Defaults: ad-blocking on, clear-on-exit off, DuckDuckGo for both
+/// Defaults: ad-blocking on, clear-on-exit off, `DuckDuckGo` for both
 /// search and homepage. The struct is the single source of truth the
 /// chrome persists — the [`SettingsPane`] only edits the live CRDT
 /// mirror of these fields.
@@ -174,11 +174,11 @@ impl Settings {
         Settings {
             adblock_enabled: v
                 .get("adblock_enabled")
-                .and_then(|x| x.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(d.adblock_enabled),
             clear_on_exit: v
                 .get("clear_on_exit")
-                .and_then(|x| x.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(d.clear_on_exit),
             search_engine: v
                 .get("search_engine")
@@ -322,8 +322,7 @@ impl SettingsPane {
             .push(Box::new(Text::new("Settings").with_size(24.0)))
             .push(Box::new(Spacer::new()))
             .push(Box::new(
-                Button::new("settings.close", "Done", Some(CLOSE_FLAG))
-                    .with_size(96.0, 36.0),
+                Button::new("settings.close", "Done", Some(CLOSE_FLAG)).with_size(96.0, 36.0),
             ));
 
         let general = card(
@@ -451,7 +450,11 @@ fn card(title: &str, body: El) -> El {
         ))
         .push(vgap(CARD_TITLE_GAP))
         .push(body);
-    Box::new(Container::new().with_background().with_child(Box::new(inner)))
+    Box::new(
+        Container::new()
+            .with_background()
+            .with_child(Box::new(inner)),
+    )
 }
 
 /// A vertical stack of rows with explicit inter-row spacing.
@@ -475,7 +478,9 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_size(14.0)))
         .push(vgap(2.0))
-        .push(Box::new(Text::new(description).with_size(12.0).with_color(dim())));
+        .push(Box::new(
+            Text::new(description).with_size(12.0).with_color(dim()),
+        ));
     Box::new(
         Row::new()
             .push(Box::new(text_block))
@@ -511,10 +516,10 @@ fn put_bool_if_absent(state: &mut AutoCommit, root: &ObjId, path: &str, value: b
 
 /// Seed an Automerge `Text` object at `path` with `value` when absent.
 fn put_text_if_absent(state: &mut AutoCommit, root: &ObjId, path: &str, value: &str) {
-    if state.get(root, path).ok().flatten().is_none() {
-        if let Ok(obj_id) = state.put_object(root, path, ObjType::Text) {
-            let _ = state.splice_text(&obj_id, 0, 0, value);
-        }
+    if state.get(root, path).ok().flatten().is_none()
+        && let Ok(obj_id) = state.put_object(root, path, ObjType::Text)
+    {
+        let _ = state.splice_text(&obj_id, 0, 0, value);
     }
 }
 
@@ -549,24 +554,23 @@ impl Widget for SettingsPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&child_node) = children.first() {
-                    c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&child_node) = children.first()
+        {
+            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -595,22 +599,21 @@ impl Widget for SettingsPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&child_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        child_node,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&child_node) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
         }
     }
 
@@ -630,7 +633,7 @@ impl Widget for SettingsPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SettingsPane"
     }
 
@@ -853,7 +856,15 @@ mod tests {
             let mut handled = false;
             let mut focus = None;
             pane.handle_event(
-                &ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy,
+                &ev,
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
             );
         };
         dispatch(

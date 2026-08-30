@@ -87,7 +87,7 @@ pub fn sweep(store: &Store, max_bytes: u64) -> Result<GcReport, StoreError> {
             // Pinned by the time we try to evict it. Just skip and
             // move on to the next candidate — do NOT surface this as
             // an error.
-            Err(StoreError::PinnedRemove(_)) | Err(StoreError::Unknown(_)) => continue,
+            Err(StoreError::PinnedRemove(_) | StoreError::Unknown(_)) => continue,
             Err(other) => return Err(other),
         }
     }
@@ -135,11 +135,26 @@ mod tests {
         for id in [a, b, p] {
             write_payload(dir.path(), id, 1024);
         }
-        let mut ea = RegistryEntry::new_now(a, Pinning::Tried, dir.path().join("payloads").join(a.to_hex()), "".into());
+        let mut ea = RegistryEntry::new_now(
+            a,
+            Pinning::Tried,
+            dir.path().join("payloads").join(a.to_hex()),
+            String::new(),
+        );
         ea.last_used_unix = 1;
-        let mut eb = RegistryEntry::new_now(b, Pinning::Tried, dir.path().join("payloads").join(b.to_hex()), "".into());
+        let mut eb = RegistryEntry::new_now(
+            b,
+            Pinning::Tried,
+            dir.path().join("payloads").join(b.to_hex()),
+            String::new(),
+        );
         eb.last_used_unix = 2;
-        let ep = RegistryEntry::new_now(p, Pinning::Pinned, dir.path().join("payloads").join(p.to_hex()), "".into());
+        let ep = RegistryEntry::new_now(
+            p,
+            Pinning::Pinned,
+            dir.path().join("payloads").join(p.to_hex()),
+            String::new(),
+        );
         store.put_entry(ea).unwrap();
         store.put_entry(eb).unwrap();
         store.put_entry(ep).unwrap();

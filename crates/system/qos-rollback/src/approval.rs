@@ -2,16 +2,14 @@
 //!
 //! # The problem this closes
 //!
-//! An NV counter whose increment needs only an empty authorisation value can be
-//! incremented by anything running as root. The floor only moves in the safe
-//! direction, so that is not a route to booting an old image — but it is a denial
-//! of service: push the floor above the running generation and the machine
-//! unlocks by recovery key until it is re-enrolled.
+//! An NV counter whose increment needs only an empty authorisation can be incremented by
+//! anything running as root. The floor only moves in the safe direction, so this isn't a
+//! route to booting an old image — but it is a denial of service: push the floor above the
+//! running generation and the machine unlocks by recovery key until re-enrolled.
 //!
 //! # The shape
 //!
-//! The index is defined with `policywrite` and no `authwrite`, and its
-//! `authPolicy` is
+//! The index is defined with `policywrite` and no `authwrite`, with `authPolicy`:
 //!
 //! ```text
 //! PolicyOR(
@@ -20,54 +18,40 @@
 //! )
 //! ```
 //!
-//! The second branch exists because the counter has to be *materialised* before
-//! anything can be sealed against it, and a device holds no signing key. It works
-//! exactly once: writing the index sets `TPMA_NV_WRITTEN`, and
-//! `PolicyNvWritten(clear)` then fails forever. Verified against a TPM.
-//!
-//! Every subsequent increment needs the first branch, and the policy the authority
-//! signs is
+//! The second branch materialises the counter before anything can be sealed against it (a
+//! device holds no signing key); it works exactly once, since writing the index sets
+//! `TPMA_NV_WRITTEN` and `PolicyNvWritten(clear)` then fails forever. Every subsequent
+//! increment needs the first branch, and the policy the authority signs is
 //!
 //! ```text
 //! PolicyCommandCode(TPM2_NV_Increment) -> PolicyNV(counter == target - 1)
 //! ```
 //!
-//! which gives three properties, all enforced by the TPM rather than by this code:
+//! which gives three properties, all enforced by the TPM rather than this code:
 //!
-//! * **Single-use.** After the increment the counter is `target`, so
-//!   `counter == target - 1` no longer holds and the same approval is dead. Not
-//!   "we delete the file afterwards" — the TPM refuses it.
-//! * **Bound to one target.** An approval for `target` cannot produce `target + 5`;
-//!   each step needs its own approval.
+//! * **Single-use.** After the increment `counter == target - 1` no longer holds, so the
+//!   same approval is dead — the TPM refuses it, not just a deleted file.
+//! * **Bound to one target.** An approval for `target` cannot produce `target + 5`.
 //! * **Bound to one command.** It authorises `TPM2_NV_Increment` and nothing else.
 //!
 //! # What happens when the authority is unavailable
 //!
-//! **The floor stops advancing. The disk keeps unlocking.** Unsealing only *reads*
-//! the counter — `TPM2_PolicyNV` needs no approval — so an unreachable or lost
-//! authority cannot make a machine stop booting. Confirmation still prunes the
-//! keyslot window and reports that the advance is pending, and the protection
-//! degrades to the keyslot-retention half, which is honest rather than silent.
-//!
-//! Losing the authority key permanently means the floor is frozen where it is.
-//! That is recoverable: re-enrolling with a new authority key defines a fresh
-//! index and re-seals the tokens, with the recovery key as the unlock path
-//! throughout. It does not brick anything.
+//! **The floor stops advancing. The disk keeps unlocking.** Unsealing only *reads* the
+//! counter (`TPM2_PolicyNV` needs no approval), so an unreachable authority cannot stop a
+//! machine booting; confirmation still prunes the keyslot window and reports the advance as
+//! pending. Losing the authority key permanently just freezes the floor — recoverable by
+//! re-enrolling with a new authority key, which defines a fresh index and re-seals tokens.
 //!
 //! # The bound that keeps a burnt batch harmless
 //!
-//! Approvals are not secret, they are signatures, so a device holding them can
-//! spend them — including a device that is later compromised. The protection is
-//! therefore not "root cannot increment" but "root cannot increment past a point
-//! that strands the machine": issuance refuses any target floor above the newest
-//! generation that has a sealed keyslot. Burning every approval a device holds then
-//! lands the floor exactly where a legitimate confirmation would have put it, with
-//! the newest enrolled generation still able to unseal.
-//!
-//! That bound is computed from the device's own request, so a device that lies
-//! about its state can be issued approvals that strand it. A device that lies is
-//! already compromised; the bound exists to stop a *later* compromise from turning
-//! a stash of approvals into a bricked machine.
+//! Approvals are signatures, not secrets, so a device holding them (or one later compromised)
+//! can spend them. The protection is "root cannot increment past a point that strands the
+//! machine": issuance refuses any target floor above the newest generation with a sealed
+//! keyslot, so burning every held approval lands the floor exactly where a legitimate
+//! confirmation would, with the newest enrolled generation still able to unseal. That bound is
+//! computed from the device's own request, so a device that lies about its state can be
+//! issued approvals that strand it — but it's already compromised if it's lying; the bound
+//! exists to stop a *later* compromise turning a stash of approvals into a bricked machine.
 
 use crate::exec::{Runner, require};
 use crate::policy::Workspace;
@@ -79,11 +63,9 @@ use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Policy reference for the floor-advance `PolicyAuthorize`.
-///
-/// Domain separation: a signature the authority makes for a floor advance must not
-/// be usable as a PCR prediction approval, and vice versa, even when the same key
-/// is used for both.
+/// Policy reference for the floor-advance `PolicyAuthorize`. Domain separation: a signature
+/// for a floor advance must not be usable as a PCR prediction approval, and vice versa, even
+/// when the same key is used for both.
 pub const POLICY_REF: &[u8] = b"qos-rollback-floor";
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -91,10 +73,8 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Where a device keeps the approvals it has been issued.
 pub const DEFAULT_DIR: &str = "/var/lib/qos/rollback/approvals";
 
-/// What a device tells the authority so it can issue approvals.
-///
-/// Nothing here is secret. The NV Name and counter value are public facts about
-/// the machine, and the generation numbers are in the image.
+/// What a device tells the authority so it can issue approvals. Nothing here is secret — the
+/// NV Name and counter value are public facts, and the generation numbers are in the image.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Request {
     pub version: u32,
@@ -110,8 +90,8 @@ pub struct Request {
     /// Generations that currently have a sealed keyslot, newest first.
     pub enrolled_generations: Vec<u64>,
     pub retained_generations: u32,
-    /// The highest floor generation that can be reached without leaving the
-    /// machine unable to unseal: the newest generation that has a keyslot.
+    /// The highest floor generation reachable without leaving the machine unable to unseal: the
+    /// newest generation that has a keyslot.
     pub safe_target_floor: u64,
 }
 
@@ -156,11 +136,9 @@ impl Approval {
             .context("approval nv_name is not base64")
     }
 
-    /// Check everything checkable without a TPM.
-    ///
-    /// Deliberately not a security boundary — the TPM is. This catches the
-    /// mundane cases (an approval for another machine, a corrupted file) with a
-    /// diagnostic instead of an opaque policy failure.
+    /// Check everything checkable without a TPM. Deliberately not a security boundary — the TPM
+    /// is — this just catches mundane cases (wrong machine, corrupted file) with a diagnostic
+    /// instead of an opaque policy failure.
     pub fn validate_for(&self, nv_index: u32, nv_name: &[u8]) -> Result<()> {
         if self.version != SCHEMA_VERSION {
             bail!(
@@ -226,9 +204,8 @@ pub fn build_request(
     retained_generations: u32,
 ) -> Result<Request> {
     let newest = enrolled_generations.iter().copied().max();
-    // SAFETY-CRITICAL: the highest floor that still leaves something able to
-    // unseal is the newest generation that has a keyslot. Above that, every token
-    // is below the floor and the machine can only be opened with the recovery key.
+    // SAFETY-CRITICAL: the highest floor that still leaves something able to unseal is the
+    // newest generation with a keyslot — above that, every token is below the floor.
     let safe_target_floor = newest.unwrap_or_else(|| floor.floor_generation());
     Ok(Request {
         version: SCHEMA_VERSION,
@@ -243,12 +220,12 @@ pub fn build_request(
     })
 }
 
-/// Issue approvals covering every step from the current counter up to
-/// `up_to_floor`. Requires the authority's private key.
+/// Issue approvals covering every step from the current counter up to `up_to_floor`.
+/// Requires the authority's private key.
 ///
-/// SAFETY-CRITICAL: refuses to issue past the request's `safe_target_floor`
-/// unless explicitly overridden, because the approvals a device holds are the
-/// approvals a compromised device can spend.
+/// SAFETY-CRITICAL: refuses to issue past the request's `safe_target_floor` unless
+/// explicitly overridden — approvals a device holds are approvals a compromised device
+/// can spend.
 pub fn issue(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -300,19 +277,20 @@ pub fn issue(
             runner,
             "openssl",
             &argv![
-                "dgst", "-sha256",
-                "-sign", private_key_pem.as_os_str(),
-                "-out", sig_file.as_os_str(),
+                "dgst",
+                "-sha256",
+                "-sign",
+                private_key_pem.as_os_str(),
+                "-out",
+                sig_file.as_os_str(),
                 msg_file.as_os_str(),
             ],
             "signing a floor-advance approval",
         )?;
-        let sig = std::fs::read(&sig_file)
-            .with_context(|| format!("reading {}", sig_file.display()))?;
-        let target_floor = u64::try_from(
-            i128::from(target_counter) - i128::from(request.base),
-        )
-        .context("target counter maps to a negative floor generation")?;
+        let sig =
+            std::fs::read(&sig_file).with_context(|| format!("reading {}", sig_file.display()))?;
+        let target_floor = u64::try_from(i128::from(target_counter) - i128::from(request.base))
+            .context("target counter maps to a negative floor generation")?;
         out.push(Approval {
             version: SCHEMA_VERSION,
             nv_index: request.nv_index,
@@ -339,10 +317,8 @@ pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Load every approval in a directory, oldest target first.
-///
-/// A file that does not parse is reported and skipped rather than aborting: one
-/// corrupt approval must not stop the others being used.
+/// Load every approval in a directory, oldest target first. A file that doesn't parse is
+/// reported and skipped rather than aborting — one corrupt approval must not stop the others.
 pub fn load_all(dir: &Path) -> Result<Vec<Approval>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -355,9 +331,10 @@ pub fn load_all(dir: &Path) -> Result<Vec<Approval>> {
         if p.extension().is_none_or(|e| e != "json") {
             continue;
         }
-        match std::fs::read_to_string(&p).map_err(anyhow::Error::from).and_then(|t| {
-            serde_json::from_str::<Approval>(&t).map_err(anyhow::Error::from)
-        }) {
+        match std::fs::read_to_string(&p)
+            .map_err(anyhow::Error::from)
+            .and_then(|t| serde_json::from_str::<Approval>(&t).map_err(anyhow::Error::from))
+        {
             Ok(a) => out.push(a),
             Err(e) => eprintln!("qos-rollback: ignoring {}: {e:#}", p.display()),
         }
@@ -368,11 +345,13 @@ pub fn load_all(dir: &Path) -> Result<Vec<Approval>> {
 
 /// The approval for one specific counter value, if the device holds it.
 pub fn find(approvals: &[Approval], target_counter: u64) -> Option<&Approval> {
-    approvals.iter().find(|a| a.target_counter == target_counter)
+    approvals
+        .iter()
+        .find(|a| a.target_counter == target_counter)
 }
 
-/// Remove a spent approval's file. Best effort — the TPM has already made it
-/// useless, so a failure here is untidy rather than dangerous.
+/// Remove a spent approval's file. Best effort — the TPM has already made it useless, so a
+/// failure here is untidy rather than dangerous.
 pub fn discard(dir: &Path, approval: &Approval) {
     let _ = std::fs::remove_file(dir.join(approval.file_name()));
 }
@@ -436,7 +415,10 @@ mod tests {
         };
         let e = a.validate_for(0x01D9_1100, &other).unwrap_err().to_string();
         assert!(e.contains("different NV index Name"), "{e}");
-        let e = a.validate_for(0x01D9_1200, &name()).unwrap_err().to_string();
+        let e = a
+            .validate_for(0x01D9_1200, &name())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("NV index"), "{e}");
     }
 
@@ -444,13 +426,19 @@ mod tests {
     fn validation_catches_a_tampered_target() {
         let mut a = approval_for(5);
         a.target_counter = 9;
-        let e = a.validate_for(0x01D9_1100, &name()).unwrap_err().to_string();
+        let e = a
+            .validate_for(0x01D9_1100, &name())
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("does not match its stated target"), "{e}");
     }
 
     #[test]
     fn the_safe_bound_is_the_newest_enrolled_generation() {
-        let floor = counter::FloorState { counter: 10, base: 5 };
+        let floor = counter::FloorState {
+            counter: 10,
+            base: 5,
+        };
         let r = build_request(1, &name(), floor, &[8, 7, 6], 3).unwrap();
         assert_eq!(r.floor_generation, 5);
         assert_eq!(r.safe_target_floor, 8);
@@ -458,7 +446,10 @@ mod tests {
 
     #[test]
     fn with_nothing_enrolled_the_safe_bound_is_the_current_floor() {
-        let floor = counter::FloorState { counter: 10, base: 5 };
+        let floor = counter::FloorState {
+            counter: 10,
+            base: 5,
+        };
         let r = build_request(1, &name(), floor, &[], 3).unwrap();
         assert_eq!(r.safe_target_floor, 5);
     }

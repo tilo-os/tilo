@@ -1,28 +1,9 @@
-//! `shots` — four-mode driver for the nirios shell, plus a `check`
-//! subcommand for baseline image diffs.
+//! `shots` — four-mode driver for the nirios shell (`window`, `offscreen`,
+//! `headless`, `recording`), plus a `check` subcommand that captures and
+//! pixel-diffs against baseline PNGs. Full flag reference in `--help`.
 //!
-//! Modes:
-//!   - `window`    — real winit window + GPU swapchain. Optional
-//!                    `--scenario NAME` pre-rolls before going
-//!                    interactive.
-//!   - `offscreen` — wgpu offscreen renderer, no window. Captures one
-//!                    PNG per `Snapshot` action under `--out`.
-//!   - `headless`  — no GPU, no display. Dumps chrome state JSON per
-//!                    `Snapshot` action under `--out`.
-//!   - `recording` — wgpu offscreen + H.264 encoder. Writes a raw
-//!                    Annex-B NALU stream to `--out`.
-//!
-//! Subcommands:
-//!   - `shots check --baseline <dir>` — capture current outputs and
-//!     pixel-diff them against PNGs already in `<dir>`. Exit 1 on any
-//!     mismatch, 0 otherwise.
-//!
-//! Multi-resolution sweep (`--sweep`) and per-frame capture
-//! (`--per-frame N`) are documented in `--help`.
-//!
-//! Backwards-compat: invoked without `--mode` / `--scenario`, behaves
-//! like the original `shots` binary — renders the legacy scene set
-//! (`desktop`, `overview`, `palette`, …) to PNG via offscreen mode.
+//! Invoked without `--mode` / `--scenario`, behaves like the original
+//! `shots` binary — renders the legacy scene set to PNG via offscreen mode.
 
 mod diff;
 mod driver;
@@ -116,11 +97,11 @@ impl Args {
         let mut argv: Vec<String> = std::env::args().skip(1).collect();
         // Subcommand detection — `shots check ...` runs the baseline
         // diff path. Anything else falls through to the modes.
-        if let Some(first) = argv.first() {
-            if first == "check" {
-                subcommand = Some("check".to_string());
-                argv.remove(0);
-            }
+        if let Some(first) = argv.first()
+            && first == "check"
+        {
+            subcommand = Some("check".to_string());
+            argv.remove(0);
         }
         while let Some(arg) = argv.first().cloned() {
             argv.remove(0);
@@ -280,8 +261,7 @@ impl Args {
             // failure mode is obvious.
             if mode != Mode::Offscreen {
                 return Err(format!(
-                    "shots check: --mode {:?} is not supported (offscreen only)",
-                    mode
+                    "shots check: --mode {mode:?} is not supported (offscreen only)"
                 ));
             }
         }
@@ -307,7 +287,7 @@ impl Args {
             // Default `out` is a directory; in recording mode we write a
             // single file. Switch the default to a `.h264` path if the
             // caller didn't supply one.
-            if out == PathBuf::from("target/nirios-shots") {
+            if out == *"target/nirios-shots" {
                 out = PathBuf::from("target/nirios-shots.h264");
             }
         }
@@ -344,7 +324,7 @@ pub fn parse_sweep_list(raw: &str) -> Result<Vec<(u32, u32)>, String> {
             continue;
         }
         let (w, h) = entry
-            .split_once(|c: char| c == 'x' || c == 'X')
+            .split_once(['x', 'X'])
             .ok_or_else(|| format!("--sweep: '{entry}' is not WxH"))?;
         let w: u32 = w
             .trim()
@@ -423,7 +403,7 @@ Examples:\n\
   shots --scenes desktop,palette --out /tmp/s\n\
   shots --mode offscreen --scenario palette_typing\n\
   shots --mode offscreen --scenes desktop --sweep --out /tmp/sweep\n\
-  shots --mode offscreen --scenario workspace_switch_animated --per-frame 4\n\
+  shots --mode offscreen --scenario overview_transition --per-frame 4\n\
   shots --mode headless  --scenario palette_typing --out target/headless\n\
   shots --mode recording --scenario palette_typing --out /tmp/out.h264\n\
   shots --mode window    --scenario workspace_switch\n\
@@ -435,25 +415,17 @@ Examples:\n\
 }
 
 fn main() {
-    // Startup timing capture. Same env-var contract as `shell` — a
-    // process launched with `QOS_STARTUP_METRICS_PATH=/tmp/x.json` gets
-    // a JSON dump on exit; without it, every `mark` call is a single
-    // atomic-load no-op. `shots` is the harness that measures the win
-    // from the cold-start warmup, so instrumenting it is the only way
-    // to A/B the two paths without a real display.
+    // Same env-var contract as `shell`: QOS_STARTUP_METRICS_PATH=/tmp/x.json
+    // dumps JSON timings on exit; without it every `mark` is a no-op.
+    // `shots` is the harness that measures the cold-start warmup win.
     qos_startup_metrics::init();
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
-    // Kick off cosmic-text + Vello warmup on a background thread. See
-    // `ui::warmup::spawn_warmup` for what runs; the point of doing it
-    // this early is that the FontSystem build and the scratch Vello
-    // render both overlap with argv parsing / driver bring-up. Disabled
-    // with QOS_STARTUP_WARM=off.
-    // FontSystem-only warmup by default (~90 ms cold-start win vs no
-    // warmup, measured on the shots harness). Vello scratch-render
-    // opt-in via QOS_STARTUP_WARM_VELLO=1 — see the compositor's main
-    // for the rationale.
+    // cosmic-text + Vello warmup on a background thread, overlapping argv
+    // parsing / driver bring-up. FontSystem-only by default (~90 ms
+    // cold-start win, measured on this harness); Vello scratch-render
+    // opt-in via QOS_STARTUP_WARM_VELLO=1. Disabled with QOS_STARTUP_WARM=off.
     let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
         .ok()
         .is_some_and(|v| {
@@ -582,7 +554,7 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                 match entry.kind {
                     diff::DiffKind::Ok => {
                         ok_count += 1;
-                        println!("OK   {}", entry.path.display())
+                        println!("OK   {}", entry.path.display());
                     }
                     diff::DiffKind::Diff(px) => {
                         // Tolerate `max_diff_pixels` per-image — the
@@ -591,11 +563,11 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                         // expected steady state.
                         if px <= args.max_diff_pixels {
                             ok_count += 1;
-                            println!("OK   {} ({} px within tolerance)", entry.path.display(), px,);
+                            println!("OK   {} ({} px within tolerance)", entry.path.display(), px);
                         } else {
                             any_diff = true;
                             diff_count += 1;
-                            println!("DIFF {} {} pixels differ", entry.path.display(), px,);
+                            println!("DIFF {} {} pixels differ", entry.path.display(), px);
                         }
                     }
                     diff::DiffKind::Missing => {
@@ -622,8 +594,8 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                     }
                 }
             }
-            println!("shots check: {} OK, {} diff(s)", ok_count, diff_count,);
-            if any_diff { 1 } else { 0 }
+            println!("shots check: {ok_count} OK, {diff_count} diff(s)");
+            i32::from(any_diff)
         }
         Err(e) => {
             eprintln!("shots check: {e}");

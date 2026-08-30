@@ -15,7 +15,7 @@
 //!                   so a project can be copied and handed to someone.
 //!   * [`preview`] — the composited-frame producer: a representative frame
 //!                   from clip metadata, or (behind the `decode` feature) a
-//!                   real decoded frame via `ui::VideoPlayer` / GStreamer.
+//!                   real decoded frame via `ui::VideoPlayer` / `GStreamer`.
 //!   * [`timecode`]— wall-clock ↔ frame conversions and formatting.
 //!   * [`gpu`]     — the wgpu compositor both the preview canvas and the
 //!                   export render through, so they cannot disagree.
@@ -33,9 +33,25 @@
 //! `app_root()` is the single integration point used by both the live
 //! event loop and the `--shots` offscreen renderer.
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 pub mod actions;
-pub mod audio;
 pub mod app;
+pub mod audio;
 pub mod curve;
 pub mod doc;
 pub mod export;
@@ -46,8 +62,8 @@ pub mod param;
 pub mod portal;
 pub mod presence;
 pub mod preview;
-pub mod project_file;
 pub mod probe;
+pub mod project_file;
 pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
@@ -81,7 +97,9 @@ pub fn app_root_narrow() -> Box<dyn Widget> {
 /// filters + fades showing in the inspector (the "clip selected with filters"
 /// shot). Deterministic: playhead parked inside the drone open.
 pub fn app_root_filters() -> Box<dyn Widget> {
-    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::SelectedFilters))
+    Box::new(VideoEditorApp::new_for_shot(
+        app::ShotScenario::SelectedFilters,
+    ))
 }
 
 /// Root configured to capture the timeline immediately after a split at the
@@ -103,7 +121,9 @@ pub fn app_root_rename() -> Box<dyn Widget> {
 
 /// Root configured to capture a bin clip mid-drag over a timeline lane.
 pub fn app_root_drag() -> Box<dyn Widget> {
-    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::DragToTimeline))
+    Box::new(VideoEditorApp::new_for_shot(
+        app::ShotScenario::DragToTimeline,
+    ))
 }
 
 /// Root configured to capture the per-clip effects stack in the inspector.

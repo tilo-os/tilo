@@ -29,3 +29,6 @@ required-features = ["cli"]
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
+
+[lints]
+workspace = true

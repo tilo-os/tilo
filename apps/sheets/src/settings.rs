@@ -132,8 +132,7 @@ impl GlobalSettings {
     /// Persist to the shared path, preserving foreign keys. Creates the
     /// `qos` config directory if needed. Returns the path written.
     pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = settings_path()
-            .ok_or_else(|| std::io::Error::other("no config dir"))?;
+        let path = settings_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

@@ -79,7 +79,7 @@ impl SignedRoot {
         out[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
         out[12..44].copy_from_slice(&self.manifest_hash.0);
         out[44..76].copy_from_slice(&self.payload_root_hash.0);
-        out[76] = if self.signature.is_some() { 1 } else { 0 };
+        out[76] = u8::from(self.signature.is_some());
         out[77..109].copy_from_slice(&self.publisher_identity);
         out
     }
@@ -94,7 +94,7 @@ impl SignedRoot {
         out
     }
 
-    /// Decode strict — magic, format version, has_signature bit
+    /// Decode strict — magic, format version, `has_signature` bit
     /// all checked.
     pub fn decode(bytes: &[u8]) -> Result<Self, SignedRootError> {
         if bytes.len() != SIGNED_ROOT_LEN {

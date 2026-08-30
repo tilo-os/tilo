@@ -1,9 +1,8 @@
 //! Backend trait abstracting frame submission + event polling for the
 //! native compositor mode.
 //!
-//! [`WinitBackend`] (this phase) hosts on top of an existing
-//! Wayland/X11 session for development. [`DrmBackend`] (Phase 5) will
-//! drive a TTY directly.
+//! [`WinitBackend`] hosts on top of an existing Wayland/X11 session for
+//! development. [`DrmBackend`] drives a TTY directly.
 
 use vello::Scene;
 // Absolute path: this module has a `pub mod winit;` child below that
@@ -75,14 +74,34 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
 /// decides whether a gesture is the shell's or the focused client's.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GestureEvent {
-    SwipeBegin { fingers: u32 },
-    SwipeUpdate { dx: f64, dy: f64 },
-    SwipeEnd { cancelled: bool },
-    PinchBegin { fingers: u32 },
-    PinchUpdate { dx: f64, dy: f64, scale: f64, rotation: f64 },
-    PinchEnd { cancelled: bool },
-    HoldBegin { fingers: u32 },
-    HoldEnd { cancelled: bool },
+    SwipeBegin {
+        fingers: u32,
+    },
+    SwipeUpdate {
+        dx: f64,
+        dy: f64,
+    },
+    SwipeEnd {
+        cancelled: bool,
+    },
+    PinchBegin {
+        fingers: u32,
+    },
+    PinchUpdate {
+        dx: f64,
+        dy: f64,
+        scale: f64,
+        rotation: f64,
+    },
+    PinchEnd {
+        cancelled: bool,
+    },
+    HoldBegin {
+        fingers: u32,
+    },
+    HoldEnd {
+        cancelled: bool,
+    },
 }
 
 /// One touch point's movement, in combined-output coordinates.
@@ -113,12 +132,6 @@ pub enum BackendEvent {
     /// is carried so `compositor::native::run` can hand it to
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
-    ///
-    /// Previously a marker variant: the compositor knew "some input
-    /// happened" but the event was discarded. That meant the native
-    /// backend silently swallowed every click — visible only because
-    /// hardware-clicking the window produced no widget reaction
-    /// (headless tests bypassed this path entirely, so the bug hid).
     Input(WindowEvent),
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
@@ -148,11 +161,10 @@ pub trait Backend {
     /// it has one. The compositor paces its loop to this rather than to a
     /// hard-coded 60 Hz (see [`crate::compositor::pacing`]).
     ///
-    /// Default `None`: a backend with no display — [`HeadlessBackend`] —
-    /// reports nothing and the compositor uses
-    /// [`crate::compositor::pacing::FALLBACK_INTERVAL`]. That keeps the
-    /// display-free path free of any display concept rather than giving
-    /// it a fake refresh rate to pace to.
+    /// Default `None`: [`HeadlessBackend`] has no display and reports
+    /// nothing, so the compositor falls back to
+    /// [`crate::compositor::pacing::FALLBACK_INTERVAL`] rather than a
+    /// fake refresh rate.
     fn refresh_interval(&self) -> Option<std::time::Duration> {
         None
     }
@@ -161,41 +173,49 @@ pub trait Backend {
     /// can run it on a dedicated thread (see
     /// [`crate::compositor::present`]). Called once, before the loop
     /// starts. After a backend hands its presenter over,
-    /// [`Backend::submit_frame`] is never called on it again — the
-    /// compositor submits through the pipe instead.
+    /// [`Backend::submit_frame`] is never called on it again.
     ///
-    /// Default `None`: the backend keeps presenting inline on the loop
-    /// thread. That is what [`HeadlessBackend`] does, deliberately — its
-    /// rendered bytes are read back synchronously by the test-control
-    /// `snapshot` command, and a harness that has to wait for a frame to
-    /// arrive is a harness with a race in it.
+    /// Default `None`, keeping presentation inline: [`HeadlessBackend`]
+    /// does this deliberately, since its rendered bytes are read back
+    /// synchronously by the test-control `snapshot` command, and a
+    /// harness that waits for a frame to arrive has a race in it.
     fn take_presenter(&mut self) -> Option<Box<dyn crate::compositor::present::Presenter>> {
         None
     }
 
-    /// Power the physical display(s) on (`true`) or off (`false`) for
-    /// idle / session-lock blanking (Track D2).
+    /// Whether this backend puts a pointer on screen by itself.
     ///
-    /// Default no-op: backends with no real output — [`WinitBackend`]
-    /// (the host owns power management) and [`HeadlessBackend`] (no
-    /// display at all) — are unaffected. Only [`DrmBackend`] overrides
-    /// this, where it stops scanout and toggles the connector's DPMS
-    /// state. Idempotent: redundant calls (off-while-off, on-while-on)
-    /// are harmless.
+    /// `true` for a backend whose display already carries a cursor the
+    /// compositor doesn't paint — [`DrmBackend`]'s hardware cursor plane,
+    /// and [`WinitBackend`], where the host session draws its own.
+    /// Painting one into the scene too would put two on screen.
+    ///
+    /// Default `false` ([`HeadlessBackend`]: no display, nobody to draw
+    /// it) rather than default-true, so a new display-free backend is
+    /// visible by construction — an unnecessary arrow is a far easier
+    /// defect to notice than an invisible one.
+    fn has_cursor_plane(&self) -> bool {
+        false
+    }
+
+    /// Power the physical display(s) on (`true`) or off (`false`) for
+    /// idle / session-lock blanking.
+    ///
+    /// Default no-op: backends with no real output ([`WinitBackend`],
+    /// [`HeadlessBackend`]) are unaffected. Only [`DrmBackend`] overrides
+    /// this, stopping scanout and toggling the connector's DPMS state.
+    /// Idempotent: redundant calls are harmless.
     fn set_dpms(&mut self, _on: bool) {}
 
     /// Re-establish the display after the system came back from suspend.
     ///
     /// Default no-op: a hosted backend's display is the host's problem,
-    /// and a headless one has none. Only [`DrmBackend`] overrides it,
-    /// where the DRM device comes back from a suspend with no mode set,
-    /// no framebuffer bound and a cursor plane that has been cleared — so
-    /// "the screen is black after closing and opening the lid" is not a
-    /// bug in the panel, it is the compositor never having asked for any
-    /// of that back.
-    ///
-    /// Separate from the VT-switch path because a suspend does not pause
-    /// the seat: no session event arrives, so nothing else would trigger.
+    /// and a headless one has none. Only [`DrmBackend`] overrides it —
+    /// the DRM device comes back from suspend with no mode set, no
+    /// framebuffer bound and a cleared cursor plane, so this is what
+    /// asks for all of that back. Separate from the VT-switch path
+    /// because a suspend doesn't pause the seat: no session event
+    /// arrives, so nothing else would trigger it.
     fn reset_display(&mut self) {}
 
     /// Re-read the persisted input preferences and apply them.

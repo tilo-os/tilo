@@ -46,7 +46,7 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 
 ### Phases 1, 4, 5 — UI widgets
 
-- `ActivityTimeline`, `HistoryScrubber`, `ConflictBanner`, `ConflictPicker`, `ChannelBrowser` exist with full tests and `cargo run -p ui --example <name>` demos.
+- `ActivityTimeline`, `HistoryScrubber`, `ConflictBanner`, `ConflictPicker`, `ChannelBrowser` exist with full tests and named `ui-lab` scenarios (`cargo run -p ui --example ui-lab -- --list`).
 - None of them are bound to a real data source in any deployed app.
 
 ---
@@ -55,7 +55,7 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 
 Two brokers existed and the wrong one shipped: `apps/collab-broker`, a 33-LOC wrapper around the legacy relay in `ui::collaboration::broker`, which fans plaintext frames to every peer with no record scoping and no validation.
 
-Lifting the real broker into a shared crate was the obvious fix and it is the wrong one. The broker's validation reads the room's governance, the session's identity and the libp2p handle, all of which live in the shell; a separate process would have to re-export all three across an IPC boundary to reach the same decisions. So the resolution went the other way: **the standalone daemon is deleted, and the native compositor runs `shell::shell::collab_broker` in-process** on `$XDG_RUNTIME_DIR/qos/services/collab.sock` — the path `launcher::services` dials to hand each sandboxed app a descriptor.
+Lifting the real broker into a shared crate was the obvious fix and it is the wrong one. The broker's validation reads the room's governance, the session's identity and the Iroh handle, all of which live in the shell; a separate process would have to re-export all three across an IPC boundary to reach the same decisions. So the resolution went the other way: **the standalone daemon is deleted, and the native compositor runs `shell::shell::collab_broker` in-process** on `$XDG_RUNTIME_DIR/qos/services/collab.sock` — the path `launcher::services` dials to hand each sandboxed app a descriptor.
 
 The socket had two independently-written path expressions on opposite sides of the sandbox boundary, which is how it stayed broken silently. They now share one owner (`launcher::services::COLLAB_SERVICE`), pinned by `compositor_binds_the_socket_the_launcher_dials`, which binds through the compositor's spawn path and resolves through the launcher's resolver.
 
@@ -65,9 +65,9 @@ The socket had two independently-written path expressions on opposite sides of t
 
 - **No two-machine test has ever run.** Everything tested on localhost — including `scripts/two-session-collab-demo.py`, which drives two real compositors but on one box. `qos-relay` works in unit tests; no LAN deploy verified.
 - **No systemd unit for `qos-collab-link`.** Still foreground-only. The broker no longer needs one: it is part of the session process.
-- **Broker federation is the session's, not a daemon's.** Each session's broker bridges to peers through the `ShellNetwork` handle it is given, so fan-out reaches other machines over gossipsub. What has never been exercised is two machines.
+- **Broker federation is the session's, not a daemon's.** Each session's broker bridges to peers through the `ShellNetwork` handle it is given, so fan-out reaches other machines over Iroh gossip and the authenticated workspace host. What has never been exercised is two physical machines.
 - **No xdg-desktop-portal / system-keyring integration for the on-disk identity.** It's plaintext JSON with `0600` as the only mitigation, called out as TODO Phase 8.5.
-- **No cross-host invite flow.** The `qos://invite/...` URL parser works; nothing on the other side processes it into a `ChannelEvent::AttestationIssued`.
+- **Transport invites work across hosts; governance issuance is still incomplete.** Accepting a signed `qos://invite/...` adopts the room and dials its Iroh owner/hosts, but the flow still does not issue the corresponding `ChannelEvent::AttestationIssued` for the cryptographic role layer.
 
 ---
 

@@ -23,7 +23,11 @@ pub struct FrameBuf {
 
 impl FrameBuf {
     fn new(w: u32, h: u32) -> Self {
-        Self { rgba: vec![0; (w * h * 4) as usize], w, h }
+        Self {
+            rgba: vec![0; (w * h * 4) as usize],
+            w,
+            h,
+        }
     }
 
     #[inline]
@@ -46,9 +50,9 @@ impl FrameBuf {
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
         let a = a.clamp(0.0, 1.0);
         let inv = 1.0 - a;
-        self.rgba[i] = (self.rgba[i] as f32 * inv + r as f32 * a) as u8;
-        self.rgba[i + 1] = (self.rgba[i + 1] as f32 * inv + g as f32 * a) as u8;
-        self.rgba[i + 2] = (self.rgba[i + 2] as f32 * inv + b as f32 * a) as u8;
+        self.rgba[i] = (f32::from(self.rgba[i]) * inv + f32::from(r) * a) as u8;
+        self.rgba[i + 1] = (f32::from(self.rgba[i + 1]) * inv + f32::from(g) * a) as u8;
+        self.rgba[i + 2] = (f32::from(self.rgba[i + 2]) * inv + f32::from(b) * a) as u8;
         self.rgba[i + 3] = 255;
     }
 
@@ -66,16 +70,19 @@ type Rgb = (u8, u8, u8);
 fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
     (
-        (a.0 as f32 + (b.0 as f32 - a.0 as f32) * t) as u8,
-        (a.1 as f32 + (b.1 as f32 - a.1 as f32) * t) as u8,
-        (a.2 as f32 + (b.2 as f32 - a.2 as f32) * t) as u8,
+        (f32::from(a.0) + (f32::from(b.0) - f32::from(a.0)) * t) as u8,
+        (f32::from(a.1) + (f32::from(b.1) - f32::from(a.1)) * t) as u8,
+        (f32::from(a.2) + (f32::from(b.2) - f32::from(a.2)) * t) as u8,
     )
 }
 
 /// Cheap deterministic value hash → [0,1).
 fn hash01(mut n: u32) -> f32 {
     n = (n << 13) ^ n;
-    let m = (n.wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789221)).wrapping_add(1376312589)) & 0x7fffffff;
+    let m = (n
+        .wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789221))
+        .wrapping_add(1376312589))
+        & 0x7fffffff;
     1.0 - (m as f32 / 1073741824.0)
 }
 
@@ -92,17 +99,66 @@ fn palette(seed: u8) -> Palette {
     // Six distinct looks. `style` selects the composition (0 landscape,
     // 1 sunset, 2 city, 3 portrait bokeh, 4 forest, 5 desert).
     let table: [Palette; 6] = [
-        Palette { sky_top: (96, 165, 250), sky_bot: (191, 219, 254), ground: (52, 96, 64), ridge: (30, 58, 70), accent: (250, 250, 240), style: 0 },
-        Palette { sky_top: (244, 114, 90), sky_bot: (252, 211, 77), ground: (60, 40, 60), ridge: (88, 28, 64), accent: (255, 237, 200), style: 1 },
-        Palette { sky_top: (30, 41, 59), sky_bot: (71, 85, 105), ground: (15, 18, 28), ridge: (51, 65, 85), accent: (250, 204, 21), style: 2 },
-        Palette { sky_top: (60, 50, 70), sky_bot: (120, 90, 110), ground: (40, 30, 45), ridge: (90, 70, 90), accent: (244, 211, 188), style: 3 },
-        Palette { sky_top: (134, 192, 160), sky_bot: (214, 232, 200), ground: (34, 70, 48), ridge: (24, 54, 40), accent: (245, 245, 225), style: 4 },
-        Palette { sky_top: (250, 200, 140), sky_bot: (252, 232, 196), ground: (176, 124, 78), ridge: (140, 92, 60), accent: (255, 244, 222), style: 5 },
+        Palette {
+            sky_top: (96, 165, 250),
+            sky_bot: (191, 219, 254),
+            ground: (52, 96, 64),
+            ridge: (30, 58, 70),
+            accent: (250, 250, 240),
+            style: 0,
+        },
+        Palette {
+            sky_top: (244, 114, 90),
+            sky_bot: (252, 211, 77),
+            ground: (60, 40, 60),
+            ridge: (88, 28, 64),
+            accent: (255, 237, 200),
+            style: 1,
+        },
+        Palette {
+            sky_top: (30, 41, 59),
+            sky_bot: (71, 85, 105),
+            ground: (15, 18, 28),
+            ridge: (51, 65, 85),
+            accent: (250, 204, 21),
+            style: 2,
+        },
+        Palette {
+            sky_top: (60, 50, 70),
+            sky_bot: (120, 90, 110),
+            ground: (40, 30, 45),
+            ridge: (90, 70, 90),
+            accent: (244, 211, 188),
+            style: 3,
+        },
+        Palette {
+            sky_top: (134, 192, 160),
+            sky_bot: (214, 232, 200),
+            ground: (34, 70, 48),
+            ridge: (24, 54, 40),
+            accent: (245, 245, 225),
+            style: 4,
+        },
+        Palette {
+            sky_top: (250, 200, 140),
+            sky_bot: (252, 232, 196),
+            ground: (176, 124, 78),
+            ridge: (140, 92, 60),
+            accent: (255, 244, 222),
+            style: 5,
+        },
     ];
     let idx = (seed as usize) % table.len();
     // Cheap clone via field copy (Palette is small + Copy-ish ints).
     let p = &table[idx];
-    Palette { sky_top: p.sky_top, sky_bot: p.sky_bot, ground: p.ground, ridge: p.ridge, accent: p.accent, style: p.style }
+    Palette {
+        sky_top: p.sky_top,
+        sky_bot: p.sky_bot,
+        ground: p.ground,
+        ridge: p.ridge,
+        accent: p.accent,
+        style: p.style,
+    }
 }
 
 /// Paint a deterministic scene into `buf` using seed `seed`.
@@ -152,7 +208,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             let mut x = 0;
             let mut col = 0u32;
             while x < w {
-                let bw = 24 + (hash01(col * 7 + seed as u32 * 31) * 46.0) as i32;
+                let bw = 24 + (hash01(col * 7 + u32::from(seed) * 31) * 46.0) as i32;
                 let bh = (h as f32 * (0.18 + hash01(col * 13 + 3) * 0.34)) as i32;
                 let top = horizon - bh;
                 let shade = lerp(pal.ridge, (12, 14, 22), hash01(col * 5) * 0.6);
@@ -178,7 +234,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
         3 => {
             // Portrait: soft bokeh circles in the upper area.
             for i in 0..26u32 {
-                let bx = (hash01(i * 17 + seed as u32) * w as f32) as i32;
+                let bx = (hash01(i * 17 + u32::from(seed)) * w as f32) as i32;
                 let by = (hash01(i * 31 + 7) * horizon as f32) as i32;
                 let br = 10.0 + hash01(i * 13 + 3) * 34.0;
                 let tint = lerp(pal.accent, pal.sky_top, hash01(i * 5));
@@ -197,11 +253,12 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
             // Layered mountain ridges.
             for layer in 0..3 {
                 let base = horizon - (3 - layer) * (h / 18);
-                let amp = (h as f32 * (0.05 + layer as f32 * 0.02)) as f32;
+                let amp = h as f32 * (0.05 + layer as f32 * 0.02);
                 let shade = lerp(pal.ridge, pal.ground, layer as f32 / 3.0);
                 for x in 0..w {
                     let t = x as f32 / w as f32 * std::f32::consts::PI * (2.0 + layer as f32);
-                    let ridge = base as f32 - (t + seed as f32).sin() * amp
+                    let ridge = base as f32
+                        - (t + f32::from(seed)).sin() * amp
                         - (t * 1.7).cos() * amp * 0.4;
                     for y in (ridge as i32)..horizon {
                         buf.put(x, y, shade.0, shade.1, shade.2);
@@ -214,7 +271,7 @@ fn paint_scene(buf: &mut FrameBuf, seed: u8) {
     // Subtle film grain + corner vignette so it reads as a photo.
     for y in 0..h {
         for x in 0..w {
-            let n = hash01((x * 374761 + y * 668265 + seed as i32 * 9176) as u32);
+            let n = hash01((x * 374761 + y * 668265 + i32::from(seed) * 9176) as u32);
             if n > 0.93 {
                 buf.blend(x, y, 255, 255, 255, 0.04);
             }
@@ -269,9 +326,26 @@ pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Opti
     let pad = mscale * 2;
     for sy in 0..10 {
         let a = 0.12 - sy as f32 * 0.011;
-        buf.fill_rect_blend(px0 - pad + sy, py0 - pad + sy, px0 + poster + pad + sy, py0 + poster + pad + sy, 0, 0, 0, a);
+        buf.fill_rect_blend(
+            px0 - pad + sy,
+            py0 - pad + sy,
+            px0 + poster + pad + sy,
+            py0 + poster + pad + sy,
+            0,
+            0,
+            0,
+            a,
+        );
     }
-    buf.fill_rect(px0 - pad, py0 - pad, px0 + poster + pad, py0 + poster + pad, 250, 250, 250);
+    buf.fill_rect(
+        px0 - pad,
+        py0 - pad,
+        px0 + poster + pad,
+        py0 + poster + pad,
+        250,
+        250,
+        250,
+    );
 
     // QR modules (dark on the card's white quiet zone).
     for my in 0..modules {
@@ -324,9 +398,9 @@ fn to_luma(buf: &FrameBuf) -> Vec<u8> {
     let n = (buf.w * buf.h) as usize;
     let mut out = vec![0u8; n];
     for i in 0..n {
-        let r = buf.rgba[i * 4] as f32;
-        let g = buf.rgba[i * 4 + 1] as f32;
-        let b = buf.rgba[i * 4 + 2] as f32;
+        let r = f32::from(buf.rgba[i * 4]);
+        let g = f32::from(buf.rgba[i * 4 + 1]);
+        let b = f32::from(buf.rgba[i * 4 + 2]);
         out[i] = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
     }
     out
@@ -353,8 +427,8 @@ mod tests {
         assert_eq!(scanned.raw, payload);
         // Corners land within the frame.
         for (x, y) in scanned.corners {
-            assert!(x >= 0.0 && x <= 900.0, "corner x in range: {x}");
-            assert!(y >= 0.0 && y <= 560.0, "corner y in range: {y}");
+            assert!((0.0..=900.0).contains(&x), "corner x in range: {x}");
+            assert!((0.0..=560.0).contains(&y), "corner y in range: {y}");
         }
     }
 

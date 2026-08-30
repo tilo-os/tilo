@@ -13,14 +13,12 @@
 //! requires two post-handshake exchanges — the `Ready` that answers a
 //! `Subscribe`, and a `Ping`/`Pong` round trip after it.
 
-mod common;
-
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 /// Take the next envelope or fail loudly. A dropped endpoint shows up
 /// here as a timeout, so the message has to name the suspect.

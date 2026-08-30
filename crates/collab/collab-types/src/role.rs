@@ -1,155 +1,127 @@
 //! Roles, op classes, and the spec's static permission table.
 //!
-//! `Role` and `OpClass` are the two enums that drive every "is this
-//! mutation allowed?" decision in the system. `role_permits` is the
-//! lookup function — the single source of truth, consulted by both
-//! the local shell (to paint affordances and grey out forbidden
-//! actions) and every receiving peer's validator (to reject invalid
-//! ops on the wire).
+//! `Role` and `OpClass` drive every "is this mutation allowed?" decision.
+//! `role_permits` is the single source of truth, consulted by both the
+//! local shell (to paint/grey out affordances) and every receiving
+//! peer's validator (to reject invalid ops on the wire).
 //!
-//! The table is intentionally hard-coded at compile time. Adding a
-//! new role or op class is a schema-breaking change that needs a
-//! version bump on every peer, so we don't pretend it is data.
+//! The table is hard-coded at compile time — adding a role or op class is
+//! a schema-breaking change needing a version bump on every peer, so it
+//! isn't pretended to be data.
 
 use serde::{Deserialize, Serialize};
 
 /// Roles a member can hold in a channel.
 ///
-/// Roles are ordered logically (Owner most privileged, Denied least)
-/// but `Ord` is **not** derived: ordering by enum discriminant would
-/// be misleading because `Denied` is not "less than Viewer" — it is
-/// an *explicit block* that overrides any inherited grant from the
-/// channel's `default_role`. Callers comparing privilege must do so
-/// against the permission table, not by ordering roles.
+/// Ordered logically (Owner most privileged, Denied least) but `Ord` is
+/// **not** derived: `Denied` is not "less than Viewer", it's an explicit
+/// block overriding any inherited grant from `default_role`. Callers
+/// comparing privilege must go through the permission table, not enum ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Role {
-    /// Channel governance authority. Can issue + revoke
-    /// attestations, transfer ownership, edit channel settings, and
-    /// — by extension — perform every op class on every artifact.
+    /// Channel governance authority: issue/revoke attestations, transfer
+    /// ownership, edit settings, and — by extension — every op class on every artifact.
     Owner,
-    /// Mutate any artifact, but cannot govern. Editors are the
-    /// default role for trust-rich teams.
+    /// Mutate any artifact, but cannot govern. Default role for trust-rich teams.
     Editor,
-    /// Append-only. Can comment + react but never splice, move,
-    /// rename, or delete.
+    /// Append-only: can comment + react but never splice, move, rename, or delete.
     Commenter,
-    /// Read-only. No signed ops accepted from this role. Used for
-    /// auditors, observers, and lurkers.
+    /// Read-only. No signed ops accepted from this role — auditors,
+    /// observers, lurkers.
     Viewer,
-    /// Explicit block. Overrides any inherited grant. Used to
-    /// kick-but-not-delete: the member remains in the channel
-    /// directory (so their historical attribution survives) but
-    /// cannot apply any op of any class.
+    /// Explicit block, overriding any inherited grant. Kick-but-not-delete:
+    /// the member stays in the channel directory (historical attribution
+    /// survives) but can apply no op of any class.
     Denied,
 }
 
-/// The semantic class of a single CRDT op, declared in the op
-/// envelope itself.
+/// The semantic class of a single CRDT op, declared in the op envelope itself.
 ///
-/// The classification is **author-declared**, not validator-derived,
-/// so a malicious client could lie. The validator catches lies by
-/// re-checking the role table; the broker never relies on the
-/// declared class for routing, only for fan-out filtering at coarse
-/// granularity (e.g. only forwarding Comment-class ops to
-/// Commenter-tier members).
+/// **Author-declared**, not validator-derived — a malicious client could
+/// lie. The validator catches lies by re-checking the role table; the
+/// broker never relies on the declared class for routing, only coarse
+/// fan-out filtering (e.g. Comment-class ops only to Commenter-tier members).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum OpClass {
     /// Text edit. Insert/delete bytes into a CRDT text field.
     Splice,
-    /// Reorder operation. Kanban card moves, file reordering,
-    /// strip-swap in the compositor model.
+    /// Reorder operation: kanban card moves, file reordering, strip-swap in
+    /// the compositor model.
     Move,
     /// Metadata mutation. Rename, retag, change description.
     EditMeta,
-    /// Append a comment or reaction. The Commenter role's *only*
-    /// permitted class.
+    /// Append a comment or reaction — the Commenter role's *only* permitted class.
     Comment,
-    /// Soft delete. Marks the artifact as deleted but preserves
-    /// history; the artifact's data and op log remain.
+    /// Soft delete: marks the artifact deleted but preserves history and the op log.
     Tombstone,
-    /// Undo a tombstone. Available to Editor+ on every artifact
-    /// kind.
+    /// Undo a tombstone. Available to Editor+ on every artifact kind.
     Restore,
-    /// Governance op. Issue/revoke attestations, transfer ownership,
-    /// rename channel, update channel settings. Only Owner role
-    /// permits this class.
+    /// Governance op: issue/revoke attestations, transfer ownership, rename
+    /// channel, update settings. Only Owner permits this class.
     Govern,
-    /// Phase 6: host-driven compaction checkpoint. The channel's
-    /// host (initial: the channel owner's primary device) emits one
-    /// of these every N ops or M bytes; recipients use it to evict
-    /// older op-log entries from in-memory storage and snapshot the
-    /// document state to cold history. Only `Owner` role permits this
-    /// class — the eventual quorum-elected backup host is a v2
-    /// follow-up. The payload of a `SignedOp` with this class is a
-    /// [`crate::compaction::CompactionCheckpoint`] encoded with
+    /// Host-driven compaction checkpoint. The channel's host (initially the
+    /// owner's primary device) emits one every N ops or M bytes; recipients
+    /// use it to evict older op-log entries and snapshot state to cold
+    /// history. Only `Owner` permits this class — a quorum-elected backup
+    /// host is a future follow-up. Payload is a
+    /// [`crate::compaction::CompactionCheckpoint`] via
     /// [`crate::canonical::canonical_bytes`].
     Compaction,
-    /// Phase 9 (second half): cooperative cryptographic redaction.
-    /// The channel **owner** (and only the owner — see the role table
-    /// in [`role_permits`]) mints a Redact op to declare "this earlier
-    /// op is now compliance-required to be removed; peers, please
-    /// honour it." The payload is a
-    /// [`crate::redaction::RedactRequest`] encoded with
-    /// [`crate::canonical::canonical_bytes`]. See
-    /// `docs/superpowers/specs/2026-06-30-cryptographic-redaction-design.md`
-    /// for the full threat model + rationale.
+    /// Cooperative cryptographic redaction. Only the channel **owner** (see
+    /// [`role_permits`]) mints a Redact op to declare "this earlier op is now
+    /// compliance-required to be removed; peers, please honour it." Payload
+    /// is a [`crate::redaction::RedactRequest`] via
+    /// [`crate::canonical::canonical_bytes`].
     ///
-    /// Recursive redaction (a `Redact` whose `target_op_id` resolves to
-    /// another `Redact`) is rejected by the validator — see
+    /// Recursive redaction (a `Redact` targeting another `Redact`) is
+    /// rejected by the validator — see
     /// [`crate::validator::ValidationError::RecursiveRedaction`].
     Redact,
 }
 
 /// The categorical kind of an artifact.
 ///
-/// Each kind has its own row in the permission table because
-/// "Comment on a Kanban" means something different from
-/// "Comment on a Note" — the latter is a side-anchor on text, the
-/// former is a card-attached thread. The toolkit handles both
-/// uniformly; the permission rule is the same shape either way.
+/// Each kind has its own permission-table row because "Comment on a
+/// Kanban" differs from "Comment on a Note" (side-anchor on text vs.
+/// card-attached thread), even though the toolkit and the permission
+/// rule handle both the same shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ArtifactKind {
     /// Free-form rich-text document. The qOS Notes app's primitive.
     Note,
-    /// Binary file backed by the P2P FUSE layer. Op classes that
-    /// "mutate" are interpreted as filesystem operations.
+    /// Binary file backed by the P2P FUSE layer. "Mutate" op classes are
+    /// interpreted as filesystem operations.
     File,
-    /// A compositor cluster session — a tiled set of running
-    /// windows that can be saved + reopened collaboratively.
+    /// A compositor cluster session — a tiled set of running windows saved +
+    /// reopened collaboratively.
     Cluster,
-    /// Kanban board. `Move` is a first-class op for card
-    /// transitions; `Splice` lands on card body text.
+    /// Kanban board. `Move` is first-class for card transitions; `Splice`
+    /// lands on card body text.
     Kanban,
     /// Append-only chat log inside a channel.
     ChatLog,
 }
 
-/// The spec's static permission table.
+/// The spec's static permission table: does a member holding `role` may
+/// emit an op of `op` class against an artifact of `kind`?
 ///
-/// Returns `true` iff a member holding `role` is permitted to
-/// emit an op of `op` class against an artifact of `kind`.
-/// Owner permits everything (including Govern). Editor permits
-/// every class except Govern, on every artifact kind. Commenter
-/// permits Comment only. Viewer and Denied permit nothing.
+/// Owner permits everything (including Govern). Editor permits every
+/// class except Govern, on every kind. Commenter permits Comment only.
+/// Viewer and Denied permit nothing. Exhaustive — every (Role,
+/// `ArtifactKind`, `OpClass`) triple has a defined answer, cross-checked by
+/// `tests/role_table.rs`.
 ///
-/// The table is exhaustive — every (Role, ArtifactKind, OpClass)
-/// triple has a defined answer. The tests in `tests/role_table.rs`
-/// cross-check every row.
-///
-/// Stability: this is a wire-protocol decision. Adding a row
-/// (e.g. a new ArtifactKind) is allowed; flipping an existing
-/// row's value is a breaking change because two peers running
-/// different versions would disagree on whether an op is valid.
+/// This is a wire-protocol decision: adding a row is fine, but flipping
+/// an existing row's value is a breaking change — two peers on different
+/// versions would disagree on op validity.
 pub fn role_permits(role: Role, _kind: ArtifactKind, op: OpClass) -> bool {
-    // The implementation could in principle vary per artifact kind
-    // (e.g. "Comment on a File doesn't exist"), but the spec's
-    // table treats every kind uniformly: the role determines the
-    // permitted op classes, the kind doesn't subtract from that.
-    // If a future row needs to be kind-specific, branch here on
-    // `_kind` and document the carve-out in the spec first.
+    // Could in principle vary per artifact kind, but the spec's table
+    // treats every kind uniformly — role determines permitted op
+    // classes, kind doesn't subtract from that. A future kind-specific
+    // carve-out branches here, documented in the spec first.
     match role {
         Role::Owner => true,
         Role::Editor => match op {
@@ -159,12 +131,10 @@ pub fn role_permits(role: Role, _kind: ArtifactKind, op: OpClass) -> bool {
             | OpClass::Comment
             | OpClass::Tombstone
             | OpClass::Restore => true,
-            // Editors mutate artifacts; they don't govern, they
-            // don't issue compaction checkpoints (Phase 6 v1 pins the
-            // host to the channel owner), and they don't redact.
-            // Redaction is a governance act and stays with governance
-            // authority; an editor who wants something removed asks
-            // an owner.
+            // Editors mutate artifacts; they don't govern, don't issue
+            // compaction checkpoints (host is pinned to the channel owner), and
+            // don't redact — redaction is a governance act, and an editor who
+            // wants something removed asks an owner.
             OpClass::Govern | OpClass::Compaction | OpClass::Redact => false,
         },
         Role::Commenter => matches!(op, OpClass::Comment),
@@ -199,9 +169,7 @@ mod tests {
             ] {
                 assert!(
                     role_permits(Role::Owner, kind, op),
-                    "Owner should permit {:?} on {:?}",
-                    op,
-                    kind
+                    "Owner should permit {op:?} on {kind:?}"
                 );
             }
         }
@@ -218,9 +186,9 @@ mod tests {
 
     #[test]
     fn editor_cannot_compact() {
-        // Phase 6 v1: only the channel owner may emit a Compaction
-        // checkpoint. An Editor with full mutate permissions still
-        // does NOT get to evict history for the channel.
+        // Only the channel owner may emit a Compaction checkpoint — an
+        // Editor with full mutate permissions still does NOT get to evict
+        // channel history.
         assert!(!role_permits(
             Role::Editor,
             ArtifactKind::Note,
@@ -230,11 +198,9 @@ mod tests {
 
     #[test]
     fn editor_cannot_redact() {
-        // Phase 9 (second half): redaction is a governance act. An
-        // Editor with full mutate permissions can tombstone — the
-        // soft-delete primitive that says "I changed my mind about
-        // this edit" — but cannot redact: the validator's role table
-        // pins Redact to the channel owner.
+        // Redaction is a governance act: an Editor can tombstone (the
+        // soft-delete "I changed my mind" primitive) but cannot redact — the
+        // role table pins Redact to the channel owner.
         assert!(!role_permits(
             Role::Editor,
             ArtifactKind::Note,

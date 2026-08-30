@@ -144,7 +144,11 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
     } else {
         repo_name.to_string()
     };
-    let mut repo = Resource::new(format!("git_client.repo:{repo_name}"), "git_client.repo", label);
+    let mut repo = Resource::new(
+        format!("git_client.repo:{repo_name}"),
+        "git_client.repo",
+        label,
+    );
 
     // Diff layout — flip to the other layout.
     let next_layout = match s.diff_layout {
@@ -175,7 +179,9 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
                 "Turn on syntax highlighting"
             },
             GIT_CLIENT_ACTION_TYPE,
-            &GitClientAction::SetSyntaxHighlight { on: !s.syntax_highlight },
+            &GitClientAction::SetSyntaxHighlight {
+                on: !s.syntax_highlight,
+            },
         )
         .expect("encode syntax-highlight action"),
     );
@@ -184,9 +190,15 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
     repo = repo.with_action(
         ActionSpec::immediate(
             "show-whitespace",
-            if s.show_whitespace { "Hide whitespace" } else { "Show whitespace" },
+            if s.show_whitespace {
+                "Hide whitespace"
+            } else {
+                "Show whitespace"
+            },
             GIT_CLIENT_ACTION_TYPE,
-            &GitClientAction::SetShowWhitespace { on: !s.show_whitespace },
+            &GitClientAction::SetShowWhitespace {
+                on: !s.show_whitespace,
+            },
         )
         .expect("encode show-whitespace action"),
     );
@@ -195,7 +207,11 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
     repo = repo.with_action(
         ActionSpec::immediate(
             "wrap-lines",
-            if s.wrap_lines { "Stop wrapping long lines" } else { "Wrap long lines" },
+            if s.wrap_lines {
+                "Stop wrapping long lines"
+            } else {
+                "Wrap long lines"
+            },
             GIT_CLIENT_ACTION_TYPE,
             &GitClientAction::SetWrapLines { on: !s.wrap_lines },
         )
@@ -275,7 +291,12 @@ mod tests {
     #[test]
     fn malformed_diff_layout_normalises_instead_of_wedging() {
         let mut doc = seeded();
-        dispatch(&mut doc, &GitClientAction::SetDiffLayout { layout: "nonsense".into() });
+        dispatch(
+            &mut doc,
+            &GitClientAction::SetDiffLayout {
+                layout: "nonsense".into(),
+            },
+        );
         assert_eq!(
             Settings::read_only(&doc).diff_layout,
             DiffLayout::Unified,
@@ -299,7 +320,12 @@ mod tests {
         let ids: Vec<&str> = repo.actions.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["diff-layout", "syntax-highlight", "show-whitespace", "wrap-lines"],
+            vec![
+                "diff-layout",
+                "syntax-highlight",
+                "show-whitespace",
+                "wrap-lines"
+            ],
         );
 
         let mut palette = ui::ActionPalette::new();
@@ -328,13 +354,21 @@ mod tests {
         doc.commit();
 
         let resources = provide_resources("qos", &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "diff-layout").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "diff-layout")
+            .unwrap();
         // Currently side-by-side, so the exported action flips back to unified.
         assert_eq!(
             immediate_encode(spec),
             encode(&set_diff_layout_action(DiffLayout::Unified)),
         );
-        let syn = resources[0].actions.iter().find(|a| a.id == "syntax-highlight").unwrap();
+        let syn = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "syntax-highlight")
+            .unwrap();
         assert_eq!(
             immediate_encode(syn),
             encode(&GitClientAction::SetSyntaxHighlight { on: true }),
@@ -350,34 +384,29 @@ mod tests {
         // Seed defaults as the app's first sync does, then bracket.
         Settings::default().write(&mut state.doc);
         state.doc.commit();
-        assert_eq!(Settings::read_only(&state.doc).diff_layout, DiffLayout::Unified);
+        assert_eq!(
+            Settings::read_only(&state.doc).diff_layout,
+            DiffLayout::Unified
+        );
         let before_heads = state.doc.get_heads();
 
         let encoded = encode(&set_diff_layout_action(DiffLayout::SideBySide));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             Settings::read_only(&state.doc).diff_layout,
             DiffLayout::SideBySide,
             "the action switched the layout"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             Settings::read_only(&state.doc).diff_layout,
             DiffLayout::Unified,
@@ -393,14 +422,22 @@ mod tests {
         let mut a = seeded();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let action = set_diff_layout_action(DiffLayout::SideBySide);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert_eq!(Settings::read_only(&b).diff_layout, DiffLayout::SideBySide);
     }
 
@@ -411,7 +448,11 @@ mod tests {
     fn palette_and_builder_encode_identically() {
         let doc = seeded(); // unified → the exported toggle targets side-by-side
         let resources = provide_resources("qos", &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "diff-layout").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "diff-layout")
+            .unwrap();
 
         let from_spec = immediate_encode(spec);
         let from_builder = encode(&set_diff_layout_action(DiffLayout::SideBySide));

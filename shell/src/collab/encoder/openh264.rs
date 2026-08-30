@@ -16,12 +16,6 @@ use crate::network::encoder::{EncodeError, H264Encoder};
 /// Cisco openh264 software backend — the always-available fallback.
 pub struct OpenH264Backend {
     inner: H264Encoder,
-    /// The first `encode` call includes SPS + PPS metadata NALs. We
-    /// treat frame 0 as a keyframe for the stats field even though
-    /// openh264 doesn't hand us an explicit "this NAL was IDR" flag —
-    /// the receiver's decoder ignores the field, this is purely for the
-    /// keyframe counter in `PeerSurfaceSnapshot`.
-    frames_encoded: u64,
     width: u32,
     height: u32,
 }
@@ -48,15 +42,17 @@ impl OpenH264Backend {
                 reason: "openh264 does not support HDR (10-bit, PQ/HLG)".to_string(),
             });
         }
-        // Bitrate from the caller (kbps) → openh264's bps. Prior wiring
-        // called ::new() and inherited the library's 120 kbps default,
-        // which skip-framed most of the stream on any real workload.
-        let bitrate_bps = (init.bitrate_kbps as u32).saturating_mul(1000).max(500_000);
-        let inner = H264Encoder::new_with_bitrate_bps(
+        // Bitrate from the caller (kbps) → openh264's bps, floored well
+        // above the library's 120 kbps default, which skip-frames most
+        // of the stream on any real workload.
+        let bitrate_bps = init.bitrate_kbps.saturating_mul(1000).max(500_000);
+        let keyframe_interval_frames = init.keyframe_interval_secs.saturating_mul(init.fps.max(1));
+        let inner = H264Encoder::new_with_bitrate_and_keyframe_interval(
             init.width,
             init.height,
             init.fps.max(1),
             bitrate_bps,
+            keyframe_interval_frames,
         )
         .map_err(|e: EncodeError| EncoderError::ConfigFailed {
             kind: EncoderKind::Openh264,
@@ -64,7 +60,6 @@ impl OpenH264Backend {
         })?;
         Ok(Self {
             inner,
-            frames_encoded: 0,
             width: init.width,
             height: init.height,
         })
@@ -111,8 +106,7 @@ impl Encoder for OpenH264Backend {
                 detail: format!("{e:?}"),
             })?;
         let elapsed = start.elapsed();
-        let is_keyframe = self.frames_encoded == 0;
-        self.frames_encoded = self.frames_encoded.saturating_add(1);
+        let is_keyframe = qos_callstream::session::is_h264_keyframe(&bytes);
         let stats = FrameStats {
             encode_wallclock: elapsed,
             keyframe: is_keyframe,

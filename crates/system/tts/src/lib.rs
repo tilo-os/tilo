@@ -1,10 +1,8 @@
 //! # qos-tts — the qOS text-to-speech engine
 //!
-//! A small, dependency-light, **offline** speech engine for the qOS built-in
-//! screen reader. It abstracts
-//! over several speech backends behind one [`Speaker`] trait and adds an
-//! interrupt-aware [`SpeechQueue`] so chatty focus narration coalesces and
-//! preempts sanely.
+//! A small, dependency-light, **offline** speech engine for the qOS built-in screen reader.
+//! It abstracts over several speech backends behind one [`Speaker`] trait and adds an
+//! interrupt-aware [`SpeechQueue`] so chatty focus narration coalesces and preempts sanely.
 //!
 //! ## Backends
 //!
@@ -47,25 +45,21 @@
 //!
 //! ## License posture
 //!
-//! This crate is `MIT OR Apache-2.0` and links **only permissive** code. The
-//! actual speech engines are GPL, but every one of them is reached as a
-//! **separate process across a protocol/process boundary**, which is *not*
-//! linkage and so imposes **no GPL constraint** on this crate or anything that
-//! links it:
+//! This crate is `MIT OR Apache-2.0` and links **only permissive** code. The actual speech
+//! engines are GPL, but each is reached as a **separate process across a protocol/process
+//! boundary**, which is *not* linkage and imposes **no GPL constraint** on this crate or
+//! anything that links it:
 //!
-//! * **speech-dispatcher** (GPL): reached over its **SSIP socket** via the
-//!   pure-Rust [`ssip-client`](https://crates.io/crates/ssip-client) crate
-//!   (MIT OR Apache-2.0). The socket is the boundary.
-//! * **espeak-ng** (GPL-3.0): reached as a **spawned subprocess** (we pipe text
-//!   to the `espeak-ng` binary's stdin). The process boundary is the boundary.
-//!   Also typically reached *through* speech-dispatcher as an output module.
-//! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher
-//!   output module** — another separate process behind the SSIP socket.
+//! * **speech-dispatcher** (GPL): reached over its **SSIP socket** via the pure-Rust
+//!   [`ssip-client`](https://crates.io/crates/ssip-client) crate (MIT OR Apache-2.0).
+//! * **espeak-ng** (GPL-3.0): reached as a **spawned subprocess** (text piped to its stdin);
+//!   also typically reached *through* speech-dispatcher as an output module.
+//! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher output module** —
+//!   another separate process behind the SSIP socket.
 //!
-//! Ship those engines in the OS image and document their licenses; the qOS code
-//! itself stays permissive. (`piper-plus`, MIT, exists as a GPL-free in-process
-//! escape hatch if a daemon-less embedded path is ever needed — out of scope
-//! here.)
+//! Ship those engines in the OS image and document their licenses; the qOS code itself stays
+//! permissive. (`piper-plus`, MIT, exists as a GPL-free in-process escape hatch if a
+//! daemon-less embedded path is ever needed — out of scope here.)
 //!
 //! All backends are offline: no network, no telemetry.
 
@@ -90,14 +84,14 @@ pub use speechd::SpeechDispatcherSpeaker;
 
 #[cfg(test)]
 mod integration_tests {
-    //! Cross-module behaviour: the queue + a recording backend modelling what
-    //! the reader actually does, with no daemon and no audio.
+    //! Cross-module behaviour: the queue + a recording backend modelling what the reader
+    //! actually does, with no daemon and no audio.
     use super::*;
 
     #[test]
     fn focus_storm_coalesces_to_latest() {
-        // Simulate a fast Tab through a toolbar: five focus changes arrive before
-        // anything is spoken. Only the last should survive (interrupt semantics).
+        // Simulate a fast Tab through a toolbar: five focus changes arrive before anything is
+        // spoken. Only the last should survive (interrupt semantics).
         let mut q = SpeechQueue::new();
         for label in ["New", "Open", "Save", "Print", "Close"] {
             q.push(Utterance::new(format!("{label} button")));
@@ -144,8 +138,8 @@ mod integration_tests {
         let mut spk: Box<dyn Speaker> = Box::new(NullSpeaker::new());
         spk.set_rate(1.5);
         spk.set_voice("en-us");
-        // Down-cast not needed; behaviour is observable via the concrete mock in
-        // its own tests. Here we just prove the trait-object path doesn't panic.
+        // Down-cast not needed; behaviour is observable via the concrete mock in its own tests.
+        // Here we just prove the trait-object path doesn't panic.
         spk.speak("hi", true);
         assert!(spk.is_speaking());
     }

@@ -39,7 +39,8 @@ model as the foundation.
 directly (shell global search, containers, sheets); it is simply **out of the app
 Ctrl+K path** — no second registry, one renderer, one flow. `ui::search` is
 untouched (the shell still drives its own compositor-level search through it).
-Proof: `ui/examples/ctrl_k_palette.rs` renders the unified palette (Actions +
+Proof: the `ctrl_k_palette` scenario in `cargo run -p ui --example ui-shots -- --list`
+(`ui/examples/ctrl_k_palette.rs`) renders the unified palette (Actions +
 Contacts groups) offscreen; app-level tests in `ui/src/app.rs` prove both an
 action-dispatch and a content-navigate through the real path; contacts/ebook/tube
 tests exercise the unified `ActionPalette` API.

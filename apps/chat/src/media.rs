@@ -3,11 +3,11 @@
 //! Voice, camera and screen-share frames travel as a MoQ-style publish/subscribe
 //! of timestamped media objects, carried by **iroh QUIC** for direct P2P (a
 //! host relay is selected above the mesh threshold — see [`crate::model::CallSession`]).
-//! Microphone capture/playback and the Opus audio codec go through **GStreamer**
+//! Microphone capture/playback and the Opus audio codec go through **`GStreamer`**
 //! elements ([`crate::audio`]); camera + screen video use the in-tree **openh264**
 //! codec ([`crate::video`]); screen capture is requested from the
-//! **xdg-desktop-portal ScreenCast** API via ashpd. None of ALSA / PulseAudio /
-//! ffmpeg / the `opus` crate are used — only GStreamer, the portal, and openh264,
+//! **xdg-desktop-portal `ScreenCast`** API via ashpd. None of ALSA / `PulseAudio` /
+//! ffmpeg / the `opus` crate are used — only `GStreamer`, the portal, and openh264,
 //! matching the qOS build env.
 //!
 //! ## Real vs. gated
@@ -38,7 +38,7 @@ pub enum TrackKind {
     Audio,
     /// Camera video.
     Video,
-    /// Screen-share video (portal ScreenCast / PipeWire).
+    /// Screen-share video (portal `ScreenCast` / `PipeWire`).
     Screen,
 }
 
@@ -133,7 +133,7 @@ pub struct Subscription {
 
 /// The transport contract the call layer programs against. An implementation
 /// connects peers, publishes the local tracks, and delivers remote objects.
-/// The call UI never names iroh or GStreamer directly — it speaks only this
+/// The call UI never names iroh or `GStreamer` directly — it speaks only this
 /// trait, so the simulated and live backends are interchangeable.
 pub trait MediaTransport {
     /// Whether this transport actually moves bytes over a network/devices
@@ -223,19 +223,25 @@ impl MediaEngine {
     pub fn new() -> Self {
         #[cfg(feature = "live-media")]
         {
-            if live::environment_supports_media() {
-                if let Some(t) = live::IrohTransport::try_new() {
-                    return Self { transport: Box::new(t) };
-                }
+            if live::environment_supports_media()
+                && let Some(t) = live::IrohTransport::try_new()
+            {
+                return Self {
+                    transport: Box::new(t),
+                };
             }
         }
-        Self { transport: Box::new(SimulatedTransport::default()) }
+        Self {
+            transport: Box::new(SimulatedTransport::default()),
+        }
     }
 
     /// Force the simulated transport regardless of build/environment. Used by
     /// `--shots`/tests that want the deterministic local bus.
     pub fn simulated() -> Self {
-        Self { transport: Box::new(SimulatedTransport::default()) }
+        Self {
+            transport: Box::new(SimulatedTransport::default()),
+        }
     }
 
     pub fn is_live(&self) -> bool {
@@ -270,8 +276,8 @@ impl Default for MediaEngine {
     }
 }
 
-/// Request a screen-share source via the xdg-desktop-portal ScreenCast API.
-/// Returns the PipeWire node id to consume, or `None` when the portal is
+/// Request a screen-share source via the xdg-desktop-portal `ScreenCast` API.
+/// Returns the `PipeWire` node id to consume, or `None` when the portal is
 /// unavailable (always, headless). Gated: the real ashpd call only compiles
 /// under `live-media`.
 pub fn request_screencast() -> Option<u32> {
@@ -299,7 +305,7 @@ mod live {
     /// clean break rather than a silent mis-parse.
     const MEDIA_ALPN: &[u8] = b"qos-chat-media/0";
 
-    /// Hard cap on a single wire frame (DoS guard). One audio/video access unit
+    /// Hard cap on a single wire frame (`DoS` guard). One audio/video access unit
     /// is far smaller than this.
     const MAX_FRAME: usize = 8 * 1024 * 1024;
 
@@ -313,7 +319,10 @@ mod live {
             || std::env::var_os("WAYLAND_DISPLAY").is_some()
     }
 
-    async fn write_frame(send: &mut iroh::endpoint::SendStream, data: &[u8]) -> std::io::Result<()> {
+    async fn write_frame(
+        send: &mut iroh::endpoint::SendStream,
+        data: &[u8],
+    ) -> std::io::Result<()> {
         send.write_all(&(data.len() as u32).to_le_bytes())
             .await
             .map_err(std::io::Error::other)?;
@@ -325,7 +334,9 @@ mod live {
 
     async fn read_frame(recv: &mut iroh::endpoint::RecvStream) -> std::io::Result<Vec<u8>> {
         let mut len = [0u8; 4];
-        recv.read_exact(&mut len).await.map_err(std::io::Error::other)?;
+        recv.read_exact(&mut len)
+            .await
+            .map_err(std::io::Error::other)?;
         let n = u32::from_le_bytes(len) as usize;
         if n == 0 {
             return Ok(Vec::new());
@@ -334,7 +345,9 @@ mod live {
             return Err(std::io::Error::other(format!("media frame too large: {n}")));
         }
         let mut buf = vec![0u8; n];
-        recv.read_exact(&mut buf).await.map_err(std::io::Error::other)?;
+        recv.read_exact(&mut buf)
+            .await
+            .map_err(std::io::Error::other)?;
         Ok(buf)
     }
 
@@ -411,9 +424,17 @@ mod live {
             );
             let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
             let (endpoint, router, ticket) = rt.block_on(async move {
-                let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0).bind().await.ok()?;
+                let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                    .bind()
+                    .await
+                    .ok()?;
                 let router = iroh::protocol::Router::builder(endpoint.clone())
-                    .accept(MEDIA_ALPN, MediaProtocol { inbound: inbound_tx })
+                    .accept(
+                        MEDIA_ALPN,
+                        MediaProtocol {
+                            inbound: inbound_tx,
+                        },
+                    )
                     .spawn();
                 // Local (direct) addresses are available right after bind;
                 // relay contact is not required for LAN / loopback peers.
@@ -499,18 +520,18 @@ mod live {
         }
     }
 
-    /// Real ScreenCast request via the xdg-desktop-portal, using ashpd. Opens a
-    /// ScreenCast session, asks the portal to let the user pick a monitor or
+    /// Real `ScreenCast` request via the xdg-desktop-portal, using ashpd. Opens a
+    /// `ScreenCast` session, asks the portal to let the user pick a monitor or
     /// window (embedded cursor), starts the cast and returns the first stream's
-    /// PipeWire node id — which [`crate::video::ScreenCapture`] then consumes
+    /// `PipeWire` node id — which [`crate::video::ScreenCapture`] then consumes
     /// via `pipewiresrc`. Runs on a short-lived current-thread runtime so it can
     /// be called from the synchronous app loop. Returns `None` when there is no
     /// portal (headless), when the user cancels, or on any portal error — never
     /// panics.
     pub fn request_screencast() -> Option<u32> {
-        use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
-        use ashpd::desktop::PersistMode;
         use ashpd::WindowIdentifier;
+        use ashpd::desktop::PersistMode;
+        use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -541,9 +562,12 @@ mod live {
                     .ok()?
                     .response()
                     .ok()?;
-                response.streams().first().map(|s| s.pipe_wire_node_id())
+                response
+                    .streams()
+                    .first()
+                    .map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
             };
-            tokio::time::timeout(std::time::Duration::from_secs(120), flow)
+            tokio::time::timeout(std::time::Duration::from_mins(2), flow)
                 .await
                 .ok()
                 .flatten()
@@ -580,7 +604,10 @@ mod tests {
         };
         let mut wire = obj.to_wire();
         wire.truncate(wire.len() - 1); // lose a payload byte
-        assert!(MediaObject::from_wire(&wire).is_none(), "truncated frame is dropped, not panicked");
+        assert!(
+            MediaObject::from_wire(&wire).is_none(),
+            "truncated frame is dropped, not panicked"
+        );
     }
 
     #[test]
@@ -588,7 +615,10 @@ mod tests {
         let mut t = SimulatedTransport::default();
         assert!(!t.is_live());
         t.publish(TrackKind::Audio);
-        t.subscribe(Subscription { peer: "u_aria".into(), kind: TrackKind::Audio });
+        t.subscribe(Subscription {
+            peer: "u_aria".into(),
+            kind: TrackKind::Audio,
+        });
         t.send(MediaObject {
             sender: "u_me".into(),
             kind: TrackKind::Audio,
@@ -636,7 +666,13 @@ mod tests {
         t.unpublish(TrackKind::Video);
         t.unpublish(TrackKind::Video);
         // No panic, no duplicate state leakage — round-trips cleanly.
-        t.send(MediaObject { sender: "x".into(), kind: TrackKind::Video, seq: 1, pts: Duration::ZERO, payload: vec![] });
+        t.send(MediaObject {
+            sender: "x".into(),
+            kind: TrackKind::Video,
+            seq: 1,
+            pts: Duration::ZERO,
+            payload: vec![],
+        });
         assert_eq!(t.poll().len(), 1);
     }
 
@@ -666,7 +702,7 @@ mod tests {
 
         /// The headline contract: two real iroh endpoints, bound in-process,
         /// exchange genuinely *encoded* audio over QUIC. Peer A synthesises a
-        /// PCM tone, Opus-encodes it through GStreamer, publishes the packets
+        /// PCM tone, Opus-encodes it through `GStreamer`, publishes the packets
         /// over the network transport; peer B receives them off the wire and
         /// Opus-decodes them back to PCM. No mock, no loopback shortcut — the
         /// bytes cross two endpoints and both codecs run.
@@ -696,22 +732,33 @@ mod tests {
             let ticket_b = b.local_ticket().expect("B publishes a real ticket");
             // A real serialized iroh EndpointAddr (id + dialable addresses),
             // never the simulator's placeholder.
-            assert!(ticket_b != "sim://local", "the live engine must not hand out the simulator ticket");
             assert!(
-                ticket_b.starts_with('{') && ticket_b.contains("\"id\"") && ticket_b.contains("\"addrs\""),
+                ticket_b != "sim://local",
+                "the live engine must not hand out the simulator ticket"
+            );
+            assert!(
+                ticket_b.starts_with('{')
+                    && ticket_b.contains("\"id\"")
+                    && ticket_b.contains("\"addrs\""),
                 "ticket is a serialized EndpointAddr, got: {ticket_b}"
             );
 
             // A dials B so A→B media can flow, and publishes its audio track.
             assert!(a.connect(&ticket_b), "A dials B's real ticket");
             a.publish(TrackKind::Audio);
-            b.subscribe(Subscription { peer: "u_a".into(), kind: TrackKind::Audio });
+            b.subscribe(Subscription {
+                peer: "u_a".into(),
+                kind: TrackKind::Audio,
+            });
 
             // Real encode: a 40 ms 48 kHz mono tone → two 20 ms Opus packets.
             let mut enc = OpusEncoder::new().expect("opusenc pipeline builds");
             let pcm = crate::audio::test_tone(48_000, 1, 40);
             let packets = enc.encode(&pcm);
-            assert!(!packets.is_empty(), "GStreamer opusenc produced encoded audio");
+            assert!(
+                !packets.is_empty(),
+                "GStreamer opusenc produced encoded audio"
+            );
             assert!(
                 packets.iter().all(|p| !p.is_empty()),
                 "every Opus packet carries bytes"
@@ -735,10 +782,17 @@ mod tests {
                 packets.len(),
                 "B received every Opus packet A sent over QUIC"
             );
-            assert!(received.iter().all(|o| o.kind == TrackKind::Audio && o.sender == "u_a"));
+            assert!(
+                received
+                    .iter()
+                    .all(|o| o.kind == TrackKind::Audio && o.sender == "u_a")
+            );
             // The bytes that crossed the wire are exactly the encoded packets.
             for (got, sent) in received.iter().zip(packets.iter()) {
-                assert_eq!(&got.payload, sent, "encoded Opus bytes survived the QUIC round-trip");
+                assert_eq!(
+                    &got.payload, sent,
+                    "encoded Opus bytes survived the QUIC round-trip"
+                );
             }
 
             // Real decode on B: the received Opus packets play back as PCM.

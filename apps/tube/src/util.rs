@@ -28,10 +28,19 @@ pub fn initials(name: &str) -> String {
 pub fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811c_9dc5;
     for b in s.bytes() {
-        h ^= b as u32;
+        h ^= u32::from(b);
         h = h.wrapping_mul(0x0100_0193);
     }
     h
+}
+
+/// Round a normalized colour channel (before the `+0.5` add-and-clamp is
+/// even relevant, this is post add) to `u8`. Clamped into `[0, 255]`
+/// immediately above the cast, so truncation is exact and the value is
+/// never negative.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn channel_u8(x: f32) -> u8 {
+    (x * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 /// Convert HSL (h in [0,360), s,l in [0,1]) to an sRGB [`Color`].
@@ -39,7 +48,11 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let hp = (h.rem_euclid(360.0)) / 60.0;
     let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match hp as u32 {
+    // hp = rem_euclid(h, 360) / 60 ∈ [0, 6), so the sector index below is
+    // always in 0..=5 — truncation cannot lose information.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let sector = hp as u32;
+    let (r1, g1, b1) = match sector {
         0 => (c, x, 0.0),
         1 => (x, c, 0.0),
         2 => (0.0, c, x),
@@ -48,11 +61,7 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
         _ => (c, 0.0, x),
     };
     let m = l - c / 2.0;
-    Color::from_rgb8(
-        (((r1 + m) * 255.0).round()).clamp(0.0, 255.0) as u8,
-        (((g1 + m) * 255.0).round()).clamp(0.0, 255.0) as u8,
-        (((b1 + m) * 255.0).round()).clamp(0.0, 255.0) as u8,
-    )
+    Color::from_rgb8(channel_u8(r1 + m), channel_u8(g1 + m), channel_u8(b1 + m))
 }
 
 /// Deterministic two-stop gradient for a thumbnail placeholder, derived
@@ -60,6 +69,8 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
 /// the grid reads as a wall of distinct-but-harmonious tiles.
 pub fn seed_gradient(seed: &str) -> (Color, Color) {
     let h = fnv1a(seed);
+    // `h % 360` is always < 360, exactly representable in f32.
+    #[allow(clippy::cast_precision_loss)]
     let hue = (h % 360) as f32;
     let top = hsl(hue, 0.55, 0.42);
     let bottom = hsl((hue + 36.0) % 360.0, 0.50, 0.28);
@@ -69,14 +80,19 @@ pub fn seed_gradient(seed: &str) -> (Color, Color) {
 /// Format a view/subscriber count the way every video site does:
 /// `1.2M`, `874K`, `12K`, `342`.
 pub fn human_count(n: u64) -> String {
+    // Display-only approximation to one decimal place; a view/subscriber
+    // count will never realistically approach 2^53, where u64->f64 would
+    // start losing precision.
+    #[allow(clippy::cast_precision_loss)]
+    let n_f64 = n as f64;
     if n >= 1_000_000_000 {
-        format!("{:.1}B", n as f64 / 1_000_000_000.0)
+        format!("{:.1}B", n_f64 / 1_000_000_000.0)
     } else if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        format!("{:.1}M", n_f64 / 1_000_000.0)
     } else if n >= 10_000 {
         format!("{}K", n / 1_000)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        format!("{:.1}K", n_f64 / 1_000.0)
     } else {
         n.to_string()
     }
@@ -101,6 +117,9 @@ pub fn duration_hms(secs: u32) -> String {
 
 /// Seconds → `mm:ss` always two-field, used by the scrubber time labels.
 pub fn clock(secs: f64) -> String {
+    // Clamped non-negative immediately above; truncating the fractional
+    // second is intended for a `mm:ss` display label.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let secs = secs.max(0.0) as u32;
     let m = secs / 60;
     let s = secs % 60;

@@ -50,7 +50,13 @@ impl CompileWorker {
                         }
                     }
                     let output = compile_source(&parts, &job.source, job.ppp);
-                    if result_tx.send(CompileResult { seq: job.seq, output }).is_err() {
+                    if result_tx
+                        .send(CompileResult {
+                            seq: job.seq,
+                            output,
+                        })
+                        .is_err()
+                    {
                         return;
                     }
                 }

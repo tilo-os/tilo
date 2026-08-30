@@ -1,42 +1,39 @@
-//! Phase 6 end-to-end: in-memory scrollback + host-driven compaction
-//! flowing through the broker, plus the cooperative scrollback path
-//! that bridges through a `ShellNetwork` mock.
+//! End-to-end: in-memory scrollback + host-driven compaction through the
+//! broker, plus the cooperative scrollback path that bridges through a
+//! `ShellNetwork` mock.
 //!
-//! The three flagship scenarios:
-//!
-//! 1. A peer publishes N ops; a second peer issues
-//!    `FetchScrollback{before_seq=N+1, max=10}` and receives all N
-//!    ops in a single `ScrollbackBatch`.
-//!
-//! 2. The same setup, but the channel owner then publishes a
-//!    `Compaction` checkpoint covering ops 1..=3. Peer B's
-//!    `FetchScrollback{before_seq=4}` now returns an empty batch with
-//!    `exhausted=true` — the evicted range is unreachable via the
-//!    in-memory path.
-//!
-//! 3. Peer A asks for a range its broker doesn't hold via
-//!    `FetchScrollback`. The broker (with peer-sync wired in) emits
-//!    a `NeighbourMsg::ScrollbackRequest`; another broker (mocked via
-//!    `handle_scrollback_response_message`) answers with a
-//!    `ScrollbackResponse`; the requesting broker forwards the answer
-//!    to the local app as a follow-up `ScrollbackBatch`.
+//! Three scenarios: a peer fetches another's ops out of the broker's log;
+//! a `Compaction` checkpoint evicts a prefix so fetching it returns
+//! `exhausted=true`; and a broker that lacks a range emits a
+//! `NeighbourMsg::ScrollbackRequest`, then forwards the answering
+//! broker's response to its local app as a follow-up `ScrollbackBatch`.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
-    encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
-};
 use collab_fixtures::{role_attestation, signed_op};
+use collab_types::{
+    ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, CompactionCheckpoint,
+    Ed25519PublicKey, OpClass, Role, SignedOp, encode_compaction_payload, generate_keypair,
+    hash_op_prefix,
+};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-// ---------- frame helpers ----------
+// frame helpers
+
+/// How long to wait for something the contract says must happen — a
+/// backstop, not a pacing device. Every wait below it resolves in
+/// microseconds on an idle machine, so this costs nothing; it only stops
+/// the harness giving up on a broker that's merely descheduled.
+///
+/// Waits asserting something *does not* happen keep their own short
+/// deadlines — there the wait is the measurement, so lengthening it would
+/// only slow the suite down.
+const REPLY_BACKSTOP: Duration = Duration::from_secs(10);
 
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
     let bytes = serde_json::to_vec(v).expect("serialize");
@@ -55,14 +52,46 @@ fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent>
     serde_json::from_slice(&body).ok()
 }
 
-fn drain_events(stream: &mut UnixStream, timeout: Duration) -> Vec<CollabEvent> {
+/// Read fan-out events until `want` signed increments have arrived, or
+/// `timeout` elapses. Returns everything read.
+///
+/// `drain_events` alone can't answer "has the broker finished recording
+/// the editor's ops": it stops at the first read that times out, which is
+/// the first scheduling gap, not the end of the stream. The two
+/// connections are served by independent reader threads with no ordering
+/// between them, so a `FetchScrollback` sent after a quiet socket can
+/// still be answered from a half-written op log — reading `[3, 4, 5]`
+/// where it wanted `[8, 9, 10]` and blaming paging. Waiting on the count
+/// the scenario actually depends on removes the guess.
+fn drain_until_signed(stream: &mut UnixStream, want: usize, timeout: Duration) -> Vec<CollabEvent> {
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
-    while Instant::now() < deadline {
+    let mut signed = 0usize;
+    // A `None` that came back without spending its budget is a
+    // closed/desynchronised stream, not a slow broker — a timeout by
+    // definition consumes the whole `remain`. Retry a few times, not in a
+    // tight loop, then let the caller's assertion report what it saw.
+    let mut fruitless = 0usize;
+    while signed < want {
         let remain = deadline.saturating_duration_since(Instant::now());
-        match read_event(stream, remain) {
-            Some(ev) => out.push(ev),
-            None => break,
+        if remain.is_zero() {
+            break;
+        }
+        let before = Instant::now();
+        if let Some(ev) = read_event(stream, remain) {
+            fruitless = 0;
+            if matches!(ev, CollabEvent::SignedCRDTIncremental { .. }) {
+                signed += 1;
+            }
+            out.push(ev);
+        } else {
+            if before.elapsed() >= remain {
+                break;
+            }
+            fruitless += 1;
+            if fruitless >= 8 {
+                break;
+            }
         }
     }
     out
@@ -72,31 +101,26 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-broker-sb-{label}-{pid}-{nanos}.sock"))
 }
 
 /// The collaboration cluster every client in these scenarios joins.
 ///
 /// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
-/// client announces on its `Hello`, so peers that are meant to observe
-/// each other's edits must announce the same pair — these scenarios
-/// pair this cluster with a single app id per file. A per-client
-/// random uuid would put every client in a cluster of its own, which
-/// is how a real deployment keeps unrelated documents apart.
+/// client announces on `Hello`, so peers meant to observe each other must
+/// announce the same pair — a per-client random uuid would put every
+/// client in a cluster of its own.
 fn test_cluster() -> uuid::Uuid {
     uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
 }
 
-/// Block until `n` clients have announced their route.
-///
-/// Connecting and saying `Hello` are separate steps, and only the
-/// second makes a client addressable — the broker routes CRDT traffic
-/// by the announced `(app_id, cluster_id)` pair. A send that races
-/// another client's `Hello` would reach nobody.
+/// Block until `n` clients have announced their route. Connecting and
+/// saying `Hello` are separate steps; only the second makes a client
+/// addressable (the broker routes by the announced pair), so a send that
+/// races another client's `Hello` would reach nobody.
 fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     while Instant::now() < deadline {
         if handle.announced_peer_count() >= n {
             return;
@@ -104,13 +128,13 @@ fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!(
-        "only {} of {n} clients announced a route within 2s",
+        "only {} of {n} clients announced a route within {REPLY_BACKSTOP:?}",
         handle.announced_peer_count()
     );
 }
 
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     loop {
         match UnixStream::connect(socket) {
             Ok(s) => return s,
@@ -122,11 +146,11 @@ fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     }
 }
 
-// ---------- attestation / op factories ----------
+// attestation / op factories
 
-/// Build a channel state populated with `signers` as the
-/// authorised-signers list, one Editor attestation for `editor_pk`
-/// signed by the first owner in `signers`, and one Note artifact.
+/// Channel state with `signers` as the authorised-signers list, one
+/// Editor attestation for `editor_pk` signed by the first owner, and one
+/// Note artifact.
 fn channel_state_with(
     owner_sk: &SigningKey,
     owner_pk: Ed25519PublicKey,
@@ -148,7 +172,7 @@ fn channel_state_with(
     (state, owner_att_id, editor_att_id)
 }
 
-// ---------- scenario 1: in-memory scrollback ----------
+// scenario 1: in-memory scrollback
 
 #[test]
 fn peer_can_fetch_recent_scrollback() {
@@ -179,7 +203,6 @@ fn peer_can_fetch_recent_scrollback() {
     }
     wait_for_announced(&handle, 2);
 
-    // Editor publishes 5 valid signed ops; each fans out to the observer.
     for seq in 1..=5_u64 {
         let op = signed_op(
             &editor_sk,
@@ -197,17 +220,16 @@ fn peer_can_fetch_recent_scrollback() {
             },
         );
     }
-    // Drain the observer's fan-out so the subsequent batch read is
-    // unambiguous.
-    let fanned = drain_events(&mut observer, Duration::from_millis(500));
+    // Drain the fan-out so the batch read below is unambiguous.
+    let fanned = drain_until_signed(&mut observer, 5, REPLY_BACKSTOP);
     let signed_count = fanned
         .iter()
         .filter(|e| matches!(e, CollabEvent::SignedCRDTIncremental { .. }))
         .count();
     assert_eq!(signed_count, 5, "observer should have seen all 5 ops");
 
-    // Now the observer asks for scrollback. Even though they already
-    // saw the live events, the broker holds the log and must reply.
+    // Even though the observer already saw the live events, the broker holds
+    // the log and must reply.
     write_frame(
         &mut observer,
         &CollabRequest::FetchScrollback {
@@ -216,8 +238,8 @@ fn peer_can_fetch_recent_scrollback() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
-        .expect("observer must receive ScrollbackBatch");
+    let event =
+        read_event(&mut observer, REPLY_BACKSTOP).expect("observer must receive ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch {
             artifact: art,
@@ -245,9 +267,7 @@ fn peer_can_fetch_recent_scrollback() {
 
 #[test]
 fn empty_scrollback_returns_exhausted_true() {
-    // Asking for scrollback before any ops have flowed must return
-    // (empty, exhausted=true). Documents the v1 contract on the
-    // "nothing to show" edge.
+    // The v1 contract on the "nothing to show" edge: (empty, exhausted=true).
     let socket = unique_socket("empty-sb");
     let handle = collab_broker::spawn(socket.clone()).expect("broker bind");
 
@@ -277,8 +297,8 @@ fn empty_scrollback_returns_exhausted_true() {
             max: 10,
         },
     );
-    let event = read_event(&mut peer, Duration::from_millis(500))
-        .expect("must receive an empty ScrollbackBatch");
+    let event =
+        read_event(&mut peer, REPLY_BACKSTOP).expect("must receive an empty ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(ops.is_empty());
@@ -293,8 +313,8 @@ fn empty_scrollback_returns_exhausted_true() {
 
 #[test]
 fn scrollback_paging_respects_max() {
-    // With max < total, the broker returns the most recent `max`
-    // ops with exhausted=false; the requester is expected to page.
+    // With max < total the broker returns the most recent `max` ops with
+    // exhausted=false; the requester is expected to page.
     let socket = unique_socket("paging");
     let handle = collab_broker::spawn(socket.clone()).expect("broker bind");
 
@@ -337,7 +357,7 @@ fn scrollback_paging_respects_max() {
             },
         );
     }
-    let _drained = drain_events(&mut observer, Duration::from_millis(500));
+    let _drained = drain_until_signed(&mut observer, 10, REPLY_BACKSTOP);
 
     write_frame(
         &mut observer,
@@ -347,7 +367,7 @@ fn scrollback_paging_respects_max() {
             max: 3,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
+    let event = read_event(&mut observer, REPLY_BACKSTOP).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
@@ -362,7 +382,7 @@ fn scrollback_paging_respects_max() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// ---------- scenario 2: compaction evicts ----------
+// scenario 2: compaction evicts
 
 #[test]
 fn compaction_evicts_log_then_scrollback_returns_exhausted() {
@@ -393,7 +413,6 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
     }
     wait_for_announced(&handle, 3);
 
-    // Editor publishes 5 ops.
     let mut ops: Vec<SignedOp> = Vec::new();
     for seq in 1..=5_u64 {
         let op = signed_op(
@@ -413,11 +432,13 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             },
         );
     }
-    let _drained = drain_events(&mut observer, Duration::from_millis(500));
-    let _drained = drain_events(&mut owner, Duration::from_millis(150));
+    // The checkpoint hashes prefix ops 1..=3, validated against the broker's
+    // own log — if the log is still half-written the checkpoint is rejected
+    // for a reason unrelated to compaction, so wait for the ops rather than
+    // the socket going quiet.
+    let _drained = drain_until_signed(&mut observer, 5, REPLY_BACKSTOP);
+    let _drained = drain_until_signed(&mut owner, 5, REPLY_BACKSTOP);
 
-    // Owner publishes a Compaction checkpoint covering ops 1..=3.
-    // The prefix hash must match what the broker's local log holds.
     let prefix: Vec<SignedOp> = ops.iter().filter(|o| o.seq <= 3).cloned().collect();
     let cp = CompactionCheckpoint {
         artifact,
@@ -440,12 +461,11 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             envelope: Box::new(comp_op),
         },
     );
-    // Drain the fan-out of the compaction op itself so the next read
-    // sees only the scrollback reply.
-    let _ = drain_events(&mut observer, Duration::from_millis(400));
-    let _ = drain_events(&mut editor, Duration::from_millis(150));
+    // Drain the compaction op's own fan-out so the next read sees only the
+    // scrollback reply.
+    let _ = drain_until_signed(&mut observer, 1, REPLY_BACKSTOP);
+    let _ = drain_until_signed(&mut editor, 1, REPLY_BACKSTOP);
 
-    // The observer asks for scrollback covering the evicted range.
     write_frame(
         &mut observer,
         &CollabRequest::FetchScrollback {
@@ -454,7 +474,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
+    let event = read_event(&mut observer, REPLY_BACKSTOP).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(
@@ -476,12 +496,11 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
+    let event = read_event(&mut observer, REPLY_BACKSTOP).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
-            // The compaction op itself (seq 100) is NOT in [1, 5];
-            // we asked for before_seq=6 → seqs strictly less than 6.
+            // The compaction op (seq 100) falls outside before_seq=6.
             assert_eq!(seqs, vec![4, 5]);
         }
         other => panic!("expected ScrollbackBatch, got {other:?}"),
@@ -496,9 +515,8 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
 
 #[test]
 fn compaction_op_class_rejected_for_editor() {
-    // Defence-in-depth: an Editor attestation must NOT carry a
-    // Compaction op past the validator. Phase 6 pins compaction to
-    // the channel owner; the role table enforces it.
+    // Defence-in-depth: an Editor attestation must not carry a Compaction op
+    // past the validator — the role table pins compaction to the owner.
     let socket = unique_socket("editor-cant-compact");
     let handle = collab_broker::spawn(socket.clone()).expect("broker bind");
 
@@ -546,7 +564,6 @@ fn compaction_op_class_rejected_for_editor() {
             envelope: Box::new(bad_op),
         },
     );
-    // Observer should NOT see it.
     let stray = read_event(&mut observer, Duration::from_millis(250));
     assert!(stray.is_none(), "Editor-issued Compaction must be dropped");
     // Audit log records the rejection.
@@ -566,26 +583,16 @@ fn compaction_op_class_rejected_for_editor() {
     let _ = std::fs::remove_file(&socket);
 }
 
-// ---------- scenario 3: cooperative round-trip ----------
+// scenario 3: cooperative round-trip
 
 #[test]
 fn cooperative_scrollback_round_trip() {
-    // Two brokers in process:
-    //
-    //   - Broker A (the "requesting" host) has an EMPTY op log for
-    //     an artifact. A local app issues FetchScrollback → the
-    //     broker replies (empty + exhausted) AND publishes a
-    //     gossipsub ScrollbackRequest.
-    //   - Broker B (the "responding" host) holds ops for the same
-    //     artifact. We simulate B by calling
-    //     `handle_scrollback_response_message` on A's ShellNetwork
-    //     directly — that injects the network-side response without
-    //     standing up a real libp2p mesh (the actor-level wire is
-    //     covered by the round_trips test in `protocol.rs`).
-    //
-    // The contract we assert: after a synthetic response arrives,
-    // broker A's local app receives a follow-up ScrollbackBatch
-    // with the responder's ops.
+    // Two brokers in process. A ("requesting") has an EMPTY op log, so a
+    // local FetchScrollback gets empty+exhausted AND publishes a gossip
+    // ScrollbackRequest; B ("responding") holds the ops, simulated by calling
+    // `handle_scrollback_response_message` on A's ShellNetwork directly (the
+    // wire-level round trip is covered by `protocol.rs::round_trips`).
+    // Contract: A's local app then receives a follow-up ScrollbackBatch.
     use shell::shell::network::ShellNetwork;
     use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
@@ -598,8 +605,7 @@ fn cooperative_scrollback_round_trip() {
     let handle = collab_broker::spawn_with_peer_sync(socket.clone(), Some(Arc::clone(&net)))
         .expect("broker bind");
 
-    // No channel state -> the first FetchScrollback will find nothing
-    // in the local log (and an unknown artifact returns empty too).
+    // No channel state, so the first FetchScrollback finds nothing.
     let (owner_sk, owner_pk) = generate_keypair();
     let (_editor_sk, editor_pk) = generate_keypair();
     let channel = ChannelId::new();
@@ -618,7 +624,6 @@ fn cooperative_scrollback_round_trip() {
         },
     );
 
-    // Local FetchScrollback — broker has nothing.
     write_frame(
         &mut app,
         &CollabRequest::FetchScrollback {
@@ -627,8 +632,7 @@ fn cooperative_scrollback_round_trip() {
             max: 10,
         },
     );
-    let first = read_event(&mut app, Duration::from_millis(500))
-        .expect("first ScrollbackBatch (local empty)");
+    let first = read_event(&mut app, REPLY_BACKSTOP).expect("first ScrollbackBatch (local empty)");
     match first {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(ops.is_empty(), "local log holds nothing");
@@ -637,12 +641,9 @@ fn cooperative_scrollback_round_trip() {
         other => panic!("expected ScrollbackBatch, got {other:?}"),
     }
 
-    // Simulate the response that would come over gossipsub. Build
-    // two valid signed ops against the same channel state so the
-    // app can verify the round-trip ergonomics (the broker doesn't
-    // validate cooperative responses against the signature pipeline
-    // in v1; the signature lives on the SignedOp and the receiving
-    // app validates on render — out of scope here).
+    // The response as gossip would deliver it. v1 doesn't validate
+    // cooperative responses against the signature pipeline here — that
+    // happens when the receiving app renders them.
     let synthetic_ops = vec![
         Box::new(signed_op(
             &owner_sk,
@@ -663,18 +664,18 @@ fn cooperative_scrollback_round_trip() {
             2,
         )),
     ];
-    net.handle_scrollback_response_message(99u64, artifact, synthetic_ops.clone());
+    net.handle_scrollback_response_message(99u64, artifact, synthetic_ops);
 
-    // The drain thread is on a 100 ms cadence. Poll the app socket
-    // with generous timeout for the follow-up ScrollbackBatch.
+    // The drain thread is on a 100 ms cadence, so poll with a generous
+    // timeout for the follow-up ScrollbackBatch.
     let mut got: Option<CollabEvent> = None;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     while Instant::now() < deadline {
-        if let Some(ev) = read_event(&mut app, Duration::from_millis(200)) {
-            if matches!(ev, CollabEvent::ScrollbackBatch { .. }) {
-                got = Some(ev);
-                break;
-            }
+        if let Some(ev) = read_event(&mut app, Duration::from_millis(200))
+            && matches!(ev, CollabEvent::ScrollbackBatch { .. })
+        {
+            got = Some(ev);
+            break;
         }
     }
     let event = got.expect("follow-up ScrollbackBatch from cooperative path");
@@ -701,20 +702,11 @@ fn cooperative_scrollback_round_trip() {
 
 #[test]
 fn cooperative_request_published_when_local_empty() {
-    // Variant of the round-trip test that asserts the *outbound*
-    // half: when a local FetchScrollback finds nothing, the broker
-    // publishes a NeighbourMsg::ScrollbackRequest. We assert this by
-    // letting the broker's `publish_scrollback_request` go through
-    // the actor's command channel — the request never reaches a real
-    // peer (no libp2p mesh), but the actor's send loop logs the
-    // attempt and ShellNetwork::tick is a no-op.
-    //
-    // The simplest assertion shape: spawn the broker WITH peer-sync
-    // wired (so the outbound path is enabled), issue a FetchScrollback
-    // for an unknown artifact, and observe the local reply is
-    // (empty, exhausted=true). The fact that the broker compiled +
-    // ran the publish call without crashing is the contract; the
-    // protocol's wire-level round-trip is independently tested in
+    // The *outbound* half: a local FetchScrollback that finds nothing must
+    // publish a NeighbourMsg::ScrollbackRequest through the actor's command
+    // channel. With no Iroh mesh the request reaches no peer, so this
+    // asserts only that the publish runs and the local reply is (empty,
+    // exhausted=true); the wire round trip is covered by
     // `network/protocol.rs::scrollback_request_round_trips_*`.
     use shell::shell::network::ShellNetwork;
     use shell::shell::state::WorkspaceTree;
@@ -748,7 +740,7 @@ fn cooperative_request_published_when_local_empty() {
             max: 10,
         },
     );
-    let reply = read_event(&mut app, Duration::from_millis(500))
+    let reply = read_event(&mut app, REPLY_BACKSTOP)
         .expect("local broker still replies even when forwarding to network");
     match reply {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
@@ -766,20 +758,11 @@ fn cooperative_request_published_when_local_empty() {
 
 #[test]
 fn cooperative_responder_answers_when_log_has_match() {
-    // Inverse of the requester-side path: when an inbound network
-    // ScrollbackRequest arrives at a broker whose local op log DOES
-    // hold the range, the drain thread publishes a ScrollbackResponse.
-    //
-    // We simulate the inbound request by injecting it into
-    // ShellNetwork's request buffer (the same hook the actor's
-    // receive path uses) and then check the actor's command channel
-    // for a corresponding Publish.
-    //
-    // Note: with a real spawned ShellNetwork the cmd_rx is owned by
-    // the runtime; we use the test-only constructor in network.rs to
-    // observe the publish directly. The drain thread lives inside
-    // the broker, so we drop in the broker-internal queues by reaching
-    // through the ShellNetwork's accessors.
+    // The inverse: an inbound ScrollbackRequest at a broker that DOES hold
+    // the range makes the drain thread publish a ScrollbackResponse. The
+    // request goes into ShellNetwork's request buffer (the hook the actor's
+    // receive path uses) via a test-only constructor, since a spawned
+    // ShellNetwork owns cmd_rx in the runtime.
     use shell::shell::network::ShellNetwork;
     use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
@@ -800,7 +783,6 @@ fn cooperative_responder_answers_when_log_has_match() {
         channel_state_with(&owner_sk, owner_pk, editor_pk, channel, artifact);
     handle.register_channel_state(artifact, state);
 
-    // Send 3 ops to populate the local op log.
     let mut editor = wait_for_broker(&socket);
     write_frame(
         &mut editor,
@@ -831,23 +813,14 @@ fn cooperative_responder_answers_when_log_has_match() {
     // Give the broker a moment to record into the log.
     std::thread::sleep(Duration::from_millis(150));
 
-    // Inject an inbound ScrollbackRequest (as if from gossipsub).
-    // The drain thread reads it, consults the local op log, and
-    // (because we have matching ops) calls
-    // `publish_scrollback_response` — which dispatches to the actor.
-    // We can't observe the actor's outbound command channel directly
-    // from a spawned ShellNetwork; instead we check the responder
-    // side delivers a follow-up via the existing buffer.
-    //
-    // The simplest end-to-end shape: connect a second local app,
-    // inject the request, then on a separate fake "remote" path —
-    // the response — re-inject the response into the same broker.
-    // Skip that and just assert the request is consumed (no panic +
-    // request buffer drains).
+    // The drain thread reads the injected request, consults the local op log
+    // and calls `publish_scrollback_response`. The actor's outbound channel
+    // isn't observable here, so this asserts only that the request is
+    // consumed (no panic, buffer drains).
     let handle_req = net.inbound_scrollback_request_handle();
     net.handle_scrollback_request_message(123u64, artifact, 10, 50);
     // Drain wakes every 100 ms.
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     let mut drained = false;
     while Instant::now() < deadline {
         if handle_req.lock().unwrap().is_empty() {

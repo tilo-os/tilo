@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 
-use notes::markdown::{parse, serialize, BlockSpec};
 use notes::WELCOME_BODY;
+use notes::markdown::{BlockSpec, parse, serialize};
 
 #[test]
 fn welcome_body_round_trips_byte_stable() {
@@ -38,12 +38,18 @@ fn welcome_body_contains_every_block_kind() {
         };
         seen.insert(tag);
     }
-    for kind in ["paragraph", "heading", "bullet", "numbered", "checklist", "code", "divider"] {
+    for kind in [
+        "paragraph",
+        "heading",
+        "bullet",
+        "numbered",
+        "checklist",
+        "code",
+        "divider",
+    ] {
         assert!(
             seen.contains(kind),
-            "welcome page seed must include a {} block (got kinds: {:?})",
-            kind,
-            seen,
+            "welcome page seed must include a {kind} block (got kinds: {seen:?})",
         );
     }
 }

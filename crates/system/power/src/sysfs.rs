@@ -10,9 +10,9 @@
 //! The kernel's power-supply class is a stable ABI (`Documentation/ABI/
 //! testing/sysfs-class-power`), present on every laptop, and readable by
 //! anyone — so this works before logind is up, inside the initrd, and in
-//! a container without a bus, all cases where UPower answers nothing.
+//! a container without a bus, all cases where `UPower` answers nothing.
 //!
-//! Multiple batteries are aggregated the way UPower does it: by energy,
+//! Multiple batteries are aggregated the way `UPower` does it: by energy,
 //! so a machine with a 60 Wh and a 20 Wh pack reports one honest
 //! percentage rather than the mean of two unrelated ones.
 
@@ -28,7 +28,7 @@ const POWER_SUPPLY: &str = "/sys/class/power_supply";
 /// Read the machine's composite battery from sysfs.
 ///
 /// Returns [`BatterySnapshot::absent`] on a machine with no battery — a
-/// desktop, a VM — which is the same thing UPower reports and is what
+/// desktop, a VM — which is the same thing `UPower` reports and is what
 /// the indicator renders as "no battery" rather than as "empty".
 pub fn battery_snapshot() -> BatterySnapshot {
     snapshot_in(Path::new(POWER_SUPPLY))
@@ -91,7 +91,7 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
         // for minutes before it says "100" looks like a stuck charge.
         (((now_total as f64 / full_total as f64) * 100.0).round() as u64).min(100) as u8
     } else if !percent_fallback.is_empty() {
-        (percent_fallback.iter().map(|p| *p as u32).sum::<u32>()
+        (percent_fallback.iter().map(|p| u32::from(*p)).sum::<u32>()
             / percent_fallback.len() as u32) as u8
     } else {
         return BatterySnapshot::absent();
@@ -160,10 +160,10 @@ fn read_state(dir: &Path) -> BatteryState {
 /// signal the indicator and the low-battery latch both care about; that
 /// is why charging outranks discharging rather than the majority winning.
 fn composite_state(states: &[BatteryState]) -> BatteryState {
-    if states.iter().any(|s| *s == BatteryState::Charging) {
+    if states.contains(&BatteryState::Charging) {
         return BatteryState::Charging;
     }
-    if states.iter().any(|s| *s == BatteryState::Discharging) {
+    if states.contains(&BatteryState::Discharging) {
         return BatteryState::Discharging;
     }
     if states.iter().all(|s| *s == BatteryState::Full) {

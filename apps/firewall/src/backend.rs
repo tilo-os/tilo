@@ -15,9 +15,7 @@
 
 use std::process::Command;
 
-use crate::model::{
-    Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind,
-};
+use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind};
 
 /// How the backend will treat apply requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +38,15 @@ impl Backend {
     pub fn detect() -> Self {
         let has_cmd = which_firewall_cmd();
         let armed = std::env::var("QOS_FIREWALL_APPLY").as_deref() == Ok("1");
-        let mode = if has_cmd && armed { Mode::Live } else { Mode::DryRun };
-        Self { mode, last_plan: Vec::new() }
+        let mode = if has_cmd && armed {
+            Mode::Live
+        } else {
+            Mode::DryRun
+        };
+        Self {
+            mode,
+            last_plan: Vec::new(),
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -70,7 +75,9 @@ impl Backend {
         }
         for line in &plan {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            let Some((bin, args)) = parts.split_first() else { continue };
+            let Some((bin, args)) = parts.split_first() else {
+                continue;
+            };
             let status = Command::new(bin)
                 .args(args)
                 .status()
@@ -85,7 +92,9 @@ impl Backend {
 
 /// Whether `firewall-cmd` is resolvable on `$PATH`.
 fn which_firewall_cmd() -> bool {
-    let Ok(path) = std::env::var("PATH") else { return false };
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
     std::env::split_paths(&path).any(|p| p.join("firewall-cmd").is_file())
 }
 
@@ -124,12 +133,14 @@ pub fn import() -> Option<FirewallConfig> {
 
     let default_name = query(&["--get-default-zone"]).ok()?;
     let default_zone = ZoneKind::from_name(&default_name).unwrap_or(ZoneKind::Public);
-    let panic_mode = query(&["--query-panic"]).map(|s| s == "yes").unwrap_or(false);
+    let panic_mode = query(&["--query-panic"]).is_ok_and(|s| s == "yes");
 
     let zone_names = query(&["--get-zones"]).unwrap_or_default();
     let mut zones = Vec::new();
     for name in zone_names.split_whitespace() {
-        let Some(kind) = ZoneKind::from_name(name) else { continue };
+        let Some(kind) = ZoneKind::from_name(name) else {
+            continue;
+        };
         if let Ok(text) = query(&["--zone", name, "--list-all"]) {
             zones.push(parse_list_all(kind, &text));
         }
@@ -162,17 +173,17 @@ pub fn parse_list_all(kind: ZoneKind, text: &str) -> Zone {
                 in_rich = false;
             }
         }
-        let Some((key, value)) = trimmed.split_once(':') else { continue };
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
         let key = key.trim();
         let value = value.trim();
         match key {
             "target" => zone.target = parse_target(value),
             "interfaces" => {
-                zone.interfaces = value.split_whitespace().map(str::to_string).collect()
+                zone.interfaces = value.split_whitespace().map(str::to_string).collect();
             }
-            "services" => {
-                zone.services = value.split_whitespace().map(str::to_string).collect()
-            }
+            "services" => zone.services = value.split_whitespace().map(str::to_string).collect(),
             "ports" => {
                 for spec in value.split_whitespace() {
                     if let Some(m) = parse_port_spec(spec) {
@@ -205,7 +216,10 @@ fn parse_port_spec(spec: &str) -> Option<Matcher> {
         "udp" => Proto::Udp,
         _ => Proto::Tcp,
     };
-    Some(Matcher::Port { port: port.to_string(), proto })
+    Some(Matcher::Port {
+        port: port.to_string(),
+        proto,
+    })
 }
 
 /// Parse a single firewalld rich-rule line into a [`Rule`]. Understands the
@@ -227,14 +241,13 @@ pub fn parse_rich_rule(line: &str) -> Option<Rule> {
     let source = quoted_after(line, "source address=").unwrap_or_default();
     let matcher = if let Some(svc) = quoted_after(line, "service name=") {
         Matcher::Service(svc)
-    } else if let Some(port) = quoted_after(line, "port port=") {
+    } else {
+        let port = quoted_after(line, "port port=")?;
         let proto = match quoted_after(line, "protocol=").as_deref() {
             Some("udp") => Proto::Udp,
             _ => Proto::Tcp,
         };
         Matcher::Port { port, proto }
-    } else {
-        return None;
     };
     Some(Rule::new(matcher, action, source))
 }
@@ -278,7 +291,9 @@ fn plan_zone(z: &Zone, out: &mut Vec<String>) {
         ));
     }
     if z.masquerade {
-        out.push(format!("firewall-cmd --permanent --zone={zone} --add-masquerade"));
+        out.push(format!(
+            "firewall-cmd --permanent --zone={zone} --add-masquerade"
+        ));
     }
     for svc in &z.services {
         out.push(format!(
@@ -298,13 +313,14 @@ fn plan_zone(z: &Zone, out: &mut Vec<String>) {
 fn rich_rule(zone: &str, matcher: Matcher, action: Action, source: &str) -> String {
     let has_source = !source.trim().is_empty();
     // Simple fast-path: allow a port from anywhere → plain --add-port.
-    if action == Action::Allow && !has_source {
-        if let Matcher::Port { port, proto } = &matcher {
-            return format!(
-                "firewall-cmd --permanent --zone={zone} --add-port={port}/{}",
-                proto.label()
-            );
-        }
+    if action == Action::Allow
+        && !has_source
+        && let Matcher::Port { port, proto } = &matcher
+    {
+        return format!(
+            "firewall-cmd --permanent --zone={zone} --add-port={port}/{}",
+            proto.label()
+        );
     }
 
     let mut rule = String::from("rule family=\"ipv4\"");
@@ -313,9 +329,10 @@ fn rich_rule(zone: &str, matcher: Matcher, action: Action, source: &str) -> Stri
     }
     match &matcher {
         Matcher::Service(s) => rule.push_str(&format!(" service name=\"{s}\"")),
-        Matcher::Port { port, proto } => {
-            rule.push_str(&format!(" port port=\"{port}\" protocol=\"{}\"", proto.label()))
-        }
+        Matcher::Port { port, proto } => rule.push_str(&format!(
+            " port port=\"{port}\" protocol=\"{}\"",
+            proto.label()
+        )),
     }
     let verb = match action {
         Action::Allow => "accept",
@@ -334,7 +351,10 @@ mod tests {
     fn plan_sets_default_zone_and_reloads() {
         let cfg = crate::sample::sample_config();
         let plan = plan_commands(&cfg);
-        assert_eq!(plan.first().unwrap(), "firewall-cmd --set-default-zone=public");
+        assert_eq!(
+            plan.first().unwrap(),
+            "firewall-cmd --set-default-zone=public"
+        );
         assert_eq!(plan.last().unwrap(), "firewall-cmd --reload");
     }
 
@@ -342,7 +362,10 @@ mod tests {
     fn allow_port_anywhere_uses_add_port_fastpath() {
         let s = rich_rule(
             "public",
-            Matcher::Port { port: "51820".into(), proto: Proto::Udp },
+            Matcher::Port {
+                port: "51820".into(),
+                proto: Proto::Udp,
+            },
             Action::Allow,
             "",
         );
@@ -356,7 +379,10 @@ mod tests {
     fn deny_with_source_uses_rich_rule() {
         let s = rich_rule(
             "public",
-            Matcher::Port { port: "3389".into(), proto: Proto::Tcp },
+            Matcher::Port {
+                port: "3389".into(),
+                proto: Proto::Tcp,
+            },
             Action::Deny,
             "0.0.0.0/0",
         );
@@ -368,7 +394,12 @@ mod tests {
 
     #[test]
     fn service_allow_with_source_is_rich_rule() {
-        let s = rich_rule("work", Matcher::Service("ipp".into()), Action::Allow, "192.168.0.0/16");
+        let s = rich_rule(
+            "work",
+            Matcher::Service("ipp".into()),
+            Action::Allow,
+            "192.168.0.0/16",
+        );
         assert!(s.contains("service name=\"ipp\""));
         assert!(s.contains("accept"));
         assert!(s.contains("192.168.0.0/16"));
@@ -410,17 +441,30 @@ public (active)
         assert!(!z.masquerade);
         // Two simple ports become allow-from-anywhere rules...
         assert!(z.rules.iter().any(|r| r.matcher
-            == Matcher::Port { port: "8080".into(), proto: Proto::Tcp }
+            == Matcher::Port {
+                port: "8080".into(),
+                proto: Proto::Tcp
+            }
             && r.action == Action::Allow
             && r.source.is_empty()));
         assert!(z.rules.iter().any(|r| r.matcher
-            == Matcher::Port { port: "51820".into(), proto: Proto::Udp }));
+            == Matcher::Port {
+                port: "51820".into(),
+                proto: Proto::Udp
+            }));
         // ...plus the two rich rules.
-        assert!(z.rules.iter().any(|r| r.matcher == Matcher::Service("https".into())
-            && r.action == Action::Allow
-            && r.source == "192.168.1.0/24"));
+        assert!(
+            z.rules
+                .iter()
+                .any(|r| r.matcher == Matcher::Service("https".into())
+                    && r.action == Action::Allow
+                    && r.source == "192.168.1.0/24")
+        );
         assert!(z.rules.iter().any(|r| r.matcher
-            == Matcher::Port { port: "23".into(), proto: Proto::Tcp }
+            == Matcher::Port {
+                port: "23".into(),
+                proto: Proto::Tcp
+            }
             && r.action == Action::Deny));
     }
 

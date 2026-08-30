@@ -1,34 +1,17 @@
-//! Content-addressed blob store with **range reads** as the
-//! primitive.
+//! Content-addressed blob store with **range reads** as the primitive.
 //!
-//! Why a different trait shape than `qos-pkg::BlobStore`?
+//! Unlike `qos-pkg::BlobStore`'s whole-blob `get`/`put` (packing needs
+//! the whole bundle in hand), the mount layer serves small windows
+//! (often one 4 KiB page) into multi-hundred-MB blobs, and the whole
+//! point of the mount is to avoid pulling unrequested bytes. So it
+//! exposes `get_range(hash, offset, len)`, `has(hash)`, and
+//! `size(hash)` (for `getattr()`, without reading content).
 //!
-//! `qos-pkg` only needs whole-blob `get` / `put` because it's
-//! building and verifying packages, where the whole bundle must
-//! be in hand. The mount layer is the opposite: each kernel
-//! `read()` is a small window (often a single 4 KiB page) into a
-//! potentially multi-hundred-megabyte blob, and the whole point
-//! of the mount is to avoid pulling unrequested bytes.
-//!
-//! So we expose:
-//!
-//! - `get_range(hash, offset, len)` — the streaming primitive.
-//! - `has(hash)` — cheap existence probe.
-//! - `size(hash)` — needed by `getattr()` so the kernel knows
-//!   the file's logical size without ever reading content.
-//!
-//! Implementations:
-//!
-//! - [`MemoryBlobStore`] — exclusively for tests / the CLI's
-//!   in-memory pack flow; range reads are slices.
-//! - [`DiskBlobStore`] — files at `<dir>/<blake3-hex>`, range
-//!   reads are `pread()`.
-//! - [`CountingStore`] — wraps any store and counts calls; used
-//!   by tests to prove partial reads do not over-fetch.
-//!
-//! A real iroh-blobs adapter is intentionally out of scope here
-//! — its async surface and the streaming-with-back-pressure
-//! semantics belong in a separate adapter crate.
+//! Implementations: [`MemoryBlobStore`] (tests/CLI pack flow, slices),
+//! [`DiskBlobStore`] (files at `<dir>/<blake3-hex>`, `pread()`), and
+//! [`CountingStore`] (wraps any store, counts calls — tests prove
+//! partial reads don't over-fetch). A real iroh-blobs adapter is out
+//! of scope; its async/back-pressure semantics belong in a separate crate.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -40,8 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-/// Errors a `BlobStore` can return. The mount layer translates
-/// these to `EIO` for the kernel.
+/// Errors a `BlobStore` can return; the mount layer translates these to `EIO` for the kernel.
 #[derive(Debug, Error)]
 pub enum BlobError {
     /// The hash isn't in the store.
@@ -56,32 +38,27 @@ pub enum BlobError {
 }
 
 /// Synchronous, content-addressed blob store with range reads.
-///
 /// Implementations must be cheap to clone or wrap in `Arc` — the
 /// mount holds one shared store across all FUSE worker threads.
 pub trait BlobStore: Send + Sync {
-    /// Read `len` bytes starting at `offset` from the blob keyed
-    /// by `hash`.
+    /// Read `len` bytes starting at `offset` from the blob keyed by `hash`.
     ///
-    /// Implementations MUST NOT read more than `len` bytes from
-    /// their backing source — the point of this trait is to
-    /// stream only the bytes the caller asked for. A short read
-    /// (returned `Vec` shorter than `len`) signals end-of-blob.
+    /// Implementations MUST NOT read more than `len` bytes from their
+    /// backing source — the point of this trait is to stream only what
+    /// the caller asked for. A short read (`Vec` shorter than `len`)
+    /// signals end-of-blob.
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError>;
 
     /// Whether `hash` is known to this store.
     fn has(&self, hash: &[u8; 32]) -> bool;
 
-    /// Total byte length of the blob. Used to back `getattr()`'s
-    /// size field so the kernel knows the file's logical end
-    /// without ever reading content.
+    /// Total byte length of the blob; backs `getattr()`'s size field so
+    /// the kernel knows the logical end without reading content.
     fn size(&self, hash: &[u8; 32]) -> Result<u64, BlobError>;
 }
 
-/// In-memory blob store, for tests and the CLI's pack flow.
-///
-/// Cloning is cheap; backing state is held inside an `Arc<Mutex<_>>`
-/// so writes from one handle are visible to others.
+/// In-memory blob store for tests and the CLI's pack flow; cheap to
+/// clone (backing state in `Arc<Mutex<_>>`).
 #[derive(Debug, Default, Clone)]
 pub struct MemoryBlobStore {
     blobs: Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>,
@@ -118,7 +95,7 @@ impl BlobStore for MemoryBlobStore {
             .get(hash)
             .ok_or_else(|| BlobError::Missing(hex(hash)))?;
         let start = offset.min(blob.len() as u64) as usize;
-        let end = (offset.saturating_add(len as u64)).min(blob.len() as u64) as usize;
+        let end = (offset.saturating_add(u64::from(len))).min(blob.len() as u64) as usize;
         Ok(blob[start..end].to_vec())
     }
 
@@ -137,11 +114,10 @@ impl BlobStore for MemoryBlobStore {
 
 /// On-disk blob store. Each blob lives at `<dir>/<blake3-hex>`.
 ///
-/// `get_range` uses `pread()` so concurrent FUSE workers don't
-/// trip over each other on a shared file cursor. The file handle
-/// is opened and dropped per call — fine at this layer; a future
-/// iteration can cache open `File`s if profiles show the syscall
-/// cost dominating.
+/// `get_range` uses `pread()` so concurrent FUSE workers don't trip
+/// over a shared file cursor; the file handle is opened and dropped
+/// per call (fine here — cache open `File`s later if profiling shows
+/// the syscall cost dominating).
 #[derive(Debug, Clone)]
 pub struct DiskBlobStore {
     root: PathBuf,
@@ -158,12 +134,9 @@ impl DiskBlobStore {
         &self.root
     }
 
-    /// Write `bytes` under their BLAKE3 hash; returns the hash.
-    ///
-    /// Exposed for tests and one-off ingest paths — production
-    /// packers go through `qos-pkg` which builds the package
-    /// archive in memory and unpacks into a directory laid out
-    /// the same way.
+    /// Write `bytes` under their BLAKE3 hash; returns the hash. Exposed
+    /// for tests and one-off ingest — production packers go through
+    /// `qos-pkg`, which lays out a directory the same way.
     pub fn put(&self, bytes: &[u8]) -> Result<[u8; 32], BlobError> {
         let h = *blake3::hash(bytes).as_bytes();
         let path = self.path_for(&h);
@@ -186,15 +159,14 @@ impl BlobStore for DiskBlobStore {
             }
             Err(e) => return Err(e.into()),
         };
-        // Clamp the read against EOF so a short trailing read
-        // returns the truncated tail instead of zero-padded
-        // garbage. We learn EOF via metadata to keep the syscall
-        // count to one `pread` for non-trailing reads.
+        // Clamp the read against EOF so a short trailing read returns the
+        // truncated tail, not zero-padded garbage; EOF comes from metadata to
+        // keep non-trailing reads at one pread.
         let file_len = file.metadata()?.len();
         if offset >= file_len {
             return Ok(Vec::new());
         }
-        let want = ((file_len - offset).min(len as u64)) as usize;
+        let want = ((file_len - offset).min(u64::from(len))) as usize;
         let mut buf = vec![0u8; want];
         let mut filled = 0usize;
         while filled < want {
@@ -224,8 +196,7 @@ impl BlobStore for DiskBlobStore {
     }
 }
 
-/// A wrapping store that counts every call. Tests use it to
-/// prove the mount only fetches what was actually requested.
+/// A wrapping store that counts every call; tests use it to prove the mount only fetches what was requested.
 #[derive(Debug, Clone)]
 pub struct CountingStore<S: BlobStore> {
     inner: S,
@@ -275,7 +246,7 @@ impl<S: BlobStore> BlobStore for CountingStore<S> {
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError> {
         self.range_calls.fetch_add(1, Ordering::SeqCst);
         self.bytes_requested
-            .fetch_add(len as u64, Ordering::SeqCst);
+            .fetch_add(u64::from(len), Ordering::SeqCst);
         self.inner.get_range(hash, offset, len)
     }
 
@@ -290,9 +261,8 @@ impl<S: BlobStore> BlobStore for CountingStore<S> {
     }
 }
 
-/// Implement BlobStore for `Arc<T>` so the mount can hold a
-/// single shared handle across FUSE worker threads without
-/// forcing every call site to deref.
+/// Implement `BlobStore` for `Arc<T>` so the mount can hold one shared
+/// handle across FUSE workers without every call site derefing.
 impl<T: BlobStore + ?Sized> BlobStore for Arc<T> {
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError> {
         (**self).get_range(hash, offset, len)
@@ -316,8 +286,7 @@ pub fn hex(hash: &[u8; 32]) -> String {
     s
 }
 
-/// Decode a 64-char hex string back to a 32-byte hash. Used by
-/// disk-store recovery / debugging; not on the hot path.
+/// Decode a 64-char hex string back to a 32-byte hash; used by disk-store recovery/debugging, not the hot path.
 pub fn from_hex(s: &str) -> Result<[u8; 32], BlobError> {
     if s.len() != 64 {
         return Err(BlobError::BadName(s.to_string()));
@@ -340,16 +309,15 @@ fn nibble(b: u8) -> Option<u8> {
     }
 }
 
-/// Convenience: read a whole blob via repeated `get_range`s. Not
-/// on the FUSE hot path — used by the mount loader to fetch the
-/// (tiny) Collection blob.
+/// Convenience: read a whole blob via repeated `get_range` calls; not
+/// on the FUSE hot path — used by the mount loader for the (tiny) Collection blob.
 pub fn read_all<S: BlobStore + ?Sized>(store: &S, hash: &[u8; 32]) -> Result<Vec<u8>, BlobError> {
     let total = store.size(hash)?;
     let mut buf = Vec::with_capacity(total as usize);
     let mut offset = 0u64;
     const CHUNK: u32 = 64 * 1024;
     while offset < total {
-        let want = ((total - offset).min(CHUNK as u64)) as u32;
+        let want = ((total - offset).min(u64::from(CHUNK))) as u32;
         let part = store.get_range(hash, offset, want)?;
         if part.is_empty() {
             break;
@@ -360,8 +328,7 @@ pub fn read_all<S: BlobStore + ?Sized>(store: &S, hash: &[u8; 32]) -> Result<Vec
     Ok(buf)
 }
 
-/// Read the full contents of a file as a blob into the disk
-/// store. Useful for one-off packing in tests.
+/// Read the full contents of a file as a blob into the disk store; useful for one-off packing in tests.
 pub fn put_file_disk(store: &DiskBlobStore, path: &Path) -> Result<[u8; 32], BlobError> {
     let mut f = File::open(path)?;
     let mut buf = Vec::new();
@@ -421,7 +388,10 @@ mod tests {
 
     #[test]
     fn hex_roundtrip() {
-        let h = [0u8, 1, 2, 3, 255, 254, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let h = [
+            0u8, 1, 2, 3, 255, 254, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
         let s = hex(&h);
         assert_eq!(s.len(), 64);
         assert_eq!(from_hex(&s).unwrap(), h);

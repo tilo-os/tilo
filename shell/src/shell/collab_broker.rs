@@ -1,215 +1,52 @@
 //! Local CRDT fan-out broker for the `QUICK_COLLAB_SOCK` Unix socket.
 //!
-//! Every quick-ui app instantiates a [`ui::collaboration::CollaborationManager`]
-//! that connects to `QUICK_COLLAB_SOCK` and exchanges length-prefixed JSON
-//! frames (`u32` little-endian length + JSON body). Pre-broker, nothing in
-//! production bound that socket — the protocol was only exercised by the
-//! `ui/tests/real_socket_two_peer.rs` test-only relay.
-//!
-//! This module lifts the relay's fan-out pattern into the shell so two
-//! co-located apps (e.g. two `cargo run -p terminal` instances pointed at
-//! the same socket) share scrollback CRDT updates live.
-//!
-//! Behaviour:
-//! - Bind the configured socket path (best-effort `unlink` first so a
-//!   crashed prior shell doesn't lock us out).
-//! - Accept any number of peer connections (unlike the test broker's
-//!   hardcoded N=2).
-//! - For each peer, spawn a reader thread that decodes `CollabRequest`s
-//!   and translates them to the matching `CollabEvent`, then fans the
-//!   event to the peers the event is addressed to (see "Routing").
-//! - Drop dead peers (write failure) from the fan-out table.
-//!
-//! The mapping from request → event mirrors the test relay verbatim:
-//! - `SyncIncremental { data }` → `CRDTIncremental { data }`
-//! - `SyncCRDT { data }` → `CRDTUpdate { data }`
-//! - `Presence { key, payload }` → `RemotePresenceUpdate { user_id:
-//!   "peer-<src_id>", key, payload }`
-//! - `Hello { .. }` → swallowed (no fan-out; the hello records the
-//!   connection's [`CrdtRoute`])
-//!
-//! ## Routing
-//!
-//! Every event is delivered against a [`CrdtRoute`] — the `(app_id,
-//! cluster_id)` pair the sender announced on its `Hello`. A connection
-//! only receives an event when its own announced route matches:
-//!
-//! - **CRDT payloads** (`CRDTIncremental`, `CRDTUpdate`,
-//!   `SignedCRDTIncremental`, cooperative `ScrollbackBatch`) carry a
-//!   full `(app_id, cluster_id)` route: the Notes app never sees the
-//!   Terminal's document deltas, and cluster A never sees cluster B.
-//! - **Chrome traffic** (presence, cursors, context) carries a
-//!   cluster-only route — every app in the cluster is a legitimate
-//!   audience for "who else is here".
+//! Every quick-ui app connects a [`ui::collaboration::CollaborationManager`]
+//! to `QUICK_COLLAB_SOCK` and exchanges length-prefixed JSON frames (`u32`
+//! little-endian length + JSON body). The broker accepts any number of
+//! peers and, per peer, decodes each `CollabRequest` into the matching
+//! `CollabEvent` — `SyncIncremental`/`SyncCRDT` → `CRDTIncremental`/
+//! `CRDTUpdate`, `Presence` → `RemotePresenceUpdate`, `Hello` swallowed
+//! and just records the connection's [`CrdtRoute`] — then fans it out to
+//! the peers it's addressed to; see [`CrdtRoute`] for the routing rules.
 //!
 //! Routing **fails closed**: a connection that has not said `Hello`
-//! receives nothing at all, and a frame whose sender has not said
-//! `Hello` is neither fanned out locally nor republished over libp2p.
-//! There is no broadcast primitive left in the broker.
+//! receives nothing, and a frame whose sender has not said `Hello` is
+//! neither fanned out locally nor republished over Iroh. There is no
+//! broadcast primitive left in the broker.
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use collab_types::{
-    ArtifactId, ChannelState, Ed25519PublicKey, OpClass, OpId, RedactedMarker, SignedOp,
-    ValidationError, parse_redact_payload, validate_inbound_op,
+    ArtifactId, ChannelState, OpClass, RedactedMarker, ValidationError, validate_inbound_op,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 use crate::shell::collab_broker_capnp::CapnpBrokerState;
+pub use crate::shell::collab_core::{
+    AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
+};
+use crate::shell::collab_outbound::{PeerPublisher, Transport};
 use crate::shell::network::ShellNetwork;
-
-/// Maximum number of audit-log entries retained per channel before
-/// the in-memory ring buffer evicts its oldest entry. Persistence
-/// (and per-channel retention policy) is a Phase 3.5 follow-up —
-/// the in-memory record is enough for current debugging and tests
-/// that want to assert "this op was dropped".
-const AUDIT_LOG_RING_CAPACITY: usize = 256;
-
-/// One entry in the per-channel audit log. The full envelope is
-/// captured by reference (cloned out) so that the operator can pick
-/// over the dropped op later — author, declared op class, payload
-/// length — without having to re-parse the wire.
-#[derive(Clone, Debug)]
-pub struct AuditEntry {
-    /// The signed envelope that triggered the entry. Successful ops
-    /// also surface here when explicitly recorded (currently only
-    /// failures are logged, but the type carries the same shape so
-    /// the writer can be extended without a breaking API change).
-    pub envelope: Box<SignedOp>,
-    /// Why the entry was logged. `None` is a successful op recorded
-    /// for tracing; `Some(reason)` is a rejection.
-    pub rejection: Option<ValidationError>,
-    /// Wall-clock time the entry was minted on this host. Used by
-    /// the chrome's "Activity pane" widget (Phase 1) to render the
-    /// timeline.
-    pub at: std::time::SystemTime,
-}
-
-/// Per-channel audit log, fixed-capacity ring buffer.
-///
-/// Keyed by [`ArtifactId`] because a `SignedOp` carries an artifact
-/// id but not a channel id directly — and the broker's v1 channel
-/// state is keyed by artifact id too (see the
-/// [`Broker::channel_state_for`] note below). Phase 3.5 reshapes
-/// this to a true channel-id keyed map.
-#[derive(Default)]
-pub struct AuditLog {
-    pub entries: HashMap<ArtifactId, VecDeque<AuditEntry>>,
-}
-
-impl AuditLog {
-    /// Append `entry` to the ring buffer for `artifact`, evicting the
-    /// oldest entry if the buffer is at capacity.
-    pub fn record(&mut self, artifact: ArtifactId, entry: AuditEntry) {
-        let buf = self.entries.entry(artifact).or_default();
-        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(entry);
-    }
-
-    /// Read-only view of the entries logged for one artifact. Mostly
-    /// used by tests.
-    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
-        self.entries
-            .get(&artifact)
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-}
-
-/// Phase 9: one entry in the per-channel **redaction record** log.
-///
-/// Independent of the per-artifact rejection-audit ring buffer — a
-/// redaction is a positive governance event, not a failure. Stored in
-/// its own map so the chrome's compliance/audit surface can iterate
-/// only over redactions without filtering through every dropped
-/// envelope.
-///
-/// The record retains the Redact op's full envelope (so the original
-/// signature is verifiable forever) plus the parsed payload fields
-/// promoted to typed columns for fast lookup.
-#[derive(Clone, Debug)]
-pub struct RedactionRecord {
-    /// The Redact op envelope itself. Its signature is verifiable
-    /// against `redactor_pk` long after this record is consulted.
-    pub redact_envelope: Box<SignedOp>,
-    /// The id of the op that was redacted. Cross-references the
-    /// `target_op_hash` to a specific seq + author tuple.
-    pub target_op_id: OpId,
-    /// SHA-256 of the target op's canonical bytes at the moment the
-    /// redaction was minted. The validator preserves this even after
-    /// the op-log entry is rewritten to the redacted marker.
-    pub target_op_hash: [u8; 32],
-    /// Public key of the redactor (also recorded in the envelope's
-    /// `author` field but lifted here for direct match in audit
-    /// queries).
-    pub redactor_pk: Ed25519PublicKey,
-    /// Free-text justification (capped at
-    /// `collab_types::MAX_REDACTION_REASON_BYTES`). Used by the
-    /// chrome's tooltip and the compliance system's case record.
-    pub reason: String,
-    /// Wall-clock time the redactor recorded in the request payload.
-    pub redacted_at: std::time::SystemTime,
-}
-
-/// Phase 9: per-artifact redaction-record log.
-///
-/// Like [`AuditLog`] this is a fixed-capacity ring buffer to avoid
-/// unbounded growth, but redaction events are rare by construction
-/// (manual compliance acts) so the cap is mostly defensive.
-#[derive(Default)]
-pub struct RedactionLog {
-    pub entries: HashMap<ArtifactId, VecDeque<RedactionRecord>>,
-}
-
-impl RedactionLog {
-    /// Append `record` to the ring buffer for `artifact`, evicting
-    /// the oldest entry if the buffer is at capacity.
-    pub fn record(&mut self, artifact: ArtifactId, record: RedactionRecord) {
-        let buf = self.entries.entry(artifact).or_default();
-        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
-            buf.pop_front();
-        }
-        buf.push_back(record);
-    }
-
-    /// Read-only view of the redaction records for one artifact.
-    /// Exposed via [`BrokerHandle::redactions_for`] for tests and the
-    /// chrome's compliance surface.
-    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
-        self.entries
-            .get(&artifact)
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-}
 
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
-    /// Stable id assigned at accept time. Threaded into the synthetic
-    /// `user_id = "peer-<id>"` on presence updates, unless the peer
-    /// announced a `handle` on its `Hello`.
+    /// Stable id assigned at accept time, identifying the *connection*
+    /// rather than a participant — see [`LocalIdentity`] for who that is.
     id: u64,
-    /// The name this peer asked to be shown as in presence, from its
-    /// `Hello`. Informational: never consulted for routing or authority.
+    /// Self-reported display name from `Hello`. Informational only —
+    /// outranked by the room's name, see [`LocalIdentity`].
     handle: Mutex<Option<String>>,
-    /// Write side of the connected stream. The read side is owned by
-    /// the per-peer reader thread.
+    /// Write side; the read side belongs to the per-peer reader thread.
     writer: Mutex<UnixStream>,
-    /// The route this connection announced on its
-    /// `CollabRequest::Hello`. Both the delivery filter and the stamp
-    /// the libp2p bridge puts on outbound `NeighbourMsg`s. `None`
-    /// until the peer says hello — and a peer with `None` neither
-    /// receives nor originates routed traffic.
+    /// Route announced on `CollabRequest::Hello`. `None` until Hello —
+    /// a peer with `None` neither receives nor originates routed traffic.
     route: Mutex<Option<CrdtRoute>>,
 }
 
@@ -219,39 +56,119 @@ impl Peer {
         self.route.lock().ok().and_then(|g| g.clone())
     }
 
-    /// The name presence from this peer is stamped with: its announced
-    /// handle, else the synthetic `peer-<id>`.
-    fn presence_user_id(&self) -> String {
-        self.handle
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
-            .unwrap_or_else(|| format!("peer-{}", self.id))
+    /// What this connection said it wanted to be called — the weakest
+    /// input to [`LocalIdentity::resolve`].
+    fn announced_handle(&self) -> Option<String> {
+        self.handle.lock().ok().and_then(|g| g.clone())
     }
 }
 
-/// The address a CRDT (or chrome) event is delivered to.
+/// What a room calls the peers in it, keyed by the handle presence
+/// frames identify their sender by. Same shape as
+/// [`crate::shell::peer_presence::PeerLabels`].
+pub type PeerLabels = std::collections::BTreeMap<u64, String>;
+
+/// How long a room's answer is cached before re-asking. Reading it
+/// takes the replica's lock and parses every peer id in the room
+/// document, and the paths that need it run at pointer rate; matches
+/// the peer-sync drain's cadence for the same lookup.
+const LABEL_TTL: Duration = Duration::from_secs(2);
+
+/// Who the traffic from a locally connected app belongs to, stamped on
+/// everything an app sends before another app sees it. A local
+/// connection is this machine's peer, named through the same lookup
+/// remote peers use, so a participant reads the same everywhere.
 ///
-/// Built from the `(app_id, cluster_id)` pair a connection announces
-/// on `CollabRequest::Hello`. Two granularities exist:
-///
-/// - **app scope** — both fields set. Used for every CRDT payload so
-///   one app's document deltas never reach a different app.
-/// - **cluster scope** — `app_id` empty. Used for chrome traffic
-///   (presence / cursors / context), where every app in the cluster is
-///   a legitimate audience, and for the Cap'n Proto transport, whose
-///   `joinChannel(channelId, identity)` surface carries a channel id
-///   but no app identity (the SDK sets `channelId = cluster_id`).
-///
-/// A route with an empty `cluster_id` addresses nobody: that is the
-/// fail-closed case for a connection that never said hello, or for a
-/// libp2p frame published by a peer that could not stamp one.
-/// Rendering of `crate::shell::state::RoomId::nil` — the cluster id a
-/// workspace announces when its durable room identity has not been
-/// minted yet. Never delivered to or from; see
+/// Resolution order:
+/// 1. What the room says — only its authority can write this
+///    (`apply_room_changes` refuses anyone else), since self-naming next
+///    to a capability-gated caret would be unenforceable.
+/// 2. What the connection calls itself. No authority; never overrules 1.
+/// 3. This machine's own user id.
+pub struct LocalIdentity {
+    /// What the room calls a peer, keyed by liveness handle. A
+    /// parameter (not a direct lookup) so this is testable without a
+    /// live network.
+    labels: Box<dyn Fn(&str) -> PeerLabels + Send + Sync>,
+    /// This machine's own liveness handle. Presence frames key by that
+    /// digest while the room document keys by Iroh `EndpointId`;
+    /// `room_peer_labels` bridges the two.
+    local_handle: u64,
+    /// The last answer per cluster, with the instant it was given.
+    cache: Mutex<HashMap<String, (Instant, Option<String>)>>,
+}
+
+impl LocalIdentity {
+    /// Production wiring: ask the room document over the peer-sync
+    /// network. Without one, every local participant falls back to
+    /// `local_user_id`.
+    pub fn from_network(net: Option<Arc<ShellNetwork>>) -> Arc<Self> {
+        let local_handle = net.as_ref().map_or(0, |n| n.local_peer_id_hash());
+        Arc::new(Self {
+            labels: Box::new(move |cluster| {
+                net.as_ref()
+                    .map(|n| n.peer_labels(cluster))
+                    .unwrap_or_default()
+            }),
+            local_handle,
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Wire an explicit lookup in place of the room document.
+    pub fn with_lookup(
+        local_handle: u64,
+        labels: impl Fn(&str) -> PeerLabels + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            labels: Box::new(labels),
+            local_handle,
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// The room's name for this machine's peer in `cluster_id`.
+    fn room_name(&self, cluster_id: &str) -> Option<String> {
+        if cluster_id.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        if let Ok(cache) = self.cache.lock()
+            && let Some((at, answer)) = cache.get(cluster_id)
+            && now.duration_since(*at) < LABEL_TTL
+        {
+            return answer.clone();
+        }
+        let answer = (self.labels)(cluster_id).get(&self.local_handle).cloned();
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.insert(cluster_id.to_string(), (now, answer.clone()));
+        }
+        answer
+    }
+
+    /// The identity to stamp on traffic from a local connection that
+    /// announced `route` and calls itself `announced`.
+    pub fn resolve(&self, route: Option<&CrdtRoute>, announced: Option<&str>) -> String {
+        route
+            .and_then(|r| self.room_name(&r.cluster_id))
+            .or_else(|| announced.map(str::to_owned))
+            .unwrap_or_else(crate::shell::state::local_user_id)
+    }
+}
+
+/// Sentinel cluster id: `crate::shell::state::RoomId::nil` rendered as
+/// a string. A workspace announces this when its durable room identity
+/// has not been minted yet; never delivered to or from — see
 /// [`CrdtRoute::is_addressable`].
 const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
 
+/// The address a CRDT (or chrome) event is delivered to, built from the
+/// `(app_id, cluster_id)` pair a connection announces on `Hello`. App
+/// scope (both fields set) carries CRDT payloads, so one app's deltas
+/// never reach another; cluster scope (`app_id` empty) carries chrome
+/// traffic, where every app in the cluster is a legitimate audience, and
+/// the Cap'n Proto transport, whose `joinChannel` surface has a channel
+/// id but no app identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrdtRoute {
     /// App identity from the sender's `Hello`. Empty means "this
@@ -261,18 +178,10 @@ pub struct CrdtRoute {
     /// Collaboration cluster id (a uuid rendered as a string on the
     /// legacy dialect, the `channelId` on the capnp one).
     pub cluster_id: String,
-    /// The **record** the sender announced, or empty for an app whose
-    /// state is still one document per `(app, cluster)`.
-    ///
-    /// This is the finest granularity, and the reason it exists is
-    /// that a document is what people share — not an app. Two people
-    /// editing two different files in one room announce the same app
-    /// and the same cluster; only the record tells them apart, and
-    /// without it each was handed the other's document state.
-    ///
-    /// It is a *routing* key and nothing more: the broker still never
-    /// materialises a payload. What it now knows is which stream a
-    /// payload belongs to, because the sender said so.
+    /// The record the sender announced, or empty for an app whose state
+    /// is still one document per `(app, cluster)`. Finest granularity —
+    /// two people editing different files in one room share app and
+    /// cluster, and only the record tells them apart. Routing key only.
     pub record_id: String,
 }
 
@@ -309,42 +218,30 @@ impl CrdtRoute {
         }
     }
 
-    /// Narrow this route to a record. An empty `record_id` leaves it
-    /// as it was, which is how a connection that announced no record
-    /// keeps the pre-record addressing.
+    /// Narrow this route to a record; an empty `record_id` leaves it as
+    /// it was (pre-record addressing).
     pub fn on_record(mut self, record_id: impl Into<String>) -> Self {
         self.record_id = record_id.into();
         self
     }
 
-    /// Widen an app-scoped route to its cluster. Presence frames from
-    /// an app-scoped sender ride this.
-    ///
-    /// The record is dropped along with the app id, and deliberately:
-    /// "who else is here" is a fact about the room, so a peer editing
-    /// a different document in the same room is still a legitimate
-    /// audience for it. Only *document* payloads are record-scoped.
+    /// Widen an app-scoped route to its cluster — presence rides this.
+    /// "Who else is here" is a fact about the room, so a peer editing a
+    /// different document is still a legitimate audience for it.
     pub(crate) fn to_cluster_scope(&self) -> Self {
         Self::cluster(self.cluster_id.clone())
     }
 
-    /// The channel this route names, as one string.
-    ///
-    /// The capnp transport subscribes by channel id rather than by
-    /// route fields, so a connection has to be able to name its
-    /// address in the same vocabulary — see
-    /// [`crate::shell::collab_broker_capnp`]. The encoding lives in
-    /// [`ui::collaboration::channel_key`] because the SDK writes these
-    /// keys and the shell reads them; one definition is what keeps the
-    /// two ends from drifting.
+    /// The channel this route names, as one string — the capnp
+    /// transport subscribes by channel id. Encoding lives in
+    /// [`ui::collaboration::channel_key`] (shared with the SDK) so both
+    /// ends can't drift.
     pub fn channel_key(&self) -> String {
         ui::collaboration::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
     }
 
-    /// Split a capnp `channelId` back into its route. The inverse of
-    /// [`Self::channel_key`], and total: a key naming no app and no
-    /// record decodes to a cluster-scoped route, which is what a
-    /// connection announcing neither should address.
+    /// Split a capnp `channelId` back into its route — the inverse of
+    /// [`Self::channel_key`].
     pub fn from_channel_key(key: &str) -> Self {
         let (app_id, cluster_id, record_id) = ui::collaboration::channel_key::parse(key);
         Self {
@@ -354,51 +251,33 @@ impl CrdtRoute {
         }
     }
 
-    /// Whether this route may be published to the peer network.
-    ///
-    /// The outbound bridges ask this before handing anything to
-    /// libp2p. A route with no addressable cluster names no room, so
-    /// there is no room to publish it to — the same fail-closed test
-    /// [`Self::delivers_to`] applies locally, asked before the frame
-    /// leaves the machine rather than after.
-    pub(crate) fn addresses_a_room(&self) -> bool {
-        Self::is_addressable(&self.cluster_id)
-    }
-
-    /// Whether a cluster id names a real room.
-    ///
-    /// Two values do not: the empty string (a connection that never
-    /// said `Hello`, or a frame nobody could stamp) and the nil uuid (a
-    /// workspace whose durable room identity has not been minted yet —
-    /// see `crate::shell::state::RoomId::nil`). The nil case matters
-    /// because it is not empty: without this, every workspace still
-    /// carrying the sentinel would share one enormous room, on every
-    /// machine at once, which is precisely the failure that deriving
-    /// the cluster from a local counter used to cause.
+    /// Whether a cluster id names a real room: not the empty string
+    /// (never said `Hello`) and not the nil uuid (a workspace whose room
+    /// identity has not been minted yet). The nil case must be checked
+    /// separately from empty — otherwise every workspace still carrying
+    /// the sentinel would share one enormous room on every machine.
     fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
 
-    /// Whether an event addressed to `self` should be delivered to a
-    /// subscriber that announced `subscriber`.
+    /// Whether this route may be stamped onto a frame leaving the
+    /// machine. Same test as [`Self::delivers_to`], because the
+    /// receiving broker rebuilds the route from the wire fields and runs
+    /// the identical check — publishing an unaddressable route would put
+    /// a frame in the room every receiver silently drops.
+    pub fn is_publishable(&self) -> bool {
+        Self::is_addressable(&self.cluster_id)
+    }
+
+    /// Whether an event addressed to `self` reaches a subscriber that
+    /// announced `subscriber`. Fails closed if either side lacks an
+    /// addressable cluster. App granularity applies only when both ends
+    /// announced an app id; an end with none stays cluster-scoped rather
+    /// than silently receiving nothing.
     ///
-    /// Fails closed on either side lacking an addressable cluster. App
-    /// granularity applies only when both ends announced an app id; an
-    /// end that announced none stays cluster-scoped rather than
-    /// silently receiving nothing. Both transports do announce one —
-    /// capnp carries it in the channel id
-    /// ([`Self::from_channel_key`]) — so that fallback now covers a
-    /// connection that predates the app segment, not a whole transport.
-    ///
-    /// **Record granularity is the innermost test and it fails closed
-    /// both ways.** Two app-scoped ends agree only when they name the
-    /// same record, and "no record" is a value like any other: a
-    /// converted app's document deltas are not handed to an
-    /// unconverted connection of the same app, and vice versa, because
-    /// those two are not looking at the same document. An app that has
-    /// not adopted records still matches its own kind exactly as
-    /// before (both ends empty), which is what keeps the rest of the
-    /// fleet working untouched.
+    /// Record granularity is innermost and fails closed both ways — "no
+    /// record" is a value like any other, so a converted app's deltas
+    /// never reach an unconverted connection of the same app.
     pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
         if !Self::is_addressable(&self.cluster_id) || !Self::is_addressable(&subscriber.cluster_id)
         {
@@ -408,10 +287,7 @@ impl CrdtRoute {
             return false;
         }
         if self.app_id.is_empty() || subscriber.app_id.is_empty() {
-            // Cluster-scoped on at least one end: chrome traffic, or a
-            // transport that announces no app identity. Records do not
-            // narrow it — see `to_cluster_scope`.
-            return true;
+            return true; // Cluster-scoped on at least one end.
         }
         if self.app_id != subscriber.app_id {
             return false;
@@ -420,109 +296,29 @@ impl CrdtRoute {
     }
 }
 
-/// Phase 3 channel-state cache.
-///
-/// The broker keeps one [`ChannelState`] per artifact id (a v1
-/// proxy — see the TODO inside `state_for`). Reader threads acquire
-/// the lock for the duration of one validation, which is cheap (the
-/// validator only mutates `last_seq_per_author` on success).
-///
-/// Bootstrap policy: the first time an artifact is touched, we create
-/// a default `ChannelState` with empty `authorised_signers`. That
-/// makes every signed op fail step 2 of the validator
-/// ([`ValidationError::UnauthorisedAttestation`]) — which is the
-/// **correct, secure** default for an artifact whose role table the
-/// broker has never been told about. Tests (and the eventual Phase 3.5
-/// bootstrap path) populate the state via
-/// [`Broker::register_channel_state`] before driving traffic through
-/// the broker. The audit log records the rejection so an operator can
-/// see that an envelope was dropped because the channel was
-/// un-bootstrapped vs. genuinely-invalid.
-///
-/// TODO(phase-3.5): wire the channel state up from the persisted
-/// `Workspace.collaborators` + governance log so production traffic
-/// no longer needs the bootstrap dance.
-#[derive(Default)]
-pub struct BrokerChannels {
-    /// Per-artifact channel state. v1 keys on artifact id rather than
-    /// channel id because the wire only carries artifact id; the
-    /// 3.5 follow-up adds a real artifact→channel resolver.
-    pub states: HashMap<ArtifactId, ChannelState>,
-    /// Per-artifact audit log, fixed-capacity. Records rejected
-    /// envelopes (and Phase 9's `OpArrivedRedacted` late-arrival
-    /// records via the same shape) so an operator can triage drops.
-    pub audit: AuditLog,
-    /// Phase 9: per-artifact redaction record log. Separate from the
-    /// rejection-audit because a redaction is a positive governance
-    /// event, not a failure.
-    pub redactions: RedactionLog,
-}
-
-impl BrokerChannels {
-    /// Look up the [`ChannelState`] for `artifact`, lazily inserting
-    /// a default. The lazy default has empty `authorised_signers` so
-    /// every signed op fails step 2 of the validator until a test
-    /// or the eventual Phase 3.5 bootstrap fills it in.
-    pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
-        self.states.entry(artifact).or_default()
-    }
-
-    /// Inject a populated [`ChannelState`] for `artifact`, replacing
-    /// any existing entry. Tests use this to set up role tables; the
-    /// eventual Phase 3.5 bootstrap path calls the same helper from
-    /// the persisted workspace metadata.
-    pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
-        self.states.insert(artifact, state);
-    }
-}
-
-/// Shared registry of connected peers. Reader threads call
-/// [`PeerTable::fanout_to_route`] for every translated event.
-///
-/// The table owns:
-/// - the legacy JSON peer connections,
-/// - the process-wide peer-id counter (shared with the capnp
-///   listener so ids are unique across transports),
-/// - an optional [`CapnpBrokerState`] handle that layers the same
-///   fanout onto per-subscription mpsc queues held by the capnp
-///   RPC layer. When the capnp listener is bound alongside the
-///   legacy one, every event dispatched here reaches both.
+/// Shared registry of connected peers: JSON connections, the
+/// process-wide peer-id counter, and an optional [`CapnpBrokerState`]
+/// that layers the same fanout onto capnp's per-subscription queues so
+/// every event reaches both transports.
 pub struct PeerTable {
     peers: Mutex<Vec<Arc<Peer>>>,
-    /// Monotonic id source. Shared with the capnp listener so a
-    /// capnp-side "peer" and a legacy-side peer are never confused
-    /// when the `except` filter runs on fanout.
+    /// Monotonic id source, shared with the capnp listener so ids never
+    /// collide when the `except` filter runs on fanout.
     peer_id_counter: AtomicU64,
-    /// Optional capnp fanout sink. Set once during `spawn_*` when
-    /// the capnp listener is bound.
+    /// Set once during `spawn_*` when the capnp listener is bound.
     capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
-    /// Subscribers that live inside the shell process rather than on
-    /// the far side of a socket. See [`RoomSubscription`].
+    /// In-process subscribers. See [`RoomSubscription`].
     local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
 }
 
-/// A subscriber inside the shell process, addressed by room.
-///
-/// The shell hosts the broker but was never a reader of it, so the
-/// presence its own apps publish went out to the other apps in the
-/// room and nowhere else — the compositor drawing those windows never
-/// saw it.
-///
-/// A room subscription is how it reads. It is addressed the way every
-/// other subscriber is: a room is a cluster, and delivery is decided
-/// by [`CrdtRoute::delivers_to`] against `CrdtRoute::cluster(room)`.
-/// That is deliberate rather than convenient — presence is widened to
-/// cluster scope on the way out ([`CrdtRoute::to_cluster_scope`])
-/// precisely so a peer working in a different document of the same
-/// room is still a legitimate audience, and a subscriber that names
-/// the room inherits exactly that reach. Two apps in one room reach
-/// one subscription, which is what makes a cursor crossing from one
-/// app to the other a single peer moving rather than two peers
-/// appearing.
-///
-/// Rooms are mutable because a session's set of them is: workspaces
-/// are created, and a workspace joins a peer's room when an invite is
-/// accepted.
+/// A subscriber inside the shell process, addressed by room — how the
+/// compositor reads presence its apps publish. Delivery goes through the
+/// same [`CrdtRoute::delivers_to`] check as a socket peer, against
+/// `CrdtRoute::cluster(room)`; since presence widens to cluster scope on
+/// the way out, two apps in one room reach one subscription, so a cursor
+/// crossing between them is one peer moving, not a second appearing.
+/// Rooms are mutable — workspaces are created, and join a peer's room
+/// when an invite is accepted.
 pub struct RoomSubscription {
     rooms: Mutex<Vec<String>>,
     sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
@@ -536,10 +332,9 @@ impl RoomSubscription {
         }
     }
 
-    /// Whether `route` addresses any room this subscription holds.
-    /// Uses the broker's own delivery predicate, so a subscription
-    /// can never receive something a socket peer in the same room
-    /// would not have.
+    /// Whether `route` addresses any room this subscription holds. Uses
+    /// the broker's own delivery predicate, so it never receives
+    /// anything a socket peer in the same room wouldn't.
     fn wants(&self, route: &CrdtRoute) -> bool {
         let Ok(rooms) = self.rooms.lock() else {
             return false;
@@ -560,8 +355,8 @@ impl PeerTable {
         }
     }
 
-    /// Register an in-process subscriber and hand back its handle so
-    /// the caller can keep its room set current.
+    /// Register an in-process subscriber, returning a handle the caller
+    /// can use to keep its room set current.
     pub(crate) fn subscribe_rooms(
         &self,
         rooms: Vec<String>,
@@ -580,7 +375,10 @@ impl PeerTable {
     /// Snapshot the in-process subscribers so the sinks run without
     /// the registry lock held.
     fn local_subs(&self) -> Vec<Arc<RoomSubscription>> {
-        self.local_subs.lock().map(|g| g.clone()).unwrap_or_default()
+        self.local_subs
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Mint the next peer id. Legacy accept + capnp accept both go
@@ -589,14 +387,22 @@ impl PeerTable {
         self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Attach the capnp fanout sink. Called at most once at
-    /// broker-spawn time. Silently ignores repeat calls (defensive
-    /// but not expected).
+    /// How many connections this broker has ever accepted, across both
+    /// transports. Read as a generation, not a count: it only rises, so
+    /// a value newer than the one recorded beside an announcement means
+    /// someone connected who wasn't there to hear it — see
+    /// [`remote_participant_id`], which uses that to re-say a name.
+    pub(crate) fn connections_seen(&self) -> u64 {
+        self.peer_id_counter.load(Ordering::Relaxed)
+    }
+
+    /// Attach the capnp fanout sink. Called at most once, at
+    /// broker-spawn time; repeat calls are silently ignored.
     pub(crate) fn attach_capnp(&self, state: Arc<CapnpBrokerState>) {
-        if let Ok(mut g) = self.capnp.lock() {
-            if g.is_none() {
-                *g = Some(state);
-            }
+        if let Ok(mut g) = self.capnp.lock()
+            && g.is_none()
+        {
+            *g = Some(state);
         }
     }
 
@@ -626,20 +432,12 @@ impl PeerTable {
         self.peers.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    /// Serialize `event` and write it to every peer that `route`
-    /// addresses, skipping the peer whose id is `except` (the
-    /// originator; pass [`u64::MAX`] when the event came from off-host
-    /// and no local peer should be skipped).
-    ///
-    /// Delivery is decided by [`CrdtRoute::delivers_to`] against the
-    /// route each peer announced on its `Hello`. A peer that has not
-    /// announced one is skipped — there is no broadcast fallback, so a
-    /// silent app receives nothing rather than everything.
-    ///
-    /// Drops any peer that errors on write. Also pushes the event onto
-    /// the capnp subscription queues that the same route addresses (if
-    /// a [`CapnpBrokerState`] is attached) so both transports observe
-    /// the same routing.
+    /// Serialize `event` and write it to every peer `route` addresses,
+    /// skipping `except` (the originator; [`u64::MAX`] skips none).
+    /// Delivery is decided by [`CrdtRoute::delivers_to`] — no broadcast
+    /// fallback, so a silent peer gets nothing. Drops peers that error
+    /// on write, and pushes to the capnp subscription queues so both
+    /// transports observe the same routing.
     pub(crate) fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
         if route.cluster_id.is_empty() {
             tracing::debug!(
@@ -658,10 +456,7 @@ impl PeerTable {
                 continue;
             }
             let Some(peer_route) = peer.route() else {
-                // Connected but silent: it has not told us which app
-                // or cluster it belongs to, so nothing is addressed
-                // to it yet.
-                continue;
+                continue; // Connected but silent: no route to address yet.
             };
             if !route.delivers_to(&peer_route) {
                 continue;
@@ -683,15 +478,10 @@ impl PeerTable {
         }
     }
 
-    /// Send `event` to exactly one peer by id. Used by the Phase 6
-    /// `FetchScrollback` path — the reply only belongs to the
-    /// requester, not the whole fan-out. Drops the peer if the write
-    /// fails. Returns whether the send happened (false when the peer
-    /// id was not in the table at lookup time).
-    ///
-    /// Also consults the capnp fanout sink (if attached) so a
-    /// scrollback reply routed to a capnp-side requester still lands
-    /// on their per-request reply channel.
+    /// Send `event` to exactly one peer by id — used by
+    /// `FetchScrollback`, whose reply belongs only to the requester.
+    /// Drops the peer on write failure; falls through to the capnp sink
+    /// so a capnp-side requester's reply still lands.
     fn send_to_peer(&self, peer_id: u64, event: &CollabEvent) -> bool {
         let bytes = match serde_json::to_vec(event) {
             Ok(b) => b,
@@ -712,31 +502,25 @@ impl PeerTable {
     }
 }
 
-/// Outcome of [`translate`]. The broker hot path consumes one of these
-/// per inbound request and decides whether to fan out, reply to one
-/// peer, or do nothing. Splitting the cases as a typed enum (rather
-/// than two `Option`s + a bool) keeps `reader_loop`'s post-translate
-/// logic dispatch-on-pattern clean.
+/// Outcome of [`translate`]: fan out, reply to one peer, or do nothing.
+/// A typed enum rather than two `Option`s + a bool keeps
+/// `reader_loop`'s post-translate dispatch clean.
 enum TranslatedAction {
-    /// Nothing to do — `Hello` swallowed, invalid op dropped after
-    /// auditing, sender never announced a route, etc.
+    /// `Hello` swallowed, invalid op dropped after auditing, sender
+    /// never announced a route, etc.
     Nothing,
     /// Forward `event` to the peers `route` addresses, skipping the
-    /// originating one.
+    /// originator.
     Fanout {
         event: CollabEvent,
         route: CrdtRoute,
     },
-    /// Reply only to the originating peer. Used by `FetchScrollback`
-    /// — peers other than the requester have no interest in a paged
-    /// history fetch they didn't ask for.
+    /// Reply only to the originator — `FetchScrollback`'s paged history
+    /// is of no interest to peers who didn't ask.
     ReplyToSource(CollabEvent),
-    /// A `SignedSyncIncremental` validated and was a `Compaction`
-    /// checkpoint. The broker should still fan the envelope out
-    /// (peers downstream need to evict their own logs too) but the
-    /// local channel state has already been mutated by the time this
-    /// variant is returned.
-    ///
+    /// A `SignedSyncIncremental` that validated and was a `Compaction`
+    /// checkpoint: local channel state is already mutated, but the
+    /// envelope must still fan out so downstream peers evict their logs too.
     CompactionApplied {
         event: CollabEvent,
         route: CrdtRoute,
@@ -766,68 +550,6 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Phase 9: apply a validated Redact envelope to the shared channel
-/// state.
-///
-/// Hoisted to a helper because both the local-broker hot path
-/// (`translate`) and the libp2p drain thread reach the same code
-/// after a Redact validates. Both paths have already pushed the
-/// envelope onto the op log via `record_validated_op`; this helper
-/// only owns the derived-state mutation + the redaction-record
-/// audit entry.
-pub(crate) fn apply_redaction_from_envelope(
-    envelope: &SignedOp,
-    artifact: ArtifactId,
-    channels: &Arc<Mutex<BrokerChannels>>,
-) {
-    // Parse the payload defensively — the validator's step 5b already
-    // ran parse_redact_payload, so a Some(_) here should never come
-    // back malformed; we keep the parse so this helper can be reused
-    // outside the validated path (drain thread + future replays).
-    let req = match parse_redact_payload(envelope) {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(
-                artifact = ?artifact,
-                "collab_broker: malformed Redact payload after validation: {err}",
-            );
-            return;
-        }
-    };
-    if let Ok(mut ch) = channels.lock() {
-        let state = ch.state_for(artifact);
-        match state.apply_redaction(&req) {
-            Ok(rewritten) => {
-                tracing::info!(
-                    artifact = ?artifact,
-                    target = ?req.target_op_id,
-                    rewritten,
-                    "collab_broker: applied redaction",
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    artifact = ?artifact,
-                    target = ?req.target_op_id,
-                    "collab_broker: apply_redaction failed: {err}",
-                );
-                return;
-            }
-        }
-        ch.redactions.record(
-            artifact,
-            RedactionRecord {
-                redact_envelope: Box::new(envelope.clone()),
-                target_op_id: req.target_op_id,
-                target_op_hash: req.target_op_hash,
-                redactor_pk: req.redacted_by,
-                reason: req.reason,
-                redacted_at: req.redacted_at,
-            },
-        );
-    }
-}
-
 /// Log-and-drop for a frame whose sender never announced a route.
 /// Factored out so every fail-closed branch in [`translate`] reads the
 /// same and leaves the same trace behind.
@@ -839,17 +561,14 @@ fn unrouted(src_id: u64, kind: &str) -> TranslatedAction {
     TranslatedAction::Nothing
 }
 
-/// Translate one `CollabRequest` (already deserialized off the wire)
-/// to the action peers should observe. Returns
-/// [`TranslatedAction::Nothing`] for `Hello` (which is swallowed —
-/// see module docs).
+/// Translate one `CollabRequest` (already deserialized off the wire) to
+/// the action peers should observe. `Hello` is swallowed (see module
+/// docs) → `Nothing`.
 ///
-/// `src_route` is the route the sending connection announced on its
-/// `Hello`. `None` means it never announced one: every fan-out case
-/// then resolves to [`TranslatedAction::Nothing`], because the broker
-/// has no idea who the frame is for. Only [`CollabRequest::FetchScrollback`]
-/// still answers, since that reply is addressed to the requester by
-/// peer id rather than by route.
+/// `src_route` is `None` when the sender never said `Hello`: every
+/// fan-out case then resolves to `Nothing`, since the broker has no
+/// route to address the frame with. Only [`CollabRequest::FetchScrollback`]
+/// still answers, addressed to the requester by peer id rather than route.
 fn translate(
     src_id: u64,
     src_user_id: &str,
@@ -878,9 +597,8 @@ fn translate(
             }
         }
         CollabRequest::Presence { key, payload } => {
-            // Chrome traffic: cluster scope. Every app in the cluster
-            // is a legitimate audience for "who else is here", but a
-            // different cluster is not.
+            // Chrome traffic: cluster scope, since every app in the
+            // cluster is a legitimate audience for "who else is here".
             let Some(route) = src_route.map(CrdtRoute::to_cluster_scope) else {
                 return unrouted(src_id, "Presence");
             };
@@ -894,18 +612,12 @@ fn translate(
             }
         }
         CollabRequest::SignedSyncIncremental { envelope } => {
-            // A signed envelope is still a CRDT payload: it belongs to
-            // the sender's app + cluster and goes nowhere else. Bail
-            // before validation when the sender never said hello —
-            // there is no audience to validate for.
             let Some(route) = src_route.cloned() else {
                 return unrouted(src_id, "SignedSyncIncremental");
             };
-            // Phase 3 hot path: validate the envelope against the
-            // per-artifact `ChannelState` before fanning out. Default
-            // state has empty `authorised_signers`, so a freshly-
-            // touched artifact rejects every signed op until its
-            // role table is registered (the secure default).
+            // Validate against per-artifact `ChannelState` before fanning
+            // out; default state has empty `authorised_signers`, the
+            // secure default until a role table is registered.
             let artifact = envelope.artifact;
             let validation = {
                 let Ok(mut ch) = channels.lock() else {
@@ -916,23 +628,10 @@ fn translate(
             };
             match validation {
                 Ok(()) => {
-                    // Phase 6 housekeeping after a green validation:
-                    // record the op in the per-artifact in-memory log,
-                    // then — if this op is itself a Compaction
-                    // checkpoint — apply it. The order matters: a
-                    // checkpoint op's own envelope should NOT be
-                    // evicted by its own application (its seq is
-                    // strictly greater than `up_to_seq` by
-                    // construction), so recording first and
-                    // compacting afterwards is safe.
-                    //
-                    // Phase 9 housekeeping: if this op is a Redact,
-                    // parse the payload and apply the redaction —
-                    // rewrites local op-log entries matching
-                    // `target_op_id` to the redacted marker. Records
-                    // a `RedactionRecord` in the redaction log so
-                    // `BrokerHandle::redactions_for` can surface the
-                    // governance event to the chrome.
+                    // Record before applying a Compaction checkpoint, or
+                    // the checkpoint's own envelope is evicted by its
+                    // own application — its seq is strictly greater than
+                    // `up_to_seq`, so recording first is safe.
                     let mut compaction_evicted: Option<usize> = None;
                     if let Ok(mut ch) = channels.lock() {
                         let state = ch.state_for(artifact);
@@ -958,12 +657,9 @@ fn translate(
                                     }
                                 },
                                 Err(err) => {
-                                    // Malformed payload from a peer
-                                    // who passed signature + role
-                                    // checks. Log + skip the
-                                    // compaction; the envelope still
-                                    // fans out (other peers can audit
-                                    // independently).
+                                    // Passed signature + role checks but
+                                    // malformed payload: skip compaction,
+                                    // still fan the envelope out.
                                     tracing::warn!(
                                         artifact = ?artifact,
                                         "collab_broker: malformed compaction payload: {err}",
@@ -977,27 +673,22 @@ fn translate(
                     }
                     let event = CollabEvent::SignedCRDTIncremental {
                         envelope,
-                        from_user_id: format!("peer-{src_id}"),
+                        // Same identity this connection's presence is
+                        // stamped with, or a delta and the pointer beside
+                        // it show one person twice.
+                        from_user_id: src_user_id.to_string(),
                     };
                     if compaction_evicted.is_some() {
-                        TranslatedAction::CompactionApplied {
-                            event,
-                            route,
-                        }
+                        TranslatedAction::CompactionApplied { event, route }
                     } else {
                         TranslatedAction::Fanout { event, route }
                     }
                 }
                 Err(ValidationError::OpAlreadyRedacted { target }) => {
-                    // Phase 9 §7: a buggy or offline peer re-broadcast
-                    // an op whose id we have already redacted. Do NOT
-                    // fan it out, but DO push a marker-payload entry
-                    // into the local op log so the seq stream doesn't
-                    // form a hole (late-joiners would otherwise hunt
-                    // cooperative scrollback for an op that we deleted
-                    // by policy). Also audit-log the late arrival so
-                    // an operator can see if a peer is repeatedly
-                    // resurrecting a redacted op.
+                    // A late re-broadcast of an already-redacted op: don't
+                    // fan out, but do push a marker entry so the seq stream
+                    // stays gapless (a late-joiner's scrollback would
+                    // otherwise hunt for an op we deleted by policy).
                     tracing::warn!(
                         artifact = ?artifact,
                         author = ?envelope.author,
@@ -1050,14 +741,8 @@ fn translate(
             before_seq,
             max,
         } => {
-            // Phase 6: read-only access to the artifact's in-memory
-            // op log. The broker returns up to `max` ops in seq
-            // order; the `exhausted` flag tells the requester
-            // whether to fall back to the cooperative path.
-            //
-            // The `ScrollbackBatch` goes ONLY to the requesting
-            // peer — other locally-connected apps did not ask, and
-            // would just have to filter on `artifact` anyway.
+            // Up to `max` ops in seq order; the batch goes only to the
+            // requester.
             let (ops, exhausted) = {
                 let Ok(mut ch) = channels.lock() else {
                     return TranslatedAction::Nothing;
@@ -1074,19 +759,19 @@ fn translate(
     }
 }
 
-/// Handle the read side of one connected peer. Runs until EOF / broken
-/// pipe, then evicts the peer from the table so concurrent writers
-/// stop targeting a dead stream.
+/// Handle the read side of one connected peer until EOF / broken pipe,
+/// then evict it so concurrent writers stop targeting a dead stream.
 ///
-/// When `peer_sync` is `Some`, every `SyncIncremental` is also
-/// republished over libp2p as a `NeighbourMsg::AppCrdtIncremental`
-/// so remote hosts running the same broker can fan it out to their
-/// own local apps.
+/// Reaching other machines is [`PeerPublisher`]'s job — the same
+/// instance the capnp transport holds, so a sandboxed app and a
+/// JSON-dialect app take the identical route out of this host.
 fn reader_loop(
     peer: Arc<Peer>,
     mut stream: UnixStream,
     table: Arc<PeerTable>,
-    peer_sync: Option<Arc<ShellNetwork>>,
+    _peer_sync: Option<Arc<ShellNetwork>>,
+    identity: Arc<LocalIdentity>,
+    publisher: Arc<PeerPublisher>,
     channels: Arc<Mutex<BrokerChannels>>,
     pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
 ) {
@@ -1099,9 +784,9 @@ fn reader_loop(
             );
             continue;
         };
-        // Capture the Hello route before translating — the request is
-        // consumed by `translate`, and both the local fan-out filter
-        // and the libp2p bridge need the announced address.
+        // Capture the Hello route before translating — `translate`
+        // consumes the request, and both fan-out and the Iroh bridge
+        // need the announced address.
         if let CollabRequest::Hello {
             ref app_id,
             cluster_id,
@@ -1110,98 +795,70 @@ fn reader_loop(
         } = req
         {
             if let Ok(mut guard) = peer.route.lock() {
-                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()).on_record(
-                    record.clone().unwrap_or_default(),
-                ));
+                *guard = Some(
+                    CrdtRoute::app(app_id.clone(), cluster_id.to_string())
+                        .on_record(record.clone().unwrap_or_default()),
+                );
             }
             if let Ok(mut guard) = peer.handle.lock() {
                 *guard = handle.clone().filter(|h| !h.trim().is_empty());
             }
         }
         let src_route = peer.route();
-        // Phase 2 outbound bridge: send the raw incremental over
-        // libp2p before we fan it to local peers. Cloning the data
-        // here is unavoidable because we still need the original
-        // payload for the local `translate` path. A peer that never
-        // said hello has no route to stamp, so its frame is not
-        // republished either — the same fail-closed rule the local
-        // fan-out applies.
-        if let (Some(net), CollabRequest::SyncIncremental { data }) = (peer_sync.as_ref(), &req) {
-            match &src_route {
-                Some(route) => net.publish_app_crdt_incremental(
-                    route.app_id.clone(),
-                    route.cluster_id.clone(),
-                    route.record_id.clone(),
-                    data.clone(),
-                ),
-                None => {
-                    tracing::debug!(
-                        "collab_broker: not republishing SyncIncremental from \
-                         peer-{}: no Hello, so the frame has no route",
-                        peer.id,
-                    );
+        // Outbound bridge: publish before fanning locally (cloned since
+        // `translate` still needs the original). No route, no publish —
+        // same fail-closed rule as local fan-out.
+        match (&src_route, &req) {
+            (Some(route), CollabRequest::SyncIncremental { data }) => {
+                publisher.document_incremental(route, Transport::Json, data.clone());
+            }
+            (Some(route), CollabRequest::SignedSyncIncremental { envelope }) => {
+                // Validation happens receiver-side against their own
+                // channel state — publishing is not vouching for it.
+                publisher.signed_document(route, Transport::Json, (**envelope).clone());
+            }
+            (
+                None,
+                CollabRequest::SyncIncremental { .. } | CollabRequest::SignedSyncIncremental { .. },
+            ) => {
+                tracing::warn!(
+                    "collab_broker: peer-{} sent a CRDT payload before saying \
+                     Hello — it has no route, so nothing it types reaches \
+                     another machine",
+                    peer.id,
+                );
+            }
+            (Some(route), CollabRequest::SyncCRDT { data }) => {
+                // Merges two separately-created documents into one; sent
+                // only in reply to `Arrived`, never on commit —
+                // `ShellNetwork` holds that gate plus the gossip size cap.
+                publisher.document_snapshot(route, Transport::Json, data.clone());
+            }
+            (Some(route), CollabRequest::Presence { key, payload }) => {
+                // Legacy local input is normalized before it reaches peers;
+                // new peer writes never embed a JSON request frame.
+                if let Some(presence) = crate::shell::collab_presence::to_peer(key, payload) {
+                    publisher.presence(route, Transport::Json, presence);
                 }
             }
-        }
-        // A snapshot takes the bridge too, and it is the frame that
-        // makes two *separately created* documents one document.
-        //
-        // The toolkit sends this in reply to a peer's `Arrived`, never
-        // on a commit, so publishing it is answering a question rather
-        // than announcing into the room. Without it the deltas above
-        // cross correctly and refer to objects the receiving document
-        // has never seen — the peer's caret moves over a blank page,
-        // which is what this looked like from the outside.
-        if let (Some(net), CollabRequest::SyncCRDT { data }) = (peer_sync.as_ref(), &req) {
-            match &src_route {
-                Some(route) => net.publish_app_crdt_snapshot(
-                    route.app_id.clone(),
-                    route.cluster_id.clone(),
-                    route.record_id.clone(),
-                    data.clone(),
-                ),
-                None => {
-                    tracing::debug!(
-                        "collab_broker: not republishing SyncCRDT from peer-{}: \
-                         no Hello, so the frame has no route",
-                        peer.id,
-                    );
-                }
+            (None, CollabRequest::SyncCRDT { .. } | CollabRequest::Presence { .. }) => {
+                tracing::debug!(
+                    "collab_broker: not republishing a {} from peer-{}: no \
+                     Hello, so the frame has no route",
+                    if matches!(&req, CollabRequest::SyncCRDT { .. }) {
+                        "document snapshot"
+                    } else {
+                        "presence frame"
+                    },
+                    peer.id,
+                );
             }
+            _ => {}
         }
-        // Presence takes the same bridge, and has to: the local
-        // fan-out below reaches apps on this host, so without this a
-        // peer's caret stopped at the machine that produced it and
-        // every collaborator looked like they were doing nothing.
-        //
-        // The frame crosses exactly as it arrived — the shell does not
-        // interpret a caret any more than it interprets a change blob —
-        // and the receiving broker re-addresses it to the peer it came
-        // from before handing it to local apps.
-        if let (Some(net), CollabRequest::Presence { .. }) = (peer_sync.as_ref(), &req) {
-            match &src_route {
-                Some(route) => net.publish_app_presence(
-                    route.app_id.clone(),
-                    route.cluster_id.clone(),
-                    frame.clone(),
-                ),
-                None => {
-                    tracing::debug!(
-                        "collab_broker: not republishing Presence from peer-{}: \
-                         no Hello, so the frame has no route",
-                        peer.id,
-                    );
-                }
-            }
-        }
-        // Phase 6 cooperative-fetch outbound bridge: a local
-        // `FetchScrollback` always replies first from the local op
-        // log (handled by `translate`). When peer-sync is wired AND
-        // the local broker's reply turned out to be empty, ALSO
-        // publish a cooperative request so remote peers can chime in.
-        // The remote responses funnel back through the drain thread
-        // and reach the requesting app as a follow-up
-        // `ScrollbackBatch`.
+        // A `FetchScrollback` always replies first from the local op log
+        // (via `translate`); if that reply is empty and peer-sync is
+        // wired, also publish a cooperative request so remote peers can
+        // answer via the drain thread as a follow-up `ScrollbackBatch`.
         let cooperative_fetch = if let CollabRequest::FetchScrollback {
             artifact,
             before_seq,
@@ -1212,37 +869,26 @@ fn reader_loop(
         } else {
             None
         };
-        let src_user_id = peer.presence_user_id();
+        // Resolved per frame, not once at Hello — the room can name a
+        // peer at any later point; `LocalIdentity` caches the lookup.
+        let src_user_id = identity.resolve(src_route.as_ref(), peer.announced_handle().as_deref());
         match translate(peer.id, &src_user_id, src_route.as_ref(), req, &channels) {
             TranslatedAction::Nothing => {}
             TranslatedAction::Fanout { event, route } => {
                 table.fanout_to_route(&event, peer.id, &route);
             }
             TranslatedAction::ReplyToSource(event) => {
-                // Phase 6 targeted reply: scrollback batches only go
-                // to the peer that asked. Failure is silently
-                // dropped; the peer can re-ask.
+                // Targeted reply; failure is silently dropped, the peer
+                // can re-ask.
                 let _ = table.send_to_peer(peer.id, &event);
-                // Cooperative follow-up: if the local reply was
-                // empty (the in-memory log holds nothing in the
-                // requested range), broadcast a `ScrollbackRequest`
-                // over libp2p. Any peer holding the range responds
-                // via `ScrollbackResponse`, which the broker drain
-                // thread then fans into a follow-up `ScrollbackBatch`
-                // for the locally-connected app.
-                if let (Some(net), Some((art, before_seq, max))) =
-                    (peer_sync.as_ref(), cooperative_fetch)
-                {
+                if let Some((art, before_seq, max)) = cooperative_fetch {
                     let is_empty = matches!(
                         &event,
                         CollabEvent::ScrollbackBatch { ops, .. } if ops.is_empty()
                     );
                     if is_empty {
-                        // Remember who is waiting. The gossipsub
-                        // response comes back with an artifact id and
-                        // nothing else, so without this note the
-                        // broker would have to guess at delivery —
-                        // and guessing means broadcasting.
+                        // Remember who is waiting — a gossip response
+                        // carries only an artifact id.
                         if let Some(route) = &src_route {
                             if let Ok(mut pending) = pending_scrollback.lock() {
                                 let waiting = pending.entry(art).or_default();
@@ -1250,9 +896,15 @@ fn reader_loop(
                                     waiting.push(route.clone());
                                 }
                             }
-                            net.publish_scrollback_request(art, before_seq, max);
+                            publisher.scrollback_request(
+                                route,
+                                Transport::Json,
+                                art,
+                                before_seq,
+                                max,
+                            );
                         } else {
-                            tracing::debug!(
+                            tracing::warn!(
                                 "collab_broker: not publishing a cooperative \
                                  scrollback request for peer-{}: no Hello, so \
                                  the answer would have nowhere to go",
@@ -1262,14 +914,9 @@ fn reader_loop(
                     }
                 }
             }
-            TranslatedAction::CompactionApplied {
-                event,
-                route,
-            } => {
-                // The local compaction has already been applied
-                // inside `translate`. Fan the envelope out so peers
-                // can replicate the same eviction; without this they
-                // never converge on the new horizon.
+            TranslatedAction::CompactionApplied { event, route } => {
+                // Compaction already applied locally in `translate`; fan
+                // the envelope out so peers replicate the same eviction.
                 table.fanout_to_route(&event, peer.id, &route);
             }
         }
@@ -1279,89 +926,53 @@ fn reader_loop(
 }
 
 /// Public handle returned by [`spawn`]. Owns the listener thread's join
-/// handle so the broker doesn't get torn down mid-session — drop this
-/// (e.g. at shell shutdown) to start the cleanup chain. The socket
-/// file is best-effort-removed on `Drop` too, so a crashed shell can
-/// be restarted without a stale-inode collision.
+/// handle so the broker doesn't get torn down mid-session; drop this
+/// to start the cleanup chain. The socket file is best-effort-removed
+/// on `Drop` too, so a crashed shell can restart without a stale-inode
+/// collision.
 pub struct BrokerHandle {
-    /// Path the legacy JSON listener is bound to. Held for the
-    /// `Drop` `unlink`.
-    socket_path: PathBuf,
-    /// Optional capnp listener socket path — only present when the
-    /// capnp interface is bound alongside the legacy one. Removed on
-    /// `Drop` best-effort.
+    socket_path: Option<PathBuf>,
     capnp_socket_path: Option<PathBuf>,
-    /// Listener thread handle. Wrapped in `Option` so `Drop` can
-    /// `take()` and `join()` it without violating the moved-out rule.
+    /// `Option` so `Drop` can `take()` and `join()` it.
     listener_thread: Option<JoinHandle<()>>,
-    /// Phase 2 inbound-drain thread handle. Spawned only when the
-    /// broker has a `ShellNetwork` to pump.
+    /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
-    /// Drain-thread quit flag. Drop sets it; the drainer exits at
-    /// its next wake.
     drain_quit: Arc<AtomicBool>,
-    /// Capnp listener thread handle. `None` when the capnp interface
-    /// is not bound. The thread runs a tokio LocalSet driving
-    /// capnp-rpc futures.
+    /// `None` when the capnp interface is not bound; runs a tokio
+    /// `LocalSet` driving capnp-rpc futures.
     capnp_thread: Option<JoinHandle<()>>,
-    /// Capnp listener quit flag. Drop sets it; the capnp accept-loop
-    /// exits at its next wake.
     capnp_quit: Arc<AtomicBool>,
-    /// Shared peer table — the reader threads use it; the broker keeps
-    /// a reference so external callers (Phase 2: libp2p bridge) can
-    /// fan a remote event in to every locally-connected peer.
+    /// Shared with reader threads so external callers (the Iroh
+    /// bridge) can fan a remote event to every locally-connected peer.
     pub(crate) peers: Arc<PeerTable>,
-    /// Phase 3 channel-state cache + audit log. Reader threads pull
-    /// the lock for the duration of one validation; tests + the
-    /// eventual Phase 3.5 bootstrap path mutate the state map to
-    /// register role attestations before traffic flows.
     channels: Arc<Mutex<BrokerChannels>>,
 }
 
 impl BrokerHandle {
-    /// Snapshot the number of currently-connected peers. Used by tests
-    /// to wait for the listener to register everyone before sending.
+    /// Snapshot of currently-connected peers.
     pub fn peer_count(&self) -> usize {
-        self.peers.peers.lock().map(|g| g.len()).unwrap_or(0)
+        self.peers.peers.lock().map_or(0, |g| g.len())
     }
 
-    /// How many connected peers have announced a route (i.e. have
-    /// said `Hello`). Connecting and announcing are separate steps, so
-    /// this is strictly ≤ [`Self::peer_count`]; anything above the
-    /// difference is a peer the broker cannot address yet.
+    /// Connected peers that have said `Hello`. Strictly ≤
+    /// [`Self::peer_count`] — the difference is peers not yet addressable.
     pub fn announced_peer_count(&self) -> usize {
         self.peers
             .peers
             .lock()
-            .map(|g| g.iter().filter(|p| p.route().is_some()).count())
-            .unwrap_or(0)
+            .map_or(0, |g| g.iter().filter(|p| p.route().is_some()).count())
     }
 
-    /// Fan a `CollabEvent` to the connected peers `route` addresses.
-    /// The optional `except` skips a single peer id (used by the
-    /// libp2p bridge: a remote update should reach every addressed
-    /// local peer, but a locally-originated update has already been
-    /// delivered to the broker's other peers via the per-reader
-    /// fan-out and only needs to go onto the wire).
-    ///
-    /// There is deliberately no "reach everyone" form — see
-    /// [`PeerTable::fanout_to_route`].
+    /// Fan a `CollabEvent` to the peers `route` addresses. `except`
+    /// skips one peer id, for the Iroh bridge. No "reach everyone"
+    /// form exists — see [`PeerTable::fanout_to_route`].
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
         self.peers
             .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
     }
 
-    /// Subscribe this process to the rooms it hosts.
-    ///
-    /// The shell runs the broker but is not otherwise a reader of it,
-    /// so everything its apps published reached the other apps and
-    /// stopped there. This is how the compositor reads the same
-    /// stream — addressed by room, and delivered by the broker's own
-    /// [`CrdtRoute::delivers_to`], so a subscription sees exactly what
-    /// a socket peer in that room would see and nothing more.
-    ///
-    /// The sink runs on the reader thread that decoded the frame.
-    /// Keep it short: hand the event to a queue and return.
+    /// Subscribe this process to the rooms it hosts. The sink runs on
+    /// the reader thread that decoded the frame: keep it short.
     pub fn subscribe_rooms(
         &self,
         rooms: Vec<String>,
@@ -1370,39 +981,27 @@ impl BrokerHandle {
         self.peers.subscribe_rooms(rooms, sink)
     }
 
-    /// Shared handle to the broker's per-channel state + audit log.
-    /// Tests use this to install a [`ChannelState`] *before* sending
-    /// signed envelopes through the broker. The eventual Phase 3.5
-    /// bootstrap path is the production caller.
-    /// The bound Cap'n Proto socket, or `None` if this broker has no
-    /// app-facing transport.
-    ///
-    /// `None` after asking for one means the bind failed: the legacy
-    /// JSON listener is up but no launcher-injected app can reach it,
-    /// which is a session with collaboration switched off. Callers
-    /// that requested a capnp path are expected to check, because
-    /// `spawn_full` returning `Ok` only speaks for the JSON socket.
+    /// The bound Cap'n Proto socket. `None` after requesting one means
+    /// the bind failed — `spawn_full` returning `Ok` only speaks for
+    /// the JSON socket.
     pub fn capnp_socket(&self) -> Option<&std::path::Path> {
         self.capnp_socket_path.as_deref()
     }
 
+    /// Shared handle to per-channel state + audit log. Tests use this
+    /// to install a [`ChannelState`] before sending signed envelopes.
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
     }
 
-    /// Convenience: install a populated [`ChannelState`] for one
-    /// artifact id. Equivalent to
-    /// `self.channels().lock()?.register_channel_state(...)` but
-    /// avoids the lock-and-unwrap dance at every call site.
+    /// Install a populated [`ChannelState`] for one artifact id.
     pub fn register_channel_state(&self, artifact: ArtifactId, state: ChannelState) {
         if let Ok(mut ch) = self.channels.lock() {
             ch.register_channel_state(artifact, state);
         }
     }
 
-    /// Snapshot the audit-log entries logged for one artifact. Used by
-    /// tests to assert that a dropped envelope landed in the right
-    /// rejection bucket.
+    /// Audit-log entries for one artifact.
     pub fn audit_for(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
         self.channels
             .lock()
@@ -1410,13 +1009,8 @@ impl BrokerHandle {
             .unwrap_or_default()
     }
 
-    /// Phase 9: snapshot the structured redaction records for one
-    /// artifact. Used by chrome widgets (the activity timeline +
-    /// history scrubber) and by tests that want to assert "this
-    /// op was redacted by this owner at this time with this reason."
-    /// Independent of the rejection-audit `audit_for` so the
-    /// compliance surface doesn't have to filter through every
-    /// dropped envelope.
+    /// Structured redaction records for one artifact, independent of
+    /// `audit_for` so the compliance surface skips filtering drops.
     pub fn redactions_for(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
         self.channels
             .lock()
@@ -1427,50 +1021,60 @@ impl BrokerHandle {
 
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
-        // Signal the inbound-drain thread to exit at its next wake.
         self.drain_quit.store(true, Ordering::Relaxed);
-        // Signal the capnp accept loop to exit.
         self.capnp_quit.store(true, Ordering::Relaxed);
-        // Removing the socket file is best-effort — if the listener
-        // thread already cleaned up (or another shell instance rebound
-        // the path), don't surface a spurious error.
-        let _ = std::fs::remove_file(&self.socket_path);
+        if let Some(path) = &self.socket_path {
+            let _ = std::fs::remove_file(path); // best-effort
+        }
         if let Some(p) = &self.capnp_socket_path {
             let _ = std::fs::remove_file(p);
         }
-        // We can't reliably join the listener thread here because it's
-        // blocked on `listener.accept()`; the socket-file removal alone
-        // doesn't unblock `accept`. Detach the join handle — the
-        // process-exit path will reap it. Tests that need a clean
-        // teardown drop their connections first; reader threads
-        // observe EOF and exit on their own.
+        // Can't reliably join the listener thread — blocked on
+        // `accept()`, which socket removal alone doesn't unblock.
+        // Detach; process exit reaps it.
         let _ = self.listener_thread.take();
         let _ = self.capnp_thread.take();
-        // Best-effort join the drain thread — it polls its quit flag
-        // on a 100ms cadence so a clean shutdown is bounded.
         if let Some(t) = self.drain_thread.take() {
             let _ = t.join();
         }
     }
 }
 
-/// Bind `socket_path` and detach the listener thread.
-///
-/// Returns the [`BrokerHandle`] — keep it alive for the lifetime of
-/// the session so the broker doesn't get dropped (and its socket
-/// `unlink`ed) out from under live apps.
-///
-/// On bind failure (path already locked by another process, no write
-/// permission, …) returns the underlying `io::Error` so the caller
-/// can log a `tracing::warn!` and continue without collab — the shell
-/// must keep working even without the broker.
+/// Bind `socket_path` and detach the listener thread. Keep the returned
+/// [`BrokerHandle`] alive for the session, or its socket gets `unlink`ed
+/// out from under live apps. On bind failure returns the `io::Error` so
+/// the caller can warn and continue without collab.
 pub fn spawn(socket_path: PathBuf) -> std::io::Result<BrokerHandle> {
     spawn_full(socket_path, None, None)
 }
 
-/// Legacy shim retained so existing hosted-mode callers keep working
-/// after `capnp_socket_path` was factored out into [`spawn_full`].
-/// Callers that want the capnp interface should call `spawn_full`.
+/// Production app-facing broker: bind only the typed Cap'n Proto service.
+/// The legacy JSON listener is not opened and no compatibility socket inode
+/// is created. Peer sync and in-process subscribers use the same core state.
+pub fn spawn_native(
+    capnp_socket_path: PathBuf,
+    peer_sync: Option<Arc<ShellNetwork>>,
+) -> std::io::Result<BrokerHandle> {
+    let identity = LocalIdentity::from_network(peer_sync.clone());
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    let handle = spawn_inner(
+        None,
+        Some(capnp_socket_path),
+        peer_sync,
+        identity,
+        publisher,
+    )?;
+    if handle.capnp_socket().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "native collaboration service did not bind",
+        ));
+    }
+    Ok(handle)
+}
+
+/// Legacy shim kept for existing hosted-mode callers; new callers that
+/// want the capnp interface should call `spawn_full`.
 pub fn spawn_with_peer_sync(
     socket_path: PathBuf,
     peer_sync: Option<Arc<ShellNetwork>>,
@@ -1480,51 +1084,100 @@ pub fn spawn_with_peer_sync(
 
 /// Full-featured broker spawn.
 ///
-/// - `socket_path`: legacy JSON socket (`QUICK_COLLAB_SOCK`). Bound
-///   unconditionally so the existing SDK-migration path (bridge +
-///   legacy tests) keeps working.
+/// - `socket_path`: legacy JSON socket (`QUICK_COLLAB_SOCK`), used by
+///   compatibility tests and hosted development tools only.
 /// - `capnp_socket_path`: optional native Cap'n Proto socket
-///   (`QOS_SVC_COLLAB` in `runtime-portal` terms — the path the
-///   launcher fd-injects, or a well-known Unix path for local dev
-///   and tests). When `Some`, the shell also serves the
-///   `runtime-collab` schema natively; both transports share fanout
-///   through the same [`PeerTable`], so an event from either side
-///   reaches every subscriber on either side.
-/// - `peer_sync`: optional libp2p bridge; unchanged semantics.
+///   (`QOS_SVC_COLLAB`). When `Some`, both transports share fanout
+///   through the same [`PeerTable`], so either side reaches every
+///   subscriber on either side.
+/// - `peer_sync`: optional Iroh bridge.
 pub fn spawn_full(
     socket_path: PathBuf,
     capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
-    // Best-effort unlink: a previous shell instance may have left a
-    // stale inode behind. Ignore the result — if the file doesn't
-    // exist (the common case) the `unlink` errors and we continue;
-    // if the file exists but `bind` will still fail (e.g. wrong
-    // owner), the listener creation below surfaces the real error.
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
+    let identity = LocalIdentity::from_network(peer_sync.clone());
+    // Built once and shared by both transports — two instances would
+    // give "does a local edit leave this machine" two different answers.
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    spawn_inner(
+        Some(socket_path),
+        capnp_socket_path,
+        peer_sync,
+        identity,
+        publisher,
+    )
+}
 
+/// [`spawn_full`] with the identity lookup supplied rather than built
+/// from the network, so attribution can be tested against a room whose
+/// answers are known without standing up Iroh.
+pub fn spawn_full_with_identity(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    peer_sync: Option<Arc<ShellNetwork>>,
+    identity: Arc<LocalIdentity>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    spawn_inner(
+        Some(socket_path),
+        capnp_socket_path,
+        peer_sync,
+        identity,
+        publisher,
+    )
+}
+
+/// Same broker, with the outbound half supplied by the caller — lets a
+/// test watch what actually reaches the wire without standing up
+/// Iroh. `peer_sync` stays `None`; the inbound drain has its own coverage.
+pub fn spawn_with_publisher(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    publisher: Arc<PeerPublisher>,
+) -> std::io::Result<BrokerHandle> {
+    let identity = LocalIdentity::from_network(None);
+    spawn_inner(
+        Some(socket_path),
+        capnp_socket_path,
+        None,
+        identity,
+        publisher,
+    )
+}
+
+fn spawn_inner(
+    socket_path: Option<PathBuf>,
+    capnp_socket_path: Option<PathBuf>,
+    peer_sync: Option<Arc<ShellNetwork>>,
+    identity: Arc<LocalIdentity>,
+    publisher: Arc<PeerPublisher>,
+) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(PeerTable::new());
-    // Phase 3 per-artifact channel state + audit log. Created here so
-    // every reader thread gets the same `Arc`, and so the
-    // `BrokerHandle::channels()` accessor returns a handle to the
-    // same instance reader threads consult during validation.
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
-    // Who is waiting on a cooperative scrollback answer, keyed by the
-    // artifact they asked about. A `ScrollbackResponse` off gossipsub
-    // carries an artifact id and nothing else, so this is the only
-    // record of where the answer belongs; without it the drain thread
+    // Who is waiting on a cooperative scrollback answer, keyed by
+    // artifact — a `ScrollbackResponse` off gossip carries an
+    // artifact id and nothing else, so without this the drain thread
     // would have to broadcast the batch to every local app.
     let pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let listener_table = Arc::clone(&table);
-    let listener_peer_sync = peer_sync.clone();
-    let listener_channels = Arc::clone(&channels);
-    let listener_pending = Arc::clone(&pending_scrollback);
-    let listener_thread = std::thread::Builder::new()
-        .name("qos-collab-broker-listener".into())
-        .spawn(move || {
+    let listener_thread =
+        if let Some(path) = &socket_path {
+            // Best-effort unlink of a stale inode from a previous instance; if
+            // bind still fails (e.g. wrong owner), that surfaces below.
+            let _ = std::fs::remove_file(path);
+            let listener = UnixListener::bind(path)?;
+            let listener_table = Arc::clone(&table);
+            let listener_peer_sync = peer_sync.clone();
+            let listener_identity = Arc::clone(&identity);
+            let listener_publisher = Arc::clone(&publisher);
+            let listener_channels = Arc::clone(&channels);
+            let listener_pending = Arc::clone(&pending_scrollback);
+            Some(
+            std::thread::Builder::new()
+                .name("qos-collab-broker-listener".into())
+                .spawn(move || {
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
@@ -1552,6 +1205,8 @@ pub fn spawn_full(
                         let reader_table = Arc::clone(&listener_table);
                         let reader_peer = Arc::clone(&peer);
                         let reader_peer_sync = listener_peer_sync.clone();
+                        let reader_identity = Arc::clone(&listener_identity);
+                        let reader_publisher = Arc::clone(&listener_publisher);
                         let reader_channels = Arc::clone(&listener_channels);
                         let reader_pending = Arc::clone(&listener_pending);
                         if let Err(e) = std::thread::Builder::new()
@@ -1562,6 +1217,8 @@ pub fn spawn_full(
                                     stream,
                                     reader_table,
                                     reader_peer_sync,
+                                    reader_identity,
+                                    reader_publisher,
                                     reader_channels,
                                     reader_pending,
                                 );
@@ -1579,29 +1236,17 @@ pub fn spawn_full(
                     }
                 }
             }
-        })?;
+                })?,
+        )
+        } else {
+            None
+        };
 
-    // Phase 2 inbound-drain: when peer-sync is on, drain the
-    // `ShellNetwork`'s `inbound_app_crdt` buffer every 100 ms and
-    // fan each entry out to every locally-connected app as a
-    // `CRDTIncremental`. 100 ms is well under typical CRDT
-    // convergence cadence and keeps the drainer's CPU footprint
-    // negligible.
-    //
-    // Phase 6 stretches the same drainer to cover three new queues:
-    //   - inbound app-CRDT-signed envelopes (validated + fanned to
-    //     local apps as `SignedCRDTIncremental`),
-    //   - inbound cooperative-scrollback requests (consult local op
-    //     log; if matching ops exist, publish a response over
-    //     gossipsub),
-    //   - inbound cooperative-scrollback responses (delivered to the
-    //     route that asked, recorded in `pending_scrollback` when the
-    //     request went out).
-    //
-    // Every remote entry is routed the same way a local one is: the
-    // `(app_id, cluster_id)` the publishing host stamped on the wire
-    // decides which local apps see it. A frame that arrives without a
-    // route reaches nobody.
+    // Inbound-drain: when peer-sync is on, drain `ShellNetwork`'s queues
+    // every 100ms and fan to local apps — unsigned/signed CRDT deltas,
+    // snapshots, presence, and cooperative scrollback requests/responses.
+    // Every remote entry is routed like a local one, by the `(app_id,
+    // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync
         .as_ref()
@@ -1620,6 +1265,16 @@ pub fn spawn_full(
             std::thread::Builder::new()
                 .name("qos-collab-broker-drain".into())
                 .spawn(move || {
+                    // Name already announced per (peer, cluster) — said
+                    // again only when it changes, not on every
+                    // pointer-rate presence frame.
+                    let mut announced: std::collections::HashMap<(String, u64), (String, u64)> =
+                        std::collections::HashMap::new();
+                    // What the room last said, on a re-ask cadence
+                    // rather than every frame — the lookup takes the
+                    // replica's lock and parses every peer id it holds.
+                    let mut labels: std::collections::HashMap<String, (Instant, PeerLabels)> =
+                        std::collections::HashMap::new();
                     while !quit.load(Ordering::Relaxed) {
                         // Drain inbound unsigned CRDT increments.
                         let drained: Vec<_> = {
@@ -1639,34 +1294,22 @@ pub fn spawn_full(
                                 "PROBE drain incremental -> local fanout",
                             );
                             let event = CollabEvent::CRDTIncremental { data: entry.data };
-                            // The publishing host stamped the originating
-                            // app + cluster onto the wire; deliver only to
-                            // local apps that announced the same pair. No
-                            // local peer is skipped by id — the update
-                            // originated outside this host.
-                            let route = CrdtRoute::record(
-                                entry.app_id,
-                                entry.cluster_id,
-                                entry.record_id,
-                            );
+                            // Deliver only to apps that announced the same
+                            // app+cluster; no local peer skipped by id since
+                            // the update originated outside this host.
+                            let route =
+                                CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
-                        // Drain inbound whole-document snapshots. A
-                        // peer sent one because this host's app told
-                        // it that it had just arrived, so the app on
-                        // this side is the one with no history and
-                        // this is the frame it has been waiting for.
-                        //
+                        // Drain inbound whole-document snapshots, sent
+                        // because this host's app announced `Arrived`.
                         // Delivered as `CRDTUpdate`, which the toolkit
-                        // *merges* rather than assigns — a snapshot
-                        // arriving after the local user has already
-                        // typed must not discard what they typed.
-                        //
-                        // Routed by the full record triple, like an
-                        // increment: a document is the state of one
-                        // record, and handing it to a different one
-                        // would be unrecoverable rather than noisy.
+                        // merges rather than assigns — a snapshot
+                        // arriving after the local user typed must not
+                        // discard it. Routed by the full record triple:
+                        // a document merged into the wrong record is
+                        // unrecoverable, not just noisy.
                         let drained_snapshots: Vec<_> = {
                             let mut buf = match snapshot_inbound.lock() {
                                 Ok(g) => g,
@@ -1684,23 +1327,16 @@ pub fn spawn_full(
                                 "PROBE drain snapshot -> local fanout",
                             );
                             let event = CollabEvent::CRDTUpdate { data: entry.data };
-                            let route = CrdtRoute::record(
-                                entry.app_id,
-                                entry.cluster_id,
-                                entry.record_id,
-                            );
+                            let route =
+                                CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
-                        // Drain inbound presence and fan it to local
-                        // apps, attributed to the peer that sent it.
-                        //
-                        // Cluster scope, matching what a local presence
-                        // frame gets (`CrdtRoute::to_cluster_scope`).
-                        // Narrowing remote presence to a record would
-                        // make a peer visible to people on their own
-                        // machine and invisible to everyone else, which
-                        // is the asymmetry this bridge exists to remove.
+                        // Drain inbound presence, attributed to its
+                        // sender. Cluster scope, matching a local
+                        // presence frame (`CrdtRoute::to_cluster_scope`)
+                        // — narrowing to a record would make a peer
+                        // visible locally but invisible remotely.
                         let drained_presence: Vec<_> = {
                             let mut buf = match presence_inbound.lock() {
                                 Ok(g) => g,
@@ -1709,42 +1345,51 @@ pub fn spawn_full(
                             std::mem::take(&mut *buf)
                         };
                         for entry in drained_presence {
-                            // The frame is the sender's own
-                            // `CollabRequest::Presence`. Anything else
-                            // is a peer speaking a protocol we do not
-                            // have, and is dropped rather than guessed at.
-                            let Ok(CollabRequest::Presence { key, payload }) =
-                                serde_json::from_slice::<CollabRequest>(&entry.frame)
-                            else {
+                            let decoded = match entry.payload {
+                                crate::shell::network::InboundAppPresencePayload::Typed(
+                                    presence,
+                                ) => crate::shell::collab_presence::from_peer(presence),
+                                crate::shell::network::InboundAppPresencePayload::LegacyJson(
+                                    frame,
+                                ) => {
+                                    // Read-only compatibility for peers predating typed
+                                    // presence. No current sender writes this dialect.
+                                    match serde_json::from_slice::<CollabRequest>(&frame) {
+                                        Ok(CollabRequest::Presence { key, payload }) => {
+                                            Some((key, payload))
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                            };
+                            let Some((key, payload)) = decoded else {
                                 continue;
                             };
-                            // A peer saying it has arrived is a peer
-                            // asking for a document it has none of.
-                            // Note it, so the next whole document this
-                            // host's apps produce is published instead
-                            // of stopping at the local fan-out — and so
-                            // the ones produced when nobody is waiting
-                            // are not. See
-                            // `ShellNetwork::note_snapshot_request`.
+                            // `Arrived` means the peer has no document
+                            // yet; note it so the next snapshot this
+                            // host's apps produce gets published.
                             if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
                                 drain_net.note_snapshot_request(&entry.cluster_id);
                             }
-                            // Attributed to the publishing host, not to
-                            // a local peer slot: `user_id` is what the
-                            // receiving app colours the caret by, so two
-                            // peers must never collapse onto one id.
+                            let user_id = remote_participant_id(
+                                &entry.cluster_id,
+                                entry.peer,
+                                &|c| drain_net.peer_labels(c),
+                                &drain_table,
+                                &mut labels,
+                                &mut announced,
+                            );
+                            let route = CrdtRoute::cluster(entry.cluster_id.clone());
                             let event = CollabEvent::RemotePresenceUpdate {
-                                user_id: format!("peer@{}", entry.peer),
+                                user_id,
                                 key,
                                 payload,
                             };
-                            let route = CrdtRoute::cluster(entry.cluster_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
-                        // Drain inbound signed envelopes — validate
-                        // against the local channel state, record into
-                        // the op log on success, then fan to local apps.
+                        // Validate against local channel state, record on success,
+                        // fan to local apps.
                         let drained_signed: Vec<_> = {
                             let mut buf = match signed_inbound.lock() {
                                 Ok(g) => g,
@@ -1767,12 +1412,11 @@ pub fn spawn_full(
                                     if let Ok(mut ch) = drain_channels.lock() {
                                         let state = ch.state_for(artifact);
                                         state.record_validated_op(envelope.clone());
-                                        if envelope.op_class == OpClass::Compaction {
-                                            if let Ok(cp) =
+                                        if envelope.op_class == OpClass::Compaction
+                                            && let Ok(cp) =
                                                 collab_types::parse_compaction_payload(&envelope)
-                                            {
-                                                let _ = state.apply_compaction(&cp);
-                                            }
+                                        {
+                                            let _ = state.apply_compaction(&cp);
                                         }
                                     }
                                     if envelope.op_class == OpClass::Redact {
@@ -1782,16 +1426,25 @@ pub fn spawn_full(
                                             &drain_channels,
                                         );
                                     }
+                                    // Same id and room lookup the peer's
+                                    // presence arrives under, so one
+                                    // person reads as one participant.
+                                    let from_user_id = remote_participant_id(
+                                        &entry.cluster_id,
+                                        entry.peer,
+                                        &|c| drain_net.peer_labels(c),
+                                        &drain_table,
+                                        &mut labels,
+                                        &mut announced,
+                                    );
                                     let event = CollabEvent::SignedCRDTIncremental {
                                         envelope: Box::new(envelope),
-                                        from_user_id: format!("peer-net-{}", entry.peer),
+                                        from_user_id,
                                     };
-                                    // Signed envelopes carry the same
-                                    // app + cluster stamp as the unsigned
-                                    // ones. A peer too old to stamp one
-                                    // leaves both fields empty, and an
-                                    // unaddressed envelope is dropped
-                                    // rather than shown to every app.
+                                    // Same app + cluster stamp as unsigned
+                                    // envelopes; an unaddressed one (too
+                                    // old to stamp) is dropped, not shown
+                                    // to every app.
                                     let route = CrdtRoute::record(
                                         entry.app_id.clone(),
                                         entry.cluster_id.clone(),
@@ -1800,11 +1453,9 @@ pub fn spawn_full(
                                     drain_table.fanout_to_route(&event, u64::MAX, &route);
                                 }
                                 Err(ValidationError::OpAlreadyRedacted { target }) => {
-                                    // Phase 9 §7: late-arriving op via the
-                                    // libp2p bridge whose id is already in
-                                    // our redacted set. Don't fan; do push
-                                    // a marker entry into the log so the
-                                    // seq stream stays gapless.
+                                    // Late-arriving op via Iroh, already
+                                    // redacted: don't fan, push a marker
+                                    // entry so the seq stream stays gapless.
                                     tracing::warn!(
                                         artifact = ?artifact,
                                         target = ?target,
@@ -1847,11 +1498,10 @@ pub fn spawn_full(
                             }
                         }
 
-                        // Drain inbound scrollback requests — consult
-                        // local op log and publish a response if we have
-                        // matching ops. Empty matches are silently
-                        // dropped so the requester doesn't get spammed
-                        // by every peer saying "I don't have it either".
+                        // Drain inbound scrollback requests; publish a
+                        // response only if we have matching ops, so the
+                        // requester isn't spammed by every peer's "I
+                        // don't have it either".
                         let drained_req: Vec<_> = {
                             let mut buf = match sb_req_inbound.lock() {
                                 Ok(g) => g,
@@ -1874,12 +1524,10 @@ pub fn spawn_full(
                             }
                         }
 
-                        // Drain inbound scrollback responses — deliver the
-                        // payload to the route(s) that asked for it. The
-                        // request side recorded them in
-                        // `pending_scrollback`; a response for an artifact
-                        // nobody here asked about is dropped rather than
-                        // shown to every app.
+                        // Drain inbound scrollback responses, deliver to
+                        // the route(s) recorded in `pending_scrollback`;
+                        // an unrequested response is dropped, not
+                        // broadcast.
                         let drained_resp: Vec<_> = {
                             let mut buf = match sb_resp_inbound.lock() {
                                 Ok(g) => g,
@@ -1901,10 +1549,8 @@ pub fn spawn_full(
                                 );
                                 continue;
                             }
-                            // A response from gossipsub is the closing
-                            // half of a cooperative round-trip; mark
-                            // exhausted=true so the receiving app
-                            // doesn't immediately re-ask.
+                            // Closing half of a cooperative round-trip;
+                            // exhausted=true so the app doesn't re-ask.
                             let event = CollabEvent::ScrollbackBatch {
                                 artifact: entry.artifact,
                                 ops: entry.ops,
@@ -1922,20 +1568,17 @@ pub fn spawn_full(
         })
         .flatten();
 
-    // Optional capnp interface. Attaches its `CapnpBrokerState` to the
-    // shared `PeerTable` so every existing fanout call (`translate` →
-    // `table.fanout_to_route`, drain thread → `drain_table.fanout_to_route`,
-    // `BrokerHandle::fanout_event`) also reaches capnp subscribers.
-    // Bind failure surfaces on the return path; a capnp bind failure
-    // does NOT tear down the legacy broker (the shell must keep
-    // running even if only one transport comes up).
+    // Optional capnp interface, attached to the shared `PeerTable` so
+    // every fanout call also reaches capnp subscribers. A capnp bind
+    // failure does NOT tear down the legacy broker.
     let capnp_quit = Arc::new(AtomicBool::new(false));
     let (capnp_thread, capnp_socket_ok) = match &capnp_socket_path {
         Some(path) => match crate::shell::collab_broker_capnp::spawn(
             path.clone(),
             Arc::clone(&table),
             Arc::clone(&channels),
-            peer_sync.clone(),
+            Arc::clone(&publisher),
+            Arc::clone(&identity),
             Arc::clone(&capnp_quit),
         ) {
             Ok(handle) => (Some(handle), true),
@@ -1959,7 +1602,7 @@ pub fn spawn_full(
     Ok(BrokerHandle {
         socket_path,
         capnp_socket_path: effective_capnp_path,
-        listener_thread: Some(listener_thread),
+        listener_thread,
         drain_thread,
         drain_quit,
         capnp_thread,
@@ -1969,16 +1612,367 @@ pub fn spawn_full(
     })
 }
 
+/// The id a remote peer's traffic is attributed under, announcing the
+/// room's name for it first if nobody has said it yet. Every path
+/// showing a remote participant goes through here so they agree. The id
+/// stays the peer handle even once named — a roster entry names a
+/// participant, it does not recolour one. `labels` caches the room's
+/// answer on [`LABEL_TTL`]; `announced` remembers what has been said, so
+/// the roster publishes on change rather than every frame.
+fn remote_participant_id(
+    cluster_id: &str,
+    peer: u64,
+    labels_of: &dyn Fn(&str) -> PeerLabels,
+    table: &PeerTable,
+    labels: &mut HashMap<String, (Instant, PeerLabels)>,
+    announced: &mut HashMap<(String, u64), (String, u64)>,
+) -> String {
+    // Attributed to the publishing host, not a local peer slot: this is
+    // what colours the caret, so two peers must never collapse to one id.
+    let user_id = format!("peer@{peer}");
+    let now = Instant::now();
+    let fresh = labels
+        .get(cluster_id)
+        .is_some_and(|(at, _)| now.duration_since(*at) < LABEL_TTL);
+    if !fresh {
+        labels.insert(cluster_id.to_string(), (now, labels_of(cluster_id)));
+    }
+    // What the room (i.e. whoever invited them) calls this peer. An
+    // unnamed peer has no entry and stays labelled with the id above.
+    let slot = (cluster_id.to_string(), peer);
+    let known = labels
+        .get(cluster_id)
+        .and_then(|(_, m)| m.get(&peer))
+        .map(String::as_str);
+    let prior = announced.get(&slot);
+    let generation = table.connections_seen();
+    let say = roster_announcement(prior.map(|(n, _)| n.as_str()), known, &user_id)
+        // "Changed" alone misses an app that connected after the name
+        // was said — it was never in the audience, and nothing would
+        // say it again. A connection this answer hasn't been said in
+        // front of is itself a reason to say it again.
+        .or_else(|| {
+            let unheard = prior.is_some_and(|(_, at)| *at != generation);
+            unheard.then(|| known.unwrap_or(&user_id).to_string())
+        });
+    if let Some(name) = say {
+        announced.insert(slot, (name.clone(), generation));
+        let roster = CollabEvent::Context {
+            collaborators: vec![ui::collaboration::Collaborator {
+                id: user_id.clone(),
+                name,
+                color: [0.0, 0.0, 0.0],
+                // Always a remote network peer here — an agent joins
+                // over the local socket and is marked there instead.
+                is_agent: false,
+                is_self: false,
+            }],
+            permissions: Vec::new(),
+        };
+        // Cluster scope: a roster is chrome traffic, every app in the
+        // room is a legitimate audience.
+        table.fanout_to_route(
+            &roster,
+            u64::MAX,
+            &CrdtRoute::cluster(cluster_id.to_string()),
+        );
+    }
+    user_id
+}
+
+/// What, if anything, to tell local apps this peer is called. `said` is
+/// the name last announced, `known` what the room says now, `id` the
+/// `peer@<handle>` presence frames carry.
+///
+/// - Room names the peer, differs from last said: say it.
+/// - Room stops naming a peer that was named: say the id — an app holds
+///   a name until told otherwise, so a revoked label must be taken back.
+/// - Room has never named the peer: say nothing, the id is already shown.
+fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Option<String> {
+    let now = known.unwrap_or(id);
+    match said {
+        Some(before) if before == now => None,
+        Some(_) => Some(now.to_string()),
+        None if now == id => None,
+        None => Some(now.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A digest-shaped peer id, as presence frames carry it.
+    const PEER: &str = "peer@5537458103208628978";
+
+    #[test]
+    fn a_named_peer_is_announced_and_then_left_alone() {
+        assert_eq!(
+            super::roster_announcement(None, Some("Xaver"), PEER),
+            Some("Xaver".to_string()),
+        );
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), Some("Xaver"), PEER),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unnamed_peer_is_not_announced() {
+        assert_eq!(super::roster_announcement(None, None, PEER), None);
+    }
+
+    #[test]
+    fn a_revoked_name_reverts_the_peer_to_its_id() {
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), None, PEER),
+            Some(PEER.to_string()),
+        );
+        assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
+    }
+
+    #[test]
+    fn a_remote_peer_is_one_id_across_presence_and_deltas() {
+        let table = Arc::new(super::PeerTable::new());
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::Context { collaborators, .. } = event {
+                    for c in collaborators {
+                        if let Ok(mut g) = sink_seen.lock() {
+                            g.push((c.id.clone(), c.name.clone()));
+                        }
+                    }
+                }
+            }),
+        );
+
+        const HANDLE: u64 = 721_275_257_761_426_039;
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, "Xaver".to_string());
+            m
+        };
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+
+        // Pointer first, then the delta the caret is drawn from.
+        let from_presence = super::remote_participant_id(
+            "room-1",
+            HANDLE,
+            &room,
+            &table,
+            &mut labels,
+            &mut announced,
+        );
+        let from_delta = super::remote_participant_id(
+            "room-1",
+            HANDLE,
+            &room,
+            &table,
+            &mut labels,
+            &mut announced,
+        );
+
+        assert_eq!(
+            from_presence, from_delta,
+            "one peer, one id — a delta attributed differently from the \
+             pointer beside it is the same person drawn twice",
+        );
+        assert_eq!(
+            from_presence,
+            format!("peer@{HANDLE}"),
+            "and the id stays the peer handle once a name is known: a \
+             roster entry names a participant, it does not recolour one",
+        );
+
+        let announcements = seen.lock().unwrap().clone();
+        assert_eq!(
+            announcements,
+            vec![(format!("peer@{HANDLE}"), "Xaver".to_string())],
+            "the room's name is announced exactly once, against the id \
+             both frames arrived under",
+        );
+    }
+
+    /// An app that starts after the name was said still learns it —
+    /// "changes" is measured against what was said, not against who heard it.
+    #[test]
+    fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
+        let table = Arc::new(super::PeerTable::new());
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::Context { collaborators, .. } = event {
+                    for c in collaborators {
+                        if let Ok(mut g) = sink.lock() {
+                            g.push(c.name.clone());
+                        }
+                    }
+                }
+            }),
+        );
+
+        const HANDLE: u64 = 4_242_424_242;
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, "Xaver".to_string());
+            m
+        };
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+        let mut say = || {
+            super::remote_participant_id(
+                "room-1",
+                HANDLE,
+                &room,
+                &table,
+                &mut labels,
+                &mut announced,
+            );
+        };
+
+        say();
+        say();
+        assert_eq!(
+            heard.lock().unwrap().clone(),
+            vec!["Xaver".to_string()],
+            "a name that has not changed is not re-broadcast per frame",
+        );
+
+        let _ = table.next_peer_id();
+        say();
+        assert_eq!(
+            heard.lock().unwrap().clone(),
+            vec!["Xaver".to_string(), "Xaver".to_string()],
+            "the app that just connected was not in the audience for the \
+             first announcement, so the name has to be said again",
+        );
+
+        say();
+        assert_eq!(
+            heard.lock().unwrap().len(),
+            2,
+            "once everyone connected has heard it, it stops being said",
+        );
+    }
+
+    /// Same claim as above, on the production drain rather than the
+    /// helper it calls.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_remote_delta_reaches_an_app_under_the_name_the_room_wrote() {
+        use collab_types::{ArtifactId, ArtifactKind, ChannelId, ChannelState, OpClass, Role};
+
+        // A room this machine governs; the inviter has named the peer
+        // that is about to send something.
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let ws = tree.append_empty_workspace("Design review");
+        let room = tree.room_of(ws).expect("a fresh workspace mints a room");
+        let owner = "quinten".to_string();
+        tree.adopt_ownerless_workspaces(&owner);
+        let xaver = iroh::SecretKey::generate().public();
+        assert!(
+            tree.name_peer(room, &owner, &xaver.to_string(), "Xaver"),
+            "the room's authority may name a peer in it",
+        );
+        let xaver_handle = crate::network::behaviour::peer_liveness_handle(&xaver);
+        let cluster = room.to_string();
+
+        let socket_path = temp_sock("remote-delta-name");
+        let (net, _cmd_rx) =
+            crate::shell::network::shell_network_for_test(tree.shared(), 0xB0BAu64);
+        let net = Arc::new(net);
+        let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))
+            .expect("broker should bind");
+
+        let app = "dev.qos.word-processor";
+        let mut watcher = connect_manager_as(&socket_path, app, &cluster);
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = watcher.poll();
+
+        let (sk, pk) = collab_types::generate_keypair();
+        let artifact = ArtifactId::new();
+        let ra = collab_fixtures::role_attestation(&sk, pk, pk, ChannelId::new(), Role::Owner);
+        let att = ra.attestation.id;
+        let mut state = ChannelState::default();
+        state.authorised_signers.push(pk);
+        state.artifacts.insert(artifact, ArtifactKind::Note);
+        state.register_attestation(ra);
+        handle.register_channel_state(artifact, state);
+
+        net.handle_app_crdt_signed_message(
+            xaver_handle,
+            app.to_string(),
+            cluster,
+            String::new(),
+            collab_fixtures::signed_op(
+                &sk,
+                pk,
+                artifact,
+                att,
+                OpClass::Splice,
+                b"typed on another machine".to_vec(),
+                1,
+            ),
+        );
+
+        let events = poll_until(&mut watcher, 2, Duration::from_secs(2));
+        let attributions: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::SignedCRDTIncremental { from_user_id, .. } => {
+                    Some(from_user_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            attributions,
+            vec![format!("peer@{xaver_handle}")],
+            "the delta has to arrive under the id the same peer's \
+             presence arrives under, got {events:?}",
+        );
+
+        let named: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::Context { collaborators, .. } => collaborators
+                    .first()
+                    .map(|c| (c.id.clone(), c.name.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![(format!("peer@{xaver_handle}"), "Xaver".to_string())],
+            "and the room's name for it has to reach the app, against \
+             that same id, got {events:?}",
+        );
+
+        drop(watcher);
+        drop(handle);
+    }
+
+    /// A rename reaches the people watching, rather than the first name
+    /// standing for the session.
+    #[test]
+    fn a_renamed_peer_is_announced_again() {
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), Some("Xaver Peeters"), PEER),
+            Some("Xaver Peeters".to_string()),
+        );
+    }
+
     use super::*;
     use std::path::Path;
     use std::time::Duration;
     use ui::collaboration::{CollaborationManager, PresencePayload};
     use ui::presence::PresenceKey;
 
-    /// Unique-per-test socket path so concurrent test runs (or a
-    /// resurrected stale inode) don't collide.
+    /// Unique-per-test socket path so concurrent test runs don't collide.
     fn temp_sock(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "qos-collab-broker-{}-{}-{:?}.sock",
@@ -1988,9 +1982,7 @@ mod tests {
         ))
     }
 
-    /// Drain a manager until at least one of each desired variant
-    /// shows up or `timeout` elapses. Returns whatever it managed
-    /// to collect.
+    /// Drain a manager until `want` events show up or `timeout` elapses.
     fn poll_until(
         mgr: &mut CollaborationManager,
         want: usize,
@@ -2008,9 +2000,7 @@ mod tests {
         out
     }
 
-    /// Block briefly until the broker has accepted exactly `n`
-    /// connections. Replaces a wall-clock sleep with a poll on the
-    /// peer table.
+    /// Poll until the broker has accepted `n` connections.
     fn wait_for_peers(handle: &BrokerHandle, n: usize, timeout: Duration) {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
@@ -2021,10 +2011,7 @@ mod tests {
         }
     }
 
-    /// Block until `n` peers have announced a route. Accepting a
-    /// connection and reading its `Hello` are separate steps, and only
-    /// the second one makes a peer addressable — a send that races the
-    /// second peer's `Hello` would otherwise reach nobody.
+    /// Block until `n` peers have announced a route.
     fn wait_for_announced(handle: &BrokerHandle, n: usize, timeout: Duration) {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
@@ -2035,17 +2022,8 @@ mod tests {
         }
     }
 
-    /// Connect a CollaborationManager to `path` announcing `app_id` in
-    /// cluster `cluster_id`, mirroring the toolkit's own `new()`
-    /// constructor but using explicit values so the test is
-    /// independent of process-wide env state.
-    ///
-    /// The env vars are what `ui::collaboration::auto_hello_env` reads
-    /// to build the auto-Hello, so a manager built here announces
-    /// exactly the route the caller names — which is what the broker
-    /// filters delivery on. Left unset, `QUICK_APP_ID` defaults to a
-    /// fresh random uuid per manager, i.e. every peer would be a
-    /// different app and nothing would be delivered.
+    /// Connect a `CollaborationManager` to `path` announcing `app_id` in
+    /// `cluster_id` via the env vars `auto_hello_env` reads.
     fn connect_manager_as(path: &PathBuf, app_id: &str, cluster_id: &str) -> CollaborationManager {
         // SAFETY: tests set these env vars serially before each call;
         // no other thread reads them between sets. Every test in this
@@ -2058,12 +2036,7 @@ mod tests {
         CollaborationManager::new()
     }
 
-    /// Connect a manager announcing a **record** as well as the app and
-    /// cluster — one document's channel. Same env-var mechanism as
-    /// [`connect_manager_as`]; the record is passed to the toolkit
-    /// directly because a process can hold several records at once and
-    /// an environment variable cannot say which of them a given
-    /// connection is for.
+    /// Like [`connect_manager_as`], announcing a **record** too.
     fn connect_manager_on_record(
         path: &PathBuf,
         app_id: &str,
@@ -2080,29 +2053,21 @@ mod tests {
         CollaborationManager::for_record(record)
     }
 
-    /// A fixed cluster uuid the peers in a scenario share. Any valid
-    /// uuid works; a constant keeps the scenarios readable.
     const TEST_CLUSTER: &str = "3f2b1c00-0000-4000-8000-000000000001";
 
-    /// Connect a manager as a peer of the same app in the shared test
-    /// cluster — the common case for "N instances of one app".
+    /// Connect a manager as a peer of the same app in the shared test cluster.
     fn connect_manager(path: &PathBuf) -> CollaborationManager {
         connect_manager_as(path, "test-app", TEST_CLUSTER)
     }
 
     /// Apply every CRDT payload that reached `mgr` into `doc`, the way an
-    /// app's own `ui::App` does (`State::load_incremental` over
-    /// `CollabEvent::CRDTIncremental`). Returns how many payloads landed.
-    ///
-    /// Assertions then read the *receiver's own document*, which is the only
-    /// thing that answers "did this peer get that document's contents".
+    /// app's own `ui::App` does. Returns how many payloads landed.
     fn absorb(mgr: &mut CollaborationManager, doc: &mut automerge::AutoCommit) -> usize {
         absorb_within(mgr, doc, Duration::from_millis(400))
     }
 
-    /// [`absorb`] with an explicit window — the peer-bridge drain thread runs
-    /// on a 100 ms cadence, so a frame that crossed the wire needs longer than
-    /// one that was fanned out inline.
+    /// [`absorb`] with an explicit window — a wire-crossed frame needs
+    /// longer than one fanned out inline (drain runs on a 100ms cadence).
     fn absorb_within(
         mgr: &mut CollaborationManager,
         doc: &mut automerge::AutoCommit,
@@ -2130,8 +2095,7 @@ mod tests {
         }
     }
 
-    /// A document with one field set, plus the incremental delta that
-    /// produced it — what an app sends after an edit.
+    /// A document with one field set, plus the delta that produced it.
     fn edited(key: &str, value: &str) -> (automerge::AutoCommit, Vec<u8>) {
         use automerge::transaction::Transactable;
         let mut doc = automerge::AutoCommit::new();
@@ -2140,12 +2104,7 @@ mod tests {
         (doc, delta)
     }
 
-    /// Two people editing two **different** documents in one room must not
-    /// merge each other's state.
-    ///
-    /// Before records both announced the identical `(app, cluster)` pair, so
-    /// the broker delivered each edit to the other and every keystroke in one
-    /// file landed in the other file's document.
+    /// Two people editing different documents in one room must not merge.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn two_documents_in_one_room_do_not_merge() {
@@ -2154,9 +2113,12 @@ mod tests {
 
         let report = ui::record::RecordId::for_file("/work/report.odt");
         let minutes = ui::record::RecordId::for_file("/work/minutes.odt");
-        // Same app, same room — only the document differs.
-        let mut alice =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &report);
+        let mut alice = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &report,
+        );
         let mut bob = connect_manager_on_record(
             &socket_path,
             "dev.qos.word-processor",
@@ -2171,8 +2133,6 @@ mod tests {
         let (_alice_doc, alice_delta) = edited("body", "the quarterly report");
         alice.send(CollabRequest::SyncIncremental { data: alice_delta });
 
-        // Bob is editing minutes.odt. Whatever arrives, apply it to his own
-        // document and then ask *his* document what it contains.
         let (mut bob_doc, _) = edited("body", "the minutes");
         let applied = absorb(&mut bob, &mut bob_doc);
         assert_eq!(
@@ -2190,10 +2150,8 @@ mod tests {
         drop(handle);
     }
 
-    /// Fold inbound **full-state** frames into `doc` the way the toolkit
-    /// does: load the snapshot as its own document and merge it, rather
-    /// than assigning over the top. A snapshot that arrives after the
-    /// local user has typed must not discard what they typed.
+    /// Fold inbound full-state frames into `doc` by merging (not
+    /// assigning), so a late snapshot doesn't discard local typing.
     fn absorb_snapshots_within(
         mgr: &mut CollaborationManager,
         doc: &mut automerge::AutoCommit,
@@ -2210,21 +2168,12 @@ mod tests {
         applied
     }
 
-    /// A document created here adopts the state of the one it meets.
-    ///
-    /// This is the shape two people get when they each *start* the same
-    /// app rather than opening a document someone shared: two automerge
-    /// documents with no history in common. Deltas between them name
-    /// changes the receiver has never seen, so the receiving widgets
-    /// read nothing — the app looks alive, a peer's caret moves, and the
-    /// page stays blank.
-    ///
-    /// The frame that resolves it is the whole-document snapshot the
-    /// toolkit sends when a peer announces it has arrived. This drives
-    /// the real inbound path for it: queued exactly as
-    /// `ShellNetwork::tick` queues one off gossipsub, picked up by the
-    /// broker's drain thread, delivered as `CRDTUpdate`, and routed by
-    /// the record the sender stamped.
+    /// Two people who each *start* the same app (rather than opening a
+    /// shared document) have two automerge documents with no common
+    /// history; deltas alone would read as nothing. The whole-document
+    /// snapshot sent on `Arrived` is what resolves it — driven here via
+    /// the real inbound path: queued like `ShellNetwork::tick` queues one
+    /// off gossip, drained, delivered as `CRDTUpdate`.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_document_created_here_adopts_the_state_of_the_one_it_meets() {
@@ -2243,19 +2192,13 @@ mod tests {
             TEST_CLUSTER,
             &record,
         );
-        let mut on_other = connect_manager_on_record(
-            &socket_path,
-            "dev.qos.word-processor",
-            TEST_CLUSTER,
-            &other,
-        );
+        let mut on_other =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &other);
         wait_for_peers(&handle, 2, Duration::from_millis(500));
         wait_for_announced(&handle, 2, Duration::from_millis(500));
         let _ = on_record.poll();
         let _ = on_other.poll();
 
-        // The peer's document: created on the other machine, with
-        // content, sharing no history with anything here.
         let (peer_doc, _) = edited("body", "written on another machine");
         let snapshot = {
             let mut d = peer_doc;
@@ -2270,11 +2213,9 @@ mod tests {
             snapshot,
         );
 
-        // A document that started empty here now reads what was typed
-        // there. This is the assertion the whole path exists for.
         let mut here = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_snapshots_within(&mut on_record, &mut here, Duration::from_millis(2000)),
+            absorb_snapshots_within(&mut on_record, &mut here, Duration::from_secs(2)),
             1,
             "the app on that record receives the snapshot"
         );
@@ -2284,12 +2225,11 @@ mod tests {
             "the document created here adopted the peer's state"
         );
 
-        // And the record boundary holds for a whole document exactly as
-        // it does for a delta — more so, since a document merged into
-        // the wrong record cannot be taken back out.
+        // The record boundary holds for a whole document too — more so,
+        // since a document merged into the wrong record can't be undone.
         let mut elsewhere = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_snapshots_within(&mut on_other, &mut elsewhere, Duration::from_millis(1000)),
+            absorb_snapshots_within(&mut on_other, &mut elsewhere, Duration::from_secs(1)),
             0,
             "the app on a different record receives nothing"
         );
@@ -2300,14 +2240,61 @@ mod tests {
         drop(handle);
     }
 
-    /// The record boundary holds across hosts, not just within one.
-    ///
-    /// Gossipsub is a broadcast: a frame reaches every host on the topic, and
-    /// which of their apps see it is decided entirely by the route. So the
-    /// record has to be *on the wire* — a field of `NeighbourMsg::AppCrdt*` —
-    /// and the receiving host has to rebuild it. This drives the real inbound
-    /// path: a frame queued as if it had just arrived off gossipsub, picked up
-    /// by the broker's drain thread, routed by what the sender stamped.
+    /// The record boundary holds across hosts too. Iroh gossip is a
+    /// broadcast — which of a receiving host's apps see a frame is
+    /// decided entirely by the route, so the record has to be on the
+    /// wire (`NeighbourMsg::AppCrdt*`) and rebuilt on arrival.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_json_edit_reaches_the_same_publisher_the_capnp_transport_uses() {
+        use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
+        use crate::shell::collab_outbound::{PeerPublishSink, PeerPublisher};
+
+        let socket_path = temp_sock("json-shared-publisher");
+        let sink = std::sync::Arc::new(RecordingSink::default());
+        let publisher = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
+        let handle =
+            spawn_with_publisher(socket_path.clone(), None, publisher).expect("broker should bind");
+
+        let record = ui::record::RecordId::for_file("/work/shared.odt");
+        let mut app = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &record,
+        );
+        wait_for_peers(&handle, 1, Duration::from_millis(500));
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = app.poll();
+
+        let (_, delta) = edited("body", "typed on this machine");
+        app.send(CollabRequest::SyncIncremental {
+            data: delta.clone(),
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let seen = loop {
+            let seen = sink.snapshot();
+            if !seen.is_empty() || std::time::Instant::now() > deadline {
+                break seen;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            seen,
+            vec![Sent::Incremental {
+                app_id: "dev.qos.word-processor".to_string(),
+                cluster_id: TEST_CLUSTER.to_string(),
+                record_id: record.as_str().to_string(),
+                data: delta,
+            }],
+            "the JSON transport must publish through the shared outbound \
+             path, carrying the same route it fanned out on",
+        );
+        drop(app);
+        drop(handle);
+    }
+
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
@@ -2320,8 +2307,12 @@ mod tests {
 
         let theirs = ui::record::RecordId::for_file("/work/theirs.odt");
         let mine = ui::record::RecordId::for_file("/work/mine.odt");
-        let mut on_theirs =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &theirs);
+        let mut on_theirs = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &theirs,
+        );
         let mut on_mine =
             connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &mine);
         wait_for_peers(&handle, 2, Duration::from_millis(500));
@@ -2329,10 +2320,8 @@ mod tests {
         let _ = on_theirs.poll();
         let _ = on_mine.poll();
 
-        // A frame as it arrives off the wire from another host, stamped with
-        // the record it belongs to. Queued exactly as `ShellNetwork::tick`
-        // queues a received `AppCrdtIncremental`; the drain thread takes it
-        // from here.
+        // A frame as it arrives off the wire, stamped with its record —
+        // queued like `ShellNetwork::tick` queues an `AppCrdtIncremental`.
         let (_, delta) = edited("body", "written on another machine");
         net.handle_app_crdt_message(
             0xFACEu64,
@@ -2344,7 +2333,7 @@ mod tests {
 
         let mut theirs_doc = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_within(&mut on_theirs, &mut theirs_doc, Duration::from_millis(2000)),
+            absorb_within(&mut on_theirs, &mut theirs_doc, Duration::from_secs(2)),
             1,
             "the app on that record receives it"
         );
@@ -2355,7 +2344,7 @@ mod tests {
 
         let mut mine_doc = automerge::AutoCommit::new();
         assert_eq!(
-            absorb_within(&mut on_mine, &mut mine_doc, Duration::from_millis(1000)),
+            absorb_within(&mut on_mine, &mut mine_doc, Duration::from_secs(1)),
             0,
             "the app on a different record receives nothing"
         );
@@ -2366,12 +2355,8 @@ mod tests {
         drop(handle);
     }
 
-    /// Sharing one record shares **only** that record.
-    ///
-    /// The sender holds two documents open — the shape of a reviewer with two
-    /// files, or the PDF reader with two documents' markup. The receiver was
-    /// given a reference to one of them. It must converge on that one and
-    /// never see the other.
+    /// Sharing one record shares **only** that record — the sender holds
+    /// two documents open, the receiver was given one of them.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_peer_given_one_record_receives_only_that_record() {
@@ -2381,18 +2366,24 @@ mod tests {
         let shared = ui::record::RecordId::for_file("/work/shared.odt");
         let private = ui::record::RecordId::for_file("/work/private.odt");
 
-        // One process, two records, two channels.
-        let mut sender_shared =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+        let mut sender_shared = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &shared,
+        );
         let mut sender_private = connect_manager_on_record(
             &socket_path,
             "dev.qos.word-processor",
             TEST_CLUSTER,
             &private,
         );
-        // The peer the shared record was shared with.
-        let mut receiver =
-            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+        let mut receiver = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &shared,
+        );
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
         wait_for_announced(&handle, 3, Duration::from_millis(500));
@@ -2403,7 +2394,9 @@ mod tests {
         let (_, shared_delta) = edited("shared_body", "everyone may read this");
         let (_, private_delta) = edited("private_body", "nobody else may read this");
         sender_shared.send(CollabRequest::SyncIncremental { data: shared_delta });
-        sender_private.send(CollabRequest::SyncIncremental { data: private_delta });
+        sender_private.send(CollabRequest::SyncIncremental {
+            data: private_delta,
+        });
 
         let mut received = automerge::AutoCommit::new();
         let applied = absorb(&mut receiver, &mut received);
@@ -2431,15 +2424,10 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_room_subscription_hears_every_app_in_the_room_as_one_stream() {
-        // The property the compositor's peer cursors rest on.
-        //
-        // Presence is widened to cluster scope on the way out, so a
-        // subscription that names a room hears every app in it. Two
-        // different apps pointing inside one room reach one
-        // subscriber, which is what makes a cursor crossing from one
-        // to the other a single peer moving rather than a second peer
-        // appearing. A third app in a different room must not be
-        // heard at all, or "who is here" would leak between rooms.
+        // The property the compositor's peer cursors rest on: presence
+        // widens to cluster scope, so two apps in one room reach one
+        // subscriber (one cursor moving, not a second appearing), while
+        // a third app in a different room must not be heard at all.
         let socket_path = temp_sock("room-sub");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
@@ -2449,13 +2437,13 @@ mod tests {
         let _sub = handle.subscribe_rooms(
             vec![TEST_CLUSTER.to_string()],
             Box::new(move |event, route| {
-                if let CollabEvent::RemotePresenceUpdate { payload, .. } = event {
-                    if let ui::collaboration::PresencePayload::Pointer { x, .. } = payload {
-                        sink_heard
-                            .lock()
-                            .unwrap()
-                            .push((route.cluster_id.clone(), format!("{x}")));
-                    }
+                if let CollabEvent::RemotePresenceUpdate { payload, .. } = event
+                    && let ui::collaboration::PresencePayload::Pointer { x, .. } = payload
+                {
+                    sink_heard
+                        .lock()
+                        .unwrap()
+                        .push((route.cluster_id.clone(), format!("{x}")));
                 }
             }),
         );
@@ -2474,7 +2462,7 @@ mod tests {
             payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 1.0 },
         });
         words.send(CollabRequest::Presence {
-            key: key.clone(),
+            key: key,
             payload: ui::collaboration::PresencePayload::Pointer { x: 2.0, y: 2.0 },
         });
         elsewhere.send(CollabRequest::Presence {
@@ -2488,9 +2476,8 @@ mod tests {
         while std::time::Instant::now() < deadline && heard.lock().unwrap().len() < 2 {
             std::thread::sleep(Duration::from_millis(5));
         }
-        // Give the third frame the same chance to arrive as the two
-        // that should — otherwise "it did not leak" only says "it was
-        // slower", and the test would pass on a race it never ran.
+        // Give the third frame the same chance as the two that should
+        // arrive, or "it did not leak" just means "it was slower".
         std::thread::sleep(Duration::from_millis(150));
 
         let got = heard.lock().unwrap().clone();
@@ -2517,9 +2504,7 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn broker_fans_out_to_three_peers() {
-        // Phase 1 acceptance test: prove N=3 fan-out, not just N=2.
-        // Mirrors `ui/tests/real_socket_two_peer.rs` but exercises the
-        // production module and a peer count beyond the test broker.
+        // Prove N=3 fan-out, not just N=2.
         let socket_path = temp_sock("fanout3");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
@@ -2531,13 +2516,10 @@ mod tests {
         assert_eq!(handle.peer_count(), 3, "broker should see all three peers");
         wait_for_announced(&handle, 3, Duration::from_millis(500));
 
-        // Drain the Hello echoes. The broker swallows them, so this is
-        // just a steady-state hygiene poll.
         let _ = peer_a.poll();
         let _ = peer_b.poll();
         let _ = peer_c.poll();
 
-        // --- Assertion 1: SyncIncremental from A fans out to B and C.
         peer_a.send(CollabRequest::SyncIncremental {
             data: b"hello-world".to_vec(),
         });
@@ -2573,7 +2555,6 @@ mod tests {
         assert_eq!(crdt_b[0].as_slice(), b"hello-world");
         assert_eq!(crdt_c[0].as_slice(), b"hello-world");
 
-        // --- Assertion 2: source peer does NOT see its own update.
         let events_a = peer_a.poll();
         assert!(
             !events_a.iter().any(|e| matches!(
@@ -2583,7 +2564,8 @@ mod tests {
             "peer A must not see its own SyncIncremental echoed back, got {events_a:?}"
         );
 
-        // --- Assertion 3: presence updates carry the synthetic user_id.
+        // Presence attributed to a participant, same on every screen. No
+        // room here to name anyone, so B is called this machine's own id.
         peer_b.send(CollabRequest::Presence {
             key: PresenceKey::Workspace { id: "42".into() },
             payload: PresencePayload::Arrived,
@@ -2591,34 +2573,35 @@ mod tests {
         let events_a = poll_until(&mut peer_a, 1, Duration::from_millis(500));
         let events_c = poll_until(&mut peer_c, 1, Duration::from_millis(500));
 
-        // peer B was the second to connect → its synthetic id is "peer-1".
-        let saw_a = events_a.iter().any(|e| {
-            matches!(
-                e,
+        let arrived = |events: &[CollabEvent]| -> Option<String> {
+            events.iter().find_map(|e| match e {
                 CollabEvent::RemotePresenceUpdate {
                     user_id,
                     key: PresenceKey::Workspace { id },
                     payload: PresencePayload::Arrived,
-                } if user_id == "peer-1" && id == "42"
-            )
-        });
-        let saw_c = events_c.iter().any(|e| {
-            matches!(
-                e,
-                CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key: PresenceKey::Workspace { id },
-                    payload: PresencePayload::Arrived,
-                } if user_id == "peer-1" && id == "42"
-            )
-        });
-        assert!(
-            saw_a,
-            "peer A should see peer-1's Workspace 42 Arrived, got {events_a:?}"
+                } if id == "42" => Some(user_id.clone()),
+                _ => None,
+            })
+        };
+        let saw_a = arrived(&events_a)
+            .unwrap_or_else(|| panic!("peer A saw no Workspace 42 Arrived, got {events_a:?}"));
+        let saw_c = arrived(&events_c)
+            .unwrap_or_else(|| panic!("peer C saw no Workspace 42 Arrived, got {events_c:?}"));
+
+        assert_eq!(
+            saw_a, saw_c,
+            "one participant must read the same on every screen",
         );
         assert!(
-            saw_c,
-            "peer C should see peer-1's Workspace 42 Arrived, got {events_c:?}"
+            !saw_a.starts_with("peer-"),
+            "presence is attributed to a connection slot ({saw_a}) rather \
+             than to whoever is on the other end of it",
+        );
+        assert_eq!(
+            saw_a,
+            crate::shell::state::local_user_id(),
+            "with no room to ask, a local app's traffic belongs to the \
+             person at this machine",
         );
 
         drop(peer_a);
@@ -2641,10 +2624,7 @@ mod tests {
         wait_for_peers(&handle, 3, Duration::from_millis(500));
         wait_for_announced(&handle, 3, Duration::from_millis(500));
 
-        // Drop B; its reader thread observes EOF and removes it from
-        // the table. We then assert a send from A reaches only C.
         drop(peer_b);
-        // Give the reader thread a chance to notice EOF and evict.
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
         while std::time::Instant::now() < deadline && handle.peer_count() > 2 {
             std::thread::sleep(Duration::from_millis(10));
@@ -2709,14 +2689,9 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn crdt_deltas_do_not_cross_app_boundaries() {
-        // The leak this closes: the broker used to write every CRDT
-        // payload to every connected socket, so a note-taking app
-        // received a terminal's document deltas.
-        //
-        // Three peers in ONE cluster: two instances of "app-alpha" and
-        // one of "app-beta". Alpha-1 sends a delta. Alpha-2 must get
-        // it (otherwise this test would pass by simply breaking
-        // delivery) and beta must not see it at all.
+        // Two instances of app-alpha and one of app-beta in one cluster.
+        // Alpha-1's delta must reach alpha-2 (or this would just pass by
+        // breaking delivery) and never beta.
         let socket_path = temp_sock("app-isolation");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
@@ -2736,7 +2711,6 @@ mod tests {
             data: b"alpha-private".to_vec(),
         });
 
-        // The delta reaches the other instance of the same app.
         let events_alpha_2 = poll_until(&mut alpha_2, 1, Duration::from_millis(500));
         let alpha_2_crdt: Vec<&Vec<u8>> = events_alpha_2
             .iter()
@@ -2753,8 +2727,6 @@ mod tests {
         );
         assert_eq!(alpha_2_crdt[0].as_slice(), b"alpha-private");
 
-        // The other app sees nothing. Polled over the same window the
-        // positive half needed, so "nothing" is not just "not yet".
         let events_beta = poll_until(&mut beta, 1, Duration::from_millis(500));
         assert!(
             !events_beta
@@ -2772,8 +2744,6 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn crdt_deltas_do_not_cross_cluster_boundaries() {
-        // Same app id, different collaboration clusters: a document
-        // shared in one cluster must not leak into the other.
         let socket_path = temp_sock("cluster-isolation");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
@@ -2817,14 +2787,9 @@ mod tests {
         drop(handle);
     }
 
-    /// The nil room addresses nobody, in either direction.
-    ///
-    /// It is not the empty string, so without an explicit rule every
-    /// workspace still carrying the unminted sentinel — on every
-    /// machine at once — would be one enormous shared room. That is the
-    /// exact failure that deriving the cluster from a local counter
-    /// used to cause, and it must not reappear through the migration
-    /// window.
+    /// The nil room addresses nobody, in either direction — not the
+    /// empty string, so every workspace still carrying the unminted
+    /// sentinel doesn't collapse into one shared room.
     #[test]
     fn the_unminted_room_addresses_nobody() {
         let unminted = CrdtRoute::app(
@@ -2859,13 +2824,9 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker)]
     fn silent_client_receives_nothing() {
-        // Fail-closed: a connection that never said Hello has no route,
-        // so nothing is addressed to it. It must not fall back to
-        // receiving everything.
-        //
-        // Driven over a raw socket rather than a CollaborationManager,
-        // because the manager always auto-Hellos on construct — the
-        // silent case only exists at the wire level.
+        // Fail-closed: no Hello means no route, must not fall back to
+        // receiving everything. Driven over a raw socket since
+        // CollaborationManager always auto-Hellos on construct.
         let socket_path = temp_sock("silent-client");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
@@ -2874,9 +2835,7 @@ mod tests {
         silent
             .set_read_timeout(Some(Duration::from_millis(500)))
             .expect("set read timeout");
-        // A second announced peer proves the fan-out is live at all —
-        // otherwise "silent got nothing" could just mean the delta
-        // never left the sender.
+        // Proves fan-out is live: rules out "delta never left the sender".
         let mut listener_peer = connect_manager(&socket_path);
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
@@ -2903,8 +2862,6 @@ mod tests {
             "the announced peer must receive the delta, got {heard:?}"
         );
 
-        // Nothing was ever written to the silent socket: the read
-        // times out rather than yielding a frame header.
         let mut len_buf = [0u8; 4];
         let read = silent.read_exact(&mut len_buf);
         assert!(
@@ -2914,8 +2871,6 @@ mod tests {
             u32::from_le_bytes(len_buf),
         );
 
-        // And a frame *from* the silent client is not fanned out
-        // either — the broker cannot address it anywhere.
         let req = serde_json::to_vec(&CollabRequest::SyncIncremental {
             data: b"from-the-silent-one".to_vec(),
         })
@@ -2945,18 +2900,13 @@ mod tests {
     // -----------------------------------------------------------------
     // Launch → sandbox env → collaboration room.
     //
-    // The tests above address peers by hand. The ones below drive the
-    // production chain instead: the argv the compositor builds when the
-    // user opens an app, the bwrap argv the launcher builds from it,
-    // the env that argv gives the child, and finally what the live
-    // broker does or does not deliver to a manager built under that
-    // env. Nothing in between is stubbed, so a break anywhere along the
-    // chain — a dropped flag, a renamed variable, a lost precedence
-    // rule — surfaces here as a delivery failure.
+    // Tests below drive the production chain: launcher argv → bwrap argv
+    // → child env → broker delivery, nothing stubbed, so a break
+    // anywhere surfaces as a delivery failure here.
     // -----------------------------------------------------------------
 
-    /// Write a minimal but real package manifest and return the
-    /// [`InstalledApp`] the registry reader would have produced for it.
+    /// Write a minimal real package manifest and return the matching
+    /// [`InstalledApp`].
     fn staged_app(dir: &Path, package_id: &str) -> crate::shell::launcher::InstalledApp {
         let manifest_path = dir.join(format!("{package_id}.toml"));
         std::fs::write(
@@ -2984,23 +2934,18 @@ mod tests {
 
     /// Read one flag's value out of an argv, or panic naming the flag.
     fn flag_value(argv: &[String], flag: &str) -> String {
-        argv.windows(2)
-            .find(|w| w[0] == flag)
-            .map(|w| w[1].clone())
-            .unwrap_or_else(|| panic!("argv is missing {flag}: {argv:?}"))
+        argv.windows(2).find(|w| w[0] == flag).map_or_else(
+            || panic!("argv is missing {flag}: {argv:?}"),
+            |w| w[1].clone(),
+        )
     }
 
     /// The environment a child opened into `workspace` actually
-    /// receives, derived by walking the real launch chain:
-    ///
-    /// 1. the compositor renders the `qos-launcher` invocation,
-    /// 2. we read back the flags `qos-launcher` parses from it,
-    /// 3. the launcher builds the bwrap argv from that manifest and
-    ///    splices the workspace in exactly where `run_with` does,
-    /// 4. every `--setenv K V` triple in that argv is collected.
-    ///
-    /// Step 4 is the child's view of the world, which is precisely what
-    /// `auto_hello_env` reads.
+    /// receives, derived by walking the real launch chain: the
+    /// `qos-launcher` invocation → its parsed flags → the bwrap argv the
+    /// launcher builds from the manifest, workspace spliced in exactly
+    /// as `run_with` does → every `--setenv K V` in that argv, which is
+    /// what `auto_hello_env` reads.
     fn sandbox_env_for_launch(
         dir: &Path,
         package_id: &str,
@@ -3032,8 +2977,8 @@ mod tests {
             None,
             &launcher::capabilities::CapabilityPlan::empty(),
         );
-        // The same splice `run_with` performs: in front of the trailing
-        // entrypoint token, so bwrap still reads it as a flag.
+        // Same splice `run_with` performs: before the trailing entrypoint
+        // token, so bwrap still reads it as a flag.
         let entry = argv.pop().expect("argv non-empty");
         launcher::sandbox::push_workspace_id(&mut argv, &workspace_id);
         argv.push(entry);
@@ -3051,19 +2996,9 @@ mod tests {
         env
     }
 
-    /// Connect a manager under the env a real launch into `room`
-    /// would have given the app.
-    ///
-    /// `room` is the workspace's durable identity, which is what the
-    /// launch chain actually carries — the local `WorkspaceId` never
-    /// reaches the sandbox. Tests read it off a real
-    /// `Workspace`/`WorkspaceTree` rather than inventing one, so what
-    /// they exercise is the value production would have used.
-    ///
-    /// `instance` goes to `QUICK_APP_ID` — the standalone-dev
-    /// per-instance identity, deliberately *different* for every peer
-    /// here. Under a launched session it must not influence routing,
-    /// and leaving it set and distinct is what proves that.
+    /// Connect a manager under the env a real launch into `room` would
+    /// give the app. `instance` (→ `QUICK_APP_ID`) is deliberately
+    /// different per peer, to prove it can't influence routing.
     fn connect_as_launched_app(
         sock: &PathBuf,
         dir: &Path,
@@ -3132,14 +3067,13 @@ mod tests {
             crate::shell::state::WorkspaceId(7),
             "here",
         );
-        // Two windows of one app, opened into the same workspace. Their
-        // per-instance dev ids differ; that must not matter.
+        // Two windows of one app; their per-instance dev ids differ.
         let mut first =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "alice");
         let mut second =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "bob");
 
-        wait_for_announced(&handle, 2, Duration::from_millis(2000));
+        wait_for_announced(&handle, 2, Duration::from_secs(2));
         let _ = first.poll();
         let _ = second.poll();
 
@@ -3147,7 +3081,7 @@ mod tests {
             data: b"same-room".to_vec(),
         });
 
-        let received = poll_until(&mut second, 1, Duration::from_millis(1000));
+        let received = poll_until(&mut second, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&received),
             vec![b"same-room".to_vec()],
@@ -3165,11 +3099,8 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker, process_env)]
     fn apps_launched_into_different_workspaces_do_not_exchange_deltas() {
-        // The half that matters. A workspace is a room: an app opened
-        // in workspace 7 must never see the document of the same app
-        // opened in workspace 8. Restoring the old
-        // broadcast-to-every-socket behaviour makes this fail, which a
-        // positive-only test would not.
+        // The half that matters: a workspace is a room, so app-in-7 must
+        // never see app-in-8's document.
         let dir = scratch_dir("diff-ws");
         let socket_path = temp_sock("diff-workspace");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
@@ -3183,9 +3114,8 @@ mod tests {
             "elsewhere",
         );
 
-        // Two peers in `here` — the second is the control. Without it,
-        // "the other workspace heard nothing" could just mean the delta
-        // never left the sender.
+        // Second peer in `here` is the control, ruling out "delta never
+        // left the sender" as the reason the other workspace heard nothing.
         let mut sender =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here.room, "alice");
         let mut same_workspace =
@@ -3193,7 +3123,7 @@ mod tests {
         let mut other_workspace =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere.room, "carol");
 
-        wait_for_announced(&handle, 3, Duration::from_millis(2000));
+        wait_for_announced(&handle, 3, Duration::from_secs(2));
         let _ = sender.poll();
         let _ = same_workspace.poll();
         let _ = other_workspace.poll();
@@ -3202,8 +3132,7 @@ mod tests {
             data: b"workspace-seven-only".to_vec(),
         });
 
-        // Control: the room the sender is in does receive it.
-        let heard = poll_until(&mut same_workspace, 1, Duration::from_millis(1000));
+        let heard = poll_until(&mut same_workspace, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&heard),
             vec![b"workspace-seven-only".to_vec()],
@@ -3211,9 +3140,7 @@ mod tests {
              got {heard:?}"
         );
 
-        // The assertion this whole change exists for. Polled over the
-        // same window the control needed, so "nothing" is not "not yet".
-        let leaked = poll_until(&mut other_workspace, 1, Duration::from_millis(1000));
+        let leaked = poll_until(&mut other_workspace, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&leaked).is_empty(),
             "an app opened in workspace {} must receive no CRDT payload \
@@ -3233,9 +3160,6 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker, process_env)]
     fn a_launch_tells_the_app_its_package_and_its_workspace() {
-        // The precedence rule read straight off the env the launcher
-        // produces: under a session the package id and the workspace
-        // are both present, so they win over the dev-only override.
         let dir = scratch_dir("env");
         let workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(7),
@@ -3243,10 +3167,10 @@ mod tests {
         );
         let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace.room);
         let lookup = |key: &str| {
-            env.iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| panic!("sandbox env is missing {key}: {env:?}"))
+            env.iter().find(|(k, _)| k == key).map_or_else(
+                || panic!("sandbox env is missing {key}: {env:?}"),
+                |(_, v)| v.clone(),
+            )
         };
 
         assert_eq!(
@@ -3259,10 +3183,7 @@ mod tests {
             workspace.collab_cluster_id().to_string(),
             "the launcher must tell the app which workspace it was opened into"
         );
-        // And it must be the workspace's *durable* identity, not
-        // anything derived from the local handle. Pinned against the
-        // stored room verbatim: if `collab_cluster_id` ever goes back
-        // to deriving from `id`, the two differ and this fails.
+        // Durable identity, pinned against the stored room verbatim.
         assert_eq!(
             lookup("QOS_WORKSPACE_ID"),
             workspace.room.to_string(),
@@ -3270,8 +3191,6 @@ mod tests {
              stored room id, which is the only value a peer on another \
              machine can also hold"
         );
-        // Two workspaces are two rooms, not one — even when their local
-        // handles are adjacent counter values.
         assert_ne!(
             crate::shell::state::Workspace::test_default(crate::shell::state::WorkspaceId(7), "a",)
                 .collab_cluster_id(),
@@ -3279,9 +3198,6 @@ mod tests {
                 .collab_cluster_id(),
             "distinct workspaces must have distinct cluster ids"
         );
-        // The half a local-id derivation could never give us: two
-        // workspaces that share a local handle — "workspace 7" on two
-        // different machines — are still two different rooms.
         assert_ne!(
             crate::shell::state::Workspace::test_default(
                 crate::shell::state::WorkspaceId(7),
@@ -3300,14 +3216,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The route the broker recorded for the peer it accepted at
-    /// `index` — the `(app_id, cluster_id)` pair the app announced on
-    /// its `Hello`, derived inside the app from the `QOS_WORKSPACE_ID`
-    /// the launch put in its sandbox.
-    ///
-    /// Read out of the live peer table rather than reconstructed, so a
-    /// test that ships this route over the wire ships the value
-    /// production would have shipped.
+    /// The route recorded for the peer accepted at `index`, read from
+    /// the live peer table so the test ships production's actual value.
     fn announced_route(handle: &BrokerHandle, index: usize) -> CrdtRoute {
         handle
             .peers
@@ -3317,17 +3227,10 @@ mod tests {
             .expect("peer should have announced a route")
     }
 
-    /// One hop of the peer-sync wire, minus libp2p.
-    ///
-    /// Both ends of the bridge, verbatim. The sending host's
-    /// `reader_loop` stamps the sender's announced route onto the frame
-    /// and hands it to `ShellNetwork::publish_app_crdt_incremental`;
-    /// the receiving host's drain thread rebuilds
-    /// `CrdtRoute::app(app_id, cluster_id)` from the frame and calls
-    /// `fanout_to_route`. Everything between the two is transport, and
-    /// gossipsub is a broadcast — so a frame reaches *every* host
-    /// subscribed to the topic, and which of their apps see it is
-    /// decided entirely by the route. That is the decision under test.
+    /// One hop of the peer-sync wire, minus Iroh — both ends of the
+    /// bridge verbatim. Gossip is a broadcast: a frame reaches every
+    /// host on the topic, and which of their apps see it is decided
+    /// entirely by the route. That's the decision under test.
     fn deliver_over_the_wire(to: &BrokerHandle, wire_route: &CrdtRoute, data: &[u8]) {
         to.fanout_event(
             &CollabEvent::CRDTIncremental {
@@ -3341,10 +3244,8 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker, process_env)]
     fn a_workspace_is_the_same_room_after_a_restart() {
-        // "The workspace I had yesterday is the workspace I have
-        // today." A room id that changed on restart would quietly
-        // strand every peer who had been invited to it, and quietly
-        // orphan the app windows the user reopens into it.
+        // A room id that changed on restart would strand every invited
+        // peer and orphan the app windows reopened into it.
         let dir = scratch_dir("restart");
         let state_dir = tempfile::tempdir().expect("tempdir");
         let state_path = state_dir.path().join("state.json");
@@ -3354,7 +3255,7 @@ mod tests {
         let ws_id = crate::shell::state::WorkspaceId(7);
         let other_id = crate::shell::state::WorkspaceId(8);
 
-        // --- First run of the compositor. ---------------------------
+        // First run of the compositor.
         let mut first_run = crate::shell::state::WorkspaceTree::default();
         first_run.persist_path = Some(state_path.clone());
         first_run
@@ -3369,17 +3270,14 @@ mod tests {
         let other_room = first_run.room_of(other_id).expect("workspace exists");
         first_run.flush_to_disk();
 
-        // An app the user opened before the restart, through the real
-        // launch chain.
         let mut before =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", room_before, "alice");
 
-        // --- The process dies; a new one loads the same state file. --
+        // The process dies; a new one loads the same state file.
         let (mut second_run, _) = crate::shell::persist::load_or_default(&state_path);
-        second_run.persist_path = Some(state_path.clone());
-        // The boot-time migration must find nothing to do: these
-        // workspaces already have identities, and re-minting them is
-        // exactly the bug this test exists to catch.
+        second_run.persist_path = Some(state_path);
+        // Boot-time migration must find nothing to do: re-minting an
+        // already-identified workspace is the bug this test catches.
         let minted = second_run.adopt_roomless_workspaces();
         assert!(
             minted.is_empty(),
@@ -3396,12 +3294,8 @@ mod tests {
              restart as before it"
         );
 
-        // An app the user opens after the restart, through the same
-        // launch chain. Nothing here is told about `before`.
         let mut after =
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", room_after, "bob");
-        // Control: an app in the *other* workspace, so "the delta
-        // arrived" cannot be the broker having lost its routing.
         let room_other_after = second_run
             .room_of(other_id)
             .expect("the second workspace must survive too");
@@ -3414,7 +3308,7 @@ mod tests {
             "carol",
         );
 
-        wait_for_announced(&handle, 3, Duration::from_millis(2000));
+        wait_for_announced(&handle, 3, Duration::from_secs(2));
         let _ = before.poll();
         let _ = after.poll();
         let _ = elsewhere.poll();
@@ -3423,7 +3317,7 @@ mod tests {
             data: b"still-the-same-room".to_vec(),
         });
 
-        let heard = poll_until(&mut before, 1, Duration::from_millis(1000));
+        let heard = poll_until(&mut before, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&heard),
             vec![b"still-the-same-room".to_vec()],
@@ -3432,7 +3326,7 @@ mod tests {
              Got {heard:?}"
         );
 
-        let leaked = poll_until(&mut elsewhere, 1, Duration::from_millis(1000));
+        let leaked = poll_until(&mut elsewhere, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&leaked).is_empty(),
             "the other workspace must still be a different room after the \
@@ -3450,15 +3344,9 @@ mod tests {
     #[test]
     #[serial_test::serial(collab_broker, process_env)]
     fn an_invited_host_joins_the_room_and_an_uninvited_one_does_not() {
-        // The cross-machine claim. Three hosts, three brokers, three
-        // independently-built workspace trees — and, deliberately, the
-        // same local workspace id on all three, because that number
-        // used to be what decided the room and it must now decide
-        // nothing.
-        //
-        // Only the second host accepts the first's invite. One frame
-        // goes onto the (broadcast) wire; the assertions are about
-        // which apps it reaches.
+        // Three hosts, three brokers, deliberately the same local
+        // workspace id on all three — that must not decide the room.
+        // Only the second host accepts the invite.
         let dir = scratch_dir("cross-host");
         let host_sock = temp_sock("cross-host-a");
         let guest_sock = temp_sock("cross-host-b");
@@ -3499,9 +3387,7 @@ mod tests {
         assert_ne!(host_room, stranger_room);
         assert_ne!(guest_room_before, stranger_room);
 
-        // The guest's app as it stood *before* the invite. Same broker,
-        // same package, same everything except the room — which is what
-        // makes the post-invite result attributable to the invite.
+        // The guest's app before the invite, for attribution.
         let mut guest_before_invite = connect_as_launched_app(
             &guest_sock,
             &dir,
@@ -3510,8 +3396,10 @@ mod tests {
             "bob-before",
         );
 
-        // --- The invite. Production path on both ends. ---------------
-        let owner_key = libp2p::identity::Keypair::generate_ed25519();
+        // The invite, production path on both ends.
+        let owner_key = iroh::SecretKey::generate();
+        let owner_addr = iroh::EndpointAddr::new(owner_key.public())
+            .with_ip_addr("127.0.0.1:4001".parse().unwrap());
         let token = crate::network::invite::make_invite_token(
             &owner_key,
             host_tree
@@ -3519,7 +3407,7 @@ mod tests {
                 .iter()
                 .find(|w| w.id == local_id)
                 .expect("host workspace"),
-            "/ip4/127.0.0.1/tcp/4001",
+            &owner_addr,
             3600,
         )
         .expect("the host issues an invite");
@@ -3540,7 +3428,6 @@ mod tests {
             "the uninvited host must be untouched by someone else's invite"
         );
 
-        // --- Each host launches the app into its own workspace. ------
         let mut host_app =
             connect_as_launched_app(&host_sock, &dir, "dev.qos.notes", host_room, "alice");
         let mut guest_app = connect_as_launched_app(
@@ -3558,39 +3445,37 @@ mod tests {
             "carol",
         );
 
-        wait_for_announced(&host_broker, 1, Duration::from_millis(2000));
-        wait_for_announced(&guest_broker, 2, Duration::from_millis(2000));
-        wait_for_announced(&stranger_broker, 1, Duration::from_millis(2000));
+        wait_for_announced(&host_broker, 1, Duration::from_secs(2));
+        wait_for_announced(&guest_broker, 2, Duration::from_secs(2));
+        wait_for_announced(&stranger_broker, 1, Duration::from_secs(2));
         let _ = host_app.poll();
         let _ = guest_app.poll();
         let _ = guest_before_invite.poll();
         let _ = stranger_app.poll();
 
-        // --- One frame, broadcast to both other hosts. ---------------
+        // One frame, broadcast to both other hosts.
         let wire_route = announced_route(&host_broker, 0);
         let payload = b"from-the-host".to_vec();
         deliver_over_the_wire(&guest_broker, &wire_route, &payload);
         deliver_over_the_wire(&stranger_broker, &wire_route, &payload);
 
-        let guest_heard = poll_until(&mut guest_app, 1, Duration::from_millis(1000));
+        let guest_heard = poll_until(&mut guest_app, 1, Duration::from_secs(1));
         assert_eq!(
             crdt_payloads(&guest_heard),
-            vec![payload.clone()],
+            vec![payload],
             "an app on a host that accepted the invite must receive the \
              inviter's delta — that is the whole point of the invite \
              carrying the room. Got {guest_heard:?}"
         );
 
-        // Both negatives are polled over the same window the positive
-        // needed, so "nothing" is not "not yet".
-        let stranger_heard = poll_until(&mut stranger_app, 1, Duration::from_millis(1000));
+        let stranger_heard = poll_until(&mut stranger_app, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&stranger_heard).is_empty(),
             "an app on a host that was never invited must receive nothing \
              from the same broadcast frame; it received {:?}",
             crdt_payloads(&stranger_heard),
         );
-        let pre_invite_heard = poll_until(&mut guest_before_invite, 1, Duration::from_millis(1000));
+        let pre_invite_heard = poll_until(&mut guest_before_invite, 1, Duration::from_secs(1));
         assert!(
             crdt_payloads(&pre_invite_heard).is_empty(),
             "an app the guest opened before accepting the invite is in the \

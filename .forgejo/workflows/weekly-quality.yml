@@ -1,0 +1,74 @@
+name: Weekly full static and size gates
+
+# These compile-heavy whole-tree gates do not need to consume the shared runner
+# on every pull request. Nightly covers compilation/tests; this weekly job covers
+# the warning ratchet, Clippy baseline, docs, and release-size promises.
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: weekly-quality
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    runs-on: runner
+    timeout-minutes: 240
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Prepare remote compiler cache
+        run: bash tools/ci-sccache.sh prepare
+
+      - name: Restore Cargo downloads
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
+
+      - name: No rustc warnings
+        run: bash tools/ci-measure.sh "workspace warnings" -- tools/check-warnings.sh
+
+      - name: Clippy ratchet
+        run: bash tools/ci-measure.sh "workspace clippy" -- tools/clippy-ratchet.sh
+
+      - name: Documentation (warnings are errors)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: >-
+          bash tools/ci-measure.sh "workspace docs" --
+          cargo doc --workspace --no-deps --locked
+
+      - name: Build release binaries
+        run: >-
+          bash tools/ci-measure.sh "workspace release" --
+          cargo build --release --workspace --locked
+
+      - name: Check binary sizes against budget
+        run: tools/check-binary-size.sh
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: bash tools/ci-sccache.sh report || true

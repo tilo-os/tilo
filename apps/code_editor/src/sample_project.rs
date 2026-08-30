@@ -42,7 +42,7 @@ fn parse_limit(args: &[String]) -> Option<u64> {
 }
 "#;
 
-const PRIME_RS: &str = r#"//! Prime-number utilities.
+const PRIME_RS: &str = r"//! Prime-number utilities.
 
 /// Return every prime strictly below `limit` using a sieve of Eratosthenes.
 pub fn primes_below(limit: u64) -> Vec<u64> {
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(primes_below(20), vec![2, 3, 5, 7, 11, 13, 17, 19]);
     }
 }
-"#;
+";
 
 const GREETER_RS: &str = r#"//! Greeting helpers.
 
@@ -114,7 +114,7 @@ opt-level = 3
 lto = true
 "#;
 
-const README_MD: &str = r#"# ferris-cli
+const README_MD: &str = r"# ferris-cli
 
 A tiny command-line demo that greets the world and counts primes.
 
@@ -132,7 +132,7 @@ cargo run -- --count 50
 
 > **Note:** this project is bundled with the editor as a live highlighting
 > sample. Edit it freely — changes stay in this session.
-"#;
+";
 
 const CONFIG_JSON: &str = r#"{
   "name": "ferris-cli",
@@ -217,9 +217,6 @@ pub fn default_open(project: &Project) -> Option<crate::model::NodeId> {
     project
         .nodes
         .values()
-        .find(|n| {
-            n.name == "main.rs"
-                && matches!(n.kind, NodeKind::File { .. })
-        })
+        .find(|n| n.name == "main.rs" && matches!(n.kind, NodeKind::File { .. }))
         .map(|n| n.id)
 }

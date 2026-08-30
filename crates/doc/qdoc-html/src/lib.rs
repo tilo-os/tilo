@@ -1,41 +1,35 @@
 //! `qdoc-html` — render a [`qdoc::DocSnapshot`] to clean, semantic HTML.
 //!
-//! This is the HTML export / preview engine. It takes the materialized,
-//! read-only view of a qdoc document (headings, paragraphs, quotes, lists,
-//! tables, images) and emits well-formed, semantic HTML5 — headings as
-//! `<h1>`…`<h6>`, paragraphs as `<p>`, quotes as `<blockquote>`, lists as
-//! nested `<ul>`/`<ol>`, tables as `<table>`, and images as inline
-//! `data:` URIs. Inline marks (`strong`/`em`/underline/strike/link/color/…)
-//! are applied over the correct text ranges.
-//!
-//! Wiring this into the editor's "Export HTML" / preview action is a separate
-//! task; this crate only exposes [`render_html`].
+//! Takes the materialized, read-only document view and emits
+//! well-formed, semantic HTML5 — headings as `<h1>`…`<h6>`, paragraphs
+//! as `<p>`, quotes as `<blockquote>`, lists as nested `<ul>`/`<ol>`,
+//! tables as `<table>`, images as inline `data:` URIs. Inline marks
+//! (strong/em/underline/strike/link/color/…) apply over the correct
+//! text ranges. This crate only exposes [`render_html`]; wiring it into
+//! an editor's export/preview action is a separate task.
 //!
 //! ## Escaping & safety
 //!
-//! All document text and every attribute value is HTML-escaped, so a document
-//! containing `<script>` (or `"`/`&`/`'`) in its text or a malicious `href`
-//! produces inert, well-formed markup — there is no injection path from
-//! document content into the output structure.
+//! All document text and every attribute value is HTML-escaped, so a
+//! document containing `<script>` (or `"`/`&`/`'`) or a malicious `href`
+//! produces inert, well-formed markup — no injection path from document
+//! content into the output structure.
 //!
 //! ## Styles
 //!
-//! The document's `styles` map is emitted once as a `<style>` block of CSS
-//! classes (`.qdoc-style-<id>`), and any block carrying a `style` attr is
-//! tagged with that class. Inline `style="…"` attributes from marks
-//! (`color`/`font`/`size`) are an acceptable, used fallback for run-level
-//! formatting that classes can't express.
+//! The `styles` map is emitted once as a `<style>` block of CSS classes
+//! (`.qdoc-style-<id>`); a block carrying a `style` attr is tagged with
+//! that class. Inline `style="…"` from marks (color/font/size) is an
+//! accepted fallback for run-level formatting classes can't express.
 //!
 //! ## Known limitations
 //!
-//! - **Tables**: rendered as a flat `<table>` of `<tr>`/`<td>`; no cell
-//!   merging, `colspan`/`rowspan`, or `<th>` header inference.
-//! - **Nested marks of the same kind** collapse (a `strong` inside a `strong`
-//!   emits one `<strong>` — semantically identical, structurally flattened).
-//! - **Images**: the blob's bytes are sniffed for a handful of magic numbers
-//!   to choose the `data:` MIME type; unrecognized bytes default to PNG.
-//! - **List `start`/`index`**: an ordered list's first-item `start`/`index`
-//!   attr sets the `<ol start>`; per-item custom numbering is not modeled.
+//! Tables: a flat `<table>` of `<tr>`/`<td>`, no merging/colspan/rowspan/
+//! `<th>` inference. Nested marks of the same kind collapse (`strong`
+//! inside `strong` emits one `<strong>`). Images: blob bytes are sniffed
+//! for magic numbers to choose the `data:` MIME type, unrecognized
+//! default to PNG. List `start`/`index`: sets `<ol start>`; per-item
+//! custom numbering isn't modeled.
 
 mod base64;
 
@@ -47,8 +41,8 @@ use std::fmt::Write as _;
 #[derive(Debug, Clone)]
 pub struct HtmlOptions {
     /// When `true`, emit only the body markup (no `<!doctype>`, `<html>`,
-    /// `<head>`, or `<style>` wrapper) — suitable for embedding in a larger
-    /// page. When `false` (default), emit a complete standalone document.
+    /// `<head>`, `<style>` wrapper) — for embedding in a larger page. `false`
+    /// (default) emits a complete standalone document.
     pub fragment: bool,
     /// Optional document title used in `<title>` for a full document. Ignored
     /// for fragments.
@@ -59,15 +53,17 @@ pub struct HtmlOptions {
 
 impl Default for HtmlOptions {
     fn default() -> Self {
-        Self { fragment: false, title: None, indent: "  ".to_string() }
+        Self {
+            fragment: false,
+            title: None,
+            indent: "  ".to_string(),
+        }
     }
 }
 
-/// Render a materialized qdoc snapshot to an HTML string.
-///
-/// Always succeeds: malformed or unknown block kinds degrade to a `<p>`, and
-/// image blocks whose blob is missing render an empty `<img>` with an `alt`
-/// note rather than failing.
+/// Render a materialized qdoc snapshot to an HTML string. Always
+/// succeeds: unknown block kinds degrade to a `<p>`, and image blocks
+/// with a missing blob render an empty `<img>` with an `alt` note.
 pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {
     let mut body = String::new();
     render_blocks(&mut body, snap, &snap.blocks, &opts, 0);
@@ -95,8 +91,8 @@ pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {
 
 // ---- styles -----------------------------------------------------------------
 
-/// Emit the document's named styles as a `<style>` block of CSS classes.
-/// Returns an empty string when there are no styles.
+/// Emit the document's named styles as a `<style>` block of CSS
+/// classes. Empty string when there are no styles.
 fn render_styles(snap: &DocSnapshot) -> String {
     if snap.styles.is_empty() {
         return String::new();
@@ -119,10 +115,9 @@ fn render_styles(snap: &DocSnapshot) -> String {
     css
 }
 
-/// Map a single qdoc style property to a CSS declaration (`prop: value;`).
-/// Unknown properties are dropped. Values are CSS-escaped where they land in a
-/// `url()`-free context (colors / font names / sizes are safe scalars here, but
-/// we still sanitize to keep the `<style>` block well-formed).
+/// Map a single qdoc style property to a CSS declaration (`prop:
+/// value;`). Unknown properties are dropped; values are CSS-sanitized
+/// to keep the `<style>` block well-formed.
 fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
     let css = match prop {
         // `name` is metadata, not a visual property.
@@ -155,7 +150,13 @@ fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
 fn style_class(id: &str) -> String {
     let safe: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("qdoc-style-{safe}")
 }
@@ -166,14 +167,20 @@ fn indent_for(opts: &HtmlOptions, depth: usize) -> String {
     opts.indent.repeat(depth)
 }
 
-/// Render a slice of sibling blocks. Consecutive `list_item`s are grouped into
-/// nested `<ul>`/`<ol>` by their `level`; all other kinds dispatch individually.
-fn render_blocks(out: &mut String, snap: &DocSnapshot, blocks: &[BlockView], opts: &HtmlOptions, depth: usize) {
+/// Render a slice of sibling blocks. Consecutive `list_item`s group into
+/// nested `<ul>`/`<ol>` by `level`; other kinds dispatch individually.
+fn render_blocks(
+    out: &mut String,
+    snap: &DocSnapshot,
+    blocks: &[BlockView],
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let mut i = 0;
     while i < blocks.len() {
         if blocks[i].kind == "list_item" {
-            // Consume the maximal run of consecutive list items and render it as
-            // one (possibly nested) list.
+            // Consume the maximal run of consecutive list items and render it
+            // as one (possibly nested) list.
             let mut j = i;
             while j < blocks.len() && blocks[j].kind == "list_item" {
                 j += 1;
@@ -187,7 +194,13 @@ fn render_blocks(out: &mut String, snap: &DocSnapshot, blocks: &[BlockView], opt
     }
 }
 
-fn render_block(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_block(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     match block.kind.as_str() {
         "heading" => render_heading(out, block, opts, depth),
         "quote" | "blockquote" => render_quote(out, snap, block, opts, depth),
@@ -221,7 +234,7 @@ fn render_paragraph(out: &mut String, block: &BlockView, opts: &HtmlOptions, dep
     let attrs = block_attrs(block);
     let _ = write!(out, "{pad}<p{attrs}>");
     if block.text.is_empty() {
-        // Preserve a visible blank line without emitting an empty element that
+        // Preserve a visible blank line without emitting an empty element
         // some renderers collapse.
         out.push_str("<br>");
     } else {
@@ -230,7 +243,13 @@ fn render_paragraph(out: &mut String, block: &BlockView, opts: &HtmlOptions, dep
     out.push_str("</p>\n");
 }
 
-fn render_quote(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_quote(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let pad = indent_for(opts, depth);
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<blockquote{attrs}>");
@@ -267,12 +286,11 @@ fn list_style_type(num_format: &str) -> &'static str {
 }
 
 /// Render a run of consecutive `list_item` blocks as nested `<ul>`/`<ol>`.
-///
-/// Items carry a 0-based `level`; deeper items nest inside the previous item's
-/// sublist. `ordered` + `num_format` choose the list type/marker per level. The
-/// algorithm walks the run once, opening/closing lists as the level changes.
+/// Items carry a 0-based `level`; deeper items nest inside the previous
+/// item's sublist. `ordered`/`num_format` choose type/marker per level;
+/// the algorithm walks the run once, opening/closing lists as level changes.
 fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth: usize) {
-    // Stack of currently-open lists: (level, ordered) — used to close correctly.
+    // Stack of currently-open lists: (level, ordered) — for closing correctly.
     let mut open: Vec<(i64, bool)> = Vec::new();
 
     let item_level = |b: &BlockView| match b.attrs.get("level") {
@@ -285,8 +303,8 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
         let level = item_level(item);
         let ordered = item_ordered(item);
 
-        // Close lists deeper than this item, and close (then re-open) a list at
-        // the same depth whose ordered-ness flipped.
+        // Close lists deeper than this item, and close (then re-open) a list
+        // at the same depth whose ordered-ness flipped.
         while let Some(&(open_level, open_ord)) = open.last() {
             if open_level > level || (open_level == level && open_ord != ordered) {
                 open.pop();
@@ -297,8 +315,8 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
         }
 
         // Open lists until we reach this item's level.
-        while open.last().map(|&(l, _)| l).unwrap_or(-1) < level {
-            let new_level = open.last().map(|&(l, _)| l + 1).unwrap_or(0).max(0);
+        while open.last().map_or(-1, |&(l, _)| l) < level {
+            let new_level = open.last().map_or(0, |&(l, _)| l + 1).max(0);
             open.push((new_level, ordered));
             open_list(out, item, new_level, ordered, opts, depth);
         }
@@ -317,7 +335,14 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
     }
 }
 
-fn open_list(out: &mut String, item: &BlockView, level: i64, ordered: bool, opts: &HtmlOptions, depth: usize) {
+fn open_list(
+    out: &mut String,
+    item: &BlockView,
+    level: i64,
+    ordered: bool,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let pad = indent_for(opts, depth + level as usize);
     if ordered {
         let fmt = match item.attrs.get("num_format") {
@@ -347,17 +372,31 @@ fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, d
 
 // ---- tables -----------------------------------------------------------------
 
-fn render_table(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
-    // Rows are child blocks; each row's children are its cells. Tolerate the
-    // flat shape (cells directly under the table with a `cols` attr).
+fn render_table(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
+    // Rows are child blocks, each row's children its cells. Tolerates
+    // the flat shape (cells directly under the table with a `cols` attr).
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block.children.iter().map(|row| row.children.iter().collect()).collect()
+        block
+            .children
+            .iter()
+            .map(|row| row.children.iter().collect())
+            .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
-        block.children.chunks(cols).map(|c| c.iter().collect()).collect()
+        block
+            .children
+            .chunks(cols)
+            .map(|c| c.iter().collect())
+            .collect()
     } else {
         Vec::new()
     };
@@ -388,7 +427,13 @@ fn render_table(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &
 
 // ---- images -----------------------------------------------------------------
 
-fn render_image(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &HtmlOptions, depth: usize) {
+fn render_image(
+    out: &mut String,
+    snap: &DocSnapshot,
+    block: &BlockView,
+    opts: &HtmlOptions,
+    depth: usize,
+) {
     let pad = indent_for(opts, depth);
     let alt = if block.text.is_empty() {
         match block.attrs.get("alt") {
@@ -409,12 +454,15 @@ fn render_image(out: &mut String, snap: &DocSnapshot, block: &BlockView, opts: &
             let mime = sniff_mime(bytes);
             let data = base64::encode(bytes);
             // The data URI is self-contained; no escaping needed beyond the
-            // base64 alphabet, but quote-safety is guaranteed (no `"` in b64).
-            let _ = writeln!(out, "{pad}<img src=\"data:{mime};base64,{data}\"{alt_attr}>");
+            // base64 alphabet (no `"` in b64).
+            let _ = writeln!(
+                out,
+                "{pad}<img src=\"data:{mime};base64,{data}\"{alt_attr}>"
+            );
         }
         None => {
-            // Missing/absent blob: emit an inert img with the alt note so the
-            // structure is preserved and well-formed.
+            // Missing/absent blob: emit an inert img with the alt note so
+            // structure stays preserved and well-formed.
             let _ = writeln!(out, "{pad}<img src=\"\"{alt_attr}>");
         }
     }
@@ -440,9 +488,8 @@ fn sniff_mime(bytes: &[u8]) -> &'static str {
 
 // ---- block-level attributes -------------------------------------------------
 
-/// Compose the attribute string for a block element: the resolved style class
-/// (from the block's `style` attr) plus a block-level `text-align` from an
-/// `align` attr (best-effort inline fallback).
+/// Compose the attribute string for a block element: the resolved style
+/// class plus a best-effort `text-align` from an `align` attr.
 fn block_attrs(block: &BlockView) -> String {
     let mut class = None;
     if let Some(AttrVal::Str(sid)) = block.attrs.get("style") {
@@ -465,10 +512,9 @@ fn block_attrs(block: &BlockView) -> String {
 
 // ---- inline marks -----------------------------------------------------------
 
-/// Render `text` with `marks` applied as inline HTML over the correct character
-/// ranges. Mark `start`/`end` are byte offsets into the original UTF-8 text
-/// (matching how qdoc materializes them); we cut the text at every mark
-/// boundary, then for each segment open the set of marks active there.
+/// Render `text` with `marks` applied as inline HTML over the correct
+/// byte-offset ranges (matching how qdoc materializes them) — cut at
+/// every mark boundary, then open the active mark set per segment.
 fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
     if marks.is_empty() {
         return escape_text(text);
@@ -477,7 +523,7 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
         return String::new();
     }
 
-    // Collect all boundary byte-offsets (clamped to the string) so we split into
+    // Collect all boundary byte-offsets (clamped) so we split into
     // segments over which the active mark-set is constant.
     let mut bounds: Vec<usize> = vec![0, text.len()];
     for m in marks {
@@ -498,8 +544,10 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
         }
         let segment = &text[seg_start..seg_end];
         // Marks active over this whole segment (a mark covers [start, end)).
-        let active: Vec<&MarkSpan> =
-            marks.iter().filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end).collect();
+        let active: Vec<&MarkSpan> = marks
+            .iter()
+            .filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end)
+            .collect();
         let (open, close) = mark_tags(&active);
         out.push_str(&open);
         out.push_str(&escape_text(segment));
@@ -508,8 +556,8 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
     out
 }
 
-/// Build the opening and matching closing tag strings for the active mark set
-/// over a segment. Ordering is deterministic so open/close nest correctly:
+/// Build opening/closing tag strings for the active mark set over a
+/// segment. Ordering is deterministic so open/close nest correctly:
 /// link (outermost) → span(style) → strong → em → u → s.
 fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
     let mut open = String::new();
@@ -531,7 +579,11 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
 
     // 2. A <span style> carrying color / font / size, if any of those are set.
     let mut decls: Vec<String> = Vec::new();
-    if let Some(c) = active.iter().find(|m| m.name == "color").and_then(|m| mark_str(m)) {
+    if let Some(c) = active
+        .iter()
+        .find(|m| m.name == "color")
+        .and_then(|m| mark_str(m))
+    {
         decls.push(format!("color: {}", css_value(&c)));
     }
     if let Some(f) = active
@@ -541,11 +593,18 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
     {
         decls.push(format!("font-family: {}", css_font_family(&f)));
     }
-    if let Some(sz) = active.iter().find(|m| m.name == "size" || m.name == "fontSize") {
+    if let Some(sz) = active
+        .iter()
+        .find(|m| m.name == "size" || m.name == "fontSize")
+    {
         decls.push(format!("font-size: {}", css_size_from_mark(sz)));
     }
     if !decls.is_empty() {
-        let _ = write!(open, "<span style=\"{}\">", escape_attr(&format!("{};", decls.join("; "))));
+        let _ = write!(
+            open,
+            "<span style=\"{}\">",
+            escape_attr(&format!("{};", decls.join("; ")))
+        );
         close_stack.push("</span>");
     }
 
@@ -588,7 +647,7 @@ fn attr_as_str(val: &AttrVal) -> String {
 
 /// The string payload of a valued mark (link href, color, font family), if any.
 fn mark_str(m: &MarkSpan) -> Option<String> {
-    m.value.as_str().map(|s| s.to_string())
+    m.value.as_str().map(std::string::ToString::to_string)
 }
 
 /// CSS `font-size` for a `size`/`fontSize` mark (Int pt, or numeric string).
@@ -611,8 +670,8 @@ fn css_size(val: &AttrVal) -> String {
     }
 }
 
-/// Interpret a string size: a bare number gets `pt`; an already-unit'd value
-/// (e.g. `1.2em`, `16px`) passes through after CSS sanitization.
+/// Interpret a string size: a bare number gets `pt`; an already-unit'd
+/// value (`1.2em`, `16px`) passes through after CSS sanitization.
 fn css_size_str(s: &str) -> String {
     let t = s.trim();
     if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit() || c == '.') {
@@ -622,8 +681,8 @@ fn css_size_str(s: &str) -> String {
     }
 }
 
-/// Map a logical font family (`sans`/`serif`/`mono`) to a CSS stack; otherwise
-/// pass the (sanitized) family name through.
+/// Map a logical font family (sans/serif/mono) to a CSS stack;
+/// otherwise pass the sanitized family name through.
 fn css_font_family(f: &str) -> String {
     match f {
         "sans" | "sans-serif" => "sans-serif".to_string(),
@@ -633,21 +692,31 @@ fn css_font_family(f: &str) -> String {
     }
 }
 
-/// Sanitize a value destined for a CSS declaration: strip characters that could
-/// break out of the property value (`;`, `{`, `}`, quotes, `<`, `>`). The result
-/// is additionally HTML-attr-escaped by the caller before landing in `style="…"`.
+/// Sanitize a value destined for a CSS declaration: strip characters
+/// that could break out of the property value (`;`, `{`, `}`, quotes,
+/// `<`, `>`) — additionally HTML-attr-escaped by the caller.
 fn css_value(v: &str) -> String {
-    v.chars().filter(|c| !matches!(c, ';' | '{' | '}' | '"' | '\'' | '<' | '>' | '\\' | '(' | ')')).collect()
+    v.chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                ';' | '{' | '}' | '"' | '\'' | '<' | '>' | '\\' | '(' | ')'
+            )
+        })
+        .collect()
 }
 
-/// Reject dangerous URL schemes (`javascript:`, `data:` as a link target, …),
-/// leaving only safe http/https/mailto/relative hrefs. A rejected href becomes
-/// `#` so the `<a>` stays inert.
+/// Reject dangerous URL schemes (`javascript:`, `data:` as a link
+/// target, …), leaving only safe http/https/mailto/relative hrefs. A
+/// rejected href becomes `#` so the `<a>` stays inert.
 fn sanitize_href(href: &str) -> String {
     let trimmed = href.trim();
     let lower = trimmed.to_ascii_lowercase();
     // Strip leading control/whitespace that browsers ignore when matching schemes.
-    let scheme_probe: String = lower.chars().filter(|c| !c.is_whitespace() && *c != '\0').collect();
+    let scheme_probe: String = lower
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\0')
+        .collect();
     if scheme_probe.starts_with("javascript:")
         || scheme_probe.starts_with("vbscript:")
         || scheme_probe.starts_with("data:")
@@ -660,8 +729,8 @@ fn sanitize_href(href: &str) -> String {
 
 // ---- HTML escaping ----------------------------------------------------------
 
-/// Escape text destined for element content. Covers the three characters that
-/// can change parsing in text context plus quotes for safety.
+/// Escape text destined for element content: the characters that can
+/// change parsing in text context, plus quotes for safety.
 fn escape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -675,9 +744,9 @@ fn escape_text(s: &str) -> String {
     out
 }
 
-/// Escape a value destined for a double-quoted attribute. Escapes the quote and
-/// the structural characters so the value can never terminate the attribute or
-/// the tag.
+/// Escape a value destined for a double-quoted attribute: the quote and
+/// structural characters, so the value can never terminate the
+/// attribute or the tag.
 fn escape_attr(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

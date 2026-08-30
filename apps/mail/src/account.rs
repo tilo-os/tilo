@@ -19,7 +19,9 @@
 
 use std::path::Path;
 
-use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault};
+use accounts::{
+    Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{AccountConfig, Folder};
@@ -54,7 +56,12 @@ impl Account {
         } else {
             config.email.clone()
         };
-        Self { id, config, collapsed: false, tint: 0 }
+        Self {
+            id,
+            config,
+            collapsed: false,
+            tint: 0,
+        }
     }
 
     /// Display label for the account header: the display name, falling back to
@@ -76,7 +83,10 @@ impl Account {
         let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
         stored.display_name = self.label().to_string();
         stored.tint = self.tint;
-        stored.set_config(&StoredConfig { config: self.config.clone(), collapsed: self.collapsed });
+        stored.set_config(&StoredConfig {
+            config: self.config.clone(),
+            collapsed: self.collapsed,
+        });
         stored
     }
 
@@ -111,17 +121,11 @@ struct StoredConfig {
 }
 
 /// Mail's in-memory account list: the accounts plus which one is shown.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct AccountStore {
     pub accounts: Vec<Account>,
     /// Index of the account whose mailbox is currently shown. Clamped on read.
     pub active: usize,
-}
-
-impl Default for AccountStore {
-    fn default() -> Self {
-        Self { accounts: Vec::new(), active: 0 }
-    }
 }
 
 impl AccountStore {
@@ -130,7 +134,10 @@ impl AccountStore {
     }
 
     pub fn single(config: AccountConfig) -> Self {
-        Self { accounts: vec![Account::new(config)], active: 0 }
+        Self {
+            accounts: vec![Account::new(config)],
+            active: 0,
+        }
     }
 
     /// Load the mail accounts from the shared canonical store, hydrating each
@@ -143,7 +150,10 @@ impl AccountStore {
     /// Load under an explicit config root — the seam tests use, so they never
     /// touch the real user config directory.
     pub fn load_in(config_root: &Path) -> Self {
-        Self::from_shared(&SharedStore::load_in(config_root), &SecretVault::open_in(config_root))
+        Self::from_shared(
+            &SharedStore::load_in(config_root),
+            &SecretVault::open_in(config_root),
+        )
     }
 
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
@@ -208,7 +218,10 @@ impl AccountStore {
                     vault.remove(&id);
                 }
             } else {
-                vault.put(&id, &accounts::Secret::password(acct.config.password.clone()));
+                vault.put(
+                    &id,
+                    &accounts::Secret::password(acct.config.password.clone()),
+                );
             }
         }
         if let Some(active) = self.accounts.get(self.active) {
@@ -238,7 +251,9 @@ impl AccountStore {
     }
 
     pub fn active_config(&self) -> AccountConfig {
-        self.active_account().map(|a| a.config.clone()).unwrap_or_default()
+        self.active_account()
+            .map(|a| a.config.clone())
+            .unwrap_or_default()
     }
 
     pub fn set_active(&mut self, idx: usize) {
@@ -364,12 +379,18 @@ mod tests {
         c.password = "top-secret".into();
         let mut store = AccountStore::single(c);
         store.persist_in(&root).expect("persist");
-        assert!(SecretVault::open_in(&root).get(&AccountId::from("a@x.example")).is_some());
+        assert!(
+            SecretVault::open_in(&root)
+                .get(&AccountId::from("a@x.example"))
+                .is_some()
+        );
 
         store.remove("a@x.example");
         store.persist_in(&root).expect("persist after remove");
         assert!(
-            SecretVault::open_in(&root).get(&AccountId::from("a@x.example")).is_none(),
+            SecretVault::open_in(&root)
+                .get(&AccountId::from("a@x.example"))
+                .is_none(),
             "the removed account's secret must be purged from the vault"
         );
         std::fs::remove_dir_all(&root).ok();
@@ -382,7 +403,13 @@ mod tests {
         let id = AccountId::from("g@gmail.com");
         {
             let mut vault = SecretVault::open_in(&root);
-            vault.put(&id, &accounts::Secret { password: String::new(), token: Some("{\"access_token\":\"tok\"}".into()) });
+            vault.put(
+                &id,
+                &accounts::Secret {
+                    password: String::new(),
+                    token: Some("{\"access_token\":\"tok\"}".into()),
+                },
+            );
             vault.save();
         }
         // Persist an OAuth (passwordless) account with that id.
@@ -392,7 +419,9 @@ mod tests {
         let store = AccountStore::single(c);
         store.persist_in(&root).expect("persist");
         // The OAuth token must NOT be clobbered by the password-secret path.
-        let secret = SecretVault::open_in(&root).get(&id).expect("token survives");
+        let secret = SecretVault::open_in(&root)
+            .get(&id)
+            .expect("token survives");
         assert_eq!(secret.token.as_deref(), Some("{\"access_token\":\"tok\"}"));
         std::fs::remove_dir_all(&root).ok();
     }
@@ -408,11 +437,17 @@ mod tests {
         // The plaintext store must never carry the password …
         let store_json =
             std::fs::read_to_string(accounts::store_path_in(&root)).expect("store written");
-        assert!(!store_json.contains("hunter2"), "password must not reach the shared store JSON");
+        assert!(
+            !store_json.contains("hunter2"),
+            "password must not reach the shared store JSON"
+        );
 
         // … but a reload recovers it from the vault.
         let back = AccountStore::load_in(&root);
-        assert_eq!(back.accounts[0].config.password, "hunter2", "password rehydrates from the vault");
+        assert_eq!(
+            back.accounts[0].config.password, "hunter2",
+            "password rehydrates from the vault"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }

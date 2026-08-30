@@ -1,21 +1,11 @@
-//! Desktop backdrop widget — paints the nirios desktop background behind
-//! all shell content.
+//! Desktop backdrop widget — paints the desktop background behind all
+//! shell content: a diagonal gradient across the theme's ground surface
+//! ([`ground_stops`]), a 24×24 px grid of faint lines, and a tiled
+//! 64×64 procedural noise overlay that breaks banding on the gradient.
 //!
-//! Matches `nirios-concept/src/components/DesktopView.tsx:210-217`:
-//!   1. Linear gradient top-left → bottom-right, slate-900 (#0f172a) to
-//!      slate-950 (#020617).
-//!   2. 24×24 px grid of 1px lines at `rgba(128, 128, 128, 0.07)`.
-//!   3. A tiled 64×64 noise overlay at low opacity that breaks banding on
-//!      the gradient. The concept uses `bg-[url('noise.svg')] opacity-20
-//!      mix-blend-overlay`; we approximate with a procedurally-generated
-//!      RGBA8 buffer uploaded to a Vello `Image` with `Extend::Repeat` so
-//!      it tiles across the full backdrop rect.
-//!
-//! Structurally, this widget is a thin `Container`-style wrapper around an
-//! optional single child: it forwards sync/layout/events/presence/commit
-//! exactly like [`ui::widget::Container`], but with no padding and
-//! no rounded-rect chrome — just the flat gradient + grid beneath the
-//! child.
+//! Structurally a thin `Container`-style wrapper around one optional
+//! child, forwarding sync/layout/events like [`ui::widget::Container`]
+//! but with no padding or chrome — just the gradient + grid beneath it.
 
 use std::sync::Arc;
 
@@ -30,37 +20,36 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{
-    Blob, Brush, Color, ColorStop, Extend, Fill, Gradient,
-    ImageAlphaType, ImageBrush as Image, ImageData, ImageFormat as Format,
+    Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush as Image,
+    ImageData, ImageFormat as Format,
 };
 use winit::event::{Modifiers, WindowEvent};
 
 /// Size (in logical pixels) of one grid cell.
 const GRID_STEP: f64 = 24.0;
 
+/// High enough that the desktop reads as dark rather than blue, short
+/// of 1.0 so each theme still tints its own ground.
+const GROUND_NEUTRALITY: f32 = 0.72;
+
+/// Enough to read as depth across a whole screen; gentle enough that a
+/// light theme's ground stays light rather than ramping into grey.
+const GROUND_FALLOFF: f32 = 0.82;
+
 /// Edge length (in pixels) of the tileable noise texture.
 const NOISE_SIZE: u32 = 64;
 
-/// Opacity applied when tiling the noise image across the backdrop. The
-/// concept uses `opacity-20 mix-blend-overlay` which — because overlay
-/// dampens mid-grey against a near-black gradient — works out to roughly
-/// this value. Dial this up only if banding is still visible; the dots
-/// should not be individually distinguishable.
+/// The concept's `opacity-20 mix-blend-overlay` works out to roughly
+/// this value against a near-black gradient. Raise only if banding is
+/// still visible — the dots must not be individually distinguishable.
 const NOISE_ALPHA: f32 = 0.08;
 
-/// Deterministic seed for the noise PRNG. Keeping this fixed means every
-/// session renders the exact same grain pattern, which in turn keeps the
-/// backdrop byte-identical across the headless render tests.
+/// Fixed so every session renders the same grain, keeping the backdrop
+/// byte-identical across headless render tests.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Generate a 64×64 RGBA8 buffer of deterministic white-noise specks
-/// suitable for tiling. Each pixel is `(0xFF, 0xFF, 0xFF, alpha)` where
-/// `alpha ∈ [0, 40]` — keeping the peak alpha low ensures the overlay
-/// stays subtle even before the layer-wide [`NOISE_ALPHA`] multiplier is
-/// applied on top.
-///
-/// Uses a tiny hand-rolled xorshift64 PRNG (no `rand` dep needed) seeded
-/// from [`NOISE_SEED`] so the output is bit-for-bit reproducible.
+/// Each pixel is `(0xFF, 0xFF, 0xFF, alpha)`, `alpha ∈ [0, 40]` — kept
+/// low before [`NOISE_ALPHA`] dampens it further.
 fn generate_noise_bytes() -> Vec<u8> {
     let pixel_count = (NOISE_SIZE as usize) * (NOISE_SIZE as usize);
     let mut bytes = Vec::with_capacity(pixel_count * 4);
@@ -68,14 +57,13 @@ fn generate_noise_bytes() -> Vec<u8> {
     // xorshift64 state — must be non-zero.
     let mut state: u64 = NOISE_SEED;
     for _ in 0..pixel_count {
-        // xorshift64 step
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
 
         let alpha = (state & 0xFF) as u8;
-        // Map [0, 255] → [0, 40] so the tallest speck is barely visible.
-        let alpha = (alpha as u16 * 40 / 255) as u8;
+        // [0, 255] -> [0, 40] so the tallest speck is barely visible.
+        let alpha = (u16::from(alpha) * 40 / 255) as u8;
         bytes.push(0xFF);
         bytes.push(0xFF);
         bytes.push(0xFF);
@@ -105,23 +93,48 @@ fn build_noise_image() -> Image {
 pub struct DesktopBackdrop {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
-    /// Pre-baked tileable noise texture. Uploaded once on construction and
-    /// reused on every draw via `Extend::Repeat`.
     noise: Image,
-    /// Cached backdrop scene — gradient + grid + noise overlay encoded
-    /// at *logical* coordinates relative to the cache's emit rect. The
-    /// backdrop is the lowest-frequency surface in the shell (rebuilds
-    /// only on viewport resize), so we re-encode on size change and
-    /// translate-only thereafter via the outer transform.
-    ///
-    /// Mirrors the leaf-widget pattern in `ui::widget::Button` and
-    /// `ui::widget::column::Column::subtree_cache` — see those for the
-    /// canonical reasoning.
+    /// Re-encoded only on size or theme change; mirrors
+    /// `ui::widget::Button`'s scene-cache pattern.
     cached: Scene,
-    /// Rect (at cache-emit time) the backdrop was composed against. A
-    /// `Rect::ZERO` sentinel means "no cache yet"; any width/height
-    /// mismatch against `self.rect` triggers a rebuild.
+    /// `Rect::ZERO` means no cache yet; a size mismatch triggers a rebuild.
     cache_rect: Rect,
+    /// A theme switch invalidates the cache the same way a resize does.
+    cache_stops: Option<(Color, Color)>,
+}
+
+/// The ground is the system's largest, quietest surface — at desktop
+/// scale the surface family's tint stops reading as a hue and becomes
+/// "the colour of the machine". Easing toward luminance keeps each
+/// theme's identity while letting content, not the wallpaper, carry colour.
+fn ground_stops(theme: &Theme) -> (Color, Color) {
+    let base = settle_toward_neutral(theme.tokens.colors.surfaces.base, GROUND_NEUTRALITY);
+    (base, shade(base, GROUND_FALLOFF))
+}
+
+/// Both gradient ends are the *same* ground, one lit and one fallen
+/// away — deriving the far end from the near one makes the ramp read
+/// as a surface catching light, not two materials.
+fn shade(color: Color, factor: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    let f = factor.clamp(0.0, 1.0);
+    let m = |v: u8| (f32::from(v) * f).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgba8(m(r), m(g), m(b), a)
+}
+
+/// Mix `color` toward its own perceived luminance by `amount` in
+/// `0.0..=1.0`. At 1 it is fully grey at the same brightness, so the
+/// result only drains the tint — never lightens or darkens.
+fn settle_toward_neutral(color: Color, amount: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    let k = amount.clamp(0.0, 1.0);
+    let mix = |v: u8| {
+        (f32::from(v) + (luma - f32::from(v)) * k)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color::from_rgba8(mix(r), mix(g), mix(b), a)
 }
 
 impl DesktopBackdrop {
@@ -132,6 +145,7 @@ impl DesktopBackdrop {
             noise: build_noise_image(),
             cached: Scene::new(),
             cache_rect: Rect::ZERO,
+            cache_stops: None,
         }
     }
 
@@ -140,38 +154,21 @@ impl DesktopBackdrop {
         self
     }
 
-    /// Length in bytes of the raw RGBA8 noise buffer backing the tiled
-    /// overlay. Exposed for tests; there is no runtime consumer.
+    /// Exposed for tests; there is no runtime consumer.
     #[cfg(test)]
     pub(crate) fn noise_bytes_len(&self) -> usize {
         self.noise.image.data.len()
     }
 
-    /// Compose the backdrop into `out_scene` with the caller's transform.
-    ///
-    /// The backdrop is *purely* a function of `self.rect`'s size — every
-    /// shape position is anchored to `self.rect.x0/y0`, and the gradient
-    /// stops are constant. Re-encoding the gradient + ~80 grid strokes +
-    /// the tiled noise overlay each frame is the single biggest static
-    /// surface in the shell; with a `Scene::reset()` + 80-stroke rebuild
-    /// it dominated the at-rest `draw=` budget seen in `QUICK_UI_PERF=1`.
-    ///
-    /// Strategy mirrors `ui::widget::button::Button`'s scene cache:
-    ///
-    ///   1. Bake the full backdrop into `self.cached` exactly once at
-    ///      the current rect coordinates.
-    ///   2. On subsequent frames where the size hasn't changed, append
-    ///      the cached scene with a `translate(rect.x0 - cache_rect.x0,
-    ///      rect.y0 - cache_rect.y0)` so pure window-position changes
-    ///      (rare for the root backdrop, but cheap to support) reuse
-    ///      the encoding.
-    ///   3. If the viewport resizes, `apply_layout` updates `self.rect`;
-    ///      `paint_backdrop` detects the width/height mismatch against
-    ///      `self.cache_rect` and rebuilds.
-    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine) {
+    /// Re-encoding the gradient + ~80 grid strokes + noise every frame
+    /// dominated the at-rest `draw=` budget under `QUICK_UI_PERF=1`, so
+    /// this bakes once and replays via translate.
+    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
+        let stops = ground_stops(theme);
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
-        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
+        let theme_changed = self.cache_stops != Some(stops);
+        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed || theme_changed;
 
         if !needs_rebuild {
             // Pure-translation reuse — same as `Button::draw`.
@@ -184,23 +181,18 @@ impl DesktopBackdrop {
             return;
         }
 
-        // Cache miss — rebuild into `self.cached` at IDENTITY then
-        // splice with `out_transform`. Same `std::mem::take` dance as
-        // `ui::widget::column::Column::draw_with_presence` — lets us
-        // pass `&mut Scene` to the encoder without an aliasing borrow
-        // on `&self`.
+        // Same `std::mem::take` dance as `Column::draw_with_presence`,
+        // to avoid an aliasing borrow.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
-        self.encode_backdrop(&mut local, Affine::IDENTITY);
+        self.encode_backdrop(&mut local, Affine::IDENTITY, stops);
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_rect = self.rect;
+        self.cache_stops = Some(stops);
     }
 
-    /// Pure encoder — writes the backdrop into `scene` with `transform`
-    /// applied. Used by the cache-miss branch of `paint_backdrop`.
-    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine) {
-        // 1. Diagonal gradient: top-left slate-900 → bottom-right slate-950.
+    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, stops: (Color, Color)) {
         let gradient = Gradient::new_linear(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x1, self.rect.y1),
@@ -210,11 +202,11 @@ impl DesktopBackdrop {
             &[
                 ColorStop {
                     offset: 0.0,
-                    color: Color::from_rgb8(0x0f, 0x17, 0x2a).into(),
+                    color: stops.0.into(),
                 },
                 ColorStop {
                     offset: 1.0,
-                    color: Color::from_rgb8(0x02, 0x06, 0x17).into(),
+                    color: stops.1.into(),
                 },
             ][..],
         );
@@ -226,8 +218,6 @@ impl DesktopBackdrop {
             &self.rect,
         );
 
-        // 2. Grid — 1px lines at rgba(128, 128, 128, 0.07) every 24px.
-        //    Clip to self.rect so lines don't bleed outside the backdrop.
         let line_color = Color::from_rgba8(128, 128, 128, 18); // 0.07 * 255 ≈ 18
         let stroke = Stroke::new(1.0);
 
@@ -239,7 +229,6 @@ impl DesktopBackdrop {
             &self.rect,
         );
 
-        // Vertical lines.
         let mut x = (self.rect.x0 / GRID_STEP).ceil() * GRID_STEP;
         while x < self.rect.x1 {
             let line = Line::new((x, self.rect.y0), (x, self.rect.y1));
@@ -247,7 +236,6 @@ impl DesktopBackdrop {
             x += GRID_STEP;
         }
 
-        // Horizontal lines.
         let mut y = (self.rect.y0 / GRID_STEP).ceil() * GRID_STEP;
         while y < self.rect.y1 {
             let line = Line::new((self.rect.x0, y), (self.rect.x1, y));
@@ -257,11 +245,8 @@ impl DesktopBackdrop {
 
         scene.pop_layer();
 
-        // 3. Noise overlay — tile the 64×64 repeating Image across the
-        //    backdrop rect. The fill shape is the rect itself; `Extend::Repeat`
-        //    on the Image makes it wrap. A `push_layer` with `NOISE_ALPHA`
-        //    dampens the already-subtle per-pixel alpha further so the effect
-        //    registers as grain rather than visible dots.
+        // `push_layer` with `NOISE_ALPHA` dampens the already-subtle
+        // per-pixel alpha further so the effect reads as grain, not dots.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -270,8 +255,7 @@ impl DesktopBackdrop {
             &self.rect,
         );
         // Align the noise pattern with the backdrop's top-left corner so
-        // the tiling is stable across draws (Image uv defaults to (0, 0) at
-        // the origin in brush-transform space).
+        // tiling is stable across draws.
         let brush_transform = Affine::translate((self.rect.x0, self.rect.y0));
         scene.fill(
             Fill::NonZero,
@@ -312,8 +296,8 @@ impl Widget for DesktopBackdrop {
             display: taffy::Display::Flex,
             flex_shrink: 0.0,
             size: taffy::Size {
-                width: percent(1.0),
-                height: percent(1.0),
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
             ..Default::default()
         };
@@ -323,17 +307,17 @@ impl Widget for DesktopBackdrop {
         } else {
             taffy.new_leaf(style).unwrap()
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
         if let Some(child) = &mut self.child {
@@ -350,7 +334,7 @@ impl Widget for DesktopBackdrop {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.paint_backdrop(scene, transform);
+        self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -365,7 +349,7 @@ impl Widget for DesktopBackdrop {
         presence: &PresenceCtx,
         permissions: &PermissionContext,
     ) {
-        self.paint_backdrop(scene, transform);
+        self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             child.draw_with_presence(
                 scene,
@@ -426,7 +410,7 @@ impl Widget for DesktopBackdrop {
         self.rect
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "DesktopBackdrop"
     }
 
@@ -447,45 +431,26 @@ impl Widget for DesktopBackdrop {
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false)
+            .is_some_and(|c| c.take_structure_dirty())
     }
 
-    /// The backdrop's own painted pixels are a pure function of
-    /// `self.rect`'s size — gradient endpoints, grid stride, and noise
-    /// tiling are all anchored to its corners and there is no hover /
-    /// focus / animation state to invalidate. The first frame paints,
-    /// the cache fills, and subsequent frames are pure-translation
-    /// replays via `paint_backdrop`'s `Scene::append`.
-    ///
-    /// Therefore the backdrop itself never reports dirty after first
-    /// draw; the child subtree (the rest of the shell chrome) is asked
-    /// independently. The `cache_rect == ZERO` sentinel covers the
-    /// pre-first-draw boot path so the very first frame paints.
+    /// A pure function of `self.rect`'s size, so it never reports dirty
+    /// after the first draw; the child subtree is asked independently.
+    /// `cache_rect == ZERO` covers the pre-first-draw boot path.
     fn needs_redraw(&self) -> bool {
-        self.cache_rect == Rect::ZERO
-            || self
-                .child
-                .as_ref()
-                .map(|c| c.needs_redraw())
-                .unwrap_or(false)
+        self.cache_rect == Rect::ZERO || self.child.as_ref().is_some_and(|c| c.needs_redraw())
     }
 
     /// Forward layout-dirty queries to the child — the backdrop has no
     /// intrinsic size of its own, just `percent(1.0)` of the parent.
-    /// Without this override the default would return `true` every
-    /// frame (leaves default to true) and re-trigger taffy.
+    /// Without this the default (`true`) would re-trigger taffy every
+    /// frame.
     fn is_layout_dirty(&self) -> bool {
-        self.child
-            .as_ref()
-            .map(|c| c.is_layout_dirty())
-            .unwrap_or(false)
+        self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
     }
 
     fn mark_drawn(&mut self) {
-        // Container forward — clearing happens implicitly via cache_rect
-        // being non-zero after `paint_backdrop` rebuilds. Children clear
-        // their own per-widget dirty flags.
+        // Clearing happens implicitly via cache_rect becoming non-zero.
         if let Some(child) = &mut self.child {
             child.mark_drawn();
         }
@@ -506,9 +471,7 @@ mod tests {
 
     /// The backdrop's baked noise texture must exist and have the right
     /// byte-size (64×64 RGBA8 = 16384 bytes). Guards against someone
-    /// accidentally dropping the `include_bytes!` / procedural generation
-    /// path and reverting the visual gap documented in
-    /// `docs/nirios/visual-gaps.md` item #10.
+    /// accidentally dropping the noise-generation path.
     #[test]
     fn noise_buffer_is_populated() {
         let backdrop = DesktopBackdrop::new();

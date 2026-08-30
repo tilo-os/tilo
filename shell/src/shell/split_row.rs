@@ -1,12 +1,6 @@
-//! Shell-level horizontal split layout.
-//!
-//! `ui::Row` is opinionated toward wrapping, gap-spaced,
-//! `AlignItems::Center` layouts suited to toolbars; the shell-root needs a
-//! plain two-child row where the left child keeps its intrinsic width and
-//! the right child stretches to fill the remaining horizontal and vertical
-//! space. This widget provides exactly that — a bare taffy flex row with
-//! `flex_grow: 1` on the right child and `stretch` cross-alignment so
-//! children fill the available height.
+//! Shell-level horizontal split layout: a bare taffy flex row where the left
+//! child keeps its intrinsic width and the right stretches to fill the rest.
+//! `ui::Row` doesn't serve — it's opinionated toward wrapping toolbar layouts.
 
 use std::collections::HashMap;
 
@@ -58,11 +52,8 @@ impl Widget for SplitRow {
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
 
-        // The right child should take all remaining horizontal space while
-        // stretching vertically. Override whatever its `build_layout`
-        // returned so a Container-with-percent(1)-height still gets its
-        // flex-grow set to 1 — without this, taffy would size the right
-        // child by its intrinsic content width.
+        // Force flex-grow 1 — without it taffy sizes the right child by
+        // its intrinsic content width.
         let mut right_style = taffy.style(right_node).unwrap().clone();
         right_style.flex_grow = 1.0;
         right_style.size = Size {
@@ -88,17 +79,17 @@ impl Widget for SplitRow {
                 &[left_node, right_node],
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         let children = taffy.children(node).unwrap();
         self.left
@@ -161,7 +152,7 @@ impl Widget for SplitRow {
         );
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "SplitRow"
     }
 

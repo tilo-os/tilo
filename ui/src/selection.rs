@@ -1,20 +1,16 @@
 //! [`SelectionModel`] — a reusable index-based multi-selection model.
 //!
 //! Several toolkit widgets surface a list of homogeneous items that the
-//! user can select: the [`DataTable`](crate::widget::DataTable) list
-//! mode, the [`IconGrid`](crate::widget::IconGrid), the file picker, and
-//! the file-explorer's views. They all need the *same* selection
-//! semantics — plain click replaces, Ctrl-click toggles, Shift-click
-//! extends a contiguous range from an anchor — so that logic lives here
-//! once instead of being re-derived (subtly differently) in each widget.
+//! user can select — [`DataTable`](crate::widget::DataTable) list mode,
+//! [`IconGrid`](crate::widget::IconGrid), the file picker, the
+//! file-explorer's views — and they all need the *same* selection
+//! semantics, so that logic lives here once instead of being re-derived
+//! (subtly differently) in each widget.
 //!
-//! The model is **pure index bookkeeping**: it knows nothing about
-//! geometry, rendering, or what the indices point at. Widgets map a
-//! click/keystroke to an index and call [`SelectionModel::apply_click`]
-//! or [`SelectionModel::move_to`]; the model updates the selected set,
-//! the anchor (range origin), and the primary (cursor / last-touched)
-//! index. Widgets then paint `is_selected(i)` rows/cells and treat
-//! `primary()` as the keyboard cursor.
+//! Pure index bookkeeping: it knows nothing about geometry, rendering, or
+//! what the indices point at. Widgets map a click/keystroke to an index and
+//! call [`SelectionModel::apply_click`] or [`SelectionModel::move_to`], then
+//! paint `is_selected(i)` and treat `primary()` as the keyboard cursor.
 //!
 //! # Semantics (matching common file managers)
 //!
@@ -118,12 +114,11 @@ impl SelectionModel {
         self.primary = Some(i);
     }
 
-    /// Select the inclusive range from the anchor to `i`. With
-    /// `additive` the range is unioned with the existing selection
-    /// (Ctrl+Shift); otherwise it replaces it (Shift). The anchor is
-    /// preserved so repeated Shift gestures pivot around the same
-    /// origin; the cursor moves to `i`. Falls back to [`select_only`]
-    /// when there is no anchor to extend from.
+    /// Select the inclusive range from the anchor to `i`: unioned with the
+    /// existing selection when `additive` (Ctrl+Shift), else replacing it
+    /// (Shift). The anchor is preserved so repeated Shift gestures pivot
+    /// around the same origin. Falls back to [`select_only`] when there is
+    /// no anchor to extend from.
     ///
     /// [`select_only`]: SelectionModel::select_only
     pub fn select_range_to(&mut self, i: usize, additive: bool) {
@@ -131,7 +126,11 @@ impl SelectionModel {
             self.select_only(i);
             return;
         };
-        let (lo, hi) = if anchor <= i { (anchor, i) } else { (i, anchor) };
+        let (lo, hi) = if anchor <= i {
+            (anchor, i)
+        } else {
+            (i, anchor)
+        };
         if !additive {
             self.selected.clear();
         }
@@ -188,11 +187,11 @@ impl SelectionModel {
         self.selected.retain(|&i| i < count);
         let pruned_set = self.selected.len() != before;
         let mut pruned_meta = false;
-        if self.anchor.map(|a| a >= count).unwrap_or(false) {
+        if self.anchor.is_some_and(|a| a >= count) {
             self.anchor = None;
             pruned_meta = true;
         }
-        if self.primary.map(|p| p >= count).unwrap_or(false) {
+        if self.primary.is_some_and(|p| p >= count) {
             self.primary = None;
             pruned_meta = true;
         }

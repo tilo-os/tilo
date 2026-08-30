@@ -77,10 +77,7 @@ pub fn write_app_payload(dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn write_app_payload_with_bulk(
-    dir: &std::path::Path,
-    bulk_kib: usize,
-) -> std::io::Result<()> {
+pub fn write_app_payload_with_bulk(dir: &std::path::Path, bulk_kib: usize) -> std::io::Result<()> {
     write_app_payload(dir)?;
     // Make the payload measurably-sized without stalling on IO —
     // fill a single "data" blob deterministically. Content is
@@ -129,7 +126,7 @@ pub fn write_qpkg_bytes(id: PackageId, store: &MemoryBlobStore) -> Vec<u8> {
     let collection = store.get(&signed_dec.payload_root_hash).unwrap().unwrap();
     tar_append(&mut tar, "collection.qcl", &collection);
     for (h, b) in store.iter() {
-        let name = format!("blobs/{}", h);
+        let name = format!("blobs/{h}");
         tar_append(&mut tar, &name, b);
     }
     let inner = tar.into_inner().unwrap();

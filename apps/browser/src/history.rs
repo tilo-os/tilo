@@ -68,7 +68,9 @@ const RECENCY_HALF_LIFE_SECS: f64 = 3.0 * 24.0 * 60.0 * 60.0;
 impl History {
     /// An empty history (no persistence side-effects).
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Drop all history (the settings "clear history" action).
@@ -240,8 +242,7 @@ impl History {
     /// and any parse failure yields an empty history.
     pub fn from_json_str(text: &str) -> History {
         let mut entries = Vec::new();
-        if let Ok(serde_json::Value::Array(items)) =
-            serde_json::from_str::<serde_json::Value>(text)
+        if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(text)
         {
             for item in items {
                 let url = item
@@ -257,10 +258,13 @@ impl History {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let last_visit = item.get("last_visit").and_then(|v| v.as_u64()).unwrap_or(0);
+                let last_visit = item
+                    .get("last_visit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
                 let visit_count = item
                     .get("visit_count")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0) as u32;
                 entries.push(HistoryEntry {
                     url,
@@ -286,8 +290,7 @@ pub fn history_path() -> Option<PathBuf> {
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Recency weight in `[0, 1]`: `1.0` for a page visited *now*, halving
@@ -302,7 +305,7 @@ fn recency_score(last_visit: u64, now: u64) -> f64 {
 /// and a very popular page can't dwarf match quality. `1 → 0.5`,
 /// `4 → 0.8`, `9 → 0.9`.
 fn frequency_score(visit_count: u32) -> f64 {
-    let n = visit_count.max(1) as f64;
+    let n = f64::from(visit_count.max(1));
     1.0 - 1.0 / (1.0 + n)
 }
 
@@ -352,19 +355,16 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
             }
             hi += 1;
         }
-        match found {
-            Some(idx) => matched.push(idx),
-            None => return None, // ran out of haystack — not a subsequence
+        {
+            let idx = found?;
+            matched.push(idx);
         }
     }
 
     // Contiguity: fraction of the matched characters that are adjacent to
     // their predecessor. 1.0 for a pure substring, 0.0 for all-gaps.
     let contiguity = if need.len() > 1 {
-        let adjacent = matched
-            .windows(2)
-            .filter(|w| w[1] == w[0] + 1)
-            .count() as f64;
+        let adjacent = matched.windows(2).filter(|w| w[1] == w[0] + 1).count() as f64;
         adjacent / (need.len() - 1) as f64
     } else {
         // A single matched char is trivially "contiguous".
@@ -461,7 +461,8 @@ mod tests {
         // `suggest` folds case for the whole pipeline, so an uppercase
         // query still matches a mixed-case title/URL.
         let mut h = History::new();
-        h.entries.push(entry("https://GitHub.com", "GitHub", 1_000, 1));
+        h.entries
+            .push(entry("https://GitHub.com", "GitHub", 1_000, 1));
         let out = h.suggest_at("GIT", 10, 2_000);
         assert_eq!(out.len(), 1, "'GIT' matches 'GitHub' case-insensitively");
     }
@@ -494,8 +495,10 @@ mod tests {
     fn suggest_ranks_better_text_match_first() {
         // Equal recency + frequency isolates the match-quality signal.
         let mut h = History::new();
-        h.entries.push(entry("https://github.com", "GitHub", 1_000, 1));
-        h.entries.push(entry("https://goldieturtle.example", "Goldie", 1_000, 1));
+        h.entries
+            .push(entry("https://github.com", "GitHub", 1_000, 1));
+        h.entries
+            .push(entry("https://goldieturtle.example", "Goldie", 1_000, 1));
         let out = h.suggest_at("git", 10, 2_000);
         assert_eq!(out.len(), 2, "both are subsequence matches for 'git'");
         assert_eq!(
@@ -507,8 +510,10 @@ mod tests {
     #[test]
     fn suggest_filters_out_non_matches() {
         let mut h = History::new();
-        h.entries.push(entry("https://github.com", "GitHub", 1_000, 1));
-        h.entries.push(entry("https://example.org", "Example", 1_000, 1));
+        h.entries
+            .push(entry("https://github.com", "GitHub", 1_000, 1));
+        h.entries
+            .push(entry("https://example.org", "Example", 1_000, 1));
         let out = h.suggest_at("git", 10, 2_000);
         assert_eq!(out.len(), 1, "only the entry matching 'git' survives");
         assert_eq!(out[0].url, "https://github.com");
@@ -519,7 +524,8 @@ mod tests {
         // Equal visit counts isolate the recency signal.
         let mut h = History::new();
         h.entries.push(entry("https://old.test", "Old", 100, 1));
-        h.entries.push(entry("https://recent.test", "Recent", 5_000, 1));
+        h.entries
+            .push(entry("https://recent.test", "Recent", 5_000, 1));
         let out = h.suggest_at("", 10, 5_000);
         assert_eq!(
             out[0].url, "https://recent.test",
@@ -531,7 +537,8 @@ mod tests {
     fn empty_query_breaks_recency_tie_by_frequency() {
         let mut h = History::new();
         h.entries.push(entry("https://rare.test", "Rare", 1_000, 1));
-        h.entries.push(entry("https://popular.test", "Popular", 1_000, 25));
+        h.entries
+            .push(entry("https://popular.test", "Popular", 1_000, 25));
         let out = h.suggest_at("", 10, 1_000);
         assert_eq!(
             out[0].url, "https://popular.test",
@@ -544,7 +551,8 @@ mod tests {
         // Same URL shape so 'test' matches identically; recency decides.
         let mut h = History::new();
         h.entries.push(entry("https://a-test.com", "test", 100, 1));
-        h.entries.push(entry("https://b-test.com", "test", 9_000, 1));
+        h.entries
+            .push(entry("https://b-test.com", "test", 9_000, 1));
         let out = h.suggest_at("test", 10, 9_000);
         assert_eq!(
             out[0].url, "https://b-test.com",
@@ -582,8 +590,15 @@ mod tests {
         ]"#;
         let h = History::from_json_str(json);
         assert_eq!(h.len(), 2, "the URL-less row is skipped, partials default");
-        let partial = h.entries().iter().find(|e| e.url == "https://partial.test").unwrap();
-        assert_eq!(partial.visit_count, 0, "missing numeric fields default to 0");
+        let partial = h
+            .entries()
+            .iter()
+            .find(|e| e.url == "https://partial.test")
+            .unwrap();
+        assert_eq!(
+            partial.visit_count, 0,
+            "missing numeric fields default to 0"
+        );
         assert_eq!(partial.title, "", "missing title defaults to empty");
     }
 

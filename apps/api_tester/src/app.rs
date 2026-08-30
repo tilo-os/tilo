@@ -54,19 +54,23 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
-use ui::widget::{Button, Dropdown, SidebarDrawer, SplitLayout, TextInput, ToggleGroup, Widget};
+use ui::widget::{
+    Button, Checkbox, CheckboxFace, Dropdown, SidebarDrawer, SplitLayout, TextInput, ToggleGroup,
+    Widget,
+};
 
-use crate::actions::{self, ApiTesterAction, API_TESTER_ACTION_TYPE};
+use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
 use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::model::{
-    human_duration, human_size, Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod,
-    KeyValue, Request, RequestTab, ResponseData, ResponseView,
+    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
+    RequestTab, ResponseData, ResponseView, human_duration, human_size,
 };
 use crate::navrow::{NavKind, NavRow, ROW_H};
 use crate::palette::{short_path, status_color, token_color};
@@ -243,15 +247,27 @@ impl ApiTesterApp {
 
     fn build(demo: bool) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
-        let collections = if demo { crate::seed::collections() } else { Vec::new() };
-        let environments = if demo { crate::seed::environments() } else { Vec::new() };
+        let collections = if demo {
+            crate::seed::collections()
+        } else {
+            Vec::new()
+        };
+        let environments = if demo {
+            crate::seed::environments()
+        } else {
+            Vec::new()
+        };
         let active_env = environments.first().map(|e| e.id);
         let request = if demo {
             crate::seed::active_request()
         } else {
             crate::seed::blank_request()
         };
-        let history = if demo { crate::seed::history() } else { Vec::new() };
+        let history = if demo {
+            crate::seed::history()
+        } else {
+            Vec::new()
+        };
 
         let mut url_input = TextInput::local();
         url_input.set_plain_chrome(true);
@@ -267,7 +283,10 @@ impl ApiTesterApp {
 
         // Method picker — a ComboBox bound to a dedicated CRDT string.
         let method_dropdown = Dropdown::new(
-            HttpMethod::ALL.iter().map(|m| m.as_str().to_string()).collect(),
+            HttpMethod::ALL
+                .iter()
+                .map(|m| m.as_str().to_string())
+                .collect(),
             METHOD_PATH,
         )
         .with_id("api.method");
@@ -287,7 +306,10 @@ impl ApiTesterApp {
         // Request-builder tabs.
         let tab_sink = sink.clone();
         let request_tabs = ToggleGroup::new(
-            RequestTab::ALL.iter().map(|t| Segment::new(t.label())).collect(),
+            RequestTab::ALL
+                .iter()
+                .map(|t| Segment::new(t.label()))
+                .collect(),
             0,
         )
         .on_change(move |i| tab_sink.borrow_mut().push(Cmd::SetTab(i)));
@@ -295,7 +317,10 @@ impl ApiTesterApp {
         // Response-view switch.
         let view_sink = sink.clone();
         let response_view_toggle = ToggleGroup::new(
-            ResponseView::ALL.iter().map(|v| Segment::new(v.label())).collect(),
+            ResponseView::ALL
+                .iter()
+                .map(|v| Segment::new(v.label()))
+                .collect(),
             0,
         )
         .on_change(move |i| view_sink.borrow_mut().push(Cmd::SetView(i)));
@@ -306,7 +331,11 @@ impl ApiTesterApp {
             active_env,
             request,
             history,
-            response: if demo { Some(http::sample_response()) } else { None },
+            response: if demo {
+                Some(http::sample_response())
+            } else {
+                None
+            },
             sending: false,
             error: None,
             active_tab: RequestTab::Params,
@@ -353,7 +382,10 @@ impl ApiTesterApp {
 
     /// The active environment's variable map (for `{{var}}` substitution).
     fn env_vars(&self) -> HashMap<String, String> {
-        match self.active_env.and_then(|id| self.environments.iter().find(|e| e.id == id)) {
+        match self
+            .active_env
+            .and_then(|id| self.environments.iter().find(|e| e.id == id))
+        {
             Some(env) => vars::var_map(&env.variables),
             None => HashMap::new(),
         }
@@ -495,7 +527,8 @@ impl ApiTesterApp {
     /// document agree on a single source of truth.
     fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: ApiTesterAction) {
         self.persist(state, path);
-        self.actions.dispatch(state, API_TESTER_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(state, API_TESTER_ACTION_TYPE, &action);
         self.adopt_workspace(state, path);
         self.dirty = true;
     }
@@ -514,24 +547,13 @@ impl ApiTesterApp {
 
     /// Number shown on a request-builder tab badge (kept for the tests + the
     /// var hint; the tab strip itself no longer paints badges).
+    #[cfg(test)]
     fn tab_count(&self, tab: RequestTab) -> usize {
         match tab {
             RequestTab::Params => Request::enabled_count(&self.request.params),
             RequestTab::Headers => Request::enabled_count(&self.request.headers),
-            RequestTab::Auth => {
-                if matches!(self.request.auth, Auth::None) {
-                    0
-                } else {
-                    1
-                }
-            }
-            RequestTab::Body => {
-                if matches!(self.request.body_mode, BodyMode::None) {
-                    0
-                } else {
-                    1
-                }
-            }
+            RequestTab::Auth => usize::from(!matches!(self.request.auth, Auth::None)),
+            RequestTab::Body => usize::from(!matches!(self.request.body_mode, BodyMode::None)),
         }
     }
 
@@ -548,7 +570,10 @@ impl ApiTesterApp {
     }
 
     fn tab_index(&self) -> usize {
-        RequestTab::ALL.iter().position(|t| *t == self.active_tab).unwrap_or(0)
+        RequestTab::ALL
+            .iter()
+            .position(|t| *t == self.active_tab)
+            .unwrap_or(0)
     }
 
     /// The 0-based index of a saved request across the (expanded) collection
@@ -579,8 +604,13 @@ impl ApiTesterApp {
             .map(|(i, m)| {
                 let sink = self.sink.clone();
                 let cmd = m.cmd.clone();
-                NavRow::new(format!("api.nav.{i}"), m.kind.clone(), m.label.clone(), m.a11y_name.clone())
-                    .on_activate(move || sink.borrow_mut().push(cmd.clone()))
+                NavRow::new(
+                    format!("api.nav.{i}"),
+                    m.kind.clone(),
+                    m.label.clone(),
+                    m.a11y_name.clone(),
+                )
+                .on_activate(move || sink.borrow_mut().push(cmd.clone()))
             })
             .collect();
     }
@@ -597,11 +627,7 @@ impl ApiTesterApp {
                     count: col.requests.len(),
                 },
                 label: col.name.clone(),
-                a11y_name: format!(
-                    "{}, collection, {} requests",
-                    col.name,
-                    col.requests.len()
-                ),
+                a11y_name: format!("{}, collection, {} requests", col.name, col.requests.len()),
                 cmd: Cmd::ToggleCollection(ci),
             });
             if col.expanded {
@@ -744,7 +770,12 @@ impl ApiTesterApp {
         // --- Tab strip ---
         l.tab_strip = Rect::new(area.x0, l.urlbar.y1, area.x1, l.urlbar.y1 + TAB_STRIP_H);
         let tabs_w = 96.0 * RequestTab::ALL.len() as f64;
-        l.tabs = Rect::new(area.x0 + PAD, l.tab_strip.y0 + 4.0, area.x0 + PAD + tabs_w, l.tab_strip.y1 - 4.0);
+        l.tabs = Rect::new(
+            area.x0 + PAD,
+            l.tab_strip.y0 + 4.0,
+            area.x0 + PAD + tabs_w,
+            l.tab_strip.y1 - 4.0,
+        );
 
         // --- Editor / response split ---
         let editor_h = ((area.height() - URLBAR_H - TAB_STRIP_H) * 0.42).max(150.0);
@@ -758,13 +789,28 @@ impl ApiTesterApp {
         }
 
         // Response chrome + view switch.
-        l.resp_status = Rect::new(l.response.x0, l.response.y0, l.response.x1, l.response.y0 + 44.0);
-        l.resp_body = Rect::new(l.response.x0, l.resp_status.y1, l.response.x1, l.response.y1);
+        l.resp_status = Rect::new(
+            l.response.x0,
+            l.response.y0,
+            l.response.x1,
+            l.response.y0 + 44.0,
+        );
+        l.resp_body = Rect::new(
+            l.response.x0,
+            l.resp_status.y1,
+            l.response.x1,
+            l.response.y1,
+        );
         l.body_region = l.resp_body;
         if self.response.is_some() {
             let view_w = 210.0;
             let cy = l.resp_status.center().y;
-            l.resp_view = Rect::new(l.response.x1 - PAD - view_w, cy - 12.0, l.response.x1 - PAD, cy + 12.0);
+            l.resp_view = Rect::new(
+                l.response.x1 - PAD - view_w,
+                cy - 12.0,
+                l.response.x1 - PAD,
+                cy + 12.0,
+            );
         }
 
         // --- Sidebar rows ---
@@ -920,7 +966,7 @@ impl ApiTesterApp {
         // Hamburger (overlay only) — a painted chrome affordance.
         if self.rail.layout() == SplitLayout::Overlay {
             let ham = l.hamburger;
-            let shape = RoundedRect::from_rect(ham, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(ham, f64::from(theme.tokens.radii.md));
             scene.fill(Fill::NonZero, t, c.surface_white_5, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             draw_hamburger(scene, t, ham, c.text_primary);
@@ -931,12 +977,20 @@ impl ApiTesterApp {
         self.method_dropdown.draw(scene, t, tr, theme, presence);
 
         // URL field box + the plain TextInput inside it.
-        let url_shape = RoundedRect::from_rect(l.url, theme.tokens.radii.md as f64);
+        let url_shape = RoundedRect::from_rect(l.url, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &url_shape);
         scene.stroke(
-            &Stroke::new(if self.url_input.is_focused() { 2.0 } else { 1.0 }),
+            &Stroke::new(if self.url_input.is_focused() {
+                2.0
+            } else {
+                1.0
+            }),
             t,
-            if self.url_input.is_focused() { theme.border_focus } else { c.border_standard },
+            if self.url_input.is_focused() {
+                theme.border_focus
+            } else {
+                c.border_standard
+            },
             None,
             &url_shape,
         );
@@ -957,7 +1011,14 @@ impl ApiTesterApp {
         self.draw_response(scene, t, tr, theme, presence, l);
     }
 
-    fn draw_var_hint(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, l: &Layout) {
+    fn draw_var_hint(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &Layout,
+    ) {
         let c = &theme.tokens.colors;
         let url_now = self.url_input.value().to_string();
         let refs = vars::referenced_vars(&url_now);
@@ -967,12 +1028,19 @@ impl ApiTesterApp {
         let env = self.env_vars();
         let unresolved: Vec<&String> = refs.iter().filter(|r| !env.contains_key(*r)).collect();
         let (hint, hint_col) = if unresolved.is_empty() {
-            (format!("{} variable(s) resolved", refs.len()), c.semantic.success)
+            (
+                format!("{} variable(s) resolved", refs.len()),
+                c.semantic.success,
+            )
         } else {
             (
                 format!(
                     "unresolved: {}",
-                    unresolved.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    unresolved
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 c.semantic.warning,
             )
@@ -983,7 +1051,10 @@ impl ApiTesterApp {
             &hint,
             theme.tokens.typography.scale.sm,
             hint_col,
-            t * Affine::translate((l.main.x1 - PAD - hw as f64, l.tab_strip.center().y - 7.0)),
+            t * Affine::translate((
+                l.main.x1 - PAD - f64::from(hw),
+                l.tab_strip.center().y - 7.0,
+            )),
             None,
         );
     }
@@ -1029,11 +1100,27 @@ impl ApiTesterApp {
         let mut y = area.y0 + 12.0;
         let key_x = x0 + 30.0;
         let val_x = area.x0 + area.width() * 0.5;
-        tr.draw_text_weighted(scene, "KEY", 10.0, c.text_dim, t * Affine::translate((key_x, y)), None, TextWeight::Bold);
-        tr.draw_text_weighted(scene, "VALUE", 10.0, c.text_dim, t * Affine::translate((val_x, y)), None, TextWeight::Bold);
+        tr.draw_text_weighted(
+            scene,
+            "KEY",
+            10.0,
+            c.text_dim,
+            t * Affine::translate((key_x, y)),
+            None,
+            TextWeight::Bold,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "VALUE",
+            10.0,
+            c.text_dim,
+            t * Affine::translate((val_x, y)),
+            None,
+            TextWeight::Bold,
+        );
         y += 22.0;
 
-        if rows.iter().all(|r| r.is_blank()) {
+        if rows.iter().all(super::model::KeyValue::is_blank) {
             tr.draw_text(
                 scene,
                 empty_msg,
@@ -1050,14 +1137,17 @@ impl ApiTesterApp {
                 break;
             }
             let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-            let cb_shape = RoundedRect::from_rect(cb, 4.0);
-            if row.enabled {
-                scene.fill(Fill::NonZero, t, theme.accent_primary, None, &cb_shape);
-                draw_check(scene, t, cb, Color::WHITE);
+            Checkbox::paint(
+                scene,
+                t,
+                theme,
+                &CheckboxFace::new(cb, row.enabled).transparent_unchecked(),
+            );
+            let row_col = if row.enabled {
+                c.text_primary
             } else {
-                scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &cb_shape);
-            }
-            let row_col = if row.enabled { c.text_primary } else { c.text_dim };
+                c.text_dim
+            };
             tr.draw_text(
                 scene,
                 &row.key,
@@ -1066,9 +1156,25 @@ impl ApiTesterApp {
                 t * Affine::translate((key_x, y + 7.0)),
                 Some((val_x - key_x - 12.0) as f32),
             );
-            self.draw_value_with_vars(scene, t, tr, theme, &row.value, val_x, y + 7.0, area.x1 - PAD - val_x, row.enabled);
+            self.draw_value_with_vars(
+                scene,
+                t,
+                tr,
+                theme,
+                &row.value,
+                val_x,
+                y + 7.0,
+                area.x1 - PAD - val_x,
+                row.enabled,
+            );
             let sep = Rect::new(x0, y + ROW_H - 1.0, area.x1 - PAD, y + ROW_H);
-            scene.fill(Fill::NonZero, t, c.border_standard.with_alpha_factor(0.4), None, &sep);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.border_standard.with_alpha_factor(0.4),
+                None,
+                &sep,
+            );
             y += ROW_H;
         }
 
@@ -1081,8 +1187,22 @@ impl ApiTesterApp {
                 None,
                 &RoundedRect::from_rect(cb, 4.0),
             );
-            tr.draw_text(scene, "New key", theme.tokens.typography.scale.sm, c.text_dim.with_alpha_factor(0.6), t * Affine::translate((key_x, y + 7.0)), None);
-            tr.draw_text(scene, "New value", theme.tokens.typography.scale.sm, c.text_dim.with_alpha_factor(0.6), t * Affine::translate((val_x, y + 7.0)), None);
+            tr.draw_text(
+                scene,
+                "New key",
+                theme.tokens.typography.scale.sm,
+                c.text_dim.with_alpha_factor(0.6),
+                t * Affine::translate((key_x, y + 7.0)),
+                None,
+            );
+            tr.draw_text(
+                scene,
+                "New value",
+                theme.tokens.typography.scale.sm,
+                c.text_dim.with_alpha_factor(0.6),
+                t * Affine::translate((val_x, y + 7.0)),
+                None,
+            );
         }
     }
 
@@ -1109,29 +1229,66 @@ impl ApiTesterApp {
             if let Some(open) = rest.find("{{") {
                 if open > 0 {
                     let plain = &rest[..open];
-                    tr.draw_text(scene, plain, size, base_col, t * Affine::translate((cx, y)), None);
+                    tr.draw_text(
+                        scene,
+                        plain,
+                        size,
+                        base_col,
+                        t * Affine::translate((cx, y)),
+                        None,
+                    );
                     let (w, _) = tr.measure(plain, size, None);
-                    cx += w as f64;
+                    cx += f64::from(w);
                 }
                 if let Some(close) = rest[open..].find("}}") {
                     let var = &rest[open..open + close + 2];
-                    tr.draw_text_weighted(scene, var, size, theme.accent_primary, t * Affine::translate((cx, y)), None, TextWeight::Semibold);
+                    tr.draw_text_weighted(
+                        scene,
+                        var,
+                        size,
+                        theme.accent_primary,
+                        t * Affine::translate((cx, y)),
+                        None,
+                        TextWeight::Semibold,
+                    );
                     let (w, _) = tr.measure(var, size, None);
-                    cx += w as f64;
+                    cx += f64::from(w);
                     rest = &rest[open + close + 2..];
                     continue;
                 }
             }
-            tr.draw_text(scene, rest, size, base_col, t * Affine::translate((cx, y)), Some((limit - cx) as f32));
+            tr.draw_text(
+                scene,
+                rest,
+                size,
+                base_col,
+                t * Affine::translate((cx, y)),
+                Some((limit - cx) as f32),
+            );
             break;
         }
     }
 
-    fn draw_auth(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
+    fn draw_auth(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) {
         let c = &theme.tokens.colors;
         let x0 = area.x0 + PAD;
         let mut y = area.y0 + 16.0;
-        tr.draw_text_weighted(scene, "AUTH TYPE", 10.0, c.text_dim, t * Affine::translate((x0, y)), None, TextWeight::Bold);
+        tr.draw_text_weighted(
+            scene,
+            "AUTH TYPE",
+            10.0,
+            c.text_dim,
+            t * Affine::translate((x0, y)),
+            None,
+            TextWeight::Bold,
+        );
         y += 20.0;
 
         // Mode chips (display of the active scheme; the scheme is fixed per
@@ -1140,8 +1297,8 @@ impl ApiTesterApp {
         for label in Auth::LABELS {
             let active = self.request.auth.label() == label;
             let (lw, _) = tr.measure(label, theme.tokens.typography.scale.sm, None);
-            let chip = Rect::new(cx, y, cx + lw as f64 + 24.0, y + 30.0);
-            let shape = RoundedRect::from_rect(chip, theme.tokens.radii.full as f64);
+            let chip = Rect::new(cx, y, cx + f64::from(lw) + 24.0, y + 30.0);
+            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full));
             if active {
                 scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
             } else {
@@ -1161,10 +1318,23 @@ impl ApiTesterApp {
         }
         y += 50.0;
 
-        let draw_field = |scene: &mut Scene, tr: &mut TextRenderer, y: f64, label: &str, value: &str, secret: bool| {
-            tr.draw_text_weighted(scene, label, 10.0, c.text_dim, t * Affine::translate((x0, y)), None, TextWeight::Bold);
+        let draw_field = |scene: &mut Scene,
+                          tr: &mut TextRenderer,
+                          y: f64,
+                          label: &str,
+                          value: &str,
+                          secret: bool| {
+            tr.draw_text_weighted(
+                scene,
+                label,
+                10.0,
+                c.text_dim,
+                t * Affine::translate((x0, y)),
+                None,
+                TextWeight::Bold,
+            );
             let field = Rect::new(x0, y + 16.0, area.x1 - PAD, y + 50.0);
-            let shape = RoundedRect::from_rect(field, theme.tokens.radii.md as f64);
+            let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
             scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             let shown = if secret && !value.is_empty() {
@@ -1184,7 +1354,14 @@ impl ApiTesterApp {
 
         match &self.request.auth {
             Auth::None => {
-                tr.draw_text(scene, "This request does not use authentication.", theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((x0, y)), None);
+                tr.draw_text(
+                    scene,
+                    "This request does not use authentication.",
+                    theme.tokens.typography.scale.sm,
+                    c.text_dim,
+                    t * Affine::translate((x0, y)),
+                    None,
+                );
             }
             Auth::Bearer { token } => draw_field(scene, tr, y, "TOKEN", token, true),
             Auth::Basic { username, password } => {
@@ -1218,10 +1395,16 @@ impl ApiTesterApp {
             let active = self.request.body_mode == mode;
             let label = mode.label();
             let (lw, _) = tr.measure(label, theme.tokens.typography.scale.sm, None);
-            let chip = Rect::new(cx, y, cx + lw as f64 + 20.0, y + 28.0);
-            let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+            let chip = Rect::new(cx, y, cx + f64::from(lw) + 20.0, y + 28.0);
+            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
             if active {
-                scene.fill(Fill::NonZero, t, theme.accent_primary.with_alpha_factor(0.2), None, &shape);
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    theme.accent_primary.with_alpha_factor(0.2),
+                    None,
+                    &shape,
+                );
                 scene.stroke(&Stroke::new(1.0), t, theme.accent_primary, None, &shape);
             } else {
                 scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
@@ -1233,7 +1416,11 @@ impl ApiTesterApp {
                 if active { c.text_primary } else { c.text_dim },
                 t * Affine::translate((cx + 10.0, y + 6.0)),
                 None,
-                if active { TextWeight::Semibold } else { TextWeight::Regular },
+                if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
             );
             cx = chip.x1 + 8.0;
         }
@@ -1241,7 +1428,14 @@ impl ApiTesterApp {
 
         match self.request.body_mode {
             BodyMode::None => {
-                tr.draw_text(scene, "This request does not have a body.", theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((x0, y)), None);
+                tr.draw_text(
+                    scene,
+                    "This request does not have a body.",
+                    theme.tokens.typography.scale.sm,
+                    c.text_dim,
+                    t * Affine::translate((x0, y)),
+                    None,
+                );
             }
             BodyMode::Form => {
                 let rows = self.request.form.clone();
@@ -1250,12 +1444,26 @@ impl ApiTesterApp {
             }
             BodyMode::Json | BodyMode::Raw => {
                 let field = l.body;
-                let shape = RoundedRect::from_rect(field, theme.tokens.radii.md as f64);
-                scene.fill(Fill::NonZero, t, theme.tokens.colors.neutral[1], None, &shape);
-                scene.stroke(
-                    &Stroke::new(if self.body_input.is_focused() { 2.0 } else { 1.0 }),
+                let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
+                scene.fill(
+                    Fill::NonZero,
                     t,
-                    if self.body_input.is_focused() { theme.border_focus } else { c.border_standard },
+                    theme.tokens.colors.neutral[1],
+                    None,
+                    &shape,
+                );
+                scene.stroke(
+                    &Stroke::new(if self.body_input.is_focused() {
+                        2.0
+                    } else {
+                        1.0
+                    }),
+                    t,
+                    if self.body_input.is_focused() {
+                        theme.border_focus
+                    } else {
+                        c.border_standard
+                    },
                     None,
                     &shape,
                 );
@@ -1287,18 +1495,50 @@ impl ApiTesterApp {
             let scol = status_color(theme, resp.status_class());
             let pill_label = format!("{} {}", resp.status, resp.status_text);
             let (pw, _) = tr.measure(&pill_label, theme.tokens.typography.scale.sm, None);
-            let pill = Rect::new(x0, cy - 12.0, x0 + pw as f64 + 24.0, cy + 12.0);
-            let pill_shape = RoundedRect::from_rect(pill, theme.tokens.radii.full as f64);
-            scene.fill(Fill::NonZero, t, scol.with_alpha_factor(0.18), None, &pill_shape);
-            tr.draw_text_weighted(scene, &pill_label, theme.tokens.typography.scale.sm, scol, t * Affine::translate((pill.x0 + 12.0, cy - 7.0)), None, TextWeight::Bold);
-            let meta = format!("{}   {}", human_duration(resp.duration_ms), human_size(resp.size_bytes));
-            tr.draw_text(scene, &meta, theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((pill.x1 + 16.0, cy - 7.0)), None);
+            let pill = Rect::new(x0, cy - 12.0, x0 + f64::from(pw) + 24.0, cy + 12.0);
+            let pill_shape = RoundedRect::from_rect(pill, f64::from(theme.tokens.radii.full));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                scol.with_alpha_factor(0.18),
+                None,
+                &pill_shape,
+            );
+            tr.draw_text_weighted(
+                scene,
+                &pill_label,
+                theme.tokens.typography.scale.sm,
+                scol,
+                t * Affine::translate((pill.x0 + 12.0, cy - 7.0)),
+                None,
+                TextWeight::Bold,
+            );
+            let meta = format!(
+                "{}   {}",
+                human_duration(resp.duration_ms),
+                human_size(resp.size_bytes)
+            );
+            tr.draw_text(
+                scene,
+                &meta,
+                theme.tokens.typography.scale.sm,
+                c.text_dim,
+                t * Affine::translate((pill.x1 + 16.0, cy - 7.0)),
+                None,
+            );
 
             // View switch draws itself.
-            self.response_view_toggle.draw(scene, t, tr, theme, presence);
+            self.response_view_toggle
+                .draw(scene, t, tr, theme, presence);
 
             let body_area = l.resp_body;
-            scene.fill(Fill::NonZero, t, theme.tokens.colors.neutral[1], None, &body_area);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.tokens.colors.neutral[1],
+                None,
+                &body_area,
+            );
             let body_div = Rect::new(area.x0, body_area.y0, area.x1, body_area.y0 + 1.0);
             scene.fill(Fill::NonZero, t, c.border_standard, None, &body_div);
 
@@ -1311,17 +1551,49 @@ impl ApiTesterApp {
                     }
                 }
                 ResponseView::Raw => self.draw_raw_body(scene, t, tr, theme, &resp.body, body_area),
-                ResponseView::Preview => self.draw_response_headers(scene, t, tr, theme, &resp, body_area),
+                ResponseView::Preview => {
+                    self.draw_response_headers(scene, t, tr, theme, &resp, body_area);
+                }
             }
         } else if let Some(err) = &self.error {
-            tr.draw_text_weighted(scene, "Request failed", theme.tokens.typography.scale.base, c.semantic.danger, t * Affine::translate((x0, cy - 7.0)), None, TextWeight::Bold);
-            tr.draw_text(scene, err, theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((x0, row.y1 + 12.0)), Some((area.width() - PAD * 2.0) as f32));
+            tr.draw_text_weighted(
+                scene,
+                "Request failed",
+                theme.tokens.typography.scale.base,
+                c.semantic.danger,
+                t * Affine::translate((x0, cy - 7.0)),
+                None,
+                TextWeight::Bold,
+            );
+            tr.draw_text(
+                scene,
+                err,
+                theme.tokens.typography.scale.sm,
+                c.text_dim,
+                t * Affine::translate((x0, row.y1 + 12.0)),
+                Some((area.width() - PAD * 2.0) as f32),
+            );
         } else {
-            tr.draw_text(scene, "Send a request to see the response here.", theme.tokens.typography.scale.base, c.text_dim, t * Affine::translate((x0, cy - 7.0)), None);
+            tr.draw_text(
+                scene,
+                "Send a request to see the response here.",
+                theme.tokens.typography.scale.base,
+                c.text_dim,
+                t * Affine::translate((x0, cy - 7.0)),
+                None,
+            );
         }
     }
 
-    fn draw_json_body(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, resp: &ResponseData, area: Rect) {
+    fn draw_json_body(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        resp: &ResponseData,
+        area: Rect,
+    ) {
         let c = &theme.tokens.colors;
         let pretty = vars::pretty_json(&resp.body).unwrap_or_else(|| resp.body.clone());
         let lines = vars::tokenize_json(&pretty);
@@ -1330,7 +1602,13 @@ impl ApiTesterApp {
         let text_x0 = area.x0 + gutter_w + 8.0;
         self.layout.fold_carets.clear();
 
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &area);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &area,
+        );
         let mut screen_y = area.y0 + 8.0 - self.body_scroll;
         let mut line_no = 0usize;
         let mut hidden_until: Option<usize> = None;
@@ -1339,73 +1617,168 @@ impl ApiTesterApp {
             if let Some(close) = hidden_until {
                 if idx <= close {
                     continue;
-                } else {
-                    hidden_until = None;
                 }
+                hidden_until = None;
             }
             line_no += 1;
             if screen_y + JSON_LINE_H >= area.y0 && screen_y <= area.y1 {
                 let ln = line_no.to_string();
                 let (lnw, _) = tr.measure(&ln, 11.0, None);
-                tr.draw_text(scene, &ln, 11.0, c.text_dim.with_alpha_factor(0.6), t * Affine::translate((area.x0 + gutter_w - lnw as f64 - 6.0, screen_y + 3.0)), None);
+                tr.draw_text(
+                    scene,
+                    &ln,
+                    11.0,
+                    c.text_dim.with_alpha_factor(0.6),
+                    t * Affine::translate((
+                        area.x0 + gutter_w - f64::from(lnw) - 6.0,
+                        screen_y + 3.0,
+                    )),
+                    None,
+                );
 
                 let collapsed = self.collapsed.contains(&idx);
                 if line.opens_block && line.close_line.is_some() {
-                    let caret_pt = Point::new(area.x0 + gutter_w - 2.0, screen_y + JSON_LINE_H / 2.0);
+                    let caret_pt =
+                        Point::new(area.x0 + gutter_w - 2.0, screen_y + JSON_LINE_H / 2.0);
                     draw_fold_caret(scene, t, caret_pt, c.text_dim, !collapsed);
-                    let caret_rect = Rect::new(area.x0 + gutter_w - 10.0, screen_y, area.x0 + gutter_w + 6.0, screen_y + JSON_LINE_H);
+                    let caret_rect = Rect::new(
+                        area.x0 + gutter_w - 10.0,
+                        screen_y,
+                        area.x0 + gutter_w + 6.0,
+                        screen_y + JSON_LINE_H,
+                    );
                     self.layout.fold_carets.push((caret_rect, idx));
                 }
                 let mut cx = text_x0;
                 for tok in &line.tokens {
                     let col = token_color(theme, tok.kind);
-                    tr.draw_text_styled(scene, &tok.text, size, col, t * Affine::translate((cx, screen_y + 3.0)), None, TextWeight::Regular, false, true);
-                    let (w, _) = tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
-                    cx += w as f64;
+                    tr.draw_text_styled(
+                        scene,
+                        &tok.text,
+                        size,
+                        col,
+                        t * Affine::translate((cx, screen_y + 3.0)),
+                        None,
+                        TextWeight::Regular,
+                        false,
+                        true,
+                    );
+                    let (w, _) =
+                        tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
+                    cx += f64::from(w);
                 }
                 if collapsed && line.opens_block {
-                    tr.draw_text(scene, " \u{2026} ", size, c.text_dim, t * Affine::translate((cx, screen_y + 3.0)), None);
+                    tr.draw_text(
+                        scene,
+                        " \u{2026} ",
+                        size,
+                        c.text_dim,
+                        t * Affine::translate((cx, screen_y + 3.0)),
+                        None,
+                    );
                 }
             }
-            if line.opens_block && self.collapsed.contains(&idx) {
-                if let Some(close) = line.close_line {
-                    hidden_until = Some(close);
-                }
+            if line.opens_block
+                && self.collapsed.contains(&idx)
+                && let Some(close) = line.close_line
+            {
+                hidden_until = Some(close);
             }
             screen_y += JSON_LINE_H;
         }
         scene.pop_layer();
     }
 
-    fn draw_raw_body(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, body: &str, area: Rect) {
+    fn draw_raw_body(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        body: &str,
+        area: Rect,
+    ) {
         let c = &theme.tokens.colors;
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &area);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &area,
+        );
         let size = theme.tokens.typography.scale.sm;
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
             if y + JSON_LINE_H >= area.y0 && y <= area.y1 {
-                tr.draw_text_styled(scene, line, size, c.text_primary, t * Affine::translate((area.x0 + PAD, y + 3.0)), None, TextWeight::Regular, false, true);
+                tr.draw_text_styled(
+                    scene,
+                    line,
+                    size,
+                    c.text_primary,
+                    t * Affine::translate((area.x0 + PAD, y + 3.0)),
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    true,
+                );
             }
             y += JSON_LINE_H;
         }
         scene.pop_layer();
     }
 
-    fn draw_response_headers(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, resp: &ResponseData, area: Rect) {
+    fn draw_response_headers(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        resp: &ResponseData,
+        area: Rect,
+    ) {
         let c = &theme.tokens.colors;
         let x0 = area.x0 + PAD;
         let mut y = area.y0 + 12.0;
-        tr.draw_text_weighted(scene, "RESPONSE HEADERS", 10.0, c.text_dim, t * Affine::translate((x0, y)), None, TextWeight::Bold);
+        tr.draw_text_weighted(
+            scene,
+            "RESPONSE HEADERS",
+            10.0,
+            c.text_dim,
+            t * Affine::translate((x0, y)),
+            None,
+            TextWeight::Bold,
+        );
         y += 24.0;
         let key_w = (area.width() * 0.32).min(280.0);
         for h in &resp.headers {
             if y + 26.0 > area.y1 {
                 break;
             }
-            tr.draw_text_weighted(scene, &h.key, theme.tokens.typography.scale.sm, c.semantic.info, t * Affine::translate((x0, y)), Some((key_w - 12.0) as f32), TextWeight::Semibold);
-            tr.draw_text(scene, &h.value, theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((x0 + key_w, y)), Some((area.width() - PAD * 2.0 - key_w) as f32));
+            tr.draw_text_weighted(
+                scene,
+                &h.key,
+                theme.tokens.typography.scale.sm,
+                c.semantic.info,
+                t * Affine::translate((x0, y)),
+                Some((key_w - 12.0) as f32),
+                TextWeight::Semibold,
+            );
+            tr.draw_text(
+                scene,
+                &h.value,
+                theme.tokens.typography.scale.sm,
+                c.text_primary,
+                t * Affine::translate((x0 + key_w, y)),
+                Some((area.width() - PAD * 2.0 - key_w) as f32),
+            );
             let sep = Rect::new(x0, y + 22.0, area.x1 - PAD, y + 23.0);
-            scene.fill(Fill::NonZero, t, c.border_standard.with_alpha_factor(0.4), None, &sep);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.border_standard.with_alpha_factor(0.4),
+                None,
+                &sep,
+            );
             y += 28.0;
         }
     }
@@ -1484,7 +1857,10 @@ impl ApiTesterApp {
             let new_env = if esel == NO_ENV {
                 None
             } else {
-                self.environments.iter().find(|e| e.name == esel).map(|e| e.id)
+                self.environments
+                    .iter()
+                    .find(|e| e.name == esel)
+                    .map(|e| e.id)
             };
             if new_env != self.active_env {
                 self.perform(state, path, actions::set_active_environment_action(new_env));
@@ -1499,8 +1875,7 @@ impl ApiTesterApp {
         let env_name = self
             .active_env
             .and_then(|id| self.environments.iter().find(|e| e.id == id))
-            .map(|e| e.name.clone())
-            .unwrap_or_else(|| NO_ENV.to_string());
+            .map_or_else(|| NO_ENV.to_string(), |e| e.name.clone());
         ApiDoc::set_text(state, path, ENV_PATH, &env_name);
     }
 }
@@ -1511,21 +1886,7 @@ impl ApiTesterApp {
 
 /// Three stacked bars — the hamburger toggle that summons the overlay rail.
 fn draw_hamburger(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    let cx = rect.center().x;
-    let cy = rect.center().y;
-    let half = 8.0;
-    for dy in [-6.0, 0.0, 6.0] {
-        let bar = Rect::new(cx - half, cy + dy - 1.0, cx + half, cy + dy + 1.0);
-        scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(bar, 1.0));
-    }
-}
-
-fn draw_check(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    let mut p = BezPath::new();
-    p.move_to((rect.x0 + 3.5, rect.center().y));
-    p.line_to((rect.x0 + 6.5, rect.y1 - 4.0));
-    p.line_to((rect.x1 - 3.5, rect.y0 + 4.0));
-    scene.stroke(&Stroke::new(1.8), t, color, None, &p);
+    Icon::Menu.draw(scene, t, rect, color);
 }
 
 /// A triangle fold caret: pointing down when `expanded`, right when not.
@@ -1597,8 +1958,12 @@ impl Widget for ApiTesterApp {
         // Keep the widgets in step with app state the app itself drives.
         self.send_button.set_enabled(!self.sending);
         self.request_tabs.set_selected(self.tab_index());
-        self.response_view_toggle
-            .set_selected(ResponseView::ALL.iter().position(|v| *v == self.response_view).unwrap_or(0));
+        self.response_view_toggle.set_selected(
+            ResponseView::ALL
+                .iter()
+                .position(|v| *v == self.response_view)
+                .unwrap_or(0),
+        );
     }
 
     fn build_layout(
@@ -1616,7 +1981,7 @@ impl Widget for ApiTesterApp {
         let mut child_nodes: Vec<NodeId> = Vec::new();
         {
             let mut kids = self.children_mut_ref();
-            for k in kids.iter_mut() {
+            for k in &mut kids {
                 child_nodes.push(k.build_layout(taffy, theme, node_map));
             }
         }
@@ -1632,7 +1997,7 @@ impl Widget for ApiTesterApp {
                 &child_nodes,
             )
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.last_sig = self.child_sig();
         node
     }
@@ -1640,10 +2005,10 @@ impl Widget for ApiTesterApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.layout = self.compute_layout();
         self.position_children();
@@ -1702,11 +2067,31 @@ impl Widget for ApiTesterApp {
             let mut kids = self.children_mut_ref();
             if let Some(idx) = kids.iter().position(|k| k.wants_pointer_capture()) {
                 if let Some(&cnode) = child_nodes.get(idx) {
-                    kids[idx].handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cnode, taffy);
+                    kids[idx].handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        cnode,
+                        taffy,
+                    );
                 }
             } else {
                 for (k, &cn) in kids.iter_mut().zip(child_nodes.iter()) {
-                    k.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cn, taffy);
+                    k.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        cn,
+                        taffy,
+                    );
                     if *handled {
                         break;
                     }
@@ -1744,7 +2129,7 @@ impl Widget for ApiTesterApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.layout.body_region.contains(self.last_cursor) {
                     let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * -40.0,
+                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * -40.0,
                         MouseScrollDelta::PixelDelta(p) => -p.y,
                     };
                     self.body_scroll = (self.body_scroll + dy).max(0.0);
@@ -1773,7 +2158,7 @@ impl Widget for ApiTesterApp {
         self.children_mut_ref()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ApiTesterApp"
     }
 
@@ -1800,7 +2185,10 @@ impl Widget for ApiTesterApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Drain child structure-dirty flags per the trait contract, then add
         // our own child-set changes.
-        let child_changed = self.children_mut_ref().iter_mut().fold(false, |acc, c| c.take_structure_dirty() || acc);
+        let child_changed = self
+            .children_mut_ref()
+            .iter_mut()
+            .fold(false, |acc, c| c.take_structure_dirty() || acc);
         let sig = self.child_sig();
         let self_changed = sig != self.last_sig;
         self.last_sig = sig;
@@ -1840,7 +2228,10 @@ impl ApiTesterApp {
                 self.dirty = true;
                 return;
             }
-            if self.rail.is_open() && !self.layout.sidebar.contains(p) && self.layout.scrim.contains(p) {
+            if self.rail.is_open()
+                && !self.layout.sidebar.contains(p)
+                && self.layout.scrim.contains(p)
+            {
                 self.rail.close();
                 self.dirty = true;
                 return;
@@ -1883,14 +2274,20 @@ mod tests {
         assert!(a.collections.is_empty(), "no fabricated collections");
         assert!(a.environments.is_empty(), "no fabricated environments");
         assert!(a.history.is_empty(), "no fabricated history");
-        assert!(a.response.is_none(), "no canned response before a real Send");
+        assert!(
+            a.response.is_none(),
+            "no canned response before a real Send"
+        );
     }
 
     #[test]
     fn env_vars_resolve_from_active_environment() {
         let a = app();
         let vars = a.env_vars();
-        assert_eq!(vars.get("base_url").map(String::as_str), Some("https://api.example.com/v2"));
+        assert_eq!(
+            vars.get("base_url").map(String::as_str),
+            Some("https://api.example.com/v2")
+        );
     }
 
     #[test]
@@ -1956,12 +2353,21 @@ mod tests {
         a.env_dropdown.sync(&mut doc, &root);
         a.reconcile_pickers(&mut doc, &root);
 
-        assert_eq!(a.active_env, Some(target.id), "the active environment switched");
-        let dispatched = a.actions.last_dispatched().expect("the picker dispatched an action");
-        let expected =
-            actions::encode(&actions::set_active_environment_action(Some(target.id)));
+        assert_eq!(
+            a.active_env,
+            Some(target.id),
+            "the active environment switched"
+        );
+        let dispatched = a
+            .actions
+            .last_dispatched()
+            .expect("the picker dispatched an action");
+        let expected = actions::encode(&actions::set_active_environment_action(Some(target.id)));
         assert_eq!(dispatched.type_id, expected.type_id);
-        assert_eq!(dispatched.payload, expected.payload, "affordance == ActionSpec");
+        assert_eq!(
+            dispatched.payload, expected.payload,
+            "affordance == ActionSpec"
+        );
         assert_eq!(
             ApiDoc::active_env(&doc, &root),
             Some(target.id.to_string()),
@@ -1973,7 +2379,10 @@ mod tests {
     fn demo_builds_nav_rows_for_collections_and_history() {
         let a = app();
         // At least the collection headers + the seeded history entries.
-        assert!(!a.nav_rows.is_empty(), "sidebar rows are real focusable widgets");
+        assert!(
+            !a.nav_rows.is_empty(),
+            "sidebar rows are real focusable widgets"
+        );
         assert_eq!(a.nav_rows.len(), a.nav_meta.len());
     }
 }

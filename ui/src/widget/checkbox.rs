@@ -1,14 +1,69 @@
-use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
-use vello::Scene;
-use vello::kurbo::{Affine, RoundedRect, Rect, Point, Stroke, BezPath};
-use vello::peniko::Color;
-use winit::event::{WindowEvent, MouseButton, ElementState};
-use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::Widget;
+use crate::permissions::PermissionScope;
+use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::permissions::PermissionScope;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+/// Interaction state for an immediate-mode checkbox face. Canvas apps keep
+/// their own hit-testing while sharing the retained checkbox's visual states.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CheckboxInteract {
+    pub hovered: bool,
+    pub focused: bool,
+    pub disabled: bool,
+}
+
+/// Stateless checkbox presentation for hand-laid-out canvases.
+///
+/// [`Checkbox`] remains the right choice when the value is bound directly to
+/// an Automerge path. `CheckboxFace` avoids every immediate-mode app copying
+/// the box, focus border, disabled treatment, and proportional check mark.
+pub struct CheckboxFace {
+    rect: Rect,
+    checked: bool,
+    interact: CheckboxInteract,
+    fill_unchecked: bool,
+}
+
+impl CheckboxFace {
+    pub fn new(rect: Rect, checked: bool) -> Self {
+        Self {
+            rect,
+            checked,
+            interact: CheckboxInteract::default(),
+            fill_unchecked: true,
+        }
+    }
+
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.interact.hovered = hovered;
+        self
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.interact.focused = focused;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.interact.disabled = disabled;
+        self
+    }
+
+    /// Let the surrounding canvas provide the unchecked background. Useful
+    /// for checkboxes embedded in rows and cards rather than standalone forms.
+    pub fn transparent_unchecked(mut self) -> Self {
+        self.fill_unchecked = false;
+        self
+    }
+}
 
 pub struct Checkbox {
     _id: String,
@@ -85,97 +140,157 @@ impl Checkbox {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
+
+    /// Paint a checkbox without taking ownership of its state or events.
+    pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
+        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.md));
+        if face.interact.disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
+        }
+
+        let box_color = if face.checked {
+            theme.accent_primary
+        } else if face.interact.hovered {
+            theme.bg_hover
+        } else {
+            theme.bg_active
+        };
+        if face.checked || face.fill_unchecked || face.interact.hovered {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                box_color,
+                None,
+                &shape,
+            );
+        }
+
+        let stroke_color = if face.interact.focused {
+            theme.border_focus
+        } else {
+            theme.tokens.colors.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(if face.interact.focused { 2.0 } else { 1.0 }),
+            transform,
+            stroke_color,
+            None,
+            &shape,
+        );
+
+        if face.checked {
+            let mut path = BezPath::new();
+            path.move_to(Point::new(
+                face.rect.x0 + face.rect.width() * 0.25,
+                face.rect.y0 + face.rect.height() * 0.50,
+            ));
+            path.line_to(Point::new(
+                face.rect.x0 + face.rect.width() * 0.42,
+                face.rect.y0 + face.rect.height() * 0.67,
+            ));
+            path.line_to(Point::new(
+                face.rect.x0 + face.rect.width() * 0.75,
+                face.rect.y0 + face.rect.height() * 0.25,
+            ));
+            scene.stroke(
+                &Stroke::new((face.rect.width().min(face.rect.height()) * 0.105).max(1.5))
+                    .with_caps(vello::kurbo::Cap::Round)
+                    .with_join(vello::kurbo::Join::Round),
+                transform,
+                theme.tokens.colors.ink_on_any(
+                    &[box_color],
+                    Color::WHITE,
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                ),
+                None,
+                &path,
+            );
+        }
+
+        if face.interact.disabled {
+            scene.pop_layer();
+        }
+    }
 }
 
 impl Widget for Checkbox {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str()) {
-            if let Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Boolean(b) = s.as_ref() {
-                    self.is_checked = *b;
-                }
-            }
+        if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+        {
+            self.is_checked = *b;
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(24.0),
                 height: Dimension::length(24.0),
             },
             ..Default::default()
-        }).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        // Disabled widgets paint their (forced-idle) look under a reduced
-        // group opacity so they read as non-interactive.
-        let disabled = !self.enabled;
-        if disabled {
-            let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
-        }
-        let box_color = if self.is_checked {
-            // Checked = active fill, not hover — concept uses indigo-500
-            // (`bg-indigo-500`) for the on-state and reserves indigo-600
-            // for the hover shade.
-            theme.accent_primary
-        } else if self.is_hovered {
-            theme.bg_hover
-        } else {
-            theme.bg_active
-        };
-
-        let box_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-
-        // Draw Box
-        scene.fill(vello::peniko::Fill::NonZero, transform, box_color, None, &box_shape);
-
-        let stroke_color = if self.is_focused {
-            theme.border_focus
-        } else {
-            theme.tokens.colors.border_standard
-        };
-
-        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &box_shape);
-
-        // Draw Checkmark
-        if self.is_checked {
-            let mut path = BezPath::new();
-            path.move_to(Point::new(self.rect.x0 + 6.0, self.rect.y0 + 12.0));
-            path.line_to(Point::new(self.rect.x0 + 10.0, self.rect.y0 + 16.0));
-            path.line_to(Point::new(self.rect.x0 + 18.0, self.rect.y0 + 6.0));
-            
-            scene.stroke(
-                &Stroke::new(2.5).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round),
-                transform,
-                Color::WHITE,
-                None,
-                &path
-            );
-        }
-
-        if disabled {
-            scene.pop_layer();
-        }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        Self::paint(
+            scene,
+            transform,
+            theme,
+            &CheckboxFace::new(self.rect, self.is_checked)
+                .hovered(self.is_hovered)
+                .focused(self.is_focused)
+                .disabled(!self.enabled),
+        );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
         // Disabled: reject all input — no toggle, no hover feedback.
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -185,24 +300,31 @@ impl Widget for Checkbox {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
-                if self.is_hovered && *element_state == ElementState::Pressed {
-                    *handled = true;
-                    *focus_target = Some(node_id);
-                    // CRDT Mutation
-                    let new_val = !self.is_checked;
-                    let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
-                    // Update the local cache now so accessibility() reflects the
-                    // new state this same frame — otherwise the focus narration
-                    // triggered by this click would speak the pre-click state.
-                    self.is_checked = new_val;
-                }
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } if self.is_hovered && *element_state == ElementState::Pressed => {
+                *handled = true;
+                *focus_target = Some(node_id);
+                let new_val = !self.is_checked;
+                let _ = state.put(
+                    root,
+                    self.on_toggle_path.as_str(),
+                    automerge::ScalarValue::Boolean(new_val),
+                );
+                // Update the local cache now so accessibility() reflects the
+                // new state this same frame — otherwise the focus narration
+                // triggered by this click would speak the pre-click state.
+                self.is_checked = new_val;
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str { "Checkbox" }
+    fn name(&self) -> &'static str {
+        "Checkbox"
+    }
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("checkbox"))
@@ -212,10 +334,18 @@ impl Widget for Checkbox {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
-    fn is_focused(&self) -> bool { self.is_focused }
-    fn is_enabled(&self) -> bool { self.enabled }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -278,7 +408,9 @@ impl Widget for Checkbox {
         if self.presence_path.is_empty() {
             None
         } else {
-            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
         }
     }
 
@@ -295,22 +427,29 @@ impl Widget for Checkbox {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) { return; }
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope() {
-            if !permissions.check(&scope) {
-                let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
-            }
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
         }
 
-        if let Some(key) = self.presence_key() {
-            if let Some(peers) = presence.here.get(&key) {
-                if let Some(user) = peers.first() {
-                    presence.draw_peer_focus(scene, theme, user, self.rect);
-                }
-            }
+        if let Some(key) = self.presence_key()
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
         }
     }
 }
@@ -333,10 +472,29 @@ mod tests {
     }
 
     #[test]
+    fn immediate_face_preserves_canvas_owned_state() {
+        let rect = Rect::new(2.0, 3.0, 18.0, 19.0);
+        let face = CheckboxFace::new(rect, true)
+            .hovered(true)
+            .focused(true)
+            .disabled(true)
+            .transparent_unchecked();
+        assert_eq!(face.rect, rect);
+        assert!(face.checked);
+        assert!(face.interact.hovered);
+        assert!(face.interact.focused);
+        assert!(face.interact.disabled);
+        assert!(!face.fill_unchecked);
+    }
+
+    #[test]
     fn with_enabled_false_is_reported_by_is_enabled() {
         let c = Checkbox::new("any", "path").with_enabled(false);
         assert!(!Widget::is_enabled(&c));
-        assert!(Widget::is_enabled(&Checkbox::new("any", "path")), "default is enabled");
+        assert!(
+            Widget::is_enabled(&Checkbox::new("any", "path")),
+            "default is enabled"
+        );
     }
 
     #[test]
@@ -382,10 +540,20 @@ mod tests {
         let root = automerge::ROOT;
         let mut c = Checkbox::new("any", "checked");
         assert!(!c.is_checked);
-        assert!(Widget::perform_action(&mut c, &Action::ToggleCheck, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut c,
+            &Action::ToggleCheck,
+            &mut doc,
+            &root
+        ));
         assert!(c.is_checked, "ToggleCheck flips to checked");
         // Activate also toggles.
-        assert!(Widget::perform_action(&mut c, &Action::Activate, &mut doc, &root));
+        assert!(Widget::perform_action(
+            &mut c,
+            &Action::Activate,
+            &mut doc,
+            &root
+        ));
         assert!(!c.is_checked, "Activate flips back");
     }
 
@@ -395,7 +563,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut c = Checkbox::new("any", "checked").with_enabled(false);
-        assert!(!Widget::perform_action(&mut c, &Action::ToggleCheck, &mut doc, &root));
+        assert!(!Widget::perform_action(
+            &mut c,
+            &Action::ToggleCheck,
+            &mut doc,
+            &root
+        ));
         assert!(!c.is_checked, "a disabled checkbox must not toggle");
     }
 
@@ -427,12 +600,33 @@ mod tests {
         let mut handled = false;
 
         c.handle_event(
-            &WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (10.0, 10.0).into(),
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
         c.handle_event(
-            &WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left },
-            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
         );
 
         assert!(focus.is_none(), "disabled checkbox must not request focus");

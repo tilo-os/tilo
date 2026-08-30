@@ -1,0 +1,44 @@
+// One test binary instead of one per file; #[path] keeps the files in place.
+
+#[path = "click_link_navigates.rs"]
+mod click_link_navigates;
+#[path = "cmd_k_palette.rs"]
+mod cmd_k_palette;
+#[path = "e2e_smoke.rs"]
+mod e2e_smoke;
+#[path = "interaction_event_path.rs"]
+mod interaction_event_path;
+#[path = "main_panel_scroll.rs"]
+mod main_panel_scroll;
+#[path = "markdown_marks_roundtrip.rs"]
+mod markdown_marks_roundtrip;
+#[path = "markdown_phase3_roundtrip.rs"]
+mod markdown_phase3_roundtrip;
+#[path = "offscreen_smoke.rs"]
+mod offscreen_smoke;
+#[path = "page_edit_persistence.rs"]
+mod page_edit_persistence;
+#[path = "page_file_io.rs"]
+mod page_file_io;
+#[path = "peer_caret_visual.rs"]
+mod peer_caret_visual;
+#[path = "responsive_drawer.rs"]
+mod responsive_drawer;
+#[path = "save_failure_status.rs"]
+mod save_failure_status;
+#[path = "screenshot_critique.rs"]
+mod screenshot_critique;
+#[path = "sidebar_collab_growth.rs"]
+mod sidebar_collab_growth;
+#[path = "sidebar_dnd.rs"]
+mod sidebar_dnd;
+#[path = "slash_menu_focus.rs"]
+mod slash_menu_focus;
+#[path = "tree_operations.rs"]
+mod tree_operations;
+#[path = "two_peer_sync.rs"]
+mod two_peer_sync;
+#[path = "welcome_page_renders_all_block_kinds.rs"]
+mod welcome_page_renders_all_block_kinds;
+#[path = "workspace_persistence.rs"]
+mod workspace_persistence;

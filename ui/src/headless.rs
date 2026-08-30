@@ -1,22 +1,13 @@
 //! Driving a `ui` app without a display.
 //!
-//! `--shots` already renders an app's cold-start frame offscreen, but it
-//! builds a throwaway `State` and never delivers input, so it cannot answer
-//! the question this module exists for: *does a change the user makes
-//! survive a restart?* Answering that needs the real widget tree, the real
-//! event dispatch, and the app's real persisted document — and no window.
+//! `--shots` renders a cold-start frame offscreen but never delivers input,
+//! so it can't answer *does a change survive a restart?* [`Driver`] does:
+//! it stands up the app's real widget tree over a Taffy layout at a fixed
+//! viewport and feeds it the same `WindowEvent`s winit would, through the
+//! same [`Widget::handle_event`](crate::widget::Widget::handle_event) the
+//! live app uses — nothing stubbed, including CRDT mutations.
 //!
-//! [`Driver`] provides exactly that. It stands up the app's root widget over
-//! a Taffy tree at a fixed viewport, then feeds it the same `WindowEvent`
-//! values winit would deliver, through the same
-//! [`Widget::handle_event`](crate::widget::Widget::handle_event) the live app
-//! uses. Nothing is stubbed: a click here follows the identical path to a
-//! click on real hardware, including the CRDT mutations widgets perform on
-//! the way.
-//!
-//! # Using it from an app
-//!
-//! Apps opt in with one line in `main`, next to their `--shots` handling:
+//! Apps opt in with one line in `main`, next to `--shots`:
 //!
 //! ```ignore
 //! if let Some(spec) = ui::headless::spec_from_args(&args) {
@@ -24,17 +15,16 @@
 //! }
 //! ```
 //!
-//! which gives the binary a `--headless-drive '<json>'` flag:
+//! which adds a `--headless-drive '<json>'` flag:
 //!
 //! ```text
 //! ebook --headless-drive '{"actions":[{"click_named":"library_item[0]"}]}'
 //! ebook --headless-drive '{"dump":"/tmp/after.json"}'
 //! ```
 //!
-//! The first process makes a change and exits (flushing its store); the
-//! second loads the store and writes the document out as JSON. Comparing the
-//! two dumps is the whole persistence proof, and it is made against the
-//! app's real document rather than a harness's idea of one.
+//! The first process changes state and exits (flushing its store); the
+//! second loads the store and dumps the document as JSON. Diffing the two
+//! dumps is the persistence proof, against the app's real document.
 
 use std::collections::HashMap;
 
@@ -85,8 +75,13 @@ pub struct Spec {
     pub targets: Option<std::path::PathBuf>,
 }
 
-/// A headless app: real widget tree, real Taffy layout, real event dispatch.
-pub struct Driver {
+/// The canonical display-independent frame pipeline.
+///
+/// Both screenshot rendering and [`Driver`] input scenarios use this type, so
+/// they cannot drift into subtly different sync/layout/draw implementations.
+/// Live [`crate::App`] additionally owns the window and event loop, but follows
+/// the same pass ordering documented by [`Self::relayout`].
+pub struct FrameHarness {
     state: State,
     root: Box<dyn Widget>,
     taffy: TaffyTree<()>,
@@ -102,21 +97,17 @@ pub struct Driver {
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
-    /// Records this driver has open, when the app under test uses them.
-    ///
-    /// Present so a headless run edits the same documents the live app does:
-    /// without it a record-aware app would be driven against its room index
-    /// instead of the record it has checked out, and the harness would be
-    /// testing something the user never runs.
+    /// Records this driver has open, when the app under test uses them —
+    /// without this a record-aware app would be driven against its room
+    /// index instead of the record it checked out, testing something the
+    /// user never runs.
     records: Option<crate::record::RecordSet>,
     room_index: Option<automerge::AutoCommit>,
-    /// The taffy node of the widget that currently holds keyboard focus, or
-    /// `None`. Mirrors [`crate::app::App::focused_node`]: the driver manages
-    /// focus itself (Tab / directional / focus-on-click) because focus is an
-    /// App-level responsibility, not something the root widget's
-    /// `handle_event` does. Remapped across every `relayout` by scanning for
-    /// the widget whose `is_focused()` is still set (widget instances survive
-    /// a relayout; their taffy ids do not).
+    /// The taffy node holding keyboard focus, or `None`. Mirrors
+    /// [`crate::app::App::focused_node`] — focus is App-level, not
+    /// something the root widget's `handle_event` does. Remapped across
+    /// every `relayout` by scanning for `is_focused()`: widget instances
+    /// survive a relayout, their taffy ids do not.
     focused: Option<NodeId>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
@@ -129,9 +120,22 @@ pub struct Driver {
     profiler: Option<crate::profiling::FrameProfiler>,
 }
 
-impl Driver {
+/// Backwards-compatible name for the input-driving use of [`FrameHarness`].
+pub type Driver = FrameHarness;
+
+impl FrameHarness {
     /// Stand the app up and run the first layout pass.
     pub fn new(state: State, root: Box<dyn Widget>, viewport: (u32, u32)) -> Self {
+        Self::new_with_theme(state, root, viewport, Theme::dark())
+    }
+
+    /// Stand the app up under an explicit theme and run the first frame.
+    pub fn new_with_theme(
+        state: State,
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Self {
         let mut d = Self {
             state,
             root,
@@ -140,7 +144,7 @@ impl Driver {
             root_node: NodeId::from(0usize),
             child_node: NodeId::from(0usize),
             text: TextRenderer::new(),
-            theme: Theme::dark(),
+            theme,
             scene: Scene::new(),
             records: None,
             room_index: None,
@@ -221,6 +225,24 @@ impl Driver {
             w.set_undo_status(&status);
         }
     }
+    /// Use a different palette for subsequent frames.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.relayout();
+    }
+
+    /// Rasterise the most recently laid-out frame to a PNG.
+    ///
+    /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
+    /// this never runs a separate screenshot-only widget pipeline.
+    pub fn render_png(&self, out: &std::path::Path) {
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let (w, h) = self.viewport;
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.render_png(&self.scene, vello::peniko::Color::TRANSPARENT, out);
+    }
 
     /// Drive a record-aware app: the live document is a record's, and the
     /// widget names which one. Mirrors [`crate::App::with_records`].
@@ -266,17 +288,14 @@ impl Driver {
         }
     }
 
-    /// Re-run the app's frame: pull state from the CRDT, rebuild the Taffy
-    /// tree, compute and apply layout, and draw. Called after every action so
-    /// the next one sees where things actually moved to.
+    /// Re-run the app's frame: sync from the CRDT, rebuild Taffy, apply
+    /// layout, and draw. Called after every action so the next one sees
+    /// where things actually moved.
     ///
-    /// The draw pass is not decoration. Many widgets record the rectangles
-    /// they hit-test pointer input against *while drawing* — a click is
-    /// resolved against where the widget last painted itself. Skipping the
-    /// draw leaves those rects empty and every click silently misses, which
-    /// is exactly the kind of quietly-passing test this harness must not
-    /// produce. Nothing is rasterised: the `Scene` is encoded on the CPU and
-    /// thrown away, so no GPU or display is involved.
+    /// The draw pass isn't decoration: many widgets record their hit-test
+    /// rects while drawing, so skipping it would leave every click silently
+    /// missing — exactly the false-pass this harness must avoid. Nothing is
+    /// rasterised; the `Scene` is encoded on the CPU and discarded.
     pub fn relayout(&mut self) {
         // Records first, as `ui::App` does: an action that opened a document
         // must be editing that document by the time the next frame syncs.
@@ -363,11 +382,8 @@ impl Driver {
         }
 
         // The taffy tree was rebuilt, so the previous `focused` NodeId is
-        // stale. The widget *instances* survive (a relayout rebuilds layout,
-        // not widgets), and the focused one still reports `is_focused()`, so
-        // recover the current node by scanning the fresh node map. This keeps
-        // Tab focus + keystroke routing stable across the relayout every
-        // action triggers.
+        // stale; recover it by scanning the fresh node map for whichever
+        // widget still reports `is_focused()`.
         self.focused = self.node_map.iter().find_map(|(&n, &p)| {
             // SAFETY: same node_map contract the measure closure uses — the
             // pointers alias `self.root`, which is live and not otherwise
@@ -375,20 +391,17 @@ impl Driver {
             unsafe { (*p).is_focused() }.then_some(n)
         });
 
-        // One `relayout` is one rendered frame. Commit it (folding in any
-        // `handle_event` time banked by a preceding `send`) so the harness
-        // sees a per-frame sample. The passes ran contiguously here, so the
-        // frame total is taken as their sum.
+        // One `relayout` is one rendered frame; commit it, folding in any
+        // `handle_event` time banked by a preceding `send`.
         if let Some(p) = self.profiler.as_mut() {
             p.commit_frame_summed();
         }
     }
 
     /// The keyboard-focusable widgets in tree order — the same DFS
-    /// `crate::app::App::update_focusable_order` walks (a node is included
-    /// when `is_focusable() && is_enabled()`), so a Tab that reaches a widget
-    /// here reaches it in the live app too. Focus-trap (modal) confinement is
-    /// not modelled; a harness that needs it can filter the result.
+    /// `crate::app::App::update_focusable_order` walks, so a Tab that
+    /// reaches a widget here reaches it in the live app too. Focus-trap
+    /// (modal) confinement is not modelled.
     pub fn focus_order(&self) -> Vec<NodeId> {
         let mut order = Vec::new();
         collect_focus_order(self.child_node, self.root.as_ref(), &self.taffy, &mut order);
@@ -407,15 +420,15 @@ impl Driver {
         if self.focused == node {
             return;
         }
-        if let Some(old) = self.focused {
-            if let Some(&p) = self.node_map.get(&old) {
-                unsafe { (*p).set_focus(false) };
-            }
+        if let Some(old) = self.focused
+            && let Some(&p) = self.node_map.get(&old)
+        {
+            unsafe { (*p).set_focus(false) };
         }
-        if let Some(new) = node {
-            if let Some(&p) = self.node_map.get(&new) {
-                unsafe { (*p).set_focus(true) };
-            }
+        if let Some(new) = node
+            && let Some(&p) = self.node_map.get(&new)
+        {
+            unsafe { (*p).set_focus(true) };
         }
         self.focused = node;
     }
@@ -427,7 +440,10 @@ impl Driver {
         if order.is_empty() {
             return None;
         }
-        let next = match self.focused.and_then(|f| order.iter().position(|&x| x == f)) {
+        let next = match self
+            .focused
+            .and_then(|f| order.iter().position(|&x| x == f))
+        {
             Some(idx) => {
                 if back {
                     if idx == 0 { order.len() - 1 } else { idx - 1 }
@@ -436,7 +452,11 @@ impl Driver {
                 }
             }
             None => {
-                if back { order.len() - 1 } else { 0 }
+                if back {
+                    order.len() - 1
+                } else {
+                    0
+                }
             }
         };
         let target = order[next];
@@ -517,7 +537,7 @@ impl Driver {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        use crate::accesskit_bridge::{resolve_node_id, A11yTarget};
+        use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
         let resolved = resolve_node_id(self.root.as_ref(), &self.node_map, target)
             .ok_or_else(|| format!("no accessibility node {target:?} in the current frame"))?;
         let (taffy_id, key_path) = match resolved {
@@ -612,9 +632,8 @@ impl Driver {
             // Banked; folded into the frame the following `relayout` commits.
             p.record_since(crate::profiling::Pass::HandleEvent, t_event);
         }
-        // Mirror the App: a widget that claimed focus during dispatch (a
-        // click on a field / button) becomes the focused node, so subsequent
-        // keystrokes route to it.
+        // Mirror the App: a widget that claimed focus during dispatch
+        // becomes the focused node, so subsequent keystrokes route to it.
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
@@ -729,10 +748,8 @@ impl Driver {
     }
 
     /// Send one vertical wheel scroll of `(dx, dy)` line-deltas through the
-    /// production event path (`MouseWheel { LineDelta }`), then relayout — the
-    /// same three-step frame a real notch produces. Used by the perf harness's
-    /// scroll scenarios. Content scrollables handle the wheel regardless of
-    /// pointer position, so no prior cursor move is needed.
+    /// production event path. Content scrollables handle the wheel
+    /// regardless of pointer position, so no prior cursor move is needed.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
         self.send(WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),
@@ -767,7 +784,7 @@ impl Driver {
     pub fn take_profile_samples(&mut self) -> Vec<crate::profiling::FrameTiming> {
         self.profiler
             .as_mut()
-            .map(|p| p.take_capture())
+            .map(super::profiling::FrameProfiler::take_capture)
             .unwrap_or_default()
     }
 
@@ -813,7 +830,7 @@ impl Driver {
     /// The document rendered as JSON, for a harness to diff across a
     /// restart.
     pub fn dump_json(&mut self) -> String {
-        serde_json::to_string_pretty(&automerge::AutoSerde::from(&*self.state.doc.document()))
+        serde_json::to_string_pretty(&automerge::AutoSerde::from(self.state.doc.document()))
             .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 }
@@ -857,7 +874,7 @@ fn collect_targets(
     out.insert(path.clone(), w.get_rect());
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
-            name.clone()
+            name
         } else {
             format!("{parent_path}/{name}")
         };
@@ -875,10 +892,9 @@ fn collect_targets(
 /// Build a `WindowEvent::KeyboardInput` winit itself would have delivered.
 ///
 /// `KeyEvent::platform_specific` is `pub(crate)` in winit, so the struct
-/// cannot be built field-by-field from outside that crate. Zero-initialising
-/// and then overwriting every field we care about is the workaround the
-/// compositor's own driver already uses (`shell/src/bin/shots/driver.rs`);
-/// the zeroed platform payload is inert on the read paths widgets take.
+/// can't be built field-by-field from outside that crate. Zero-initialising
+/// and overwriting every field we care about is the same workaround the
+/// compositor's own driver uses (`shell/src/bin/shots/driver.rs`).
 fn key_event(key: Key, state: ElementState) -> WindowEvent {
     // SAFETY: `KeyEvent`'s only unwritten field is the platform payload,
     // which on Linux is a plain `Option`-shaped struct for which an
@@ -957,14 +973,26 @@ fn value_arg(args: &[String], flag: &str) -> Option<String> {
 pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("invalid JSON: {e}"))?;
+    if !v.is_object() {
+        return Err("payload must be a JSON object".to_owned());
+    }
     let mut spec = Spec::default();
-    if let Some(vp) = v.get("viewport").and_then(|x| x.as_array()) {
-        if vp.len() == 2 {
-            spec.viewport = Some((
-                vp[0].as_u64().unwrap_or(0) as u32,
-                vp[1].as_u64().unwrap_or(0) as u32,
-            ));
-        }
+    if let Some(value) = v.get("viewport") {
+        let vp = value
+            .as_array()
+            .filter(|vp| vp.len() == 2)
+            .ok_or("viewport must be [width, height]")?;
+        let width = vp[0]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or("viewport width must be a non-zero u32")?;
+        let height = vp[1]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or("viewport height must be a non-zero u32")?;
+        spec.viewport = Some((width, height));
     }
     if let Some(p) = v.get("dump").and_then(|x| x.as_str()) {
         spec.dump = Some(p.into());
@@ -972,10 +1000,17 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     if let Some(p) = v.get("targets").and_then(|x| x.as_str()) {
         spec.targets = Some(p.into());
     }
-    for a in v.get("actions").and_then(|x| x.as_array()).unwrap_or(&vec![]) {
+    for a in v
+        .get("actions")
+        .and_then(|x| x.as_array())
+        .unwrap_or(&vec![])
+    {
         let obj = a
             .as_object()
             .ok_or_else(|| format!("action must be an object, got {a}"))?;
+        if obj.len() != 1 {
+            return Err("each action must contain exactly one operation".to_owned());
+        }
         let (k, val) = obj
             .iter()
             .next()
@@ -989,8 +1024,12 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
             "click_at" => {
                 let xy = val.as_array().ok_or("click_at takes [x, y]")?;
                 Action::ClickAt(
-                    xy.first().and_then(|x| x.as_f64()).ok_or("click_at x")?,
-                    xy.get(1).and_then(|x| x.as_f64()).ok_or("click_at y")?,
+                    xy.first()
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or("click_at x")?,
+                    xy.get(1)
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or("click_at y")?,
                 )
             }
             "key" => Action::Key(val.as_str().ok_or("key takes a string")?.to_string()),
@@ -1025,11 +1064,8 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
         );
         return 3;
     }
-    // An app whose root names a record keeps its content in that record's own
-    // document, so the driver has to hold the same record set the live app
-    // does — otherwise the run would edit the room index and prove nothing
-    // about what the user sees. An app that names no record is unaffected: the
-    // set stays empty and the live document is the package's, as before.
+    // An app whose root names a record must be driven against that record's
+    // document, not the room index — see `records` on `Driver`.
     let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
     if driver.root_record_intent().is_some() {
         let (room, _) = crate::persist::open(manifest_id);
@@ -1088,7 +1124,7 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{Button, Widget};
+    use crate::widget::Button;
 
     #[test]
     fn spec_parses_every_action_shape() {
@@ -1099,7 +1135,10 @@ mod tests {
         )
         .expect("spec parses");
         assert_eq!(spec.viewport, Some((800, 600)));
-        assert_eq!(spec.dump.as_deref(), Some(std::path::Path::new("/tmp/d.json")));
+        assert_eq!(
+            spec.dump.as_deref(),
+            Some(std::path::Path::new("/tmp/d.json"))
+        );
         assert_eq!(spec.actions.len(), 5);
         assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
         assert!(matches!(&spec.actions[3], Action::Type(t) if t == "hi"));
@@ -1109,6 +1148,19 @@ mod tests {
     fn an_unknown_action_is_rejected_rather_than_ignored() {
         let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
         assert!(err.contains("teleport"), "{err}");
+    }
+
+    #[test]
+    fn malformed_headless_viewports_and_actions_are_rejected() {
+        for raw in [
+            r#"{"viewport":[0,600]}"#,
+            r#"{"viewport":[800]}"#,
+            r#"{"viewport":"800x600"}"#,
+            r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
+            "[]",
+        ] {
+            assert!(parse_spec(raw).is_err(), "accepted {raw}");
+        }
     }
 
     /// A button click must reach the widget through the same
@@ -1133,7 +1185,11 @@ mod tests {
 
     #[test]
     fn clicking_a_missing_target_is_an_error() {
-        let mut driver = Driver::new(State::new(), Box::new(Button::new("b", "B", None)), (400, 200));
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(Button::new("b", "B", None)),
+            (400, 200),
+        );
         let err = driver.click_named("no_such_widget").unwrap_err();
         assert!(err.contains("no_such_widget"), "{err}");
     }
@@ -1252,7 +1308,9 @@ mod a11y_driver_tests {
             _s: &mut automerge::AutoCommit,
             _p: &automerge::ObjId,
         ) -> bool {
-            let Some(&key) = key_path.first() else { return false };
+            let Some(&key) = key_path.first() else {
+                return false;
+            };
             let Some(i) = self
                 .items
                 .borrow()
@@ -1407,7 +1465,10 @@ mod a11y_driver_tests {
         items.borrow_mut().remove(0);
         d.relayout();
         assert!(d.a11y_node_named("alpha").is_none(), "alpha is gone");
-        assert!(d.a11y_node_named("gamma").is_some(), "gamma is still listed");
+        assert!(
+            d.a11y_node_named("gamma").is_some(),
+            "gamma is still listed"
+        );
 
         d.perform_a11y_action(gamma, &Action::Activate)
             .expect("the reference must still resolve");
@@ -1504,7 +1565,7 @@ mod undo_driver_tests {
             _node: NodeId,
             _taffy: &TaffyTree<()>,
         ) {
-            use automerge::{transaction::Transactable, ReadDoc};
+            use automerge::{ReadDoc, transaction::Transactable};
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -1676,7 +1737,7 @@ mod dispatched_action_driver_tests {
 
     impl qos_actions::Action for Append {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-            use automerge::{transaction::Transactable, ReadDoc};
+            use automerge::{ReadDoc, transaction::Transactable};
             let obj = match doc.get(&automerge::ROOT, "body") {
                 Ok(Some((_, o))) => o,
                 _ => doc.put_object(&automerge::ROOT, "body", automerge::ObjType::Text)?,
@@ -1902,7 +1963,11 @@ mod dispatched_action_driver_tests {
         );
 
         d.type_text("a");
-        assert_eq!(body(&mut d), "a", "the dispatched action reached the document");
+        assert_eq!(
+            body(&mut d),
+            "a",
+            "the dispatched action reached the document"
+        );
         assert!(
             d.undo_status().can_undo,
             "an action-dispatched edit must be an undo boundary the local user owns"
@@ -2052,7 +2117,10 @@ mod dispatched_action_driver_tests {
             position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
         });
 
-        assert!(d.perform_undo(), "the real edit is still the top of the stack");
+        assert!(
+            d.perform_undo(),
+            "the real edit is still the top of the stack"
+        );
         assert_eq!(body(&mut d), "", "and one press reverted it");
         assert!(
             !d.undo_status().can_undo,

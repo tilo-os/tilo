@@ -20,7 +20,7 @@
 //! the key is cheap to build/parse and stable across column renames.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 use crate::model::{Addr, CellFormat, Currency, DateStyle, TimeStyle};
 use crate::settings::DocSettings;
@@ -96,7 +96,7 @@ impl SheetsDoc {
         let _ = doc.put(&wb, "active", idx as i64);
     }
 
-    /// The Map ObjId for sheet `idx`, if it exists.
+    /// The Map `ObjId` for sheet `idx`, if it exists.
     fn sheet_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
         let sheets = Self::sheets_list(doc);
         match doc.get(&sheets, idx) {
@@ -161,9 +161,7 @@ impl SheetsDoc {
     /// Duplicate sheet `idx` (name, per-cell raw+format, and tab colour) into a
     /// new sheet inserted immediately after it. Returns the new sheet's index.
     pub fn duplicate_sheet(doc: &mut AutoCommit, idx: usize) -> Option<usize> {
-        if Self::sheet_map(doc, idx).is_none() {
-            return None;
-        }
+        Self::sheet_map(doc, idx)?;
         let snap = Self::snapshot_sheet(doc, idx, Currency::USD);
         let color = Self::sheet_color(doc, idx);
         let new_name = format!("{} copy", snap.name);
@@ -222,7 +220,7 @@ impl SheetsDoc {
         if let Some(sheet) = Self::sheet_map(doc, idx) {
             match color {
                 Some(c) => {
-                    let _ = doc.put(&sheet, "color", c as i64);
+                    let _ = doc.put(&sheet, "color", i64::from(c));
                 }
                 None => {
                     let _ = doc.delete(&sheet, "color");
@@ -244,14 +242,13 @@ impl SheetsDoc {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let name = match doc.get(&sheets, i) {
-                Ok(Some((Value::Object(ObjType::Map), sheet))) => {
-                    match doc.get(&sheet, "name") {
-                        Ok(Some((Value::Scalar(v), _))) => {
-                            v.to_str().map(|s| s.to_string()).unwrap_or_default()
-                        }
-                        _ => String::new(),
-                    }
-                }
+                Ok(Some((Value::Object(ObjType::Map), sheet))) => match doc.get(&sheet, "name") {
+                    Ok(Some((Value::Scalar(v), _))) => v
+                        .to_str()
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                },
                 _ => String::new(),
             };
             out.push(if name.is_empty() {
@@ -272,9 +269,7 @@ impl SheetsDoc {
         let key = Self::cell_key(addr);
         if raw.is_empty() {
             // Keep any format but clear the value; if both gone, delete.
-            if let Ok(Some((Value::Object(ObjType::Map), cell))) =
-                doc.get(&cells, key.as_str())
-            {
+            if let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) {
                 let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)));
                 if has_fmt {
                     let _ = doc.put(&cell, "raw", "");
@@ -321,7 +316,7 @@ impl SheetsDoc {
 
     fn read_str(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
         match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_str().map(|s| s.to_string()),
+            Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
             _ => None,
         }
     }
@@ -375,9 +370,10 @@ impl SheetsDoc {
         let key = Self::cell_key(addr);
         match doc.get(&cells, key.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), cell))) => match doc.get(&cell, "raw") {
-                Ok(Some((Value::Scalar(v), _))) => {
-                    v.to_str().map(|s| s.to_string()).unwrap_or_default()
-                }
+                Ok(Some((Value::Scalar(v), _))) => v
+                    .to_str()
+                    .map(std::string::ToString::to_string)
+                    .unwrap_or_default(),
                 _ => String::new(),
             },
             _ => String::new(),
@@ -397,9 +393,10 @@ impl SheetsDoc {
             return snap;
         };
         snap.name = match doc.get(&sheet, "name") {
-            Ok(Some((Value::Scalar(v), _))) => {
-                v.to_str().map(|s| s.to_string()).unwrap_or_default()
-            }
+            Ok(Some((Value::Scalar(v), _))) => v
+                .to_str()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default(),
             _ => String::new(),
         };
         let cells = match doc.get(&sheet, "cells") {
@@ -410,24 +407,22 @@ impl SheetsDoc {
             let Some(addr) = Self::parse_cell_key(&key) else {
                 continue;
             };
-            let Ok(Some((Value::Object(ObjType::Map), cell))) =
-                doc.get(&cells, key.as_str())
+            let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str())
             else {
                 continue;
             };
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "raw") {
-                if let Some(s) = v.to_str() {
-                    if !s.is_empty() {
-                        snap.raw.insert(addr, s.to_string());
-                    }
-                }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "raw")
+                && let Some(s) = v.to_str()
+                && !s.is_empty()
+            {
+                snap.raw.insert(addr, s.to_string());
             }
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "fmt") {
-                if let Some(s) = v.to_str() {
-                    let f = CellFormat::from_str_with(s, default_currency);
-                    if f != CellFormat::General {
-                        snap.fmt.insert(addr, f);
-                    }
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "fmt")
+                && let Some(s) = v.to_str()
+            {
+                let f = CellFormat::from_str_with(s, default_currency);
+                if f != CellFormat::General {
+                    snap.fmt.insert(addr, f);
                 }
             }
         }
@@ -545,8 +540,11 @@ mod tests {
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
         // The last remaining sheet cannot be deleted away.
         SheetsDoc::delete_sheet(&mut doc, 0);
-        assert!(SheetsDoc::delete_sheet(&mut doc, 0) == false || SheetsDoc::sheet_count(&mut doc) >= 1);
-        assert!(SheetsDoc::sheet_count(&mut doc) >= 1, "a workbook keeps one sheet");
+        assert!(!SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&mut doc) >= 1);
+        assert!(
+            SheetsDoc::sheet_count(&mut doc) >= 1,
+            "a workbook keeps one sheet"
+        );
     }
 
     #[test]

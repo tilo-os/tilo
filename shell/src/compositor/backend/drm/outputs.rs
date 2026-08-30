@@ -1,13 +1,8 @@
 //! `OutputId` allocation + DRM-output bookkeeping.
 //!
-//! The compositor `Backend` trait uses `OutputId(u32)` to identify a
-//! display. The DRM backend has to mint these from connector handles
-//! deterministically (so that re-enumerating after a VT switch keeps
-//! the same output IDs) and clean them up when connectors disappear.
-//!
-//! This module holds the pure-data registry. It does not touch DRM;
-//! callers feed it `(card_dev_t, connector_handle)` pairs and it
-//! hands out stable IDs.
+//! `OutputId(u32)` must be minted from connector handles deterministically,
+//! so re-enumerating after a VT switch keeps the same ids. Pure data — this
+//! never touches DRM; callers feed it `(card_dev_t, connector_handle)` pairs.
 
 use std::collections::BTreeMap;
 
@@ -23,16 +18,10 @@ pub struct DrmOutputKey {
     pub connector: u32,
 }
 
-/// Plain-data snapshot of one connector after smithay/drm enumeration.
-/// Lives here (not in `runtime`) so unit tests can construct fixtures
-/// without a real DRM device. The shape mirrors what
-/// `super::runtime::enumerate_connectors` produces; that function is
-/// the only place that builds a `ConnectorInfo` from a live device.
-///
-/// `modes` is the connector's mode list (any order); the registry's
-/// `populate` walks it via [`super::devices::preferred_mode`] to pick
-/// one. `device_id` is `dev_t` of the `cardN` node; `connector_id` is
-/// the DRM connector handle's raw u32.
+/// Plain-data snapshot of one connector after enumeration. Lives here, not
+/// in `runtime`, so unit tests can build fixtures without a real DRM device;
+/// `super::runtime::enumerate_connectors` is the only place that builds one
+/// from a live device.
 #[derive(Clone, Debug)]
 pub struct ConnectorInfo {
     /// `dev_t` of the `cardN` node, so two connectors on the same GPU
@@ -41,14 +30,12 @@ pub struct ConnectorInfo {
     /// DRM connector handle (raw u32). Stable across VT switches as
     /// long as the underlying connector slot stays the same.
     pub connector_id: u32,
-    /// True when the connector reports DRM `State::Connected` — only
-    /// these become public outputs. Disconnected connectors stay in
-    /// the registry plumbing for future hot-plug events but don't
+    /// DRM `State::Connected`; only these become public outputs.
+    /// Disconnected connectors stay in the registry for hot-plug but don't
     /// appear in the `outputs()` list.
     pub connected: bool,
-    /// All modes the connector advertises. The registry calls
-    /// `preferred_mode` to pick one; empty lists are tolerated (the
-    /// connector is skipped).
+    /// Every mode the connector advertises; the registry picks via
+    /// `preferred_mode`, and an empty list skips the connector.
     pub modes: Vec<ModeInfo>,
 }
 
@@ -97,17 +84,11 @@ impl OutputRegistry {
         self.map.iter()
     }
 
-    /// Walk a freshly-enumerated connector list and emit one [`Output`]
-    /// per **connected** connector that advertises at least one mode.
-    /// Disconnected connectors are skipped silently; connected
-    /// connectors with no modes are also skipped (a misbehaving driver
-    /// shouldn't crash the backend) but logged via `tracing::warn!`.
-    ///
-    /// Side-effect: interns each emitted output into the registry so
-    /// the returned `OutputId`s are stable across re-enumeration.
-    ///
-    /// Returns `(OutputId, Output)` pairs in the order their connectors
-    /// appeared in `connectors` — deterministic for tests.
+    /// Emit one [`Output`] per connected connector advertising at least one
+    /// mode, interning each so its `OutputId` is stable across
+    /// re-enumeration. A connected connector with no modes is skipped and
+    /// warned rather than crashing the backend. Result order follows
+    /// `connectors`, so it is deterministic for tests.
     pub fn populate(&mut self, connectors: &[ConnectorInfo]) -> Vec<(OutputId, Output)> {
         use super::devices::preferred_mode;
         let mut out = Vec::with_capacity(connectors.len());
@@ -133,13 +114,12 @@ impl OutputRegistry {
             let output = Output {
                 id,
                 position: (next_x, 0),
-                size: (mode.width as u32, mode.height as u32),
-                // Scale defaults to 1.0; per-output scale is a Phase 6+
-                // follow-up (HiDPI policy lives at the compositor layer,
-                // not the backend).
+                size: (u32::from(mode.width), u32::from(mode.height)),
+                // HiDPI policy lives at the compositor layer, not the
+                // backend, so scale defaults to 1.0 here.
                 scale: 1.0,
             };
-            next_x += mode.width as i32;
+            next_x += i32::from(mode.width);
             out.push((id, output));
         }
         out
@@ -278,8 +258,6 @@ mod tests {
 
     #[test]
     fn populate_returns_stable_ids_across_calls() {
-        // Same connector list twice → same output ids → same Output
-        // entries. Verifies the `intern` integration.
         let mut r = OutputRegistry::new();
         let connectors = vec![ConnectorInfo {
             device_id: 7,

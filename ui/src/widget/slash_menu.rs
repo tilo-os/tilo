@@ -25,9 +25,9 @@
 //!
 //! ## Why not [`crate::widget::CommandPalette`]?
 //!
-//! CommandPalette is a full-screen search affordance with a filter
+//! `CommandPalette` is a full-screen search affordance with a filter
 //! strip, kbd-chip footer, and a docked input row. The slash menu is
-//! a tiny anchored popover with seven rows and no chrome. Wrapping
+//! a compact anchored popover with no extra chrome. Wrapping
 //! the palette would mean working around its layout primitives and
 //! pinned 360 px width, which is wider than most paragraph blocks.
 //! A purpose-built widget is ~150 LOC and avoids the impedance match.
@@ -41,11 +41,15 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_selection::Selection;
 use crate::theme::Theme;
-use crate::widget::block_editor::BlockKind;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::block_editor::BlockKind;
 
 /// One row in the slash menu. Pre-canned label + a list of search
 /// keywords + the block kind it applies on Enter. Filtering matches
@@ -68,6 +72,8 @@ const ROW_HEIGHT: f64 = 28.0;
 const PADDING_Y: f64 = 6.0;
 /// Horizontal padding either side of each row label.
 const PADDING_X: f64 = 10.0;
+const FILTER_HEIGHT: f64 = 32.0;
+const FILTER_GAP: f64 = 4.0;
 
 pub struct SlashMenu {
     rows: Vec<MenuRow>,
@@ -77,6 +83,8 @@ pub struct SlashMenu {
     /// valid index (or 0 when `visible` is empty).
     cursor: usize,
     filter: String,
+    filter_selection: Selection,
+    filter_composition: QueryComposition,
     visible_flag: bool,
     /// Anchor point in logical coords (top-left of the popover).
     anchor: Point,
@@ -128,12 +136,29 @@ impl SlashMenu {
             MenuRow {
                 label: "Checklist",
                 keywords: &["checklist", "todo", "task", "check"],
-                kind: BlockKind::Checklist { indent: 0, done: false },
+                kind: BlockKind::Checklist {
+                    indent: 0,
+                    done: false,
+                },
             },
             MenuRow {
                 label: "Code block",
                 keywords: &["code", "codeblock", "code block"],
                 kind: BlockKind::CodeBlock { lang: None },
+            },
+            MenuRow {
+                label: "TeX formula",
+                keywords: &["tex", "latex", "math", "equation", "formula"],
+                kind: BlockKind::CodeBlock {
+                    lang: Some("tex".to_string()),
+                },
+            },
+            MenuRow {
+                label: "Typst formula",
+                keywords: &["typst", "math", "equation", "formula"],
+                kind: BlockKind::CodeBlock {
+                    lang: Some("typst".to_string()),
+                },
             },
             MenuRow {
                 label: "Divider",
@@ -147,6 +172,8 @@ impl SlashMenu {
             visible,
             cursor: 0,
             filter: String::new(),
+            filter_selection: Selection::collapsed(0),
+            filter_composition: QueryComposition::new(),
             visible_flag: false,
             anchor: Point::ZERO,
             pending_selection: None,
@@ -159,10 +186,12 @@ impl SlashMenu {
         self.visible_flag = visible;
         if !visible {
             self.filter.clear();
+            self.filter_selection = Selection::collapsed(0);
+            self.filter_composition.clear();
             self.cursor = 0;
             self.rebuild_visible();
             // Pending selection is left intact — the parent may set
-            // visible=false AFTER consuming the kind on Enter, and
+            // visible=false after consuming the kind on Enter, and
             // clearing here would race that read.
         }
     }
@@ -179,6 +208,8 @@ impl SlashMenu {
     /// Replace the filter string and rebuild the visible row set.
     pub fn set_filter(&mut self, filter: &str) {
         self.filter = filter.to_string();
+        self.filter_selection = Selection::collapsed(self.filter.len());
+        self.filter_composition.clear();
         self.rebuild_visible();
     }
 
@@ -216,7 +247,7 @@ impl SlashMenu {
     /// Computed height for the current visible row set, including
     /// vertical padding.
     pub fn height(&self) -> f64 {
-        PADDING_Y * 2.0 + ROW_HEIGHT * self.visible.len().max(1) as f64
+        PADDING_Y * 2.0 + FILTER_HEIGHT + FILTER_GAP + ROW_HEIGHT * self.visible.len().max(1) as f64
     }
 
     /// Rect the popover would paint into at the current anchor.
@@ -229,6 +260,20 @@ impl SlashMenu {
         )
     }
 
+    fn rows_top(&self) -> f64 {
+        self.rect().y0 + PADDING_Y + FILTER_HEIGHT + FILTER_GAP
+    }
+
+    /// Painted rectangle for a visible result row. Hosts should use this for
+    /// pointer automation rather than duplicating the filter/header geometry.
+    pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
+        (visible_index < self.visible.len()).then(|| {
+            let y0 = self.rows_top() + visible_index as f64 * ROW_HEIGHT;
+            let rect = self.rect();
+            Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT)
+        })
+    }
+
     /// The visible-row index under logical point `pt`, if the menu is open
     /// and `pt` lands on a row. Shared by hover-highlight and click-select.
     fn row_at(&self, pt: Point) -> Option<usize> {
@@ -239,7 +284,7 @@ impl SlashMenu {
         if !rect.contains(pt) {
             return None;
         }
-        let rel = pt.y - (rect.y0 + PADDING_Y);
+        let rel = pt.y - self.rows_top();
         if rel < 0.0 {
             return None;
         }
@@ -295,7 +340,7 @@ impl SlashMenu {
     /// Handle a winit `WindowEvent`. Returns `true` if the event was
     /// consumed (so the parent can stop propagating it).
     ///
-    /// This is the SlashMenu's "active" event handler — wired into
+    /// This is the `SlashMenu`'s "active" event handler — wired into
     /// [`BlockEditor::handle_event`] which redirects keystrokes here
     /// whenever the menu is visible. The widget does NOT register
     /// itself in the `Widget` trait's `handle_event` chain because it
@@ -304,8 +349,28 @@ impl SlashMenu {
         if !self.visible_flag {
             return false;
         }
+        if matches!(event, WindowEvent::Ime(_)) {
+            let change = self.filter_composition.handle_event(
+                event,
+                &mut self.filter,
+                &mut self.filter_selection,
+                false,
+                false,
+            );
+            if change == QueryEventChange::Edited {
+                self.cursor = 0;
+                self.rebuild_visible();
+            }
+            return true;
+        }
         let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text: _,
+                    ..
+                },
             ..
         } = event
         else {
@@ -335,50 +400,36 @@ impl SlashMenu {
                 self.set_visible(false);
                 true
             }
-            Key::Named(NamedKey::Backspace) => {
-                if self.filter.pop().is_some() {
-                    self.rebuild_visible();
-                } else {
-                    // Empty filter + Backspace closes the menu (so
-                    // the keystroke can fall through to the editor's
-                    // own delete-of-the-`/` handling). We DON'T set
-                    // visible=false here directly — instead we
-                    // signal close-via-empty-filter by returning
-                    // false, which the parent interprets as a
-                    // "menu wants to close" hint.
-                    self.set_visible(false);
-                    return false;
-                }
-                true
+            Key::Named(NamedKey::Backspace)
+                if self.filter_selection.is_collapsed() && self.filter_selection.cursor == 0 =>
+            {
+                // Empty filter + Backspace closes the menu, but returns
+                // false so the caller lets the keystroke fall through
+                // to the editor's own delete-of-the-`/` handling.
+                self.set_visible(false);
+                false
             }
-            Key::Named(NamedKey::Space) => {
-                self.filter.push(' ');
-                self.rebuild_visible();
-                true
-            }
-            Key::Character(_) => {
-                let mut pushed = false;
-                if let Some(t) = text {
-                    for c in t.chars() {
-                        if !c.is_control() {
-                            self.filter.push(c);
-                            pushed = true;
-                        }
-                    }
-                }
-                if pushed {
+            _ => {
+                let change = self.filter_composition.handle_event(
+                    event,
+                    &mut self.filter,
+                    &mut self.filter_selection,
+                    false,
+                    false,
+                );
+                if change == QueryEventChange::Edited {
+                    self.cursor = 0;
                     self.rebuild_visible();
                 }
-                pushed
+                change != QueryEventChange::Ignored
             }
-            _ => false,
         }
     }
 
     /// Paint the popover into `scene`. Called by the parent AFTER its
     /// main draw pass so the menu lands on top of everything else.
     pub fn draw_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -407,16 +458,46 @@ impl SlashMenu {
             &shape,
         );
 
+        let filter_rect = Rect::new(
+            rect.x0 + 6.0,
+            rect.y0 + PADDING_Y,
+            rect.x1 - 6.0,
+            rect.y0 + PADDING_Y + FILTER_HEIGHT,
+        );
+        let filter_shape = RoundedRect::from_rect(filter_rect, 4.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.base,
+            None,
+            &filter_shape,
+        );
+        self.filter_composition.draw(
+            scene,
+            transform,
+            text_renderer,
+            &self.filter,
+            &self.filter_selection,
+            "Filter blocks…",
+            Rect::new(
+                filter_rect.x0 + 6.0,
+                filter_rect.y0,
+                filter_rect.x1 - 6.0,
+                filter_rect.y1,
+            ),
+            &TextStyle::new(tokens.typography.scale.sm),
+            tokens.colors.text_primary,
+            tokens.colors.text_dim,
+            tokens.colors.accent[5].with_alpha_factor(0.3),
+            tokens.colors.accent[5],
+            true,
+        );
+
         let font_size = tokens.typography.scale.sm;
         for (i, &row_idx) in self.visible.iter().enumerate() {
             let row = &self.rows[row_idx];
-            let y0 = rect.y0 + PADDING_Y + i as f64 * ROW_HEIGHT;
-            let row_rect = Rect::new(
-                rect.x0 + 4.0,
-                y0,
-                rect.x1 - 4.0,
-                y0 + ROW_HEIGHT,
-            );
+            let y0 = self.rows_top() + i as f64 * ROW_HEIGHT;
+            let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             if i == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, 4.0);
                 scene.fill(
@@ -427,8 +508,7 @@ impl SlashMenu {
                     &hl,
                 );
             }
-            let text_y = row_rect.y0
-                + (row_rect.height() - font_size as f64) / 2.0;
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 row.label,
@@ -440,7 +520,7 @@ impl SlashMenu {
         }
         // Empty-state hint when the filter matches nothing.
         if self.visible.is_empty() {
-            let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - font_size as f64) / 2.0;
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -466,8 +546,8 @@ impl Widget for SlashMenu {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Leaf with zero size — the popover lives in overlay space.
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -495,9 +575,21 @@ impl Widget for SlashMenu {
     ) {
         // Routing is owned by the parent — see `handle_key`.
     }
-    fn name(&self) -> &str { "SlashMenu" }
-    fn test_id(&self) -> Option<&str> { Some("slash_menu") }
-    fn get_rect(&self) -> Rect { self.rect() }
+    fn name(&self) -> &'static str {
+        "SlashMenu"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("slash_menu")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.visible_flag
+            .then(|| self.filter_composition.ime_cursor_rect())
+            .flatten()
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -506,11 +598,15 @@ impl Widget for SlashMenu {
         // label and marked selected at the highlight cursor. A closed menu is
         // hidden so it collapses out of the focus/reading order.
         if !self.visible_flag {
-            return Some(AccessNode::new(Role::Menu).with_state(AccessState {
-                expanded: Some(false),
-                hidden: true,
-                ..Default::default()
-            }));
+            return Some(
+                AccessNode::new(Role::Menu)
+                    .with_name("Block types")
+                    .with_state(AccessState {
+                        expanded: Some(false),
+                        hidden: true,
+                        ..Default::default()
+                    }),
+            );
         }
         let count = self.visible.len();
         let items: Vec<AccessNode> = self
@@ -531,6 +627,8 @@ impl Widget for SlashMenu {
             .collect();
         Some(
             AccessNode::new(Role::Menu)
+                .with_name("Block types")
+                .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
                 .with_state(AccessState {
                     expanded: Some(true),
                     ..Default::default()
@@ -543,7 +641,7 @@ impl Widget for SlashMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent, Modifiers};
+    use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
     /// Same workaround used in `command_palette::tests` — `KeyEventExtra`
@@ -553,9 +651,7 @@ mod tests {
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -575,8 +671,8 @@ mod tests {
     fn new_starts_hidden_with_full_row_set() {
         let m = SlashMenu::new();
         assert!(!m.is_visible());
-        // Paragraph, H1-3, Bullet, Numbered, Checklist, Code block, Divider.
-        assert_eq!(m.visible_len(), 9);
+        // Paragraph, H1-3, lists, code, TeX, Typst, and divider.
+        assert_eq!(m.visible_len(), 11);
     }
 
     #[test]
@@ -597,11 +693,10 @@ mod tests {
         m.set_filter("h");
         // "Heading 1/2/3" and "Checklist" (contains "h" in "Checklist")
         // match. All three Heading rows should be present.
-        assert!(m.visible_len() < 8);
+        assert!(m.visible_len() < 11);
         // Specifically: "Heading 1" must be in the visible set.
         let any_h1 = (0..m.visible_len()).any(|_| {
-            matches!(m.highlighted_kind(), Some(BlockKind::Heading(1)))
-                || m.visible_len() > 0
+            matches!(m.highlighted_kind(), Some(BlockKind::Heading(1))) || m.visible_len() > 0
         });
         assert!(any_h1);
     }
@@ -671,6 +766,42 @@ mod tests {
     }
 
     #[test]
+    fn ime_preedit_is_visible_but_filters_only_after_commit() {
+        let mut m = SlashMenu::new();
+        m.set_visible(true);
+        assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "h2".into(),
+            Some((1, 1)),
+        ))));
+        assert_eq!(m.filter(), "");
+        assert_eq!(m.visible_len(), 11);
+        assert_eq!(Widget::accessibility(&m).unwrap().value, None);
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        m.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+        assert!(Widget::ime_cursor_rect(&m).is_some());
+
+        assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("h2".into()))));
+        assert_eq!(m.filter(), "h2");
+        assert_eq!(m.visible_len(), 1);
+        assert_eq!(m.highlighted_kind(), Some(&BlockKind::Heading(2)));
+        let access = Widget::accessibility(&m).unwrap();
+        assert_eq!(access.name.as_deref(), Some("Block types"));
+        assert_eq!(access.value.as_deref(), Some("h2"));
+    }
+
+    #[test]
+    fn backspace_removes_one_extended_grapheme() {
+        let mut m = SlashMenu::new();
+        m.set_visible(true);
+        m.set_filter("👩🏽‍💻");
+        assert!(m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
+        assert_eq!(m.filter(), "");
+        assert!(m.is_visible());
+    }
+
+    #[test]
     fn backspace_pops_filter() {
         let mut m = SlashMenu::new();
         m.set_visible(true);
@@ -722,9 +853,12 @@ mod tests {
         m.set_anchor(Point::new(0.0, 0.0));
         m.set_visible(true);
         // Row 1 is "Heading 1"; land the click inside its band.
-        let pt = Point::new(10.0, PADDING_Y + ROW_HEIGHT + 2.0);
+        let pt = Point::new(10.0, m.rows_top() + ROW_HEIGHT + 2.0);
         assert_eq!(m.click_at(pt), Some(BlockKind::Heading(1)));
-        assert!(!m.is_visible(), "clicking a row commits and closes the menu");
+        assert!(
+            !m.is_visible(),
+            "clicking a row commits and closes the menu"
+        );
         assert_eq!(
             m.take_selected_kind(),
             Some(BlockKind::Heading(1)),
@@ -738,7 +872,10 @@ mod tests {
         m.set_anchor(Point::new(0.0, 0.0));
         m.set_visible(true);
         assert_eq!(m.click_at(Point::new(10.0, 5000.0)), None);
-        assert!(m.is_visible(), "an off-row click leaves the menu open for the caller");
+        assert!(
+            m.is_visible(),
+            "an off-row click leaves the menu open for the caller"
+        );
     }
 
     #[test]
@@ -748,18 +885,20 @@ mod tests {
         m.set_visible(true);
         assert_eq!(m.highlighted_kind(), Some(&BlockKind::Paragraph));
         // Row 2 is "Heading 2".
-        let pt = Point::new(10.0, PADDING_Y + 2.0 * ROW_HEIGHT + 2.0);
+        let pt = Point::new(10.0, m.rows_top() + 2.0 * ROW_HEIGHT + 2.0);
         assert!(m.hover_at(pt), "hovering a new row reports a move");
         assert_eq!(m.highlighted_kind(), Some(&BlockKind::Heading(2)));
         assert!(!m.hover_at(pt), "hovering the same row is not a move");
-        assert!(!m.hover_at(Point::new(10.0, 5000.0)), "hovering off any row is a no-op");
+        assert!(
+            !m.hover_at(Point::new(10.0, 5000.0)),
+            "hovering off any row is a no-op"
+        );
     }
 
     #[test]
     fn filter_h2_then_enter_commits_heading_2() {
-        // The integration scenario from the spec: type `/h2`, Enter,
-        // get Heading(2). The leading `/` is consumed by the editor
-        // before the menu is opened, so the menu only sees `h2`.
+        // Type `/h2`, Enter → Heading(2). The leading `/` is consumed by
+        // the editor before the menu opens, so the menu only sees `h2`.
         let mut m = SlashMenu::new();
         m.set_visible(true);
         m.handle_key(&char_press("h"));

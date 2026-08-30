@@ -1,38 +1,36 @@
 //! The [`Speaker`] trait and the supporting [`Priority`] / [`Utterance`]
 //! model shared by every backend.
 
-/// Priority of an utterance, modelled after speech-dispatcher's SSIP priority
-/// levels (see `man spd-say`, the `SET … PRIORITY` SSIP command).
+/// Priority of an utterance, modelled after speech-dispatcher's SSIP priority levels (see
+/// `man spd-say`, the `SET … PRIORITY` SSIP command).
 ///
 /// The screen reader maps interaction events onto these:
 ///
-/// * [`Priority::Important`] — errors, permission prompts, modal entry. Spoken
-///   immediately and *never* discarded; later `Important` messages do not cancel
-///   an in-progress one.
-/// * [`Priority::Message`] — focus-change narration, "where am I", explicit user
-///   requests. The workhorse level for the reader. A new `Message` cancels any
-///   pending (not-yet-started) `Message`/`Text` so chatty focus changes coalesce.
-/// * [`Priority::Text`] — bulk content ("say all", read-from-cursor). Lowest of
-///   the "speak it" tiers; interrupted freely by focus changes.
-/// * [`Priority::Notification`] — short, transient (toast-style `Live::Polite`).
-///   Spoken only when nothing higher is queued; superseded silently.
+/// * [`Priority::Important`] — errors, permission prompts, modal entry. Spoken immediately
+///   and *never* discarded; later `Important` messages don't cancel an in-progress one.
+/// * [`Priority::Message`] — focus-change narration, "where am I", explicit requests. The
+///   workhorse level; a new `Message` cancels any pending `Message`/`Text` so chatty focus
+///   changes coalesce.
+/// * [`Priority::Text`] — bulk content ("say all", read-from-cursor). Lowest "speak it" tier;
+///   interrupted freely by focus changes.
+/// * [`Priority::Notification`] — short, transient (toast-style `Live::Polite`). Spoken only
+///   when nothing higher is queued; superseded silently.
 /// * [`Priority::Progress`] — progress chatter; only the most recent survives.
 ///
-/// The ordering here is *significance* ascending → [`Priority::Important`] is the
-/// most significant. `Ord` reflects that: `Important > Message > Text >
-/// Notification > Progress`, which lets the queue compare with `>=`.
+/// Ordering is *significance* ascending: `Important > Message > Text > Notification >
+/// Progress`, so the queue can compare with `>=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Priority {
-    /// One-of-a-kind progress chatter; superseded by any newer message.
+    /// Progress chatter; only the most recent survives.
     Progress,
-    /// Transient notification (`Live::Polite`); spoken when idle, superseded silently.
+    /// Ambient notification — yields to anything the user asked for.
     Notification,
-    /// Bulk text content ("say all", read-from-cursor).
+    /// Document or control text the user is reading.
     Text,
-    /// The reader's default: focus narration, explicit requests.
+    /// The default: something the app is saying to the user.
     #[default]
     Message,
-    /// Errors, permission prompts, modal entry (`Live::Assertive`). Never dropped.
+    /// Interrupts whatever is speaking.
     Important,
 }
 
@@ -59,15 +57,13 @@ pub struct Utterance {
     pub text: String,
     /// Scheduling priority.
     pub priority: Priority,
-    /// If `true`, speaking this utterance stops whatever is currently being
-    /// spoken (and clears lower-or-equal-priority pending work). This is the
-    /// responsive-focus-narration knob: a focus change sets `interrupt = true`.
+    /// If `true`, speaking this utterance stops whatever is currently being spoken (and clears
+    /// lower-or-equal-priority pending work) — the responsive-focus-narration knob.
     pub interrupt: bool,
 }
 
 impl Utterance {
-    /// A normal-priority, interrupting utterance — the common case for focus
-    /// narration.
+    /// A normal-priority, interrupting utterance — the common case for focus narration.
     pub fn new(text: impl Into<String>) -> Self {
         Utterance {
             text: text.into(),
@@ -89,17 +85,13 @@ impl Utterance {
     }
 }
 
-/// A text-to-speech backend.
-///
-/// Backends are expected to be cheap to call and to *never panic* on a missing
-/// or dead daemon — failures are logged and swallowed so the reader keeps
-/// running. Construction is where "is TTS available?" is decided (see
-/// [`crate::default_speaker`]); once you hold a `Speaker`, calling it is
-/// infallible from the caller's perspective.
+/// A text-to-speech backend. Expected to be cheap to call and to *never panic* on a missing
+/// or dead daemon — failures are logged and swallowed so the reader keeps running.
+/// Construction is where "is TTS available?" is decided (see [`crate::default_speaker`]);
+/// once you hold a `Speaker`, calling it is infallible from the caller's perspective.
 pub trait Speaker: Send {
-    /// Speak `text`. If `interrupt` is `true`, stop current speech first
-    /// (equivalent to `speak_utterance` with `interrupt = true` at the default
-    /// [`Priority::Message`]).
+    /// Speak `text`. If `interrupt` is `true`, stop current speech first (equivalent to
+    /// `speak_utterance` with `interrupt = true` at the default [`Priority::Message`]).
     fn speak(&mut self, text: &str, interrupt: bool) {
         self.speak_utterance(Utterance::new(text).with_interrupt(interrupt));
     }
@@ -107,18 +99,17 @@ pub trait Speaker: Send {
     /// Speak a fully-specified [`Utterance`] (priority + interrupt semantics).
     fn speak_utterance(&mut self, utterance: Utterance);
 
-    /// Stop all speech immediately and discard anything pending. This is the
-    /// "silence key" (Orca convention: tap Ctrl to shut it up).
+    /// Stop all speech immediately and discard anything pending — the "silence key" (Orca
+    /// convention: tap Ctrl to shut it up).
     fn stop(&mut self);
 
-    /// Set the speaking rate. `rate` is a normalized multiplier where `1.0` is
-    /// the engine default, `2.0` is roughly twice as fast and `0.5` half. Out of
-    /// the `[0.0, ~]` range is clamped by the backend. (SSIP's native scale is
-    /// an `i8` in `[-100, 100]`; backends translate.)
+    /// Set the speaking rate: a normalized multiplier where `1.0` is engine default, `2.0`
+    /// roughly twice as fast, `0.5` half; out-of-range values are clamped by the backend. (SSIP's
+    /// native scale is an `i8` in `[-100, 100]`; backends translate.)
     fn set_rate(&mut self, rate: f32);
 
-    /// Select a voice by backend-specific identifier (e.g. an espeak-ng voice
-    /// like `"en-us"`, or a speech-dispatcher synthesis-voice name).
+    /// Select a voice by backend-specific identifier (e.g. an espeak-ng voice like `"en-us"`, or
+    /// a speech-dispatcher synthesis-voice name).
     fn set_voice(&mut self, voice: &str);
 
     /// Whether the backend currently has speech in progress or queued.
@@ -128,10 +119,9 @@ pub trait Speaker: Send {
     fn backend_name(&self) -> &'static str;
 }
 
-/// Translate a normalized rate multiplier (`1.0` = default) to SSIP's `i8`
-/// `[-100, 100]` scale. `1.0 -> 0`, `2.0 -> +100`, `0.5 -> -100`. We use a
-/// log-ish piecewise-linear map so `0.5` and `2.0` are symmetric extremes,
-/// matching how speech-dispatcher perceives rate.
+/// Translate a normalized rate multiplier (`1.0` = default) to SSIP's `i8` `[-100, 100]`
+/// scale (`1.0 -> 0`, `2.0 -> +100`, `0.5 -> -100`), using a log-ish piecewise-linear map so
+/// `0.5`/`2.0` are symmetric extremes, matching how speech-dispatcher perceives rate.
 pub(crate) fn rate_to_ssip(rate: f32) -> i8 {
     if !rate.is_finite() || rate <= 0.0 {
         return 0;

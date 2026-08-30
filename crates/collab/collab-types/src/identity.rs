@@ -1,35 +1,28 @@
 //! The human-facing identity primitive.
 //!
-//! An `Identity` represents one human across all their devices. It
-//! carries:
+//! An `Identity` represents one human across all their devices: a stable
+//! Ed25519 public key (the "I am me" anchor), a human-meaningful label
+//! and optional avatar, and zero or more `Attestation`s — signed claims
+//! about this identity, issued by trust roots (an org's master key, a
+//! peer user, etc.).
 //!
-//! - a stable Ed25519 public key (the "I am me" anchor);
-//! - a human-meaningful label and an optional avatar;
-//! - zero or more `Attestation`s — signed claims about this identity,
-//!   issued by trust roots (an organisation's master key, a peer
-//!   user, etc.).
-//!
-//! In Phase 2 the *private* half of the keypair is held in a
-//! single-device file under `~/.config/qos/identity/`. Phase 8
-//! upgrades to FROST 2-of-N threshold sharing without changing this
-//! type — only the way `sign_*` calls are routed changes.
+//! The private half of the keypair is currently held in a single-device
+//! file under `~/.config/qos/identity/`; a future FROST 2-of-N
+//! threshold-sharing upgrade changes only how `sign_*` calls are routed,
+//! not this type.
 //!
 //! ## Attestation lifecycle
 //!
-//! Each attestation has a validity window (`valid_from` / `valid_until`)
-//! and a signature from the issuer. Verifiers check the signature
-//! traces back to a trust root they accept (see
+//! Each attestation has a validity window and a signature from the
+//! issuer; verifiers check it traces to an accepted trust root (see
 //! [`crate::validator`]). Revocation is a separate event
-//! ([`crate::event::ChannelEvent::AttestationRevoked`]) — the
-//! attestation itself is immutable.
+//! ([`crate::event::ChannelEvent::AttestationRevoked`]) — the attestation
+//! itself is immutable.
 //!
-//! The `attestations` field on `Identity` is a *cache* of
-//! attestations the local device has observed for this identity. It
-//! is not authoritative — fresh attestations may arrive over the
-//! wire after this identity was first cached. Callers must re-query
-//! the issuer (or, in the channel case, the channel's role table)
-//! for the current set of attestations before making a security
-//! decision.
+//! `Identity::attestations` is a *cache* of what the local device has
+//! observed, not authoritative — fresh attestations may arrive later.
+//! Callers must re-query the issuer (or the channel's role table) before
+//! making a security decision.
 
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -38,13 +31,9 @@ use uuid::Uuid;
 use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::crypto::{Ed25519PublicKey, Signature};
 
-/// Stable identifier for an attestation.
-///
-/// UUID v4 because attestation ids must be unique across all
-/// issuers without coordination, and a 128-bit random space gives
-/// us that. The id is assigned by the issuer at attestation-mint
-/// time and is the handle by which the attestation is referenced
-/// from `MemberRef::attestation` and `SignedOp::attestation_id`.
+/// Stable identifier for an attestation — a UUID v4 (unique across
+/// issuers with no coordination), assigned by the issuer at mint time,
+/// referenced from `MemberRef::attestation` and `SignedOp::attestation_id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AttestationId(pub Uuid);
@@ -64,25 +53,16 @@ impl Default for AttestationId {
 
 /// Security-clearance level for classified artifacts.
 ///
-/// Modelled as a `u8` so callers can write `Clearance(2)` for a
-/// "Confidential" requirement and arithmetic comparisons work
-/// directly. The spec specifies four named levels:
-///
-/// - `0` — Public (no restriction).
-/// - `1` — Internal (any member of the issuing org).
-/// - `2` — Confidential (cleared subset of the org).
-/// - `3` — Restricted (smallest cleared set).
-///
-/// Higher numeric value = stricter requirement. An identity with
-/// `ClearedAt(2)` may access artifacts with classification 0, 1, or
-/// 2, but not 3. The check is `identity_clearance >= artifact_classification`.
+/// A `u8` so comparisons work directly: `0` Public (no restriction), `1`
+/// Internal (any org member), `2` Confidential (cleared subset), `3`
+/// Restricted (smallest cleared set). Higher = stricter; the check is
+/// `identity_clearance >= artifact_classification`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Clearance(pub u8);
 
 impl Clearance {
-    /// Public — no clearance requirement. Equivalent to
-    /// `Clearance(0)`.
+    /// Public — no clearance requirement. Equivalent to `Clearance(0)`.
     pub const PUBLIC: Self = Clearance(0);
     /// Internal — visible to any member of the issuing org.
     pub const INTERNAL: Self = Clearance(1);
@@ -94,58 +74,43 @@ impl Clearance {
 
 /// A signed claim about an identity, issued by a trust root.
 ///
-/// Trust roots are themselves Ed25519 public keys; the validator
-/// must be configured with a set of accepted trust roots per
-/// channel (see
-/// [`crate::validator::ChannelState::accepted_trust_roots`]).
-///
-/// The `signature` field covers everything else in this struct —
-/// see `Attestation::signing_bytes` for the exact view. Revoking an
-/// attestation produces a separate event; this struct is immutable
-/// once minted.
+/// Trust roots are Ed25519 public keys the validator must be configured
+/// with per channel (see
+/// [`crate::validator::ChannelState::accepted_trust_roots`]). `signature`
+/// covers everything else — see `signing_bytes`. Revoking produces a
+/// separate event; this struct is immutable once minted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attestation {
-    /// Unique id, set by the issuer at mint time. Referenced from
-    /// `MemberRef::attestation` and `SignedOp::attestation_id`.
+    /// Unique id, set by the issuer at mint time.
     pub id: AttestationId,
-    /// Trust root that issued this attestation. The signature
-    /// covers all other fields and must verify against this key.
+    /// Trust root that issued this attestation; the signature must verify
+    /// against this key.
     pub issued_by: Ed25519PublicKey,
     /// The identity this attestation makes claims about.
     pub subject: Ed25519PublicKey,
-    /// One or more claims. Multiple claims can be packed into a
-    /// single attestation to amortise signature cost (e.g. issue
-    /// "EmployeeOf(ACME) + ClearedAt(Confidential)" in one signed
-    /// envelope).
+    /// One or more claims, packed into one attestation to amortise signature
+    /// cost (e.g. "EmployeeOf(ACME) + ClearedAt(Confidential)" in one envelope).
     pub claims: Vec<Claim>,
-    /// Earliest moment this attestation is valid. `SystemTime` is
-    /// the spec-mandated type; validators are responsible for
-    /// dealing with clock skew between issuer and verifier (the
-    /// recommendation is to allow up to 5 minutes of skew either
-    /// side).
+    /// Earliest moment this attestation is valid. `SystemTime` is the
+    /// spec-mandated type; validators handle clock skew (recommended: up to
+    /// 5 minutes either side).
     pub valid_from: SystemTime,
-    /// Last moment this attestation is valid. `valid_until > valid_from`
-    /// is checked by the validator; a misconfigured window is
-    /// treated as expired.
+    /// Last moment this attestation is valid; `valid_until > valid_from` is
+    /// checked by the validator, a misconfigured window treated as expired.
     pub valid_until: SystemTime,
-    /// Detached Ed25519 signature by `issued_by` over the
-    /// canonical-bytes view of this struct minus the signature
-    /// field. See `Attestation::signing_bytes`.
+    /// Detached Ed25519 signature by `issued_by` over the canonical-bytes
+    /// view minus the signature field — see `signing_bytes`.
     pub signature: Signature,
 }
 
 impl Attestation {
-    /// Canonical bytes that the issuer signs to mint this
-    /// attestation. The view omits the `signature` field itself so
-    /// signing is well-defined; the wire bytes (with signature)
-    /// flow through the regular `canonical_bytes` serialiser.
+    /// Canonical bytes the issuer signs to mint this attestation; omits
+    /// `signature` so signing is well-defined.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
-        // Postcard is structural, so we build a struct-shaped tuple
-        // that mirrors `Attestation`'s field order minus
-        // `signature`. Using a named helper struct avoids drifting
-        // from the wire encoding if a new field is added: just
-        // mirror the addition here.
+        // Postcard is structural, so build a struct-shaped tuple mirroring
+        // `Attestation`'s field order minus `signature` — a named helper
+        // struct avoids drifting from the wire encoding if a field is added.
         #[derive(Serialize)]
         struct View<'a> {
             id: &'a AttestationId,
@@ -168,34 +133,27 @@ impl Attestation {
 
 /// A single semantic claim packed into an attestation.
 ///
-/// `Custom` exists so private deployments can attach extensions
-/// (e.g. "BadgeNumber(...)") without forcing a spec amendment. The
-/// `value` is opaque bytes; callers that want to interpret a custom
-/// claim use the `kind` discriminator string to pick a decoder.
+/// `Custom` lets private deployments attach extensions without a spec
+/// amendment — `value` is opaque bytes, `kind` picks the decoder.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Claim {
-    /// "This identity is a member of the named space." Issued by
-    /// the space's trust root at join time.
+    /// "This identity is a member of the named space." Issued by the space's
+    /// trust root at join time.
     MemberOf {
         /// Space id this membership covers.
         space: crate::space::SpaceId,
     },
-    /// "This identity is cleared at the given level." Used as the
-    /// gate for `Artifact::classification`. Issued by an org's
-    /// trust root (or a delegated security officer).
+    /// "This identity is cleared at the given level." Gates
+    /// `Artifact::classification`. Issued by an org's trust root (or delegate).
     ClearedAt(Clearance),
-    /// "This identity is an employee of the named org." The
-    /// org-name string is human-meaningful and not parsed by the
-    /// validator; it surfaces in UI ("Signed by Alice @ ACME").
+    /// "This identity is an employee of the named org." Human-meaningful,
+    /// not parsed by the validator; surfaces in UI ("Signed by Alice @ ACME").
     EmployeeOf(String),
-    /// Extension point for deployment-specific claims. `kind` is a
-    /// stable string (DNS-style: `com.example.badge-number`),
-    /// `value` is opaque bytes the decoder for that `kind` knows
-    /// how to interpret.
+    /// Extension point for deployment-specific claims: `kind` is a stable
+    /// DNS-style string, `value` opaque bytes the matching decoder interprets.
     Custom {
-        /// Discriminator string. The validator does not interpret
-        /// it; downstream code matches on `kind` to pick a decoder.
+        /// Discriminator string; the validator doesn't interpret it.
         kind: String,
         /// Opaque bytes. Decoded by whoever knows the `kind`.
         #[serde(with = "serde_bytes")]
@@ -203,38 +161,29 @@ pub enum Claim {
     },
 }
 
-/// The full identity record cached on the local device.
-///
-/// `public_key` is the stable handle. `attestations` is an *observed*
-/// cache, not an authoritative list — see the module-level note on
-/// freshness.
+/// The full identity record cached on the local device. `public_key` is
+/// the stable handle; `attestations` is an *observed* cache, not
+/// authoritative — see the module-level note on freshness.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
-    /// Stable Ed25519 public key for this identity. The "I am me"
-    /// anchor used as the key in every member map and the author
-    /// field on every signed op.
+    /// Stable Ed25519 public key — the "I am me" anchor used as the key in
+    /// every member map and the author field on every signed op.
     pub public_key: Ed25519PublicKey,
-    /// Human-meaningful label. Defaults to the OS username at first
-    /// boot; the user can rename freely. Not unique; not used in
-    /// any equality decision.
+    /// Human-meaningful label, defaulting to the OS username at first boot;
+    /// freely renamable, not unique, not used in equality.
     pub label: String,
-    /// Optional avatar image bytes. Raw PNG or JPEG, sized for the
-    /// roster pill thumbnail (~128px). Stored inline so that
-    /// receiving a member directory snapshot does not require a
-    /// separate fetch round-trip. May be `None` if the user hasn't
-    /// set an avatar.
+    /// Optional avatar image bytes (PNG/JPEG, ~128px). Stored inline so a
+    /// member directory snapshot needs no separate fetch round-trip.
     pub avatar: Option<AvatarBytes>,
-    /// Cached attestations observed for this identity. May be stale
-    /// — validators should re-fetch before making a security
-    /// decision.
+    /// Cached attestations for this identity. May be stale — re-fetch before
+    /// a security decision.
     pub attestations: Vec<Attestation>,
 }
 
-/// Avatar image bytes (PNG or JPEG). Wrapped in a newtype with a
-/// `serde_bytes` adapter so postcard encodes it as length-prefixed
-/// bytes (compact) rather than as a sequence of `u8`s
-/// (1 varint per byte — wasteful).
+/// Avatar image bytes, wrapped in a newtype with a `serde_bytes` adapter
+/// so postcard encodes it length-prefixed (compact) rather than one
+/// varint per byte.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AvatarBytes(#[serde(with = "serde_bytes")] pub Vec<u8>);

@@ -252,7 +252,11 @@ fn radical_glyph_builds_structured_sqrt() {
     // engine can't parse. This is the `type_char('√') -> insert_sqrt()` wiring.
     let mut e = Editor::from_linear("");
     e.type_char('√');
-    assert_eq!(caret(&e).0, vec![(0, Slot::Radicand)], "caret must drop into the radicand");
+    assert_eq!(
+        caret(&e).0,
+        vec![(0, Slot::Radicand)],
+        "caret must drop into the radicand"
+    );
     for ch in "x+9".chars() {
         e.type_char(ch);
     }
@@ -277,7 +281,11 @@ fn radical_glyph_wraps_the_selection() {
     e.select_all();
     e.type_char('√');
     assert_eq!(caret(&e).0, vec![(0, Slot::Radicand)]);
-    assert_eq!(e.to_linear(), "sqrt()", "the selection is replaced by the radical");
+    assert_eq!(
+        e.to_linear(),
+        "sqrt()",
+        "the selection is replaced by the radical"
+    );
 }
 
 #[test]
@@ -420,7 +428,10 @@ fn typed_fraction_compiles_in_engine() {
     e2.type_char('/');
     e2.type_char('x');
     let linear = engine_linear(&e2.to_linear());
-    assert!(crate::engine::compile(&linear, false, false).is_ok(), "{linear}");
+    assert!(
+        crate::engine::compile(&linear, false, false).is_ok(),
+        "{linear}"
+    );
     let _ = e;
 }
 
@@ -440,7 +451,7 @@ fn engine_linear(s: &str) -> String {
 #[test]
 fn click_at_measured_glyph_boundary_places_caret_there() {
     use super::MathField;
-    use ui::text_render::{TextRenderer, TextWeight};
+    use ui::text_render::TextRenderer;
     use vello::kurbo::{Point, Rect};
 
     let mut tr = TextRenderer::new();
@@ -456,19 +467,23 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
     for k in 0..chars.len() {
         let px = origin.x + cum + 0.5; // just right of boundary k
         f.on_press_cached(Point::new(px, py), false);
-        assert!(f.editor.caret.steps.is_empty(), "root row expected at boundary {k}");
+        assert!(
+            f.editor.caret.steps.is_empty(),
+            "root row expected at boundary {k}"
+        );
         assert_eq!(
             f.editor.caret.offset, k,
             "click at measured boundary {k} (x={px:.1}) must land at offset {k}",
         );
-        let mut buf = [0u8; 4];
-        let s = chars[k].encode_utf8(&mut buf);
-        let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-        cum += w as f64;
+        cum += ui::math::measure_atom(&mut tr, chars[k], size);
     }
     // Clicking past the last glyph lands at the row end.
     f.on_press_cached(Point::new(origin.x + cum + 0.5, py), false);
-    assert_eq!(f.editor.caret.offset, chars.len(), "click past end lands at row end");
+    assert_eq!(
+        f.editor.caret.offset,
+        chars.len(),
+        "click past end lands at row end"
+    );
 }
 
 /// The drawn caret bar sits exactly at the active gap's x, which equals the
@@ -477,7 +492,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
 #[test]
 fn caret_gap_x_matches_summed_glyph_advances() {
     use super::MathField;
-    use ui::text_render::{TextRenderer, TextWeight};
+    use ui::text_render::TextRenderer;
     use vello::kurbo::Rect;
 
     let mut tr = TextRenderer::new();
@@ -500,10 +515,7 @@ fn caret_gap_x_matches_summed_glyph_advances() {
             "gap {k} x={} should equal summed advance {cum}",
             gap.x,
         );
-        let mut buf = [0u8; 4];
-        let s = ch.encode_utf8(&mut buf);
-        let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-        cum += w as f64;
+        cum += ui::math::measure_atom(&mut tr, *ch, size);
     }
 }
 
@@ -522,7 +534,10 @@ fn layout_is_cached_until_content_changes() {
     let sig1 = f.layout_sig.clone();
     // Re-laying out with the same content keeps the same signature (no rebuild).
     f.set_rect(Rect::new(0.0, 0.0, 240.0, 60.0), &mut tr);
-    assert_eq!(f.layout_sig, sig1, "unchanged content must not rebuild layout");
+    assert_eq!(
+        f.layout_sig, sig1,
+        "unchanged content must not rebuild layout"
+    );
     // Editing the content changes the signature (forces a rebuild).
     f.set_source("x+12");
     f.set_rect(Rect::new(0.0, 0.0, 240.0, 60.0), &mut tr);
@@ -562,8 +577,14 @@ fn long_formula_scrolls_horizontally_to_keep_caret_visible() {
         f.set_rect(rect, &mut tr);
     }
 
-    assert!(f.overflows(), "a formula wider than the field must scroll, not resize it");
-    assert!(f.scroll.x > 0.0, "typing off the right edge must scroll right");
+    assert!(
+        f.overflows(),
+        "a formula wider than the field must scroll, not resize it"
+    );
+    assert!(
+        f.scroll.x > 0.0,
+        "typing off the right edge must scroll right"
+    );
 
     // The caret (at the end) is on-screen inside the field rect.
     let steps = f.editor.caret.steps.clone();
@@ -610,7 +631,10 @@ fn tall_formula_is_bounded_not_resized() {
         "test fixture must be taller than the field ({content_h:.1} vs {:.1})",
         rect.height()
     );
-    assert!(f.overflows(), "a taller-than-field formula must scroll, not grow the field");
+    assert!(
+        f.overflows(),
+        "a taller-than-field formula must scroll, not grow the field"
+    );
     // The field rect the caller gave is never mutated by content.
     assert_eq!(f.rect.height(), 30.0, "the field height must stay fixed");
 
@@ -664,7 +688,10 @@ fn wheel_scrolls_within_bounds() {
     let (max_x, _) = f.scroll_bounds();
     // Over-scroll right: clamps to the max, never past the content.
     f.scroll_by(10_000.0, 0.0);
-    assert!((f.scroll.x - max_x).abs() < 1e-9, "over-scroll must clamp to max");
+    assert!(
+        (f.scroll.x - max_x).abs() < 1e-9,
+        "over-scroll must clamp to max"
+    );
     // Over-scroll left: clamps to 0.
     f.scroll_by(-10_000.0, 0.0);
     assert_eq!(f.scroll.x, 0.0);
@@ -678,7 +705,7 @@ fn wheel_scrolls_within_bounds() {
 /// fraction-over-fraction that exceeds the max (clamps to the max, then scrolls).
 #[test]
 fn card_grows_to_fit_then_scrolls_beyond_max() {
-    use super::{card_view_height, MathField, CARD_MAX_H, CARD_MIN_H};
+    use super::{CARD_MAX_H, CARD_MIN_H, MathField, card_view_height};
     use ui::text_render::TextRenderer;
     use vello::kurbo::Rect;
 
@@ -699,14 +726,20 @@ fn card_grows_to_fit_then_scrolls_beyond_max() {
             "{src}: card must grow to fit the formula exactly ({view} vs {h})"
         );
         f.set_rect(Rect::new(0.0, 0.0, 260.0, view), &mut tr);
-        assert!(!f.overflows(), "{src}: a formula that fits under the max must show in full");
+        assert!(
+            !f.overflows(),
+            "{src}: a formula that fits under the max must show in full"
+        );
     }
 
     // A fraction-over-fraction exceeds even the generous max: the card clamps to
     // the max and the field reports overflow (scroll), never clip.
     let mut huge = MathField::new("(1/x)/(1/y)").with_size(20.0);
     let huge_h = huge.content_height(&mut tr);
-    assert!(huge_h > CARD_MAX_H, "fixture must exceed the card max ({huge_h})");
+    assert!(
+        huge_h > CARD_MAX_H,
+        "fixture must exceed the card max ({huge_h})"
+    );
     let huge_view = card_view_height(huge_h);
     assert!(
         (huge_view - CARD_MAX_H).abs() < 1e-9,
@@ -760,7 +793,11 @@ fn drag_select_then_delete_removes_exactly_the_span() {
     f.on_release();
     let changed = f.handle_key(&WKey::Named(NamedKey::Delete), &Modifiers::default());
     assert!(changed, "Delete over a selection changes the content");
-    assert_eq!(f.linear(), "x+", "Delete must remove exactly the selected span");
+    assert_eq!(
+        f.linear(),
+        "x+",
+        "Delete must remove exactly the selected span"
+    );
 }
 
 /// Ctrl+X over a selection cuts exactly that span through the field's real key
@@ -809,13 +846,23 @@ fn remote_cursor_maps_to_a_drawn_caret_bar() {
     // A cursor near the middle of the formula.
     let mid = Point::new(rect.center().x, rect.center().y);
     let bars = f.remote_caret_bars(&[(mid, peer)]);
-    assert_eq!(bars.len(), 1, "a remote cursor over the field must map to one caret bar");
+    assert_eq!(
+        bars.len(),
+        1,
+        "a remote cursor over the field must map to one caret bar"
+    );
     let (bar, col) = bars[0];
     assert_eq!(col, peer, "the caret must render in the peer's colour");
-    assert!(bar.height() > 4.0, "the caret bar must have a visible height, got {}", bar.height());
     assert!(
-        bar.center().x >= rect.x0 && bar.center().x <= rect.x1
-            && bar.center().y >= rect.y0 - 0.5 && bar.center().y <= rect.y1 + 0.5,
+        bar.height() > 4.0,
+        "the caret bar must have a visible height, got {}",
+        bar.height()
+    );
+    assert!(
+        bar.center().x >= rect.x0
+            && bar.center().x <= rect.x1
+            && bar.center().y >= rect.y0 - 0.5
+            && bar.center().y <= rect.y1 + 0.5,
         "the mapped caret must sit inside the field rect: {bar:?} vs {rect:?}"
     );
 

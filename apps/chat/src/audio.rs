@@ -1,9 +1,9 @@
 //! Call audio: microphone capture, Opus encode/decode, and speaker playback.
 //!
-//! Everything here is **GStreamer** — `autoaudiosrc`/`autoaudiosink` for the
+//! Everything here is **`GStreamer`** — `autoaudiosrc`/`autoaudiosink` for the
 //! system devices and `opusenc`/`opusdec` for the codec — so no ALSA / Pulse /
 //! `opus` crate is a direct dependency (the Opus library is reached only as a
-//! GStreamer element). The whole module is compiled only under `live-media`.
+//! `GStreamer` element). The whole module is compiled only under `live-media`.
 //!
 //! Two layers:
 //! * [`OpusEncoder`] / [`OpusDecoder`] — device-free codec pipelines driven by
@@ -79,7 +79,7 @@ pub fn test_tone(rate: i32, channels: i32, ms: u64) -> Vec<i16> {
     let mut out = Vec::with_capacity(n);
     let freq = 440.0_f64;
     for i in 0..n {
-        let t = i as f64 / rate as f64;
+        let t = i as f64 / f64::from(rate);
         let v = (t * freq * std::f64::consts::TAU).sin();
         out.push((v * 12_000.0) as i16);
     }
@@ -94,10 +94,10 @@ fn drain_appsink(sink: &gst_app::AppSink, per_pull: gst::ClockTime) -> Vec<Vec<u
     loop {
         match sink.try_pull_sample(per_pull) {
             Some(sample) => {
-                if let Some(buffer) = sample.buffer() {
-                    if let Ok(map) = buffer.map_readable() {
-                        out.push(map.as_slice().to_vec());
-                    }
+                if let Some(buffer) = sample.buffer()
+                    && let Ok(map) = buffer.map_readable()
+                {
+                    out.push(map.as_slice().to_vec());
                 }
             }
             None => {
@@ -119,14 +119,14 @@ fn appsink_of(pipeline: &gst::Pipeline, name: &str) -> Option<gst_app::AppSink> 
 }
 
 /// Opus encoder: raw mono 48 kHz PCM → a sequence of Opus packets. Device-free
-/// (`appsrc`→`opusenc`→`appsink`), so it runs anywhere GStreamer is installed.
+/// (`appsrc`→`opusenc`→`appsink`), so it runs anywhere `GStreamer` is installed.
 pub struct OpusEncoder {
     _init: (),
 }
 
 impl OpusEncoder {
     /// Build an encoder, verifying the `opusenc` element is present. `None` when
-    /// GStreamer can't initialise or the Opus plugin is missing.
+    /// `GStreamer` can't initialise or the Opus plugin is missing.
     pub fn new() -> Option<Self> {
         if !ensure_init() {
             return None;
@@ -279,10 +279,10 @@ impl MicCapture {
     pub fn poll(&mut self) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         while let Some(sample) = self.sink.try_pull_sample(gst::ClockTime::ZERO) {
-            if let Some(buffer) = sample.buffer() {
-                if let Ok(map) = buffer.map_readable() {
-                    out.push(map.as_slice().to_vec());
-                }
+            if let Some(buffer) = sample.buffer()
+                && let Ok(map) = buffer.map_readable()
+            {
+                out.push(map.as_slice().to_vec());
             }
         }
         out
@@ -322,7 +322,11 @@ impl SpeakerPlayback {
         if pipeline.set_state(gst::State::Playing).is_err() {
             return None;
         }
-        Some(Self { pipeline, src, pts_ms: 0 })
+        Some(Self {
+            pipeline,
+            src,
+            pts_ms: 0,
+        })
     }
 
     /// Push one received Opus packet to the speakers.
@@ -362,11 +366,14 @@ mod tests {
     fn test_tone_has_expected_length_and_signal() {
         let t = test_tone(RATE, CHANNELS, 40);
         assert_eq!(t.len(), (RATE as usize / 1000) * 40, "40 ms of 48 kHz mono");
-        assert!(t.iter().any(|&s| s.abs() > 1000), "tone actually oscillates");
+        assert!(
+            t.iter().any(|&s| s.abs() > 1000),
+            "tone actually oscillates"
+        );
     }
 
     /// Real codec round-trip with no audio device: PCM → Opus → PCM. Proves the
-    /// GStreamer Opus encode/decode contract the call transport carries.
+    /// `GStreamer` Opus encode/decode contract the call transport carries.
     #[test]
     fn opus_encode_decode_round_trips_without_a_device() {
         let (Some(mut enc), Some(mut dec)) = (OpusEncoder::new(), OpusDecoder::new()) else {
@@ -376,11 +383,17 @@ mod tests {
         let pcm = test_tone(RATE, CHANNELS, 60); // 3 × 20 ms frames
         let packets = enc.encode(&pcm);
         assert!(!packets.is_empty(), "opusenc produced packets");
-        assert!(packets.iter().all(|p| !p.is_empty()), "each packet carries bytes");
+        assert!(
+            packets.iter().all(|p| !p.is_empty()),
+            "each packet carries bytes"
+        );
         let mut decoded = 0usize;
         for p in &packets {
             decoded += dec.decode(p).len();
         }
-        assert!(decoded > 0, "opusdec recovered PCM samples from the encoded packets");
+        assert!(
+            decoded > 0,
+            "opusdec recovered PCM samples from the encoded packets"
+        );
     }
 }

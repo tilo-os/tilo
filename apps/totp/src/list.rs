@@ -18,9 +18,9 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use vello::Scene;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::color_compat::ColorCompat;
@@ -29,7 +29,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
 
-use crate::model::{account_color, Account, AccountId};
+use crate::model::{Account, AccountId, account_color};
 use crate::ring::CountdownRing;
 use crate::totp;
 
@@ -237,7 +237,15 @@ impl AccountList {
             center.x + AVATAR_R,
             center.y + AVATAR_R,
         );
-        Avatar::draw_at(scene, transform, rect, &account.initials(), color, theme, text_renderer);
+        Avatar::draw_at(
+            scene,
+            transform,
+            rect,
+            &account.initials(),
+            color,
+            theme,
+            text_renderer,
+        );
     }
 
     fn draw_action_icons(
@@ -250,7 +258,7 @@ impl AccountList {
         hovered_zone: Option<Zone>,
     ) {
         use vello::kurbo::BezPath;
-        let cx = (l.actions_x0 + l.actions_x1) / 2.0;
+        let cx = f64::midpoint(l.actions_x0, l.actions_x1);
         let third = r.height() / 3.0;
         let centers = [
             (Zone::Up, r.y0 + third * 0.5),
@@ -319,7 +327,7 @@ impl AccountList {
         let hovered_zone = if is_hovered { self.hover_zone } else { None };
 
         // Row card.
-        let card = RoundedRect::from_rect(r, theme.tokens.radii.lg as f64);
+        let card = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.lg));
         let bg = if is_selected {
             theme.tokens.colors.surface_white_10
         } else if is_hovered {
@@ -349,7 +357,11 @@ impl AccountList {
         let text_w = (l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32;
         let issuer = account.title().to_string();
         let has_label = !account.label.trim().is_empty();
-        let issuer_y = if has_label { r.center().y - 20.0 } else { r.center().y - 10.0 };
+        let issuer_y = if has_label {
+            r.center().y - 20.0
+        } else {
+            r.center().y - 10.0
+        };
         text_renderer.draw_text_weighted(
             scene,
             &issuer,
@@ -382,8 +394,8 @@ impl AccountList {
         } else {
             theme.tokens.colors.text_primary
         };
-        let code_x = l.code_right - code_w as f64;
-        let code_y = r.center().y - code_h as f64 / 2.0;
+        let code_x = l.code_right - f64::from(code_w);
+        let code_y = r.center().y - f64::from(code_h) / 2.0;
         text_renderer.draw_text_styled(
             scene,
             &grouped,
@@ -402,7 +414,7 @@ impl AccountList {
                 "click to copy",
                 10.0,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((code_x, code_y + code_h as f64 + 2.0)),
+                transform * Affine::translate((code_x, code_y + f64::from(code_h) + 2.0)),
                 None,
             );
         }
@@ -437,7 +449,7 @@ impl AccountList {
         };
         let size = 16.0;
         let (w, _h) = text_renderer.measure(&msg, size, None);
-        let cx = self.rect.center().x - w as f64 / 2.0;
+        let cx = self.rect.center().x - f64::from(w) / 2.0;
         let cy = self.rect.center().y - 30.0;
         text_renderer.draw_text(
             scene,
@@ -454,7 +466,7 @@ impl AccountList {
             hint,
             13.0,
             theme.tokens.colors.text_dim.with_alpha_factor(0.7),
-            transform * Affine::translate((self.rect.center().x - hw as f64 / 2.0, cy + 28.0)),
+            transform * Affine::translate((self.rect.center().x - f64::from(hw) / 2.0, cy + 28.0)),
             None,
         );
     }
@@ -494,19 +506,19 @@ impl Widget for AccountList {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let x0 = origin.x + layout.location.x as f64;
-        let y0 = origin.y + layout.location.y as f64;
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
         self.rect = Rect::new(
             x0,
             y0,
-            x0 + layout.size.width as f64,
-            y0 + layout.size.height as f64,
+            x0 + f64::from(layout.size.width),
+            y0 + f64::from(layout.size.height),
         );
         self.clamp_scroll();
     }
@@ -568,39 +580,39 @@ impl Widget for AccountList {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some((i, zone)) = self.hit(self.last_mouse) {
-                    if let Some(account) = self.accounts.get(i) {
-                        let id = account.id;
-                        let ev = match zone {
-                            Zone::Copy => ListEvent::Copy(id),
-                            Zone::Up => ListEvent::MoveUp(id),
-                            Zone::Down => ListEvent::MoveDown(id),
-                            Zone::Delete => ListEvent::Delete(id),
-                            Zone::Body => ListEvent::Select(id),
-                        };
-                        if matches!(zone, Zone::Body | Zone::Copy) {
-                            self.selected = Some(id);
-                        }
-                        self.events.push(ev);
-                        *handled = true;
-                    }
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if self.rect.contains(self.last_mouse) && self.max_scroll() > 0.0 {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
-                        MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                if let Some((i, zone)) = self.hit(self.last_mouse)
+                    && let Some(account) = self.accounts.get(i)
+                {
+                    let id = account.id;
+                    let ev = match zone {
+                        Zone::Copy => ListEvent::Copy(id),
+                        Zone::Up => ListEvent::MoveUp(id),
+                        Zone::Down => ListEvent::MoveDown(id),
+                        Zone::Delete => ListEvent::Delete(id),
+                        Zone::Body => ListEvent::Select(id),
                     };
-                    self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
+                    if matches!(zone, Zone::Body | Zone::Copy) {
+                        self.selected = Some(id);
+                    }
+                    self.events.push(ev);
                     *handled = true;
                 }
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.rect.contains(self.last_mouse) && self.max_scroll() > 0.0 =>
+            {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                };
+                self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
+                *handled = true;
             }
             _ => {}
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "AccountList"
     }
 
@@ -646,10 +658,16 @@ mod tests {
         let body_p = Point::new(layout.text_x + 4.0, r.center().y);
         assert_eq!(l.hit(body_p), Some((0, Zone::Body)));
         // Top of the action column → reorder-up.
-        let up_p = Point::new((layout.actions_x0 + layout.actions_x1) / 2.0, r.y0 + 6.0);
+        let up_p = Point::new(
+            f64::midpoint(layout.actions_x0, layout.actions_x1),
+            r.y0 + 6.0,
+        );
         assert_eq!(l.hit(up_p), Some((0, Zone::Up)));
         // Bottom of the action column → delete.
-        let del_p = Point::new((layout.actions_x0 + layout.actions_x1) / 2.0, r.y1 - 6.0);
+        let del_p = Point::new(
+            f64::midpoint(layout.actions_x0, layout.actions_x1),
+            r.y1 - 6.0,
+        );
         assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
     }
 
@@ -675,7 +693,17 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
-        l.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut None, node, &taffy);
+        l.handle_event(
+            ev,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut None,
+            node,
+            &taffy,
+        );
         handled
     }
 
@@ -699,7 +727,7 @@ mod tests {
         let id = l.account_at(0).unwrap().id;
         let r = l.row_rect(0);
         let layout = l.row_layout(r);
-        let col_x = (layout.actions_x0 + layout.actions_x1) / 2.0;
+        let col_x = f64::midpoint(layout.actions_x0, layout.actions_x1);
         // Top third of the action column → move up.
         dispatch(&mut l, &cursor_at(Point::new(col_x, r.y0 + 4.0)));
         dispatch(&mut l, &left_press());
@@ -722,7 +750,11 @@ mod tests {
         dispatch(&mut l, &cursor_at(Point::new(300.0, 110.0)));
         // Scroll far down: the offset clamps to the bottom, never past it.
         dispatch(&mut l, &wheel(-100.0));
-        assert_eq!(l.scroll, l.max_scroll(), "scrolling down clamps to the bottom");
+        assert_eq!(
+            l.scroll,
+            l.max_scroll(),
+            "scrolling down clamps to the bottom"
+        );
         // Scroll far up: clamps to the top, never negative.
         dispatch(&mut l, &wheel(100.0));
         assert_eq!(l.scroll, 0.0, "scrolling up clamps to the top");

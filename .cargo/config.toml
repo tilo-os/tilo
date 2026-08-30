@@ -1,15 +1,9 @@
 [build]
-# This tree builds inside a container, declared in `.build-container` at the repo root, because
-# its native dependencies (xkbcommon, libseat, libinput, libudev, libdrm, gbm, gl, egl, pipewire,
-# fuse3, dbus, libav*, wayland-client, capnp) are not present on this image-based host. The cargo
-# shim on PATH reads that file and routes the build there, which is also where it enables sccache
-# and picks the sccache server belonging to that namespace. None of that needs to be repeated here.
+# `tools/cargo-shim`, if installed as `cargo`, routes builds into the container named in
+# `.build-container` and picks that namespace's sccache server. See DEVELOPMENT.md.
 #
-# Crates in this tree cost on the order of gigabytes of resident memory per rustc, roughly an order
-# of magnitude more than the lighter projects on this machine, so the job count is pinned here
-# rather than in the home-level config where it would tax everything else. The systemd budget on
-# the container slice is what makes an over-large value survivable; this is what keeps builds from
-# spending their time being throttled against it.
+# Jobs are memory-bound, not core-bound: rustc peaks ~7 GB here. The shim derives
+# CARGO_BUILD_JOBS from RAM; this is the floor when it is bypassed (CI).
 jobs = 4
 # CPU floor is `x86-64-v3` — Haswell/Excavator (2013+), the intersection
 # of "vast majority of installed hardware" and "enough SIMD to matter"
@@ -52,6 +46,9 @@ jobs = 4
 #                        have to come from the compiler, and stable Rust does
 #                        not emit them, so claiming IBT would trap on the first
 #                        indirect call.
+# Keep every flag in this one list. A `[target.<triple>]` rustflags block does not
+# merge with `build.rustflags`, it REPLACES it — moving one flag into a target block
+# silently drops the hardening above, and nothing errors.
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -132,3 +129,11 @@ rustflags = [
 [env]
 CFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
 CXXFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+
+# sccache refuses `-C incremental=`; with it on, 13,417/16,947 requests refused.
+# Here rather than Cargo.toml: a config [profile] overrides the manifest.
+[profile.dev]
+incremental = false
+
+[profile.release]
+incremental = false

@@ -38,7 +38,7 @@ impl Sky {
             61 | 63 | 65 => Sky::Rain,
             66 | 67 => Sky::FreezingRain,
             71 | 73 | 75 | 77 => Sky::Snow,
-            80 | 81 | 82 => Sky::Showers,
+            80..=82 => Sky::Showers,
             85 | 86 => Sky::SnowShowers,
             95 => Sky::Thunder,
             96 | 99 => Sky::ThunderHail,

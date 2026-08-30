@@ -71,9 +71,7 @@ pub mod workspace;
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
-pub use coedit::{
-    AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession,
-};
+pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use policy::TrustPolicy;
@@ -82,3 +80,13 @@ pub use transport::{ALPN, Envelope};
 /// Semantic version emitted by `qos-relay --version`. Tied to the
 /// crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Derive the stable numeric host/gossip shard for a room UUID. This is shared
+/// by the shell and admin CLI so local workspace handles never leak onto the
+/// wire and operators cannot accidentally bind a different shard.
+pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
+    let room = uuid::Uuid::parse_str(room)?;
+    let hash = blake3::derive_key("qos-room-transport-v1", room.to_string().as_bytes());
+    let id = u64::from_le_bytes(hash[..8].try_into().expect("eight-byte hash prefix"));
+    Ok(if id == 0 { 1 } else { id })
+}

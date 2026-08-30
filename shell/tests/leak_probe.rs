@@ -1,7 +1,7 @@
-//! Diagnostic probe (not a real assertion test): loops the CPU-side
-//! frame pipeline (`relayout` + `paint`) on the idle bootstrap tree and
-//! prints RSS every N iterations, to isolate a per-frame memory leak in
-//! the widget/taffy/text/CRDT path from GPU-side (vello/wgpu) growth.
+//! Diagnostic probe (not an assertion test): loops the CPU-side frame
+//! pipeline (`relayout` + `paint`) on the idle bootstrap tree and prints
+//! RSS every N iterations, isolating a per-frame leak in the
+//! widget/taffy/text/CRDT path from GPU-side (vello/wgpu) growth.
 //!
 //! Run: `cargo test -p shell --test leak_probe -- --ignored --nocapture`
 
@@ -20,11 +20,10 @@ fn rss_kb() -> u64 {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a diagnostic probe that prints RSS; run with --ignored --nocapture"]
 fn idle_gpu_render_loop_rss_growth() {
-    // Exercises the GPU path: relayout + paint + offscreen vello render
-    // (render_to_texture → wgpu). Isolates a GPU-side (vello atlas /
-    // wgpu resource) per-frame leak.
+    // The GPU path: relayout + paint + offscreen vello render (wgpu), to
+    // isolate a vello-atlas / wgpu-resource per-frame leak.
     use ui::offscreen::OffscreenRenderer;
     let mut fb = FrameBuilder::new((1600, 900));
     let mut r = OffscreenRenderer::new(1600, 900);
@@ -54,7 +53,7 @@ fn idle_gpu_render_loop_rss_growth() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a diagnostic probe that prints RSS; run with --ignored --nocapture"]
 fn idle_paint_loop_rss_growth() {
     let mut fb = FrameBuilder::new((1600, 900));
     let iters = 6000usize; // ~100s of real frames at 60fps

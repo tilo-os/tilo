@@ -94,7 +94,7 @@ pub fn active_id(text: &str) -> Option<String> {
     root.get(SECTION)?
         .get("id")?
         .as_str()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Parse the active [`ThemeSpec`] from a settings document, if present.
@@ -146,10 +146,19 @@ mod tests {
         let out = to_json_merged(&spec, existing);
         // Our section landed with the id + a nested full theme.
         assert_eq!(active_id(&out).as_deref(), Some("sunset"));
-        assert!(out.contains("\"appearance\""), "appearance section present: {out}");
+        assert!(
+            out.contains("\"appearance\""),
+            "appearance section present: {out}"
+        );
         // Foreign sections survive untouched.
-        assert!(out.contains("\"currency\": \"EUR\""), "locale survived: {out}");
-        assert!(out.contains("\"event_sounds\": true"), "audio survived: {out}");
+        assert!(
+            out.contains("\"currency\": \"EUR\""),
+            "locale survived: {out}"
+        );
+        assert!(
+            out.contains("\"event_sounds\": true"),
+            "audio survived: {out}"
+        );
     }
 
     #[test]
@@ -157,7 +166,10 @@ mod tests {
         let spec = presets()[3].clone(); // Dracula
         let out = to_json_merged(&spec, "");
         let back = active_spec(&out).expect("appearance.theme parses back into a spec");
-        assert_eq!(back, spec, "the exact ThemeSpec is recoverable from the store");
+        assert_eq!(
+            back, spec,
+            "the exact ThemeSpec is recoverable from the store"
+        );
         assert_eq!(active_id(&out).as_deref(), Some(spec.id.as_str()));
     }
 
@@ -174,7 +186,10 @@ mod tests {
         // (no stale keys from the previous theme leak through).
         let first = to_json_merged(&presets()[0].clone(), "");
         let second = to_json_merged(&presets()[4].clone(), &first);
-        assert_eq!(active_id(&second).as_deref(), Some(presets()[4].id.as_str()));
+        assert_eq!(
+            active_id(&second).as_deref(),
+            Some(presets()[4].id.as_str())
+        );
         let back = active_spec(&second).unwrap();
         assert_eq!(back, presets()[4].clone());
     }
@@ -197,8 +212,15 @@ mod tests {
         save_to(&path, &spec).expect("save_to writes the settings file");
         assert_eq!(load_active_id_from(&path).as_deref(), Some("sunset"));
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(active_spec(&text), Some(spec), "the exact theme reads back off disk");
-        assert!(text.contains("GBP"), "foreign locale section survived the write");
+        assert_eq!(
+            active_spec(&text),
+            Some(spec),
+            "the exact theme reads back off disk"
+        );
+        assert!(
+            text.contains("GBP"),
+            "foreign locale section survived the write"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

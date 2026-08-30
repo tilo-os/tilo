@@ -6,11 +6,10 @@ use crate::process::{run, run_capture};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetworkInfo {
     pub ssid: String,
-    /// Signal-strength bucket in `[0, 4]`. Mapped from the nmcli
-    /// percentage via [`signal_pct_to_bucket`].
+    /// Signal-strength bucket in `[0, 4]`. Mapped from the nmcli percentage via
+    /// [`signal_pct_to_bucket`].
     pub signal: u8,
-    /// `true` when the row's SECURITY column is non-empty (i.e. not
-    /// `"--"`).
+    /// `true` when the row's SECURITY column is non-empty (i.e. not `"--"`).
     pub secure: bool,
     /// `true` when the row's IN-USE column is `*`.
     pub connected: bool,
@@ -22,8 +21,7 @@ pub fn set_wifi(enabled: bool) -> Result<(), String> {
     run("nmcli", &["radio", "wifi", state])
 }
 
-/// Read the Wi-Fi radio state. `nmcli radio wifi` prints `enabled` or
-/// `disabled` on stdout.
+/// Read the Wi-Fi radio state. `nmcli radio wifi` prints `enabled` or `disabled` on stdout.
 pub fn get_wifi() -> Result<bool, String> {
     let out = run_capture("nmcli", &["radio", "wifi"])?;
     parse_nmcli_radio(&out)
@@ -42,13 +40,19 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
     }
 }
 
-/// Scan + list visible Wi-Fi networks via
-/// `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list`. The `-t`
-/// (terse) flag prints one row per line, fields separated by `:`.
+/// Scan + list visible Wi-Fi networks via `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device
+/// wifi list`. `-t` (terse) prints one row per line, fields separated by `:`.
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     let out = run_capture(
         "nmcli",
-        &["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
+        &[
+            "-t",
+            "-f",
+            "IN-USE,SSID,SIGNAL,SECURITY",
+            "device",
+            "wifi",
+            "list",
+        ],
     )?;
     Ok(parse_nmcli_wifi_list(&out))
 }
@@ -77,9 +81,8 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
             connected: in_use == "*",
         });
     }
-    // De-duplicate SSIDs (multiple BSSIDs broadcasting the same SSID
-    // show up as separate rows in the terse output). Keep the strongest
-    // signal and preserve the connected flag from any row.
+    // De-duplicate SSIDs (multiple BSSIDs broadcasting the same SSID show up as separate rows):
+    // keep the strongest signal and preserve the connected flag from any row.
     let mut deduped: Vec<WifiNetworkInfo> = Vec::new();
     for entry in out {
         if let Some(existing) = deduped.iter_mut().find(|e| e.ssid == entry.ssid) {
@@ -99,19 +102,19 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
     deduped
 }
 
-/// Split a single nmcli `-t` (terse) line on unescaped `:` separators.
-/// `\:` inside a field stays a literal colon in the field value.
+/// Split a single nmcli `-t` (terse) line on unescaped `:` separators. `\:` inside a field
+/// stays a literal colon.
 fn split_terse(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                buf.push(next);
-                chars.next();
-                continue;
-            }
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+        {
+            buf.push(next);
+            chars.next();
+            continue;
         }
         if c == ':' {
             out.push(std::mem::take(&mut buf));
@@ -123,8 +126,7 @@ fn split_terse(line: &str) -> Vec<String> {
     out
 }
 
-/// Map nmcli's `SIGNAL` percentage `0..=100` onto the popover's signal
-/// bucket `0..=4`.
+/// Map nmcli's `SIGNAL` percentage `0..=100` onto the popover's signal bucket `0..=4`.
 fn signal_pct_to_bucket(pct: u8) -> u8 {
     match pct {
         0..=20 => 1,
@@ -147,11 +149,10 @@ pub enum LinkKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkStatus {
     pub kind: LinkKind,
-    /// The connection's name — the SSID on Wi-Fi, the profile name on
-    /// Ethernet. `None` when offline.
+    /// The connection's name — the SSID on Wi-Fi, the profile name on Ethernet. `None` when offline.
     pub name: Option<String>,
-    /// Signal-strength bucket `1..=4` on Wi-Fi; `0` on wired and offline.
-    /// Same scale as [`WifiNetworkInfo::signal`].
+    /// Signal-strength bucket `1..=4` on Wi-Fi; `0` on wired and offline. Same scale as
+    /// [`WifiNetworkInfo::signal`].
     pub signal: u8,
 }
 
@@ -168,35 +169,34 @@ impl LinkStatus {
     }
 }
 
-/// Read the active connection without triggering a scan.
+/// Read the active connection without triggering a scan. Deliberately **not** built on
+/// [`list_wifi_networks`]: that runs `device wifi list`, which asks the driver to rescan and
+/// can block a timer-driven poll thread for seconds; `device status` is a cache read.
 ///
-/// Deliberately **not** built on [`list_wifi_networks`]: that runs
-/// `device wifi list`, which asks the driver to rescan and can block for
-/// seconds. An indicator refreshed on a timer must not do that — it would
-/// churn the radio, and on a busy band it would stall its own poll thread
-/// long enough to miss the next tick. `device status` is a cache read.
-///
-/// Signal strength comes from `/proc/net/wireless`, which the kernel
-/// updates continuously and which costs one file read — so the bars move
-/// as the user walks around without any nmcli involvement at all.
+/// Signal strength comes from `/proc/net/wireless` instead, one file read the kernel keeps
+/// current, so the bars move as the user walks around with no nmcli involvement at all.
 pub fn get_link_status() -> Result<LinkStatus, String> {
     let out = run_capture(
         "nmcli",
-        &["-t", "-f", "TYPE,STATE,CONNECTION,DEVICE", "device", "status"],
+        &[
+            "-t",
+            "-f",
+            "TYPE,STATE,CONNECTION,DEVICE",
+            "device",
+            "status",
+        ],
     )?;
     let mut status = parse_nmcli_device_status(&out);
-    if status.kind == LinkKind::Wifi {
-        if let Some(pct) = wireless_link_quality_pct() {
-            status.signal = signal_pct_to_bucket(pct);
-        }
+    if status.kind == LinkKind::Wifi
+        && let Some(pct) = wireless_link_quality_pct()
+    {
+        status.signal = signal_pct_to_bucket(pct);
     }
     Ok(status)
 }
 
-/// Pick the machine's primary link out of `nmcli device status`.
-///
-/// Ethernet wins over Wi-Fi when both are up, because that is the one
-/// carrying the traffic and the one whose loss the user needs to see.
+/// Pick the machine's primary link out of `nmcli device status`. Ethernet wins over Wi-Fi
+/// when both are up — it's the one carrying the traffic and the one whose loss matters.
 fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
     let mut wifi: Option<LinkStatus> = None;
     for line in stdout.lines() {
@@ -205,10 +205,8 @@ fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
             continue;
         }
         let (kind_s, state, conn) = (f[0].trim(), f[1].trim(), f[2].trim());
-        // nmcli spells the fully-up state "connected"; "connecting
-        // (getting IP configuration)" and friends are not yet carrying
-        // traffic, so they read as offline rather than as a link that
-        // works.
+        // nmcli spells the fully-up state "connected"; "connecting (getting IP configuration)" and
+        // friends aren't yet carrying traffic, so they read as offline.
         if state != "connected" {
             continue;
         }
@@ -225,31 +223,26 @@ fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
                     signal: 0,
                 };
             }
-            "wifi" => {
+            "wifi"
                 // Remember it, but keep scanning for a wired link.
-                if wifi.is_none() {
-                    // Bucket 4 until /proc/net/wireless refines it, so a
-                    // connected radio never draws as "no signal".
+                if wifi.is_none() => {
+                    // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws as "no signal".
                     wifi = Some(LinkStatus {
                         kind: LinkKind::Wifi,
                         name,
                         signal: 4,
                     });
                 }
-            }
             _ => {}
         }
     }
     wifi.unwrap_or_else(LinkStatus::offline)
 }
 
-/// Best link quality across every wireless interface, as a percentage.
-///
-/// `/proc/net/wireless` reports quality on the driver's own scale, with a
-/// trailing `.` on each value. Most drivers use 0..70 (the classic wext
-/// ceiling); a value above that is taken as already-a-percentage rather
-/// than clamped, so an unusual driver degrades to a plausible reading
-/// instead of a pinned one.
+/// Best link quality across every wireless interface, as a percentage. `/proc/net/wireless`
+/// reports quality on the driver's own scale (a trailing `.` on each value, most drivers
+/// 0..70); a value above that is taken as already-a-percentage rather than clamped, so an
+/// unusual driver degrades gracefully instead of pinning.
 fn wireless_link_quality_pct() -> Option<u8> {
     let raw = std::fs::read_to_string("/proc/net/wireless").ok()?;
     parse_proc_net_wireless(&raw)
@@ -283,10 +276,9 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
     best
 }
 
-/// Connect to a Wi-Fi SSID. Passing `Some(pw)` appends a
-/// `password <pw>` clause; `None` omits it (open networks or already-
-/// known SSIDs). The call is synchronous: nmcli blocks until
-/// association either completes or fails.
+/// Connect to a Wi-Fi SSID. `Some(pw)` appends a `password <pw>` clause; `None` omits it
+/// (open networks or already-known SSIDs). Synchronous: nmcli blocks until association
+/// completes or fails.
 pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     let mut args: Vec<&str> = vec!["device", "wifi", "connect", ssid];
     if let Some(pw) = password {
@@ -302,8 +294,8 @@ mod tests {
 
     #[test]
     fn parse_nmcli_radio_states() {
-        assert_eq!(parse_nmcli_radio("enabled\n").unwrap(), true);
-        assert_eq!(parse_nmcli_radio("disabled\n").unwrap(), false);
+        assert!(parse_nmcli_radio("enabled\n").unwrap());
+        assert!(!parse_nmcli_radio("disabled\n").unwrap());
         assert!(parse_nmcli_radio("garbled").is_err());
     }
 
@@ -376,19 +368,33 @@ pub struct WiredInfo {
     pub ipv4: Option<String>,
 }
 
-/// Snapshot the primary wired (ethernet) device via `nmcli`. Returns a
-/// default (`connected: false`) `WiredInfo` when no ethernet device is
-/// present, so the Settings panel renders an "unplugged" card without an
-/// error path.
+/// Snapshot the primary wired (ethernet) device via `nmcli`. Returns a default
+/// (`connected: false`) `WiredInfo` when no ethernet device is present, so the Settings
+/// panel renders an "unplugged" card without an error path.
 pub fn get_wired() -> Result<WiredInfo, String> {
-    let status = run_capture("nmcli", &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])?;
+    let status = run_capture(
+        "nmcli",
+        &["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+    )?;
     let Some((device, connected)) = parse_nmcli_wired_status(&status) else {
         return Ok(WiredInfo::default());
     };
-    let mut info = WiredInfo { connected, device: Some(device.clone()), speed: None, ipv4: None };
+    let mut info = WiredInfo {
+        connected,
+        device: Some(device.clone()),
+        speed: None,
+        ipv4: None,
+    };
     if let Ok(show) = run_capture(
         "nmcli",
-        &["-t", "-f", "CAPABILITIES.SPEED,IP4.ADDRESS", "device", "show", &device],
+        &[
+            "-t",
+            "-f",
+            "CAPABILITIES.SPEED,IP4.ADDRESS",
+            "device",
+            "show",
+            &device,
+        ],
     ) {
         let (speed, ipv4) = parse_nmcli_wired_show(&show);
         info.speed = speed;
@@ -397,8 +403,8 @@ pub fn get_wired() -> Result<WiredInfo, String> {
     Ok(info)
 }
 
-/// First ethernet device + connected flag, from terse
-/// `nmcli -t -f DEVICE,TYPE,STATE device status` (`DEVICE:TYPE:STATE`).
+/// First ethernet device + connected flag, from terse `nmcli -t -f DEVICE,TYPE,STATE device
+/// status` (`DEVICE:TYPE:STATE`).
 fn parse_nmcli_wired_status(stdout: &str) -> Option<(String, bool)> {
     for line in stdout.lines() {
         let mut it = line.splitn(3, ':');
@@ -412,14 +418,15 @@ fn parse_nmcli_wired_status(stdout: &str) -> Option<(String, bool)> {
     None
 }
 
-/// Link speed + first IPv4 from terse
-/// `nmcli -t -f CAPABILITIES.SPEED,IP4.ADDRESS device show <dev>`
-/// (`FIELD:value`, with `IP4.ADDRESS[1]:1.2.3.4/24`).
+/// Link speed + first IPv4 from terse `nmcli -t -f CAPABILITIES.SPEED,IP4.ADDRESS device
+/// show <dev>` (`FIELD:value`, with `IP4.ADDRESS[1]:1.2.3.4/24`).
 fn parse_nmcli_wired_show(stdout: &str) -> (Option<String>, Option<String>) {
     let mut speed = None;
     let mut ipv4 = None;
     for line in stdout.lines() {
-        let Some((field, value)) = line.split_once(':') else { continue };
+        let Some((field, value)) = line.split_once(':') else {
+            continue;
+        };
         let value = value.trim();
         if field == "CAPABILITIES.SPEED" {
             if !value.is_empty() && value != "unknown" {
@@ -442,13 +449,19 @@ mod wired_tests {
     #[test]
     fn parses_connected_ethernet_from_status() {
         let out = "lo:loopback:unmanaged\neth0:ethernet:connected\nwlan0:wifi:connected\n";
-        assert_eq!(parse_nmcli_wired_status(out), Some(("eth0".to_string(), true)));
+        assert_eq!(
+            parse_nmcli_wired_status(out),
+            Some(("eth0".to_string(), true))
+        );
     }
 
     #[test]
     fn disconnected_ethernet_reports_device_but_not_connected() {
         let out = "enp3s0:ethernet:disconnected\n";
-        assert_eq!(parse_nmcli_wired_status(out), Some(("enp3s0".to_string(), false)));
+        assert_eq!(
+            parse_nmcli_wired_status(out),
+            Some(("enp3s0".to_string(), false))
+        );
     }
 
     #[test]

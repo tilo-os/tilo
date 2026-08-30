@@ -1,17 +1,7 @@
-//! The shipped app fleet's manifests, checked against the real schema.
-//!
-//! `apps/<name>/qos-app.toml` is what makes an app installable: without
-//! one it can never be packed into a `.qpkg`, so it can never be
-//! installed, so the shell's launcher can never start it. This suite
-//! walks the monorepo's `apps/` directory and holds every manifest to
-//! the invariants a launch actually depends on — decode, schema
-//! validation, a payload-relative entrypoint, id uniqueness, and the
-//! egress/namespace agreement `qos-launcher` reads when it builds the
-//! bwrap argv.
-//!
-//! These assert against the production `pkg` types, not a local copy of
-//! the schema, so a schema change that would break a real install breaks
-//! this suite first.
+//! Manifests for the shipped app fleet, checked against the production `pkg`
+//! schema (not a local copy), so a schema change that breaks a real install
+//! breaks this suite first. Every app needs a valid `qos-app.toml` to be
+//! packable, installable, and launchable at all.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,8 +10,7 @@ use pkg::id::Kind;
 use pkg::manifest::{EntrypointType, Manifest, NetMode};
 use pkg::validate::validate_manifest;
 
-/// Repo root, derived from this crate's location
-/// (`<root>/crates/packaging/pkg`).
+/// Repo root, derived from this crate's path at `<root>/crates/packaging/pkg`.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -30,8 +19,7 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every directory under `apps/` that is a Cargo crate, i.e. every app
-/// the workspace actually builds a binary for.
+/// Every apps/ directory that's a Cargo crate, i.e. every app the workspace builds a binary for.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&apps)
@@ -55,15 +43,13 @@ fn manifest_path(app_dir: &Path) -> PathBuf {
 
 fn load(app_dir: &Path) -> Manifest {
     let path = manifest_path(app_dir);
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     Manifest::from_toml_str(&src)
         .unwrap_or_else(|e| panic!("{} does not decode: {e}", path.display()))
 }
 
-/// The gate this whole workstream exists to close: an app crate with no
-/// manifest cannot be installed, so it cannot be launched, so it can
-/// never appear on the desktop.
+/// An app crate with no manifest can never be installed or launched.
 #[test]
 fn every_app_crate_ships_a_manifest() {
     let missing: Vec<String> = app_dirs()
@@ -82,14 +68,12 @@ fn every_app_crate_ships_a_manifest() {
 fn every_manifest_passes_schema_validation() {
     for dir in app_dirs() {
         let m = load(&dir);
-        validate_manifest(&m)
-            .unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
+        validate_manifest(&m).unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
     }
 }
 
-/// `qos-pkg pack` re-serialises the manifest into the payload, and the
-/// launcher reads *that* copy — so anything that does not survive a
-/// round-trip is silently lost between authoring and launch.
+/// `qos-pkg pack` re-serialises the manifest for the payload, and the launcher
+/// reads that copy — anything lost in the round-trip is lost between authoring and launch.
 #[test]
 fn every_manifest_survives_a_toml_round_trip() {
     for dir in app_dirs() {
@@ -136,9 +120,8 @@ fn package_ids_are_unique_and_reverse_dns() {
     }
 }
 
-/// The entrypoint is joined onto the in-sandbox payload mount, so it has
-/// to be a payload-relative path — an absolute one would escape the
-/// mount and an empty one fails the launch after the fork.
+/// The entrypoint is joined onto the in-sandbox payload mount, so it must be
+/// payload-relative — absolute escapes the mount, empty fails the launch.
 #[test]
 fn entrypoints_are_payload_relative() {
     for dir in app_dirs() {
@@ -163,9 +146,8 @@ fn entrypoints_are_payload_relative() {
     }
 }
 
-/// `qos-launcher` adds `--share-net` iff `sandbox.net.mode != "off"`,
-/// while the `namespaces` list is what an auditor reads. If the two
-/// disagree the manifest lies about the app's egress.
+/// `qos-launcher` grants `--share-net` iff `sandbox.net.mode != "off"`; the
+/// `namespaces` list is what an auditor reads, so the two must agree.
 #[test]
 fn net_mode_and_namespace_agree() {
     for dir in app_dirs() {
@@ -187,9 +169,8 @@ fn net_mode_and_namespace_agree() {
     }
 }
 
-/// An allowlist with no hosts is an allowlist of nothing — every request
-/// the app makes would be refused, which is a manifest bug, not a
-/// policy.
+/// An allowlist with no hosts blocks every request the app makes — that's a
+/// manifest bug, not a policy.
 #[test]
 fn allowlisted_egress_names_at_least_one_host() {
     for dir in app_dirs() {
@@ -212,12 +193,8 @@ fn allowlisted_egress_names_at_least_one_host() {
     }
 }
 
-/// The Wayland socket used to be a per-manifest `fs.read` entry, and a
-/// GUI app that forgot it launched into a namespace with no display.
-/// The launcher binds it now (`--wayland-socket`, normalised to
-/// `wayland-0` inside the sandbox), so the invariant to hold is the
-/// opposite one: no manifest names it, because no manifest names any
-/// path at all.
+/// The launcher binds the Wayland socket itself (`--wayland-socket`, normalised
+/// to `wayland-0`); no manifest should name that path.
 #[test]
 fn no_manifest_names_a_filesystem_path() {
     let mut checked = 0usize;
@@ -239,20 +216,10 @@ fn no_manifest_names_a_filesystem_path() {
     assert!(checked >= 40, "expected the shipped fleet, found {checked}");
 }
 
-/// A service package's entrypoint says whether it draws, and the two
-/// answers have to agree.
-///
-/// The shell's Applications provider hides `kind = "service"`, so what
-/// the entrypoint claims is the only thing that decides whether the
-/// launcher ever gives it a surface: a `cli` service offered as a
-/// window is a launch that can never show anything, and a `gui` one
-/// with no GUI binary is the same failure from the other side.
-///
-/// Written over whatever services the tree holds rather than naming
-/// one, because it used to name `collab-broker` — and when that package
-/// was deleted the test did not start passing vacuously, it started
-/// failing on a missing file, which is luckier than it should have
-/// been. Requiring at least one subject keeps it honest either way.
+/// A service's entrypoint kind must agree with its declared kind: the shell hides
+/// `kind = "service"` apps, so the entrypoint alone decides whether the launcher
+/// ever gives it a surface. Asserts over whatever services exist rather than a
+/// fixed name, so deleting one can't make this pass vacuously.
 #[test]
 fn service_packages_agree_with_their_entrypoint_about_drawing() {
     let mut checked = 0usize;
@@ -282,14 +249,17 @@ fn service_packages_agree_with_their_entrypoint_about_drawing() {
     );
 }
 
-/// The human-facing metadata the shell's palette renders. Deriving a
-/// name from the id gives `Api Tester` and `Pdf Viewer`; declaring one
-/// is why the field exists.
+/// Human-facing name for the shell's palette — declared, not derived from the
+/// id (which would give "Api Tester").
 #[test]
 fn apps_declare_a_display_name_and_category() {
+    // Freedesktop main categories, narrowed to the ones qOS actually groups
+    // by. Adding one is deliberate: the palette groups on this string, so a
+    // typo would silently create a category of one.
     const CATEGORIES: &[&str] = &[
         "Accessibility",
         "Development",
+        "Graphics",
         "Multimedia",
         "Network",
         "Office",
@@ -317,28 +287,13 @@ fn apps_declare_a_display_name_and_category() {
     }
 }
 
-/// This test used to bar two blanket grants by name — `/` and `/etc`
-/// wholesale — and it passed on every manifest in the tree. It read:
-///
-/// ```text
-/// for pat in m.sandbox.fs.read.iter().chain(m.sandbox.fs.write.iter()) {
-///     let p = pat.trim_end_matches('/');
-///     assert!(p != "" && p != "/" && p != "/etc" && p != "/usr", ...);
-/// }
-/// ```
-///
-/// It was a denylist over a field the packager controlled, so it could
-/// only ever name the shapes someone had thought of: `~` (the whole home
-/// directory), `~/.ssh`, `~/..`, and another package's state directory
-/// all passed it. The field is gone, so the check is now the one the
-/// installer runs — every shipped package goes through exactly the
-/// validation a stranger's would, with no first-party exception.
+/// Runs the same fs-permission validation the installer runs on any third-party
+/// package, with no first-party exception — replacing a prior denylist over specific paths.
 #[test]
 fn every_shipped_manifest_passes_the_installers_own_validation() {
     for dir in app_dirs() {
         let m = load(&dir);
-        validate_manifest(&m).unwrap_or_else(|e| {
-            panic!("{}: refused by its own installer: {e}", dir.display())
-        });
+        validate_manifest(&m)
+            .unwrap_or_else(|e| panic!("{}: refused by its own installer: {e}", dir.display()));
     }
 }

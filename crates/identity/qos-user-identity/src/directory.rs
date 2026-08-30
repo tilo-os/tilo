@@ -196,7 +196,7 @@ impl WorkspaceDirectory {
     /// Key under `ROOT` for a workspace entry. We deliberately use
     /// `ROOT` as the workspaces map (rather than nesting under
     /// `ROOT/workspaces`) so two devices concurrently creating
-    /// their first workspaces do not both put_object on the same
+    /// their first workspaces do not both `put_object` on the same
     /// container key — that would produce a Map register conflict
     /// under which the losing peer's workspace contents become
     /// unreachable through `get`. Top-level keys are namespaced with
@@ -207,7 +207,7 @@ impl WorkspaceDirectory {
     }
 
     /// Ensure a workspace entry (identified by `w:{id}` key at
-    /// ROOT) exists and return its ObjId.
+    /// ROOT) exists and return its `ObjId`.
     ///
     /// When two devices concurrently `add_workspace(id, ...)` for
     /// the *same* id, both `put_object` operations create a map
@@ -289,11 +289,7 @@ impl WorkspaceDirectory {
     }
 
     /// Add a single host to a workspace's host set.
-    pub fn assign_host(
-        &mut self,
-        id: WorkspaceId,
-        host: [u8; 32],
-    ) -> Result<(), DirectoryError> {
+    pub fn assign_host(&mut self, id: WorkspaceId, host: [u8; 32]) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
         let mut hosts = self.read_pubkey_list(&obj, "hosts");
         if !hosts.contains(&host) {
@@ -367,16 +363,15 @@ impl WorkspaceDirectory {
         let len = self.doc.length(&list_obj);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            match self.doc.get(&list_obj, i) {
-                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            if let Ok(Some((Value::Scalar(s), _))) = self.doc.get(&list_obj, i) {
+                match s.as_ref() {
                     ScalarValue::Bytes(b) if b.len() == 32 => {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(b);
                         out.push(arr);
                     }
                     _ => {}
-                },
-                _ => {}
+                }
             }
         }
         out
@@ -394,7 +389,11 @@ impl WorkspaceDirectory {
             .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
         for k in keys {
             self.doc
-                .insert(&list, self.doc.length(&list), ScalarValue::Bytes(k.to_vec()))
+                .insert(
+                    &list,
+                    self.doc.length(&list),
+                    ScalarValue::Bytes(k.to_vec()),
+                )
                 .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
         }
         Ok(())
@@ -424,8 +423,7 @@ impl WorkspaceDirectory {
             delta,
             signature: [0u8; 64],
         };
-        let digest =
-            crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
+        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
         update.signature = device_signing_key.sign(&digest).to_bytes();
         Ok(update)
     }
@@ -464,8 +462,7 @@ impl WorkspaceDirectory {
         // Signature must cover the delta bytes.
         let vk = ed25519_dalek::VerifyingKey::from_bytes(&update.author_device_public_key)
             .map_err(|_| DirectoryError::BadSignature)?;
-        let digest =
-            crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
+        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
         let sig = ed25519_dalek::Signature::from_bytes(&update.signature);
         vk.verify(&digest, &sig)
             .map_err(|_| DirectoryError::BadSignature)?;
@@ -514,7 +511,9 @@ mod serde_bytes_64 {
 mod tests {
     use super::*;
     use crate::cert::{DeviceCapabilities, DeviceCert, sign_device_cert};
-    use crate::revocation::{RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry};
+    use crate::revocation::{
+        RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
+    };
     use crate::{DeviceIdentity, UserIdentity};
 
     struct Fixture {
@@ -553,8 +552,12 @@ mod tests {
     #[test]
     fn add_and_list_workspaces() {
         let f = fresh_user();
-        let (_dev_sk, dev_pk, _cert) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (_dev_sk, dev_pk, _cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let mut dir = WorkspaceDirectory::new(f.user_pk, dev_pk);
         dir.add_workspace(1, "Personal").unwrap();
         dir.add_workspace(2, "Work").unwrap();
@@ -567,8 +570,12 @@ mod tests {
     #[test]
     fn set_member_hosts_pin_unpin() {
         let f = fresh_user();
-        let (_a_sk, a_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (_a_sk, a_pk, _) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let (_b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
         let (_h_sk, h_pk, _) =
@@ -594,8 +601,12 @@ mod tests {
     #[test]
     fn concurrent_add_merges() {
         let f = fresh_user();
-        let (a_sk, a_pk, a_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let (b_sk, b_pk, b_cert) =
             enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
@@ -626,8 +637,12 @@ mod tests {
     #[test]
     fn author_of_change_is_provable_via_signature() {
         let f = fresh_user();
-        let (a_sk, a_pk, a_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
 
         let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
         dir.add_workspace(1, "Personal").unwrap();
@@ -654,8 +669,12 @@ mod tests {
     #[test]
     fn revoked_device_delta_rejected() {
         let f = fresh_user();
-        let (a_sk, a_pk, a_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let (b_sk, b_pk, b_cert) =
             enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
@@ -707,8 +726,12 @@ mod tests {
     #[test]
     fn delta_signed_by_wrong_device_rejected() {
         let f = fresh_user();
-        let (_a_sk, a_pk, a_cert) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (_a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let (b_sk, _b_pk, _b_cert) =
             enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
 
@@ -732,12 +755,20 @@ mod tests {
     fn cross_user_delta_rejected() {
         let f_alice = fresh_user();
         let f_bob = fresh_user();
-        let (_a_sk, a_pk, a_cert_alice) =
-            enrol_device(&f_alice.user_sk, f_alice.user_pk, "laptop", DeviceCapabilities::primary());
+        let (_a_sk, a_pk, a_cert_alice) = enrol_device(
+            &f_alice.user_sk,
+            f_alice.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         // Alice's directory. Bob attempts to apply a delta with a
         // cert issued under Bob's identity — rejected as WrongIdentity.
-        let (b_sk, b_pk, _) =
-            enrol_device(&f_bob.user_sk, f_bob.user_pk, "phone", DeviceCapabilities::primary());
+        let (b_sk, b_pk, _) = enrol_device(
+            &f_bob.user_sk,
+            f_bob.user_pk,
+            "phone",
+            DeviceCapabilities::primary(),
+        );
         let mut alice_dir = WorkspaceDirectory::new(f_alice.user_pk, a_pk);
         alice_dir.add_workspace(1, "AlicePersonal").unwrap();
         let delta = alice_dir.sync_incremental(&b_sk, 100).unwrap();
@@ -752,8 +783,12 @@ mod tests {
         // And a delta whose author matches Bob's cert, but the
         // cert's user identity is Bob's — again WrongIdentity, but
         // triggered by the different guard.
-        let (b_sk2, b_pk2, b_cert_bob) =
-            enrol_device(&f_bob.user_sk, f_bob.user_pk, "laptop", DeviceCapabilities::primary());
+        let (b_sk2, b_pk2, b_cert_bob) = enrol_device(
+            &f_bob.user_sk,
+            f_bob.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let mut bob_dir = WorkspaceDirectory::new(f_bob.user_pk, b_pk2);
         bob_dir.add_workspace(1, "BobPersonal").unwrap();
         let bob_delta = bob_dir.sync_incremental(&b_sk2, 100).unwrap();
@@ -769,8 +804,12 @@ mod tests {
     #[test]
     fn save_and_load_round_trip() {
         let f = fresh_user();
-        let (a_sk, a_pk, _) =
-            enrol_device(&f.user_sk, f.user_pk, "laptop", DeviceCapabilities::primary());
+        let (a_sk, a_pk, _) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
 
         let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
         dir.add_workspace(42, "Answer").unwrap();

@@ -1,15 +1,9 @@
 //! Screen 6 — channel invite acceptance.
 //!
-//! Triggered by a `qos://invite/...` URL — typed in by the user,
-//! arrived in a chat handoff, or coming in via the system "open"
-//! mechanism. Shows:
-//! - A confirmation banner: "Alice invited you to #engineering as Editor"
-//! - Expiry warning if applicable.
-//! - Accept + Decline buttons.
-//!
-//! On accept the screen builds a `ChannelEvent::AttestationIssued`
-//! signed by the embedded delegation key (which the inviting owner
-//! pre-signed) and emits it via the supplied callback.
+//! Triggered by a `qos://invite/...` URL (typed, chat handoff, or system "open").
+//! On accept, builds a `ChannelEvent::AttestationIssued` signed by the embedded
+//! delegation key the inviting owner pre-signed, and emits it via the supplied
+//! callback.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -26,17 +20,15 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{
     IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
 };
 
-/// Screen 6: invite-accept confirmation.
 pub struct InviteAcceptScreen {
     rect: Rect,
-    /// Raw URL the user pasted (or that arrived via deep-link).
     url: String,
-    /// Decoded envelope, if parsing succeeded.
     parsed: Option<InviteEnvelope>,
     parse_error: Option<String>,
     url_focus: bool,
@@ -45,11 +37,16 @@ pub struct InviteAcceptScreen {
     decline_rect: Rect,
     accept_hovered: bool,
     decline_hovered: bool,
-    /// Result of the last accept — the `AttestationIssued` event for
-    /// the shell to broadcast.
+    /// The `AttestationIssued` event for the shell to broadcast.
     pub last_accepted_event: Option<ChannelEvent>,
     accept_error: Option<String>,
     last_cursor: Point,
+}
+
+impl Default for InviteAcceptScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InviteAcceptScreen {
@@ -71,8 +68,6 @@ impl InviteAcceptScreen {
         }
     }
 
-    /// Inject a URL programmatically (for tests / clipboard
-    /// integration / deep-link handlers).
     pub fn set_url(&mut self, url: impl Into<String>) {
         self.url = url.into();
         self.parse();
@@ -98,8 +93,6 @@ impl InviteAcceptScreen {
         self.last_accepted_event.as_ref()
     }
 
-    /// Re-parse `self.url`. Side-effects: populates `parsed` /
-    /// `parse_error`.
     pub fn parse(&mut self) {
         self.last_accepted_event = None;
         self.accept_error = None;
@@ -126,10 +119,8 @@ impl InviteAcceptScreen {
         }
     }
 
-    /// Accept the invite with the supplied invitee public key. On
-    /// success the resulting attestation event is stored in
-    /// `last_accepted_event` and the container should treat it as a
-    /// `ScreenOutcome::Advance`.
+    /// On success, stores the attestation in `last_accepted_event`; the container
+    /// should treat that as a `ScreenOutcome::Advance`.
     pub fn accept(
         &mut self,
         invitee_pubkey: Ed25519PublicKey,
@@ -151,6 +142,11 @@ impl InviteAcceptScreen {
         self.last_accepted_event = None;
     }
 
+    // Mirrors `Widget::handle_event`'s parameter list on purpose --
+    // this is invoked from the trait impl, forwarding the same event,
+    // scale, modifiers, CRDT handle, and out-params the screen host
+    // received; bundling it would mean bundling the trait method too.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -191,13 +187,11 @@ impl InviteAcceptScreen {
                     *handled = true;
                     return ScreenOutcome::Back;
                 }
-                // Accept needs the invitee pubkey — the shell sets it
-                // via the container's wire-up. The screen exposes
-                // `accept()` for the shell to call directly.
+                // Accept needs the invitee pubkey, which only the shell has — it
+                // calls `accept()` directly, and the container catches Advance and
+                // consults `last_accepted_event` for the result.
                 if self.accept_rect.contains(self.last_cursor) && self.parsed.is_some() {
                     *handled = true;
-                    // The container catches Advance and consults
-                    // `last_accepted_event` to decide what to do.
                     return ScreenOutcome::Advance;
                 }
                 ScreenOutcome::Stay
@@ -256,26 +250,24 @@ impl Widget for InviteAcceptScreen {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(720.0),
-                    height: Dimension::length(540.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(720.0),
+                height: Dimension::length(540.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x as f64 + layout.location.x as f64,
-            origin.y as f64 + layout.location.y as f64,
-            origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
-            origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let card_w = 560.0;
         let card_h = 440.0;
@@ -341,7 +333,6 @@ impl Widget for InviteAcceptScreen {
             transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
             None,
         );
-        // URL input box.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -378,7 +369,6 @@ impl Widget for InviteAcceptScreen {
             transform * Affine::translate((self.url_rect.x0 + 12.0, self.url_rect.y0 + 12.0)),
             None,
         );
-        // Summary banner.
         if let Some(env) = &self.parsed {
             let banner = format!(
                 "{} invited you to #{} as {:?}",
@@ -398,7 +388,7 @@ impl Widget for InviteAcceptScreen {
             .to_rfc3339();
             text_renderer.draw_text(
                 scene,
-                &format!("Expires {}", when),
+                &format!("Expires {when}"),
                 12.0,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((card.x0 + pad, card.y0 + 200.0)),
@@ -414,7 +404,6 @@ impl Widget for InviteAcceptScreen {
                 None,
             );
         }
-        // Decline button.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -441,7 +430,6 @@ impl Widget for InviteAcceptScreen {
                 )),
             None,
         );
-        // Accept button.
         let enabled = self.parsed.is_some();
         let bg = if !enabled {
             theme.tokens.colors.surfaces.base
@@ -470,7 +458,7 @@ impl Widget for InviteAcceptScreen {
             label_color,
             transform
                 * Affine::translate((
-                    self.accept_rect.x0 + (self.accept_rect.width() - aw as f64) / 2.0,
+                    self.accept_rect.x0 + (self.accept_rect.width() - f64::from(aw)) / 2.0,
                     self.accept_rect.y0 + (self.accept_rect.height() - 14.0) / 2.0,
                 )),
             None,
@@ -501,7 +489,7 @@ impl Widget for InviteAcceptScreen {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "InviteAcceptScreen"
     }
 
@@ -592,10 +580,7 @@ mod tests {
     #[test]
     fn tampered_url_fails_signature() {
         let url = fixture_url(SystemTime::now());
-        // Drop the last 4 chars so the trailing bytes don't decode
-        // cleanly — exercise the parse_error path (the postcard
-        // decoder rejects truncated input, which surfaces as a
-        // DecodeFailed mapped to parse_error).
+        // Truncation exercises the parse_error path (doesn't decode cleanly).
         let mut chars: Vec<char> = url.chars().collect();
         for _ in 0..4 {
             chars.pop();

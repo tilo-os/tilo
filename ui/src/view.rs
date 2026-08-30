@@ -1,31 +1,18 @@
 //! The **View**: an app's presentation layer, distinct from its state.
 //!
-//! A qOS app owns exactly two pieces of live state. The **State document**
-//! (an Automerge CRDT in [`crate::state::State`]) is the collaborative truth —
-//! shared, merged, and serialized with `doc.save()`. The **View** is
-//! everything about *where the user is looking* that is deliberately **not**
-//! merged: the scroll offset, the caret and selection, which resource is open,
-//! the viewport, the current view mode.
+//! A qOS app owns two pieces of live state: the **State document** (an
+//! Automerge CRDT in [`crate::state::State`]) is the collaborative truth,
+//! merged and serialized with `doc.save()`; the **View** is everything about
+//! *where the user is looking* that is deliberately **not** merged — scroll,
+//! caret/selection, open resource, viewport, view mode.
 //!
-//! The View has two independent uses, and this module implements the second
-//! (the first is a follow-up):
-//!
-//! - **Presence** (not here): each participant broadcasts a subset of their
-//!   View so others can *see* where they are and *attach* to follow them. The
-//!   fields are laid out as small typed slots precisely so that layer can send
-//!   a subset without re-deriving anything.
-//! - **Freeze/thaw** (here): [`FreezeThaw::freeze`] serializes an app's State
-//!   *and* its View into one versioned envelope; [`FreezeThaw::thaw`] restores
-//!   both. This is what backs OS memory-eviction of idle apps, reboot, and
-//!   crash recovery — a thawed app is not merely the same data, it is the same
-//!   *place*.
-//!
-//! Freeze/thaw route through a single override hook,
-//! [`FreezeThaw::serialize_state`] / [`FreezeThaw::restore_state`], which
-//! defaults (for a [`crate::app::App`]) to the CRDT save/load. An app whose
-//! state is not a plain CRDT — a browser serializing its own tab/session
-//! state — overrides just those two and keeps freeze/thaw, view capture, and
-//! everything else for free.
+//! Two uses: **presence** (not here) broadcasts a subset so others can see
+//! and follow a participant; **freeze/thaw** (here) serializes State *and*
+//! View into one versioned envelope and restores both — backing OS
+//! memory-eviction, reboot, and crash recovery, so a thawed app is the same
+//! *place*, not merely the same data. It routes through a single override
+//! hook, [`FreezeThaw::serialize_state`] / [`FreezeThaw::restore_state`],
+//! defaulting to the CRDT save/load; a non-CRDT app overrides just those two.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,13 +32,9 @@ pub struct ViewRect {
 
 /// The focused widget's ephemeral presentation state, captured through the
 /// same mechanism the undo path uses to restore a caret across a rebuild.
-///
-/// `ordinal` is the focused widget's index in
-/// [`crate::app::App::focusable_order`] — stable as long as the tree shape is,
-/// which is exactly the condition under which restoring a caret onto it is
-/// meaningful. `ephemeral` is the opaque string a widget produces from
-/// [`crate::widget::Widget::get_state`] and consumes in
-/// [`crate::widget::Widget::set_state`] (its caret byte, its selection range).
+/// `ordinal` is stable exactly when the tree shape is — the condition under
+/// which restoring a caret is meaningful; `ephemeral` is the opaque string
+/// from [`crate::widget::Widget::get_state`]/[`set_state`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FocusView {
     pub ordinal: usize,
@@ -60,12 +43,10 @@ pub struct FocusView {
 
 /// The typed presentation fields a widget contributes to (and has restored
 /// from) the [`View`] — its scroll offset(s) and its current view mode.
-///
 /// Kept structured rather than folded into [`FocusView::ephemeral`] because a
-/// scroll position and a view mode are what a *presence* layer wants to
-/// broadcast on their own — "this peer is scrolled here, in grid mode" — and a
-/// container that scrolls is usually not the focused widget anyway. The root
-/// widget returns this from [`crate::widget::Widget::view_state`].
+/// presence layer wants to broadcast scroll/view-mode on their own — "this
+/// peer is scrolled here, in grid mode" — independent of whether the
+/// scrolling container is the focused widget.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewContribution {
     /// Scroll offset(s). A single scrollable owns one value; a multi-pane
@@ -76,12 +57,10 @@ pub struct ViewContribution {
 }
 
 /// A participant's View: everything about *where they are looking* that is
-/// never merged into anyone else's.
-///
-/// Every field derives `Serialize`/`Deserialize` so a future presence layer
-/// can broadcast any subset, and the whole thing serializes for freeze/thaw.
-/// [`View::default`] is "top of the document, nothing focused, no resource" —
-/// the correct starting point for a freshly-launched app.
+/// never merged into anyone else's. Every field derives
+/// `Serialize`/`Deserialize` so a future presence layer can broadcast any
+/// subset. [`View::default`] is "top of the document, nothing focused, no
+/// resource" — the correct starting point for a freshly-launched app.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct View {
     /// Scroll offset(s) of the app's scrollable content.
@@ -99,16 +78,11 @@ pub struct View {
 /// The broadcastable subset of a [`View`] — the region and resource a
 /// participant is looking at, minus the caret/selection.
 ///
-/// The presence layer publishes this so peers know not just where a
-/// participant's cursor is (that rides the existing caret/selection
-/// presence stream) but *what they are looking at*: the scroll offset(s),
-/// the open resource, the viewport, and the view mode. It is deliberately
-/// small and self-describing so it can travel inside the existing presence
-/// frame, and it is what an **attach/follow** binds the local viewport to.
-///
-/// The caret ([`View::focus`]) is intentionally excluded: it already has a
-/// dedicated presence payload (`Caret` / `Selection`) that lands in the
-/// per-key caret maps, so re-sending it here would double-broadcast and
+/// Deliberately small and self-describing so it can travel inside the
+/// existing presence frame; it's what an **attach/follow** binds the local
+/// viewport to. The caret ([`View::focus`]) is intentionally excluded: it
+/// already has a dedicated presence payload (`Caret`/`Selection`) landing in
+/// the per-key caret maps, so re-sending it here would double-broadcast and
 /// re-key it away from the widget scopes those renderers read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewSubset {
@@ -134,10 +108,9 @@ impl ViewSubset {
         }
     }
 
-    /// True when this subset carries nothing worth broadcasting — the
-    /// starting point of a freshly-launched app that has not scrolled,
-    /// opened a resource, or been laid out. Lets the broadcaster skip the
-    /// first frame's no-op send.
+    /// True at the starting point of a freshly-launched app that has not
+    /// scrolled, opened a resource, or been laid out — lets the broadcaster
+    /// skip the first frame's no-op send.
     pub fn is_empty(&self) -> bool {
         *self == ViewSubset::default()
     }
@@ -201,27 +174,19 @@ impl std::error::Error for ThawError {}
 
 /// Freeze/thaw for a qOS app, extendable at exactly one seam.
 ///
-/// The two **required** methods are the override hook: [`serialize_state`] /
-/// [`restore_state`] say how an app's *state* becomes bytes and back. For a
-/// [`crate::app::App`] they default (in the impl in `app.rs`) to the CRDT
-/// `doc.save()` / `AutoCommit::load`; a non-CRDT app overrides only these.
+/// The two **required** methods are the override hook: `serialize_state` /
+/// `restore_state` say how an app's *state* becomes bytes and back,
+/// defaulting (for a [`crate::app::App`]) to the CRDT `doc.save()` /
+/// `AutoCommit::load`; a non-CRDT app overrides only these.
 ///
-/// [`capture_view`] / [`restore_view`] have batteries-included defaults (an
-/// empty View, a no-op) so an implementor that does not touch the toolkit's
-/// focus/scroll machinery still round-trips its state; [`crate::app::App`]
-/// overrides them to capture the real focus/scroll/resource/viewport.
+/// `capture_view` / `restore_view` default to an empty View / a no-op, so an
+/// implementor that doesn't touch the toolkit's focus/scroll machinery still
+/// round-trips its state; [`crate::app::App`] overrides them for the real
+/// focus/scroll/resource/viewport.
 ///
-/// [`freeze`] / [`restore`] — sorry, [`freeze`] / [`thaw`] — are **not** meant
-/// to be overridden: they frame `serialize_state() + capture_view()` into a
-/// versioned [`FrozenApp`] and back, so overriding the state hook changes only
-/// serialization and leaves the presentation handling intact.
-///
-/// [`serialize_state`]: FreezeThaw::serialize_state
-/// [`restore_state`]: FreezeThaw::restore_state
-/// [`capture_view`]: FreezeThaw::capture_view
-/// [`restore_view`]: FreezeThaw::restore_view
-/// [`freeze`]: FreezeThaw::freeze
-/// [`thaw`]: FreezeThaw::thaw
+/// `freeze` / `thaw` are **not** meant to be overridden: they frame
+/// `serialize_state() + capture_view()` into a versioned [`FrozenApp`] and
+/// back, so overriding the state hook changes only serialization.
 pub trait FreezeThaw {
     /// Serialize this app's state to bytes. The single override point for a
     /// non-CRDT app.
@@ -273,18 +238,18 @@ pub trait FreezeThaw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PresenceCtx;
+    use crate::TextRenderer;
+    use crate::Theme;
     use crate::app::App;
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     use crate::state::State;
     use crate::widget::Widget;
-    use crate::PresenceCtx;
-    use crate::TextRenderer;
-    use crate::Theme;
-    use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ROOT};
+    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::TaffyTree;
-    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use vello::Scene;
+    use vello::kurbo::{Affine, Point, Rect as KurboRect};
     use winit::event::WindowEvent;
 
     /// A minimal root widget that owns all the presentation state a View
@@ -391,11 +356,11 @@ mod tests {
         doc.text(&obj).ok()
     }
 
-    /// The headline covenant test: a populated doc + a non-default View
-    /// (scrolled, a caret, an open resource, a view mode) freezes and thaws
-    /// into a *fresh* app with BOTH the document content AND every view field
-    /// intact — asserted on the real freeze/thaw path, and additionally on the
-    /// bytes in between so no field is silently dropped by capture.
+    /// A populated doc + a non-default View (scrolled, a caret, an open
+    /// resource, a view mode) freezes and thaws into a *fresh* app with BOTH
+    /// the document content AND every view field intact — asserted on the
+    /// real freeze/thaw path, and on the bytes in between so no field is
+    /// silently dropped by capture.
     #[test]
     fn freeze_thaw_round_trips_doc_and_view() {
         // App 1: a document with real text, and a root carrying a non-default
@@ -409,9 +374,8 @@ mod tests {
         let mut state = State::new();
         let body = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         state.doc.splice_text(&body, 0, 0, "Hello, world").unwrap();
-        // Stamp the document with the identity of the record it holds, the way a
-        // real record-backed app does — so that reopening it after thaw is a
-        // fact readable from the restored document, not just from widget config.
+        // Stamp the document with the record identity it holds, so reopening
+        // it after thaw is readable from the restored document.
         crate::record::init(
             &mut state.doc,
             &RecordId::parse("file:/report.md").unwrap(),
@@ -423,7 +387,6 @@ mod tests {
         app1.autofocus_first = true; // focus the single field so a caret exists
         app1.init_layout();
 
-        // Capturing app1 sees the live presentation.
         let v1 = app1.capture_view();
         assert_eq!(v1.scroll, vec![10.0, 20.0]);
         assert_eq!(v1.view_mode.as_deref(), Some("grid"));
@@ -441,31 +404,31 @@ mod tests {
         // App 2: a fresh app with an EMPTY doc and a default root.
         let mut app2 = App::new(State::new(), Box::new(DocRoot::new()));
         app2.init_layout();
-        assert_eq!(text_at(&app2.state_mut_for_test().doc.clone(), "body"), None);
+        assert_eq!(
+            text_at(&app2.state_mut_for_test().doc.clone(), "body"),
+            None
+        );
 
         app2.thaw(&frozen).expect("thaw a well-formed envelope");
 
-        // Document content restored.
         let doc2 = app2.state_mut_for_test().doc.clone();
         assert_eq!(
             text_at(&doc2, "body").as_deref(),
             Some("Hello, world"),
             "the CRDT document round-tripped through freeze/thaw"
         );
-        // The open resource is genuinely reopened: the restored document carries
-        // the record identity that `open_resource` named.
+        // The restored document carries the record identity that
+        // `open_resource` named — the resource is genuinely reopened.
         assert_eq!(
             crate::record::identity(&doc2).map(|c| c.id.as_str().to_string()),
             Some("file:/report.md".to_string()),
             "thaw reopened the resource the View named — its document is live"
         );
 
-        // The presentation fields restored onto the live app — asserted by
-        // re-capturing app2. `scroll`/`view_mode` went back to the root widget;
-        // `focus`/caret went back through the ephemeral get_state/set_state
-        // mechanism. (`open_resource` is proven above via the live document — it
-        // is deliberately not written back onto the widget, since the document
-        // *is* the resource.)
+        // `scroll`/`view_mode` went back to the root widget; `focus`/caret via
+        // the ephemeral get_state/set_state mechanism. `open_resource` isn't
+        // re-checked here — it's proven above via the live document, since the
+        // document *is* the resource.
         let v2 = app2.capture_view();
         assert_eq!(v2.scroll, vec![10.0, 20.0], "scroll restored to the widget");
         assert_eq!(v2.view_mode.as_deref(), Some("grid"), "view mode restored");
@@ -474,26 +437,26 @@ mod tests {
         assert_eq!(f2.ephemeral, "caret=42", "caret restored via set_state");
     }
 
-    /// Robustness: thawing truncated or garbage bytes returns an error, and an
-    /// envelope from an unknown version is rejected rather than mis-read.
-    /// Never a panic.
+    /// Thawing truncated or garbage bytes returns an error, and an envelope
+    /// from an unknown version is rejected rather than mis-read — never a panic.
     #[test]
     fn thaw_rejects_bad_bytes_without_panicking() {
         let mut app = App::new(State::new(), Box::new(DocRoot::new()));
         app.init_layout();
 
-        // Garbage.
         assert!(matches!(
             app.thaw(&[0xff, 0x00, 0x7e, 0x13]),
             Err(ThawError::Envelope(_))
         ));
-        // Empty.
         assert!(matches!(app.thaw(&[]), Err(ThawError::Envelope(_))));
 
         // A valid envelope truncated mid-way still fails cleanly.
         let good = app.freeze();
         let truncated = &good[..good.len() / 2];
-        assert!(app.thaw(truncated).is_err(), "truncated bytes error, not panic");
+        assert!(
+            app.thaw(truncated).is_err(),
+            "truncated bytes error, not panic"
+        );
 
         // A future version is refused, not silently mis-decoded.
         let future = FrozenApp {
@@ -510,8 +473,7 @@ mod tests {
 
     /// A stub whose state is NOT a CRDT overrides only `serialize_state` /
     /// `restore_state` and round-trips through the *same* `freeze`/`thaw`
-    /// default path — proving the override hook is actually the seam freeze/thaw
-    /// run through, and that view capture/restore default cleanly for it.
+    /// default path — proving that view capture/restore default cleanly for it.
     #[test]
     fn custom_serialization_app_round_trips_via_override() {
         /// A browser-like app: its "state" is an opaque session string, not a

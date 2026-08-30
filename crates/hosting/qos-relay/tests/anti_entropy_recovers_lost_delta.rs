@@ -18,16 +18,14 @@
 //! (identical `get_heads()`), on the real `Relay` / `RelayClient` path,
 //! no mocks of the host.
 
-mod common;
-
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use qos_relay::{Envelope, RelayClient, reconcile};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
-use common::{TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -40,13 +38,11 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
 }
 
 fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -75,7 +71,9 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     )
     .await
     .expect("A connect");
-    a_client.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    a_client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
     // Drain A's Ready(0).
     match tokio::time::timeout(Duration::from_secs(2), a_client.recv())
         .await
@@ -144,7 +142,10 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(drained, "host drained + deleted B's queued delta on subscribe");
+    assert!(
+        drained,
+        "host drained + deleted B's queued delta on subscribe"
+    );
     drop(b1); // B's wire dies; it never durably applied the drained delta.
 
     // The store-and-forward tier is now exhausted for this delta: the
@@ -176,7 +177,10 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     {
         // The queue is empty — no catch-up delta is delivered.
         Envelope::Ready { pending_deltas, .. } => {
-            assert_eq!(pending_deltas, 0, "queue is empty; subscribe alone cannot recover d1");
+            assert_eq!(
+                pending_deltas, 0,
+                "queue is empty; subscribe alone cannot recover d1"
+            );
         }
         other => panic!("expected Ready(0), got {other:?}"),
     }
@@ -184,14 +188,21 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     // B starts from nothing and is divergent from A.
     let mut doc_b = AutoCommit::new();
     doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-    assert_ne!(doc_b.get_heads(), doc_a.get_heads(), "B is behind A before anti-entropy");
+    assert_ne!(
+        doc_b.get_heads(),
+        doc_a.get_heads(),
+        "B is behind A before anti-entropy"
+    );
 
     // ---- Anti-entropy: B reconciles against the host's MATERIALIZED
     //      doc — the only place d1 still lives — and converges. ----
     let applied = reconcile(&b2, WS, &mut doc_b, Duration::from_secs(3))
         .await
         .expect("reconcile round trip");
-    assert!(applied > 0, "host backfilled the lost change via anti-entropy");
+    assert!(
+        applied > 0,
+        "host backfilled the lost change via anti-entropy"
+    );
 
     assert_eq!(read_str(&doc_b, "note").as_deref(), Some("recover-me"));
     assert_eq!(

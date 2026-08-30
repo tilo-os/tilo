@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "settings"
 version = "0.1.0"
 edition = "2024"
@@ -52,7 +54,6 @@ tracing-subscriber.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
-dirs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
@@ -63,3 +64,10 @@ accounts = { path = "../../crates/system/accounts" }
 # account back through Mail's own reader to prove Mail actually consumes what
 # Settings persisted (end-to-end across the shared store, not a mock).
 mail = { path = "../mail" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

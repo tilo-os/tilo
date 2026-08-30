@@ -64,5 +64,8 @@ fn no_orphans_after_repeated_delete() {
     ws.delete_page(mid);
     ws.check_invariants().unwrap();
     let kids = ws.children_of(Some(root));
-    assert!(kids.is_empty(), "no surviving descendants of `root` after deleting `mid`");
+    assert!(
+        kids.is_empty(),
+        "no surviving descendants of `root` after deleting `mid`"
+    );
 }

@@ -75,9 +75,8 @@ fn workspace_admin_requires_admin_authority() {
 
 #[test]
 fn actor_with_no_role_denies_everything() {
-    // The replacement for "the named role wasn't found": an actor that
-    // holds no role has no base authority at all, so absent an explicit
-    // capability it is denied — fail-closed by construction.
+    // An actor with no role has no base authority at all, so absent an
+    // explicit capability it is denied — fail-closed by construction.
     let ctx = PermissionContext::from_capabilities(Actor::person(None, "x"), vec![]);
     let scope = PermissionScope::app_kind(AppKind::FileExplorer, Verb::Read);
     assert!(!ctx.check(&scope));
@@ -106,8 +105,6 @@ fn an_explicitly_denied_role_cannot_be_rescued_by_a_grant() {
         Some(CapDecision::DeniedByRole)
     );
 }
-
-// --- Task 6: Widget trait hooks for presence + permission ---
 
 struct NoOpWidget;
 impl ui::widget::Widget for NoOpWidget {
@@ -149,7 +146,7 @@ impl ui::widget::Widget for NoOpWidget {
         _t: &taffy::TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "noop"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -166,9 +163,8 @@ fn widget_default_presence_and_permission_are_none() {
 
 #[test]
 fn draw_with_presence_default_delegates_to_draw() {
-    // Compile-time assertion: draw_with_presence is defined on Widget with the
-    // expected signature. If this compiles and runs without panic, the default
-    // implementation exists and forwards to draw.
+    // If this compiles and runs without panic, the default
+    // `draw_with_presence` implementation exists and forwards to `draw`.
     let mut w = NoOpWidget;
     let mut scene = vello::Scene::new();
     let mut tr = ui::text_render::TextRenderer::new();
@@ -184,8 +180,6 @@ fn draw_with_presence_default_delegates_to_draw() {
         &perms,
     );
 }
-
-// --- Task 7: Framework-level permission gating in event dispatch ---
 
 use ui::permissions::PermissionScope as PS;
 
@@ -234,7 +228,7 @@ impl ui::widget::Widget for GatedButton {
     ) {
         self.clicked = true;
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gated"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -275,8 +269,6 @@ fn gated_widget_allowed_when_role_grants_edit() {
     assert!(fired);
 }
 
-// --- Installing a real actor + capability set on an App ---
-
 #[test]
 fn permission_context_built_from_an_actor_and_its_capabilities() {
     let ctx = PermissionContext::from_capabilities(
@@ -293,7 +285,10 @@ fn permission_context_built_from_an_actor_and_its_capabilities() {
     // The individual grant lifts her above her role's ceiling — but only
     // inside the scope it names.
     assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Admin)));
-    assert!(!ctx.check(&PermissionScope::app_kind(AppKind::FileExplorer, Verb::Admin)));
+    assert!(!ctx.check(&PermissionScope::app_kind(
+        AppKind::FileExplorer,
+        Verb::Admin
+    )));
 }
 
 #[test]
@@ -312,7 +307,10 @@ fn a_lapsed_capability_stops_granting() {
     assert!(live.check(&scope));
 
     let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(2_000);
-    assert!(!lapsed.check(&scope), "the deadline is exclusive: at it, the grant is dead");
+    assert!(
+        !lapsed.check(&scope),
+        "the deadline is exclusive: at it, the grant is dead"
+    );
     assert_eq!(
         lapsed.check_with_denied_feedback(&scope),
         Some(CapDecision::DeniedByRole)
@@ -328,7 +326,10 @@ fn permissive_holds_one_real_workspace_wide_admin_capability() {
     assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
     assert!(ctx.check(&PermissionScope::workspace(Verb::Admin)));
     assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Write)));
-    assert!(ctx.check(&PermissionScope::path("/var/workspace/anything", Verb::Write)));
+    assert!(ctx.check(&PermissionScope::path(
+        "/var/workspace/anything",
+        Verb::Write
+    )));
     assert_eq!(
         ctx.decide(&ResourceRef::Device("camera".into()), Verb::Read),
         CapDecision::Allow

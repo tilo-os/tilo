@@ -10,8 +10,8 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use automerge::transaction::Transactable;
 use automerge::AutoCommit;
+use automerge::transaction::Transactable;
 use settings::accounts::{AccountDirectory, AccountKind};
 use settings::prefs::SystemPrefs;
 use settings::region::{RegionSettings, TimeStyle};
@@ -52,7 +52,11 @@ fn audio_event_sounds_toggle_persists_to_disk() {
 
     let mut pane = settings::panes::audio::build();
     // Default is `true`; flip it off through the production path.
-    seed_then_set_bool(pane.as_mut(), settings::panes::audio::EVENT_SOUNDS_KEY, false);
+    seed_then_set_bool(
+        pane.as_mut(),
+        settings::panes::audio::EVENT_SOUNDS_KEY,
+        false,
+    );
 
     let reloaded = SystemPrefs::load();
     assert!(
@@ -67,7 +71,11 @@ fn display_night_light_toggle_persists_to_disk() {
     let _home = temp_home("display");
 
     let mut pane = settings::panes::display::build();
-    seed_then_set_bool(pane.as_mut(), settings::panes::display::NIGHT_LIGHT_KEY, true);
+    seed_then_set_bool(
+        pane.as_mut(),
+        settings::panes::display::NIGHT_LIGHT_KEY,
+        true,
+    );
 
     assert!(
         SystemPrefs::load().display.night_light,
@@ -219,16 +227,32 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     let _ = doc.put(&root, settings::panes::accounts::ADD_MAIL_KEY, true);
     pane.sync(&mut doc, &root);
     let _ = doc.put(&root, settings::panes::accounts::FORM_NAME_KEY, "Test User");
-    let _ = doc.put(&root, settings::panes::accounts::FORM_EMAIL_KEY, "test@gmail.com");
-    let _ = doc.put(&root, settings::panes::accounts::FORM_USER_KEY, "test@gmail.com");
-    let _ = doc.put(&root, settings::panes::accounts::FORM_PASSWORD_KEY, "s3cret-pw");
+    let _ = doc.put(
+        &root,
+        settings::panes::accounts::FORM_EMAIL_KEY,
+        "test@gmail.com",
+    );
+    let _ = doc.put(
+        &root,
+        settings::panes::accounts::FORM_USER_KEY,
+        "test@gmail.com",
+    );
+    let _ = doc.put(
+        &root,
+        settings::panes::accounts::FORM_PASSWORD_KEY,
+        "s3cret-pw",
+    );
     let _ = doc.put(&root, settings::panes::accounts::FORM_SAVE_KEY, true);
     pane.sync(&mut doc, &root);
 
     // The account is now in the shared on-disk store Mail loads, auto-configured.
     let dir = AccountDirectory::load();
     let views = dir.views_of(AccountKind::Mail);
-    assert_eq!(views.len(), 1, "Add persisted a real account to the shared store");
+    assert_eq!(
+        views.len(),
+        1,
+        "Add persisted a real account to the shared store"
+    );
     assert_eq!(views[0].id, "test@gmail.com");
     assert!(
         views[0].summary.contains("imap.gmail.com"),
@@ -240,7 +264,9 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     // The password persisted to the encrypted vault (not the plaintext store)…
     let account_id = accounts::AccountId::from(id.clone());
     assert_eq!(
-        accounts::SecretVault::open().get(&account_id).map(|s| s.password),
+        accounts::SecretVault::open()
+            .get(&account_id)
+            .map(|s| s.password),
         Some("s3cret-pw".to_string()),
         "the password was sealed in the vault, keyed by account id"
     );
@@ -262,7 +288,9 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     // The directory now reports empty for the Email kind — the account is gone
     // from the shared store on disk.
     assert!(
-        AccountDirectory::load().views_of(AccountKind::Mail).is_empty(),
+        AccountDirectory::load()
+            .views_of(AccountKind::Mail)
+            .is_empty(),
         "Remove deleted the account from the shared store on disk"
     );
     // …and its sealed credential was dropped from the vault too.

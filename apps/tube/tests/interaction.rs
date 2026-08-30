@@ -2,15 +2,15 @@
 //!
 //! These build the real widget tree, run the real five-pass layout, resolve
 //! affordances by their laid-out rect, and inject real winit pointer events
-//! through `Widget::handle_event` — the exact production path (ActionBus drain →
+//! through `Widget::handle_event` — the exact production path (`ActionBus` drain →
 //! `TubeApp::apply`). No app-level shortcuts: a passing test means a real click
 //! at the real coordinates did the real thing.
 
 mod harness;
 
 use harness::Harness;
-use tube::model::Route;
 use tube::TubeApp;
+use tube::model::Route;
 
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
@@ -21,7 +21,7 @@ fn clicking_a_nav_tab_switches_route() {
     // the wide layout resolves its docked rail on the first frame (as the live
     // app does once its width lands) rather than the unknown-width overlay.
     let mut h = Harness::new(
-        TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64),
+        TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
         VIEWPORT,
     );
     assert_eq!(
@@ -77,7 +77,10 @@ fn palette_result_click_navigates_to_video() {
         matches!(h.app.route_for_test(), Route::Watch(_)),
         "clicking a video result opens its watch page"
     );
-    assert!(!h.app.palette_open_for_test(), "activating a result closes the palette");
+    assert!(
+        !h.app.palette_open_for_test(),
+        "activating a result closes the palette"
+    );
 }
 
 #[test]
@@ -102,7 +105,7 @@ fn watch_view_lays_out_the_shared_video_player_surface() {
 fn non_watch_views_have_no_video_player_surface() {
     // The dual: off a watch route (Home) the player surface must not be in the
     // tree — the surface is scoped to the watch page, not always-on.
-    let app = TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64);
+    let app = TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
     let h = Harness::new(app, VIEWPORT);
     assert_eq!(h.app.route_for_test(), &Route::Home);
     assert!(
@@ -119,22 +122,20 @@ fn clicking_scrim_closes_palette() {
     // Click near the top-left corner — inside the scrim, outside the centred
     // card — which must dismiss the palette.
     h.click_at(vello::kurbo::Point::new(20.0, 20.0));
-    assert!(!h.app.palette_open_for_test(), "scrim click closes the palette");
+    assert!(
+        !h.app.palette_open_for_test(),
+        "scrim click closes the palette"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// text-entry surfaces must be reachable (the headline defect)
+// text-entry surfaces must be reachable
 // ---------------------------------------------------------------------------
 
 #[test]
 fn top_bar_search_input_is_present_even_when_query_is_empty() {
-    // Regression: the search box used to hide its real TextInput behind a
-    // `!query.is_empty()` gate and show a static label, so with an empty query
-    // there was NO input in the tree to focus — free-text search was
-    // unreachable. The input must now always be laid out (placeholder-backed),
-    // so a user can click into it and type from a cold start.
     let h = Harness::new(
-        TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64),
+        TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
         VIEWPORT,
     );
     assert_eq!(h.app.route_for_test(), &Route::Home);
@@ -150,8 +151,6 @@ fn top_bar_search_input_is_present_even_when_query_is_empty() {
 
 #[test]
 fn command_palette_input_is_present_even_when_query_is_empty() {
-    // Same defect on the Ctrl+K palette: the input was gated on a non-empty
-    // query, so the freshly-opened (empty) palette had no field to type into.
     let app = TubeApp::new().with_palette_open_for_test("");
     let h = Harness::new(app, VIEWPORT);
     assert!(h.app.palette_open_for_test(), "palette starts open");
@@ -170,23 +169,26 @@ const WATCH_ID: &str = "vid_rust_async";
 
 fn watch_app() -> TubeApp {
     TubeApp::new()
-        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_route_shot(Route::Watch(WATCH_ID.into()))
 }
 
 #[test]
 fn share_button_copies_a_link_and_is_not_wired_to_like() {
-    // The Share pill was mis-wired to `Action::Like`. Clicking it must record a
-    // "link copied" notice (the visible confirmation of the real clipboard
-    // write) and must NOT like the video — proving the two are distinct.
+    // Clicking Share must record a "link copied" notice (the visible
+    // confirmation of the real clipboard write) and must NOT like the video —
+    // proving the two are distinct.
     let mut h = Harness::new(watch_app(), VIEWPORT);
-    assert!(!h.app.model_for_test().is_liked(WATCH_ID), "not liked to start");
+    assert!(
+        !h.app.model_for_test().is_liked(WATCH_ID),
+        "not liked to start"
+    );
 
     h.click_id("share_btn");
 
     assert!(
         !h.app.model_for_test().is_liked(WATCH_ID),
-        "Share must not like the video (the old mis-wire did)"
+        "Share must not like the video"
     );
     assert!(
         h.app
@@ -197,7 +199,10 @@ fn share_button_copies_a_link_and_is_not_wired_to_like() {
         "Share records a 'link copied' notice for this video"
     );
     // And the confirmation toast is actually rendered.
-    assert!(h.has_id("notices"), "the share confirmation shows in the toast strip");
+    assert!(
+        h.has_id("notices"),
+        "the share confirmation shows in the toast strip"
+    );
 }
 
 #[test]
@@ -220,8 +225,6 @@ fn like_button_toggles_liked_state_through_a_real_click() {
 
 #[test]
 fn transport_settings_gear_navigates_to_settings() {
-    // The gear in the watch transport bar was a dead glyph. It must now open
-    // the Settings screen.
     let mut h = Harness::new(watch_app(), VIEWPORT);
     assert!(matches!(h.app.route_for_test(), Route::Watch(_)));
     h.click_id("watch_settings");
@@ -244,11 +247,11 @@ fn watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar() {
         .expect("the watch page lays out the shared video-player surface");
 
     let content_left = tube::screens::NAV_RAIL_W; // docked rail width (86)
-    let viewport_h = VIEWPORT.1 as f64;
+    let viewport_h = f64::from(VIEWPORT.1);
     // The content lane: the split's content pane minus the reserved scrollbar
     // gutter on the right.
     let lane_left = content_left;
-    let lane_right = VIEWPORT.0 as f64 - tube::app::SCROLL_GUTTER as f64;
+    let lane_right = f64::from(VIEWPORT.0) - f64::from(tube::app::SCROLL_GUTTER);
 
     // 16:9 aspect.
     let aspect = player.width() / player.height();
@@ -258,14 +261,14 @@ fn watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar() {
         player.width(),
         player.height()
     );
-    // Height-driven: ~65% of the viewport height, not the old ~480px cap.
+    // Height-driven: ~65% of the viewport height, not a fixed pixel cap.
     assert!(
         player.height() > 0.55 * viewport_h && player.height() <= 0.66 * viewport_h + 2.0,
         "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
         player.height()
     );
     // Centered in the content lane.
-    let lane_center = (lane_left + lane_right) / 2.0;
+    let lane_center = f64::midpoint(lane_left, lane_right);
     assert!(
         (player.center().x - lane_center).abs() < 3.0,
         "player centered in the content lane (center.x={}, lane center {lane_center})",
@@ -288,23 +291,29 @@ fn watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar() {
 
 #[test]
 fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved() {
-    // The headline of the nav-stack adoption: from a results list, opening a
-    // video and pressing Back must land on the EXACT same search results, with
-    // the scroll position preserved — all through real clicks on real widgets.
+    // From a results list, opening a video and pressing Back must land on the
+    // EXACT same search results, with the scroll position preserved — all
+    // through real clicks on real widgets.
     let query = "rust";
     // Use several sample video ids so the results list is long enough to scroll.
     let sample = tube::sample::model();
     let ids: Vec<String> = sample.videos.iter().map(|v| v.id.clone()).collect();
-    assert!(ids.len() >= 3, "need a few sample videos to build a results list");
+    assert!(
+        ids.len() >= 3,
+        "need a few sample videos to build a results list"
+    );
     let first = ids[0].clone();
 
     let app = tube::TubeApp::new()
-        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_model_for_test(sample)
         .with_search_for_test(query, ids);
     let mut h = Harness::new(app, VIEWPORT);
     assert_eq!(h.app.route_for_test(), &Route::Search(query.into()));
-    assert!(h.app.can_go_back_for_test(), "arriving via search leaves Home to go back to");
+    assert!(
+        h.app.can_go_back_for_test(),
+        "arriving via search leaves Home to go back to"
+    );
 
     // Scroll the results down, then record where the grid sits.
     h.wheel_at(vello::kurbo::Point::new(640.0, 500.0), -6.0);
@@ -321,7 +330,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
     );
 
     // Press Back (a real click on the top-bar Back button).
-    assert!(h.has_id("back_btn"), "the Back affordance is present on the watch page");
+    assert!(
+        h.has_id("back_btn"),
+        "the Back affordance is present on the watch page"
+    );
     h.click_id("back_btn");
     assert_eq!(
         h.app.route_for_test(),
@@ -331,7 +343,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
     assert!(h.has_id("video_grid"), "the results list is rendered again");
 
     // Scroll position preserved: the grid resumes where it was, not reset to top.
-    let grid_after_back = h.rect_by_id("video_grid").expect("results grid re-laid out").y0;
+    let grid_after_back = h
+        .rect_by_id("video_grid")
+        .expect("results grid re-laid out")
+        .y0;
     assert!(
         (grid_after_back - grid_after_scroll).abs() < 2.0,
         "scroll preserved on Back: grid y0 {grid_after_back} vs pre-nav {grid_after_scroll}",
@@ -358,7 +373,7 @@ fn watch_page_lays_out_dislikes_pill_and_sponsorblock_timeline() {
 fn settings_category_mode_pill_cycles_the_skip_mode_through_a_real_click() {
     use tube::model::{Category, SkipMode};
     let app = TubeApp::new()
-        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_route_shot(Route::Settings);
     let mut h = Harness::new(app, VIEWPORT);
     // Sponsor defaults to Auto-skip; clicking its mode pill cycles it to Show.
@@ -409,7 +424,7 @@ fn autoplay_switch_toggles_the_setting_through_a_real_switch_click() {
     // Exercise `Switch::handle_event` for real (not app.apply): click the
     // autoplay switch on the Settings page and prove the setting flips.
     let app = TubeApp::new()
-        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_route_shot(Route::Settings);
     let mut h = Harness::new(app, VIEWPORT);
     let before = h.app.model_for_test().settings.autoplay;
@@ -431,7 +446,7 @@ fn hamburger_toggles_the_overlay_rail_through_a_real_click() {
     // hamburger must summon and dismiss it — via a real click through the menu
     // button's `handle_event`, not app.apply.
     let narrow = (560.0f32, 800.0f32);
-    let app = TubeApp::new().with_viewport(narrow.0 as f64, narrow.1 as f64);
+    let app = TubeApp::new().with_viewport(f64::from(narrow.0), f64::from(narrow.1));
     let mut h = Harness::new(app, narrow);
     assert!(
         !h.app.sidebar_open_for_test(),
@@ -455,12 +470,12 @@ fn hamburger_toggles_the_overlay_rail_through_a_real_click() {
 // Scroll-performance + responsive-grid + real-image regressions
 // ---------------------------------------------------------------------------
 
-/// REGRESSION (task 4): a real click on the top search field must move keyboard
-/// focus to the `search_input` TextInput. Drives the actual hit-test +
-/// event-routing path (`handle_event` → `focus_target`), the thing that broke.
+/// A real click on the top search field must move keyboard focus to the
+/// `search_input` `TextInput` — drives the actual hit-test + event-routing path
+/// (`handle_event` → `focus_target`).
 #[test]
 fn clicking_the_search_field_focuses_the_input() {
-    let app = TubeApp::new().with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64);
+    let app = TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
     let mut h = Harness::new(app, VIEWPORT);
 
     // The field is present and has a real, clickable rect (not zero-sized /
@@ -480,28 +495,38 @@ fn clicking_the_search_field_focuses_the_input() {
     );
 }
 
-/// Task 2: the responsive grid fills each row edge-to-edge — no blank gutter on
-/// the right — and adds columns as the window widens. Driven at three widths.
+/// The responsive grid fills each row edge-to-edge — no blank gutter on the
+/// right — and adds columns as the window widens. Driven at three widths.
 #[test]
 fn home_grid_fills_the_row_with_no_right_gutter_across_widths() {
     let mut columns_per_width = Vec::new();
     for w in [1040.0_f32, 1360.0, 1760.0] {
         let vp = (w, 900.0);
-        let app = TubeApp::new().with_viewport(w as f64, 900.0);
+        let app = TubeApp::new().with_viewport(f64::from(w), 900.0);
         let h = Harness::new(app, vp);
 
         let grid = h
             .rect_by_id("video_grid")
             .unwrap_or_else(|| panic!("home grid laid out at width {w}"));
         let cards = h.child_rects("video_grid");
-        assert!(cards.len() >= 4, "grid has cards at width {w} (got {})", cards.len());
+        assert!(
+            cards.len() >= 4,
+            "grid has cards at width {w} (got {})",
+            cards.len()
+        );
 
         // The top row: cards sharing the smallest y0.
         let top_y = cards.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min);
-        let mut top: Vec<&vello::kurbo::Rect> =
-            cards.iter().filter(|r| (r.y0 - top_y).abs() < 1.0).collect();
+        let mut top: Vec<&vello::kurbo::Rect> = cards
+            .iter()
+            .filter(|r| (r.y0 - top_y).abs() < 1.0)
+            .collect();
         top.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap());
-        assert!(top.len() >= 2, "the grid has >= 2 columns at width {w} (got {})", top.len());
+        assert!(
+            top.len() >= 2,
+            "the grid has >= 2 columns at width {w} (got {})",
+            top.len()
+        );
         columns_per_width.push(top.len());
 
         // Equal-width flex tracks.
@@ -531,9 +556,10 @@ fn home_grid_fills_the_row_with_no_right_gutter_across_widths() {
     );
 }
 
-/// Task 3: a real creator avatar (fetched + decoded through the ImageStore) is
-/// painted on the Home cards — not the initials-only fallback. Drives the whole
-/// Home screen with a seeded store and asserts an IMAGE draw reaches the scene.
+/// A real creator avatar (fetched + decoded through the `ImageStore`) is
+/// painted on the Home cards — not the initials-only fallback. Drives the
+/// whole Home screen with a seeded store and asserts an IMAGE draw reaches
+/// the scene.
 #[test]
 fn home_channel_avatars_render_the_fetched_photo() {
     use std::sync::Arc;
@@ -594,11 +620,12 @@ fn home_channel_avatars_render_the_fetched_photo() {
     );
 }
 
-/// Issue #1 (majority): the yt-dlp/rustypipe channel-record mismatch. Most cards
-/// are uploaded by one creator whose *primary* channel record carries NO avatar,
-/// while a second record (a creator row, different id, same name) does. After
-/// `reconcile_channel_avatars` every card for that creator must resolve the real
-/// avatar — proving the reconciliation fixes the MAJORITY, not just one row.
+/// The yt-dlp/rustypipe channel-record mismatch: most cards are uploaded by
+/// one creator whose *primary* channel record carries NO avatar, while a
+/// second record (a creator row, different id, same name) does. After
+/// `reconcile_channel_avatars` every card for that creator must resolve the
+/// real avatar — proving the reconciliation fixes the MAJORITY, not just one
+/// row.
 #[test]
 fn reconciled_avatars_render_on_the_majority_of_home_cards() {
     use std::sync::Arc;
@@ -632,7 +659,6 @@ fn reconciled_avatars_render_on_the_majority_of_home_cards() {
     // which has NO avatar (the yt-dlp record). No thumbnails, so the only image a
     // card can paint is the avatar.
     let mut model = TubeModel::default();
-    model.route = Route::Home;
     for i in 0..12 {
         model.videos.push(Video {
             id: format!("v{i}"),
@@ -722,9 +748,9 @@ fn reconciled_avatars_render_on_the_majority_of_home_cards() {
 /// Scroll-perf guard: after a fully laid-out + drawn frame, NO widget in the
 /// Home tree may still demand a layout re-measure. A widget that reports "dirty"
 /// forever — e.g. an avatar keyed off a draw-time cache while it's culled
-/// off-screen — forces the enclosing NavSplit to rebuild a cosmic-text
-/// FontSystem + re-solve the whole content pane on EVERY scroll frame (measured
-/// at ~26 ms/frame before the fix). This is the load-bearing invariant.
+/// off-screen — forces the enclosing `NavSplit` to rebuild a cosmic-text
+/// `FontSystem` + re-solve the whole content pane on EVERY scroll frame, measured
+/// at ~26 ms/frame when this regresses.
 #[test]
 fn laid_out_home_does_not_demand_relayout_a_scroll_perf_guard() {
     // A large catalogue so most cards (and their avatars) are culled off-screen.
@@ -740,7 +766,9 @@ fn laid_out_home_does_not_demand_relayout_a_scroll_perf_guard() {
         i += 1;
     }
 
-    let app = TubeApp::new().with_viewport(1280.0, 900.0).with_model_for_test(model);
+    let app = TubeApp::new()
+        .with_viewport(1280.0, 900.0)
+        .with_model_for_test(model);
     let mut h = Harness::new(app, (1280.0, 900.0));
     // One real drawn frame (visible widgets warm their caches, off-screen ones
     // are culled — exactly the state a scroll leaves the tree in).

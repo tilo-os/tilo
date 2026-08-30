@@ -77,8 +77,12 @@ pub enum TextAlign {
 impl TextAlign {
     /// Every alignment, in the order the inspector's segmented control shows
     /// them (left · center · right · justify).
-    pub const ALL: [TextAlign; 4] =
-        [TextAlign::Left, TextAlign::Center, TextAlign::Right, TextAlign::Justify];
+    pub const ALL: [TextAlign; 4] = [
+        TextAlign::Left,
+        TextAlign::Center,
+        TextAlign::Right,
+        TextAlign::Justify,
+    ];
     pub fn as_str(self) -> &'static str {
         match self {
             TextAlign::Left => "left",
@@ -176,8 +180,16 @@ impl Element {
             h,
             text: String::new(),
             src: String::new(),
-            fill: if kind == ElementKind::Line { "none".into() } else { "accent".into() },
-            stroke: if kind == ElementKind::Line { "accent".into() } else { "none".into() },
+            fill: if kind == ElementKind::Line {
+                "none".into()
+            } else {
+                "accent".into()
+            },
+            stroke: if kind == ElementKind::Line {
+                "accent".into()
+            } else {
+                "none".into()
+            },
             stroke_width: if kind == ElementKind::Line { 6.0 } else { 0.0 },
             font_size: 32.0,
             align: TextAlign::Left,
@@ -329,7 +341,11 @@ impl Slide {
         Slide {
             id: new_id(),
             layout,
-            background: if layout.is_cover() { Background::Accent } else { Background::Surface },
+            background: if layout.is_cover() {
+                Background::Accent
+            } else {
+                Background::Surface
+            },
             notes: String::new(),
             elements: Vec::new(),
         }
@@ -498,7 +514,7 @@ impl Palette {
     /// the OS theme; or a literal `#RRGGBB` / `#RRGGBBAA` hex chosen with the
     /// inspector colour picker, which resolves to that exact colour regardless
     /// of theme. Hex is what lets a user pick an arbitrary fill and what a
-    /// LibreOffice `.odp` round-trips faithfully.
+    /// `LibreOffice` `.odp` round-trips faithfully.
     pub fn resolve_role(&self, role: &str) -> Option<Color> {
         if role == "none" {
             return None;
@@ -582,7 +598,11 @@ pub fn color_to_hex(c: Color) -> String {
 
 /// Linear blend `a*(1-t) + b*t` in straight RGB.
 fn mix(a: Color, b: Color, t: f64) -> Color {
-    let l = |x: u8, y: u8| (x as f64 * (1.0 - t) + y as f64 * t).round().clamp(0.0, 255.0) as u8;
+    let l = |x: u8, y: u8| {
+        (f64::from(x) * (1.0 - t) + f64::from(y) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     Color::from_rgba8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), 255)
 }
 
@@ -597,9 +617,11 @@ pub fn starter_deck() -> Deck {
     let mut s = Slide::new(Layout::Title);
     s.background = Background::Surface;
     s.add(Element::text("Title", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
-    s.add(Element::text("Subtitle", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
-        e.fill = "text-dim".into();
-    }));
+    s.add(
+        Element::text("Subtitle", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
+            e.fill = "text-dim".into();
+        }),
+    );
     Deck {
         title: "Untitled deck".into(),
         palette: PaletteKind::Indigo,
@@ -623,21 +645,45 @@ pub fn seed_deck() -> Deck {
         s.notes = "Set the scene. One line on why we're renewing the park and who \
                    the workshop is for."
             .into();
-        s.add(Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
-            e.fill = "on-accent".into();
-            e.bold = true;
-        }));
-        s.add(Element::text("Riverside Park\nrenewal plan", 105.0, 300.0, 900.0, 220.0, 72.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-        }));
-        s.add(Element::text("Design workshop  ·  spring review", 110.0, 500.0, 900.0, 60.0, 30.0).with(|e| {
-            e.fill = "on-accent".into();
-        }));
-        s.add(Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
-            e.fill = "white".into();
-            e.radius = 4.0;
-        }));
+        s.add(
+            Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
+                e.fill = "on-accent".into();
+                e.bold = true;
+            }),
+        );
+        s.add(
+            Element::text(
+                "Riverside Park\nrenewal plan",
+                105.0,
+                300.0,
+                900.0,
+                220.0,
+                72.0,
+            )
+            .with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+            }),
+        );
+        s.add(
+            Element::text(
+                "Design workshop  ·  spring review",
+                110.0,
+                500.0,
+                900.0,
+                60.0,
+                30.0,
+            )
+            .with(|e| {
+                e.fill = "on-accent".into();
+            }),
+        );
+        s.add(
+            Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
+                e.fill = "white".into();
+                e.radius = 4.0;
+            }),
+        );
         slides.push(s);
     }
 
@@ -648,13 +694,17 @@ pub fn seed_deck() -> Deck {
         s.notes = "Walk the four goals. Spend the most time on protecting the \
                    wetland — that's the constraint everything else works around."
             .into();
-        s.add(Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
-            e.bold = true;
-        }));
-        s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
-            e.fill = "accent".into();
-            e.radius = 4.0;
-        }));
+        s.add(
+            Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+                e.bold = true;
+            }),
+        );
+        s.add(
+            Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+                e.fill = "accent".into();
+                e.radius = 4.0;
+            }),
+        );
         s.add(Element::text(
             "• Reconnect the waterfront path\n\n• Add shade, seating and lighting\n\n• Protect the existing wetland\n\n• Keep the budget under review",
             96.0,
@@ -664,18 +714,24 @@ pub fn seed_deck() -> Deck {
             34.0,
         ));
         // A small decorative figure block on the right.
-        s.add(Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
-            e.fill = "accent-soft".into();
-            e.radius = 28.0;
-        }));
-        s.add(Element::shape(ElementKind::Ellipse, 940.0, 290.0, 180.0, 180.0).with(|e| {
-            e.fill = "accent".into();
-        }));
-        s.add(Element::text("Q3", 940.0, 350.0, 180.0, 80.0, 52.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-            e.align = TextAlign::Center;
-        }));
+        s.add(
+            Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
+                e.fill = "accent-soft".into();
+                e.radius = 28.0;
+            }),
+        );
+        s.add(
+            Element::shape(ElementKind::Ellipse, 940.0, 290.0, 180.0, 180.0).with(|e| {
+                e.fill = "accent".into();
+            }),
+        );
+        s.add(
+            Element::text("Q3", 940.0, 350.0, 180.0, 80.0, 52.0).with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+                e.align = TextAlign::Center;
+            }),
+        );
         slides.push(s);
     }
 
@@ -686,21 +742,30 @@ pub fn seed_deck() -> Deck {
         s.notes = "Two path options. Ask the room which trade-off they prefer \
                    before we cost them out."
             .into();
-        s.add(Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| e.bold = true));
-        s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
-            e.fill = "accent".into();
-            e.radius = 4.0;
-        }));
-        s.add(Element::shape(ElementKind::Rect, 96.0, 220.0, 520.0, 400.0).with(|e| {
-            e.fill = "surface-dim".into();
-            e.stroke = "accent".into();
-            e.stroke_width = 3.0;
-            e.radius = 24.0;
-        }));
-        s.add(Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
-            e.fill = "accent".into();
-            e.bold = true;
-        }));
+        s.add(
+            Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0)
+                .with(|e| e.bold = true),
+        );
+        s.add(
+            Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+                e.fill = "accent".into();
+                e.radius = 4.0;
+            }),
+        );
+        s.add(
+            Element::shape(ElementKind::Rect, 96.0, 220.0, 520.0, 400.0).with(|e| {
+                e.fill = "surface-dim".into();
+                e.stroke = "accent".into();
+                e.stroke_width = 3.0;
+                e.radius = 24.0;
+            }),
+        );
+        s.add(
+            Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+                e.fill = "accent".into();
+                e.bold = true;
+            }),
+        );
         s.add(Element::text(
             "A boardwalk along the east\nbank with a single wide\npromenade and open views.",
             128.0,
@@ -709,22 +774,29 @@ pub fn seed_deck() -> Deck {
             240.0,
             30.0,
         ));
-        s.add(Element::shape(ElementKind::Rect, 664.0, 220.0, 520.0, 400.0).with(|e| {
-            e.fill = "accent".into();
-            e.radius = 24.0;
-        }));
-        s.add(Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-        }));
-        s.add(Element::text(
-            "A split path with a quiet\ngarden loop inland and a\nterrace at the water's edge.",
-            696.0,
-            312.0,
-            460.0,
-            240.0,
-            30.0,
-        ).with(|e| e.fill = "on-accent".into()));
+        s.add(
+            Element::shape(ElementKind::Rect, 664.0, 220.0, 520.0, 400.0).with(|e| {
+                e.fill = "accent".into();
+                e.radius = 24.0;
+            }),
+        );
+        s.add(
+            Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+            }),
+        );
+        s.add(
+            Element::text(
+                "A split path with a quiet\ngarden loop inland and a\nterrace at the water's edge.",
+                696.0,
+                312.0,
+                460.0,
+                240.0,
+                30.0,
+            )
+            .with(|e| e.fill = "on-accent".into()),
+        );
         slides.push(s);
     }
 
@@ -735,47 +807,65 @@ pub fn seed_deck() -> Deck {
         s.notes = "The route at a glance: north gate, through the plaza, out to \
                    the pier. Trace it as you talk."
             .into();
-        s.add(Element::text("How the paths connect", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-        }));
+        s.add(
+            Element::text("How the paths connect", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+            }),
+        );
         // node A
-        s.add(Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
-            e.fill = "accent".into();
-        }));
-        s.add(Element::text("North\ngate", 150.0, 385.0, 230.0, 110.0, 34.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-            e.align = TextAlign::Center;
-        }));
+        s.add(
+            Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
+                e.fill = "accent".into();
+            }),
+        );
+        s.add(
+            Element::text("North\ngate", 150.0, 385.0, 230.0, 110.0, 34.0).with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+                e.align = TextAlign::Center;
+            }),
+        );
         // connector
-        s.add(Element::shape(ElementKind::Line, 380.0, 435.0, 280.0, 0.0).with(|e| {
-            e.stroke = "accent-soft".into();
-            e.stroke_width = 8.0;
-        }));
+        s.add(
+            Element::shape(ElementKind::Line, 380.0, 435.0, 280.0, 0.0).with(|e| {
+                e.stroke = "accent-soft".into();
+                e.stroke_width = 8.0;
+            }),
+        );
         // node B
-        s.add(Element::shape(ElementKind::Ellipse, 660.0, 320.0, 230.0, 230.0).with(|e| {
-            e.fill = "surface".into();
-            e.stroke = "accent".into();
-            e.stroke_width = 4.0;
-        }));
-        s.add(Element::text("Plaza", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
-            e.bold = true;
-            e.align = TextAlign::Center;
-        }));
-        s.add(Element::shape(ElementKind::Line, 890.0, 435.0, 160.0, 0.0).with(|e| {
-            e.stroke = "accent-soft".into();
-            e.stroke_width = 8.0;
-        }));
-        s.add(Element::shape(ElementKind::Rect, 1050.0, 360.0, 150.0, 150.0).with(|e| {
-            e.fill = "accent".into();
-            e.radius = 20.0;
-        }));
-        s.add(Element::text("Pier", 1050.0, 405.0, 150.0, 60.0, 34.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-            e.align = TextAlign::Center;
-        }));
+        s.add(
+            Element::shape(ElementKind::Ellipse, 660.0, 320.0, 230.0, 230.0).with(|e| {
+                e.fill = "surface".into();
+                e.stroke = "accent".into();
+                e.stroke_width = 4.0;
+            }),
+        );
+        s.add(
+            Element::text("Plaza", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
+                e.bold = true;
+                e.align = TextAlign::Center;
+            }),
+        );
+        s.add(
+            Element::shape(ElementKind::Line, 890.0, 435.0, 160.0, 0.0).with(|e| {
+                e.stroke = "accent-soft".into();
+                e.stroke_width = 8.0;
+            }),
+        );
+        s.add(
+            Element::shape(ElementKind::Rect, 1050.0, 360.0, 150.0, 150.0).with(|e| {
+                e.fill = "accent".into();
+                e.radius = 20.0;
+            }),
+        );
+        s.add(
+            Element::text("Pier", 1050.0, 405.0, 150.0, 60.0, 34.0).with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+                e.align = TextAlign::Center;
+            }),
+        );
         slides.push(s);
     }
 
@@ -786,17 +876,31 @@ pub fn seed_deck() -> Deck {
         s.notes = "Close on the ask: feedback by Friday, prototype in April. \
                    Leave the last slide up for questions."
             .into();
-        s.add(Element::shape(ElementKind::Rect, 110.0, 300.0, 92.0, 8.0).with(|e| {
-            e.fill = "accent".into();
-            e.radius = 4.0;
-        }));
-        s.add(Element::text("Questions & next steps", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
-            e.fill = "white".into();
-            e.bold = true;
-        }));
-        s.add(Element::text("Share feedback by Friday  ·  prototype in April", 110.0, 450.0, 1000.0, 60.0, 30.0).with(|e| {
-            e.fill = "text-dim".into();
-        }));
+        s.add(
+            Element::shape(ElementKind::Rect, 110.0, 300.0, 92.0, 8.0).with(|e| {
+                e.fill = "accent".into();
+                e.radius = 4.0;
+            }),
+        );
+        s.add(
+            Element::text("Questions & next steps", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
+                e.fill = "white".into();
+                e.bold = true;
+            }),
+        );
+        s.add(
+            Element::text(
+                "Share feedback by Friday  ·  prototype in April",
+                110.0,
+                450.0,
+                1000.0,
+                60.0,
+                30.0,
+            )
+            .with(|e| {
+                e.fill = "text-dim".into();
+            }),
+        );
         slides.push(s);
     }
 

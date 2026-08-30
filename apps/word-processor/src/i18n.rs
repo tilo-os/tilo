@@ -1,26 +1,17 @@
 //! Fluent-based localization for the word processor's user-facing strings.
 //!
 //! The project mandates i18n via [Fluent](https://projectfluent.org/): UI code
-//! passes **translation keys**, never literal display strings, to the chrome.
-//! This module is the editor's small, self-contained loader for that — it owns
-//! the bundled `.ftl` catalogs (embedded with `include_str!`, so there is no
-//! build script and no runtime file I/O), picks a locale from the environment,
-//! and resolves keys through [`t`] / [`t_args`].
+//! passes **translation keys**, never literal strings. This module is the
+//! editor's small, self-contained loader: bundled `.ftl` catalogs (embedded via
+//! `include_str!`, no build script, no runtime file I/O), a locale picked from
+//! the environment, resolved through [`t`]/[`t_args`].
 //!
-//! Design goals:
-//! - **Dependency-light**: only `fluent` + `unic-langid` (already in the
-//!   workspace lockfile via `ui`). No `fluent-fallback`, no loader crates.
-//! - **Panic-free**: a missing key, a missing locale, or a malformed pattern
-//!   never panics — it degrades to the English string, and ultimately to the
-//!   key itself, so the UI always renders *something* legible.
-//! - **Self-contained**: the editor does not depend on global i18n state set up
-//!   elsewhere (e.g. `ui::i18n`), so a headless `--shots` render or a unit test
-//!   gets correct strings without any wiring.
-//!
-//! Locale selection (first hit wins): `LC_ALL`, then `LANGUAGE`, then `LANG`.
-//! The value is read as a POSIX locale (`de_DE.UTF-8`), of which only the
-//! language/region part (`de-DE`) is used. If no catalog matches the requested
-//! language, `en-US` (the source locale) is used.
+//! Panic-free: a missing key/locale/pattern degrades to the English string,
+//! then the key itself, never panics. Self-contained: no dependency on global
+//! i18n state (`ui::i18n`), so `--shots`/unit tests get correct strings
+//! unwired. Locale selection (first hit wins): `LC_ALL`, `LANGUAGE`, `LANG`,
+//! read as POSIX (`de_DE.UTF-8`, only the `de-DE` language/region used);
+//! falls back to `en-US` if nothing matches.
 
 use std::sync::{OnceLock, RwLock};
 
@@ -28,9 +19,13 @@ use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use unic_langid::LanguageIdentifier;
 
 /// The source language id (`en-US`). Parsed from a known-good literal; if the
-/// parse ever fails (it cannot for this constant) we fall back to a bare `en`.
+/// parse ever fails (it cannot for this constant) we fall back to a bare `en`,
+/// then to the undetermined locale — the module never panics on a bad parse.
 fn source_lang() -> LanguageIdentifier {
-    "en-US".parse().unwrap_or_else(|_| "en".parse().expect("`en` is a valid language id"))
+    "en-US"
+        .parse()
+        .or_else(|_| "en".parse())
+        .unwrap_or_default()
 }
 
 /// The source locale — always present, the fallback for every other locale.
@@ -87,10 +82,10 @@ fn make_bundle(lang: LanguageIdentifier, ftl: &str) -> FluentBundle<FluentResour
 /// Returns `None` when nothing usable is set (callers then keep `en-US`).
 fn locale_from_env() -> Option<LanguageIdentifier> {
     for var in ["LC_ALL", "LANGUAGE", "LANG"] {
-        if let Ok(val) = std::env::var(var) {
-            if let Some(id) = parse_posix_locale(&val) {
-                return Some(id);
-            }
+        if let Ok(val) = std::env::var(var)
+            && let Some(id) = parse_posix_locale(&val)
+        {
+            return Some(id);
         }
     }
     None
@@ -113,12 +108,18 @@ fn parse_posix_locale(raw: &str) -> Option<LanguageIdentifier> {
 /// Parse every bundled catalog into [`Catalogs`]. Called once per thread the
 /// first time that thread resolves a key.
 fn build_catalogs() -> Catalogs {
-    let source = Catalog { lang: source_lang(), bundle: make_bundle(source_lang(), SOURCE_FTL) };
+    let source = Catalog {
+        lang: source_lang(),
+        bundle: make_bundle(source_lang(), SOURCE_FTL),
+    };
     let others = CATALOGS
         .iter()
         .filter_map(|(tag, ftl)| {
             let lang: LanguageIdentifier = tag.parse().ok()?;
-            Some(Catalog { lang: lang.clone(), bundle: make_bundle(lang, ftl) })
+            Some(Catalog {
+                lang: lang.clone(),
+                bundle: make_bundle(lang, ftl),
+            })
         })
         .collect();
     Catalogs { source, others }
@@ -135,7 +136,9 @@ fn active_lock() -> &'static RwLock<LanguageIdentifier> {
 
 /// The currently-active language id.
 fn active_lang() -> LanguageIdentifier {
-    active_lock().read().map(|l| l.clone()).unwrap_or_else(|_| source_lang())
+    active_lock()
+        .read()
+        .map_or_else(|_| source_lang(), |l| l.clone())
 }
 
 thread_local! {
@@ -160,10 +163,10 @@ impl Catalogs {
     /// Resolve `key` for `lang`: active locale first, then the source catalog,
     /// then the key itself. Never panics.
     fn lookup(&self, lang: &LanguageIdentifier, key: &str, args: Option<&FluentArgs>) -> String {
-        if let Some(bundle) = self.bundle_for(lang) {
-            if let Some(s) = format_in(bundle, key, args) {
-                return s;
-            }
+        if let Some(bundle) = self.bundle_for(lang)
+            && let Some(s) = format_in(bundle, key, args)
+        {
+            return s;
         }
         if let Some(s) = format_in(&self.source.bundle, key, args) {
             return s;
@@ -247,7 +250,9 @@ mod tests {
     static LOCALE_GUARD: StdMutex<()> = StdMutex::new(());
 
     fn lock_locale() -> std::sync::MutexGuard<'static, ()> {
-        LOCALE_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        LOCALE_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]
@@ -256,7 +261,10 @@ mod tests {
         set_locale("en-US");
         assert_eq!(t("toolbar-body"), "Body");
         assert_eq!(t("template-report"), "Report");
-        assert_eq!(t("recovery-banner"), "Recovered unsaved changes from a previous session.");
+        assert_eq!(
+            t("recovery-banner"),
+            "Recovered unsaved changes from a previous session."
+        );
     }
 
     #[test]
@@ -322,9 +330,67 @@ mod tests {
         assert!(parse_posix_locale("C").is_none());
         assert!(parse_posix_locale("POSIX").is_none());
         assert!(parse_posix_locale("").is_none());
-        assert_eq!(parse_posix_locale("de_DE.UTF-8").map(|l| l.to_string()), Some("de-DE".to_string()));
-        assert_eq!(parse_posix_locale("en_US").map(|l| l.to_string()), Some("en-US".to_string()));
+        assert_eq!(
+            parse_posix_locale("de_DE.UTF-8").map(|l| l.to_string()),
+            Some("de-DE".to_string())
+        );
+        assert_eq!(
+            parse_posix_locale("en_US").map(|l| l.to_string()),
+            Some("en-US".to_string())
+        );
         // LANGUAGE list: first entry wins.
-        assert_eq!(parse_posix_locale("de:en_US").map(|l| l.to_string()), Some("de".to_string()));
+        assert_eq!(
+            parse_posix_locale("de:en_US").map(|l| l.to_string()),
+            Some("de".to_string())
+        );
+    }
+
+    /// One word is a word, not "1 words" — the counter is often the only text
+    /// on a fresh page, so its grammar is the whole screen's grammar. Also a
+    /// parse guard: `make_bundle` drops entries that fail to parse, so a slip
+    /// in a multi-line select expression costs the message, not the build —
+    /// asserting the rendered plural catches a dropped message (which renders
+    /// as the bare key).
+    #[test]
+    fn counts_take_the_singular_at_one() {
+        let _g = lock_locale();
+        set_locale("en-US");
+
+        let one = t_args("status-count", &[arg("words", 1), arg("chars", 1)]);
+        assert_eq!(one, "1 word    1 character");
+
+        let many = t_args("status-count", &[arg("words", 2), arg("chars", 12)]);
+        assert_eq!(many, "2 words    12 characters");
+
+        // Zero takes the plural in English, as CLDR has it.
+        let none = t_args("status-count", &[arg("words", 0), arg("chars", 0)]);
+        assert_eq!(none, "0 words    0 characters");
+
+        assert_eq!(
+            t_args("toast-toc-updated", &[arg("n", 1)]),
+            "Table of contents updated (1 entry)"
+        );
+        assert_eq!(
+            t_args("toast-toc-updated", &[arg("n", 4)]),
+            "Table of contents updated (4 entries)"
+        );
+
+        // German has the same one/other split, and `Zeichen` is invariant —
+        // the catalog must not have grown an English-shaped plural for it.
+        set_locale("de");
+        assert_eq!(
+            t_args("status-count", &[arg("words", 1), arg("chars", 1)]),
+            "1 Wort    1 Zeichen"
+        );
+        assert_eq!(
+            t_args("status-count", &[arg("words", 3), arg("chars", 9)]),
+            "3 Wörter    9 Zeichen"
+        );
+        assert_eq!(
+            t_args("toast-toc-updated", &[arg("n", 1)]),
+            "Inhaltsverzeichnis aktualisiert (1 Eintrag)"
+        );
+
+        set_locale("en-US");
     }
 }

@@ -194,7 +194,10 @@ pub fn delete_contact_action(id: impl Into<String>) -> ContactsAction {
 
 /// Set a contact's favourite flag to `favorite`.
 pub fn set_favorite_action(id: impl Into<String>, favorite: bool) -> ContactsAction {
-    ContactsAction::SetFavorite { id: id.into(), favorite }
+    ContactsAction::SetFavorite {
+        id: id.into(),
+        favorite,
+    }
 }
 
 // ===========================================================================
@@ -294,8 +297,11 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
         ));
 
         // Favourite — one immediate action toggles to the resolved value.
-        let fav_label =
-            if contact.favorite { "Remove from favorites" } else { "Add to favorites" };
+        let fav_label = if contact.favorite {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        };
         child = child.with_action(immediate_spec(
             "favorite",
             fav_label,
@@ -406,7 +412,10 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New contact")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("New contact")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -427,16 +436,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
-        );
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             ContactsDoc::list_contacts(&state.doc).len(),
@@ -444,21 +444,26 @@ mod tests {
             "the action deleted a contact"
         );
         assert!(
-            !ContactsDoc::list_contacts(&state.doc).iter().any(|c| c.id == victim),
+            !ContactsDoc::list_contacts(&state.doc)
+                .iter()
+                .any(|c| c.id == victim),
             "the right contact is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             ContactsDoc::list_contacts(&state.doc).len(),
             before,
             "undo reverted the deletion and nothing else"
         );
         assert!(
-            ContactsDoc::list_contacts(&state.doc).iter().any(|c| c.id == victim),
+            ContactsDoc::list_contacts(&state.doc)
+                .iter()
+                .any(|c| c.id == victim),
             "the contact is back after undo"
         );
     }
@@ -473,7 +478,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         let target = first_contact(&a);
         let action = set_favorite_action(target.id.to_string(), !target.favorite);
@@ -482,7 +491,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         let fav_a = ContactsDoc::list_contacts(&a)
             .into_iter()
             .find(|c| c.id == target.id)
@@ -533,7 +546,11 @@ mod tests {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
         let book = &resources[0];
-        let contact = book.children.iter().find(|r| r.kind == "contacts.contact").unwrap();
+        let contact = book
+            .children
+            .iter()
+            .find(|r| r.kind == "contacts.contact")
+            .unwrap();
         let id = contact.id.as_str().trim_start_matches("contacts.contact:");
         let stored = ContactsDoc::list_contacts(&doc)
             .into_iter()
@@ -545,24 +562,33 @@ mod tests {
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_contact_action(id.to_string()));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // Favourite: spec toggles to the negation of the current state, exactly
         // as the star affordance builds it.
         let fav_spec = contact.actions.iter().find(|a| a.id == "favorite").unwrap();
         let from_spec = immediate_encode(fav_spec);
         let from_builder = encode(&set_favorite_action(id.to_string(), !stored.favorite));
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for favourite");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for favourite"
+        );
 
         // Rename: prompted spec == upsert builder for the renamed record.
         let edit_spec = contact.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "Grace Hopper");
-        let mut renamed = stored.clone();
+        let mut renamed = stored;
         let (first, last) = split_name("Grace Hopper");
         renamed.first = first;
         renamed.last = last;
         let from_builder = encode(&upsert_contact_action(&renamed));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
     }
 
     /// Dispatching the "New contact" prompted action creates a contact in the
@@ -571,7 +597,11 @@ mod tests {
     fn new_contact_action_creates_a_contact() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "new-contact").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-contact")
+            .unwrap();
         let before = ContactsDoc::list_contacts(&doc).len();
 
         let encoded = prompted_encode(spec, "Dana Scott");
@@ -582,18 +612,24 @@ mod tests {
         let book = ContactsDoc::list_contacts(&doc);
         assert_eq!(book.len(), before + 1, "the action added a contact");
         let created = book.iter().find(|c| c.first == "Dana" && c.last == "Scott");
-        assert!(created.is_some(), "the created contact carries the committed name");
+        assert!(
+            created.is_some(),
+            "the created contact carries the committed name"
+        );
     }
 
     /// The action side and the search side coexist: the same live app exports a
-    /// mutating resource tree AND a working SearchProvider that resolves a real
+    /// mutating resource tree AND a working `SearchProvider` that resolves a real
     /// contact. Adding actions did not break navigation.
     #[test]
     fn search_provider_still_resolves_a_contact() {
         let (app, doc) = seeded();
 
         // The mutation side is live.
-        assert!(!Widget::resources(&app, &doc).is_empty(), "resources are exported");
+        assert!(
+            !Widget::resources(&app, &doc).is_empty(),
+            "resources are exported"
+        );
 
         // The navigation side still finds and resolves a contact.
         let providers = Widget::search_providers(&app);

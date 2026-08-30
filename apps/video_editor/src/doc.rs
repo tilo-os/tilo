@@ -33,14 +33,18 @@ impl VideoDoc {
     fn map(doc: &mut AutoCommit, key: &str) -> ObjId {
         match doc.get(&ROOT, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc.put_object(&ROOT, key, ObjType::Map).expect("put_object map"),
+            _ => doc
+                .put_object(&ROOT, key, ObjType::Map)
+                .expect("put_object map"),
         }
     }
 
     fn ensure_child(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc.put_object(parent, key, ObjType::Map).expect("put_object child"),
+            _ => doc
+                .put_object(parent, key, ObjType::Map)
+                .expect("put_object child"),
         }
     }
 
@@ -110,8 +114,8 @@ impl VideoDoc {
         let proj = Self::map(doc, "project");
         let _ = doc.put(&proj, "name", p.name.as_str());
         let _ = doc.put(&proj, "fps", p.fps);
-        let _ = doc.put(&proj, "width", p.width as i64);
-        let _ = doc.put(&proj, "height", p.height as i64);
+        let _ = doc.put(&proj, "width", i64::from(p.width));
+        let _ = doc.put(&proj, "height", i64::from(p.height));
         let _ = doc.put(
             &proj,
             "markers",
@@ -125,10 +129,10 @@ impl VideoDoc {
         let _ = doc.put(&obj, "name", m.name.as_str());
         let _ = doc.put(&obj, "kind", m.kind.as_str());
         let _ = doc.put(&obj, "duration", m.duration);
-        let _ = doc.put(&obj, "width", m.width as i64);
-        let _ = doc.put(&obj, "height", m.height as i64);
+        let _ = doc.put(&obj, "width", i64::from(m.width));
+        let _ = doc.put(&obj, "height", i64::from(m.height));
         let _ = doc.put(&obj, "fps", m.fps);
-        let _ = doc.put(&obj, "palette", m.palette as i64);
+        let _ = doc.put(&obj, "palette", i64::from(m.palette));
         // FUSE-media seam: the CRDT carries the workspace path + hydration
         // state, never the bytes (see crate::media).
         let _ = doc.put(&obj, "path", m.path.as_str());
@@ -139,11 +143,7 @@ impl VideoDoc {
         // granularity and would cost a schema.
         match &m.text {
             Some(t) => {
-                let _ = doc.put(
-                    &obj,
-                    "text",
-                    serde_json::to_string(t).unwrap_or_default(),
-                );
+                let _ = doc.put(&obj, "text", serde_json::to_string(t).unwrap_or_default());
             }
             // Explicitly cleared, so turning a title back into a plain
             // reference replicates as a change rather than as silence.
@@ -158,7 +158,7 @@ impl VideoDoc {
         let obj = Self::ensure_child(doc, &tracks, &t.id.to_string());
         let _ = doc.put(&obj, "name", t.name.as_str());
         let _ = doc.put(&obj, "kind", t.kind.as_str());
-        let _ = doc.put(&obj, "index", t.index as i64);
+        let _ = doc.put(&obj, "index", i64::from(t.index));
         let _ = doc.put(&obj, "muted", t.muted);
         let _ = doc.put(&obj, "locked", t.locked);
         let _ = doc.put(&obj, "solo", t.solo);
@@ -175,7 +175,7 @@ impl VideoDoc {
         let _ = doc.put(&obj, "opacity", c.opacity);
         let _ = doc.put(&obj, "volume", c.volume);
         let _ = doc.put(&obj, "transition", c.transition.as_str());
-        let _ = doc.put(&obj, "palette", c.palette as i64);
+        let _ = doc.put(&obj, "palette", i64::from(c.palette));
         let _ = doc.put(&obj, "brightness", c.filters.brightness);
         let _ = doc.put(&obj, "contrast", c.filters.contrast);
         let _ = doc.put(&obj, "saturation", c.filters.saturation);
@@ -200,10 +200,26 @@ impl VideoDoc {
         );
         let _ = doc.put(&obj, "speed_rate", c.speed.rate);
         let _ = doc.put(&obj, "speed_reverse", c.speed.reverse);
-        let _ = doc.put(&obj, "curves", serde_json::to_string(&c.curves).unwrap_or_default());
-        let _ = doc.put(&obj, "key", serde_json::to_string(&c.key).unwrap_or_default());
-        let _ = doc.put(&obj, "mask", serde_json::to_string(&c.mask).unwrap_or_default());
-        let _ = doc.put(&obj, "anim", serde_json::to_string(&c.anim).unwrap_or_default());
+        let _ = doc.put(
+            &obj,
+            "curves",
+            serde_json::to_string(&c.curves).unwrap_or_default(),
+        );
+        let _ = doc.put(
+            &obj,
+            "key",
+            serde_json::to_string(&c.key).unwrap_or_default(),
+        );
+        let _ = doc.put(
+            &obj,
+            "mask",
+            serde_json::to_string(&c.mask).unwrap_or_default(),
+        );
+        let _ = doc.put(
+            &obj,
+            "anim",
+            serde_json::to_string(&c.anim).unwrap_or_default(),
+        );
         let _ = doc.put(
             &obj,
             "markers",
@@ -268,9 +284,11 @@ impl VideoDoc {
         let keep_tracks: Vec<String> = p.tracks.iter().map(|t| t.id.to_string()).collect();
         let keep_clips: Vec<String> = p.clips.iter().map(|c| c.id.to_string()).collect();
 
-        for (map_key, keep) in
-            [("media", &keep_media), ("tracks", &keep_tracks), ("clips", &keep_clips)]
-        {
+        for (map_key, keep) in [
+            ("media", &keep_media),
+            ("tracks", &keep_tracks),
+            ("clips", &keep_clips),
+        ] {
             let obj = Self::map(doc, map_key);
             for existing in Self::keys_of(doc, map_key) {
                 if !keep.contains(&existing) {
@@ -302,9 +320,10 @@ impl VideoDoc {
 
         if let Ok(Some((Value::Object(ObjType::Map), media))) = doc.get(&ROOT, "media") {
             for key in doc.keys(&media) {
-                let Ok(id) = key.parse::<Uuid>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&media, key.as_str())
+                let Ok(id) = key.parse::<Uuid>() else {
+                    continue;
+                };
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&media, key.as_str())
                 else {
                     continue;
                 };
@@ -336,9 +355,10 @@ impl VideoDoc {
 
         if let Ok(Some((Value::Object(ObjType::Map), tracks))) = doc.get(&ROOT, "tracks") {
             for key in doc.keys(&tracks) {
-                let Ok(id) = key.parse::<Uuid>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&tracks, key.as_str())
+                let Ok(id) = key.parse::<Uuid>() else {
+                    continue;
+                };
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&tracks, key.as_str())
                 else {
                     continue;
                 };
@@ -360,17 +380,18 @@ impl VideoDoc {
 
         if let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") {
             for key in doc.keys(&clips) {
-                let Ok(id) = key.parse::<Uuid>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&clips, key.as_str())
+                let Ok(id) = key.parse::<Uuid>() else {
+                    continue;
+                };
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&clips, key.as_str())
                 else {
                     continue;
                 };
-                let track = Self::get_str(doc, &obj, "track")
-                    .and_then(|s| s.parse::<Uuid>().ok());
-                let media = Self::get_str(doc, &obj, "media")
-                    .and_then(|s| s.parse::<Uuid>().ok());
-                let (Some(track), Some(media)) = (track, media) else { continue };
+                let track = Self::get_str(doc, &obj, "track").and_then(|s| s.parse::<Uuid>().ok());
+                let media = Self::get_str(doc, &obj, "media").and_then(|s| s.parse::<Uuid>().ok());
+                let (Some(track), Some(media)) = (track, media) else {
+                    continue;
+                };
                 p.clips.push(Clip {
                     id,
                     track,
@@ -448,9 +469,14 @@ impl VideoDoc {
     /// its name. Two peers that agree about the edit therefore agree about the
     /// order, which an id-based sort could not promise.
     fn in_a_settled_order(p: &mut Project) {
-        p.tracks.sort_by(|a, b| a.index.cmp(&b.index).then_with(|| a.name.cmp(&b.name)));
-        let lane: std::collections::HashMap<Uuid, usize> =
-            p.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+        p.tracks
+            .sort_by(|a, b| a.index.cmp(&b.index).then_with(|| a.name.cmp(&b.name)));
+        let lane: std::collections::HashMap<Uuid, usize> = p
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.id, i))
+            .collect();
         p.clips.sort_by(|a, b| {
             lane.get(&a.track)
                 .unwrap_or(&usize::MAX)
@@ -497,16 +523,54 @@ pub fn sample_project() -> Project {
         }
     };
 
-    let drone = mk("Drone_Coastline.mov", MediaKind::Video, 24.0, 3840, 2160, 24.0, 0);
-    let interview = mk("Interview_A.mp4", MediaKind::Video, 38.5, 1920, 1080, 30.0, 1);
-    let market = mk("Cutaway_Market.mp4", MediaKind::Video, 12.0, 1920, 1080, 30.0, 2);
-    let sunset = mk("Sunset_Timelapse.mp4", MediaKind::Video, 9.0, 3840, 2160, 30.0, 3);
+    let drone = mk(
+        "Drone_Coastline.mov",
+        MediaKind::Video,
+        24.0,
+        3840,
+        2160,
+        24.0,
+        0,
+    );
+    let interview = mk(
+        "Interview_A.mp4",
+        MediaKind::Video,
+        38.5,
+        1920,
+        1080,
+        30.0,
+        1,
+    );
+    let market = mk(
+        "Cutaway_Market.mp4",
+        MediaKind::Video,
+        12.0,
+        1920,
+        1080,
+        30.0,
+        2,
+    );
+    let sunset = mk(
+        "Sunset_Timelapse.mp4",
+        MediaKind::Video,
+        9.0,
+        3840,
+        2160,
+        30.0,
+        3,
+    );
     let logo = mk("Logo_Bug.png", MediaKind::Image, 6.0, 800, 800, 30.0, 4);
     let vo = mk("VO_Take3.wav", MediaKind::Audio, 32.0, 0, 0, 0.0, 5);
     let pad = mk("Ambient_Pad.wav", MediaKind::Audio, 60.0, 0, 0, 0.0, 6);
 
     let (drone_id, interview_id, market_id, sunset_id, logo_id, vo_id, pad_id) = (
-        drone.id, interview.id, market.id, sunset.id, logo.id, vo.id, pad.id,
+        drone.id,
+        interview.id,
+        market.id,
+        sunset.id,
+        logo.id,
+        vo.id,
+        pad.id,
     );
     p.media = vec![drone, interview, market, sunset, logo, vo, pad];
 
@@ -516,7 +580,8 @@ pub fn sample_project() -> Project {
         kind,
         index,
         muted: false,
-        locked: false, solo: false,
+        locked: false,
+        solo: false,
     };
     let v1 = mk_track("V1", TrackKind::Video, 1);
     let v2 = mk_track("V2", TrackKind::Video, 2);
@@ -561,19 +626,114 @@ pub fn sample_project() -> Project {
 
     let neutral = Filters::default();
     // A graded look on the drone open: brighter, punchier contrast.
-    let graded = Filters { brightness: 0.62, contrast: 0.64, saturation: 0.58 };
+    let graded = Filters {
+        brightness: 0.62,
+        contrast: 0.64,
+        saturation: 0.58,
+    };
 
     // V1 — the spine: drone open (graded + fade-in), interview body, market cutaway.
-    place(v1id, drone_id, 0.0, 2.0, 10.0, 0, 1.0, 1.0, Transition::FadeIn, graded, 1.5, 0.0);
-    place(v1id, interview_id, 8.0, 5.0, 17.0, 1, 1.0, 1.0, Transition::CrossDissolve, neutral, 0.0, 0.0);
-    place(v1id, market_id, 20.0, 0.0, 6.0, 2, 1.0, 1.0, Transition::None, neutral, 0.0, 1.0);
+    place(
+        v1id,
+        drone_id,
+        0.0,
+        2.0,
+        10.0,
+        0,
+        1.0,
+        1.0,
+        Transition::FadeIn,
+        graded,
+        1.5,
+        0.0,
+    );
+    place(
+        v1id,
+        interview_id,
+        8.0,
+        5.0,
+        17.0,
+        1,
+        1.0,
+        1.0,
+        Transition::CrossDissolve,
+        neutral,
+        0.0,
+        0.0,
+    );
+    place(
+        v1id,
+        market_id,
+        20.0,
+        0.0,
+        6.0,
+        2,
+        1.0,
+        1.0,
+        Transition::None,
+        neutral,
+        0.0,
+        1.0,
+    );
     // V2 — overlays: logo bug, then a sunset insert that dissolves in.
-    place(v2id, logo_id, 1.0, 0.0, 4.0, 4, 0.9, 1.0, Transition::FadeIn, neutral, 0.0, 0.0);
-    place(v2id, sunset_id, 21.0, 0.0, 6.0, 3, 0.85, 1.0, Transition::CrossDissolve, neutral, 0.0, 1.2);
+    place(
+        v2id,
+        logo_id,
+        1.0,
+        0.0,
+        4.0,
+        4,
+        0.9,
+        1.0,
+        Transition::FadeIn,
+        neutral,
+        0.0,
+        0.0,
+    );
+    place(
+        v2id,
+        sunset_id,
+        21.0,
+        0.0,
+        6.0,
+        3,
+        0.85,
+        1.0,
+        Transition::CrossDissolve,
+        neutral,
+        0.0,
+        1.2,
+    );
     // A1 — narration aligned under the interview.
-    place(a1id, vo_id, 8.0, 1.5, 13.5, 5, 1.0, 1.0, Transition::None, neutral, 0.3, 0.5);
+    place(
+        a1id,
+        vo_id,
+        8.0,
+        1.5,
+        13.5,
+        5,
+        1.0,
+        1.0,
+        Transition::None,
+        neutral,
+        0.3,
+        0.5,
+    );
     // A2 — ambient bed under the whole piece, ducked low, gentle fades.
-    place(a2id, pad_id, 0.0, 0.0, 28.0, 6, 1.0, 0.4, Transition::FadeIn, neutral, 2.0, 3.0);
+    place(
+        a2id,
+        pad_id,
+        0.0,
+        0.0,
+        28.0,
+        6,
+        1.0,
+        0.4,
+        Transition::FadeIn,
+        neutral,
+        2.0,
+        3.0,
+    );
 
     // A couple of stacked effects on the drone open so the demo shows the
     // effects stack (warm grade, then a gentle vignette).
@@ -676,7 +836,10 @@ mod tests {
 
         let back = round_trip(&p);
         let c = back.clip(cid).unwrap();
-        assert_eq!(c.curves, want, "every channel and the amount, not just the master");
+        assert_eq!(
+            c.curves, want,
+            "every channel and the amount, not just the master"
+        );
     }
 
     #[test]
@@ -687,7 +850,10 @@ mod tests {
         let (p, cid) = one_clip();
         let back = round_trip(&p);
         let c = back.clip(cid).unwrap();
-        assert!(c.curves.is_identity(), "an untouched clip comes back ungraded");
+        assert!(
+            c.curves.is_identity(),
+            "an untouched clip comes back ungraded"
+        );
     }
 
     #[test]
@@ -736,7 +902,11 @@ mod tests {
         assert!(got.anim.is_animated(Param::PosX));
         let keys = &got.anim.track(Param::Opacity).unwrap().keys;
         assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0].interp, Interp::Ease, "the shape of the curve comes back too");
+        assert_eq!(
+            keys[0].interp,
+            Interp::Ease,
+            "the shape of the curve comes back too"
+        );
         assert_eq!(keys[1].interp, Interp::Hold);
         // And the sampled value is identical, which is what actually matters.
         for t in [0.0, 0.7, 1.5, 2.9, 5.0] {
@@ -752,7 +922,10 @@ mod tests {
     fn markers_survive_on_both_the_project_and_the_clip() {
         let (mut p, cid) = one_clip();
         p.add_marker(4.0, "act two", 3);
-        p.clip_mut(cid).unwrap().add_marker(2.0, "beat", 5).expect("inside");
+        p.clip_mut(cid)
+            .unwrap()
+            .add_marker(2.0, "beat", 5)
+            .expect("inside");
         let back = round_trip(&p);
         assert_eq!(back.markers.len(), 1);
         assert_eq!(back.markers[0].name, "act two");
@@ -806,7 +979,13 @@ mod tests {
         });
         let mut doc = AutoCommit::new();
         VideoDoc::write_project(&mut doc, &p);
-        assert!(VideoDoc::load_project(&doc).media(mid).unwrap().text.is_some());
+        assert!(
+            VideoDoc::load_project(&doc)
+                .media(mid)
+                .unwrap()
+                .text
+                .is_some()
+        );
 
         p.media[0].text = None;
         p.media[0].kind = MediaKind::Video;
@@ -829,7 +1008,13 @@ mod tests {
         let clips = VideoDoc::map(&mut doc, "clips");
         let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
         for key in [
-            "transform", "speed_rate", "speed_reverse", "anim", "markers", "key", "mask",
+            "transform",
+            "speed_rate",
+            "speed_reverse",
+            "anim",
+            "markers",
+            "key",
+            "mask",
         ] {
             let _ = doc.delete(&obj, key);
         }
@@ -841,15 +1026,25 @@ mod tests {
 
         let back = VideoDoc::load_project(&doc);
         let c = back.clip(cid).expect("the clip still loads");
-        assert!(c.transform.is_identity(), "no geometry means the aspect-fit placement");
+        assert!(
+            c.transform.is_identity(),
+            "no geometry means the aspect-fit placement"
+        );
         assert!(c.speed.is_normal(), "no speed means normal speed");
         assert!(c.anim.is_empty(), "no curves");
         assert!(!c.key.is_active(), "no key means nothing is keyed out");
-        assert!(!c.mask.is_active(), "and no mask means the layer is not cut");
+        assert!(
+            !c.mask.is_active(),
+            "and no mask means the layer is not cut"
+        );
         assert!(c.markers.is_empty());
         assert!(back.markers.is_empty());
         assert_eq!(back.media(p.media[0].id).unwrap().text, None);
-        assert_eq!(c.duration(), p.clip(cid).unwrap().duration(), "and the same length");
+        assert_eq!(
+            c.duration(),
+            p.clip(cid).unwrap().duration(),
+            "and the same length"
+        );
     }
 
     #[test]
@@ -881,7 +1076,10 @@ mod tests {
         );
         // The project map is still absent — emptiness no longer keys on it alone.
         assert!(
-            !matches!(doc.get(&ROOT, "project"), Ok(Some((Value::Object(ObjType::Map), _)))),
+            !matches!(
+                doc.get(&ROOT, "project"),
+                Ok(Some((Value::Object(ObjType::Map), _)))
+            ),
             "import wrote no project map"
         );
     }
@@ -930,14 +1128,24 @@ mod tests {
         {
             let c = p.clip_mut(cid).unwrap();
             c.effects = vec![
-                ClipEffect { kind: EffectKind::Sepia, amount: 0.6 },
-                ClipEffect { kind: EffectKind::Invert, amount: 1.0 },
+                ClipEffect {
+                    kind: EffectKind::Sepia,
+                    amount: 0.6,
+                },
+                ClipEffect {
+                    kind: EffectKind::Invert,
+                    amount: 1.0,
+                },
             ];
         }
         VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
         let reload = VideoDoc::load_project(&doc);
         let effects = &reload.clip(cid).unwrap().effects;
-        assert_eq!(effects.len(), 2, "the effects stack survived the round-trip in order");
+        assert_eq!(
+            effects.len(),
+            2,
+            "the effects stack survived the round-trip in order"
+        );
         assert_eq!(effects[0].kind, EffectKind::Sepia);
         assert!((effects[0].amount - 0.6).abs() < 1e-9);
         assert_eq!(effects[1].kind, EffectKind::Invert);
@@ -954,7 +1162,11 @@ mod tests {
         }
         VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
         let reload = VideoDoc::load_project(&doc);
-        assert_eq!(reload.clips.len(), p.clips.len(), "no duplicate clip created");
+        assert_eq!(
+            reload.clips.len(),
+            p.clips.len(),
+            "no duplicate clip created"
+        );
         assert!((reload.clip(cid).unwrap().start - 99.0).abs() < 1e-9);
     }
 
@@ -990,7 +1202,12 @@ mod tests {
             ..Default::default()
         });
         let tid = uuid::Uuid::new_v4();
-        other.tracks.push(Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        other.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            index: 1,
+            ..Default::default()
+        });
         let cid = uuid::Uuid::new_v4();
         other.clips.push(Clip {
             id: cid,
@@ -1009,7 +1226,10 @@ mod tests {
         assert_eq!(after.clips.len(), 1, "the old timeline is gone");
         assert_eq!(after.clips[0].id, cid);
         for old in &before.clips {
-            assert!(after.clip(old.id).is_none(), "no clip of the old project survives");
+            assert!(
+                after.clip(old.id).is_none(),
+                "no clip of the old project survives"
+            );
         }
     }
 

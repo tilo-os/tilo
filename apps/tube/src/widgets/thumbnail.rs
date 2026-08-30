@@ -4,8 +4,8 @@
 //! so we paint a deterministic two-stop gradient derived from the video's
 //! seed (so every tile is distinct but the wall stays harmonious), plus
 //! the chrome a real thumbnail carries: a duration pill, an optional
-//! watched-progress bar, an optional LIVE badge, and — when DeArrow is on
-//! and has data — a small "DeArrow" marker noting the frame was swapped
+//! watched-progress bar, an optional LIVE badge, and — when `DeArrow` is on
+//! and has data — a small "`DeArrow`" marker noting the frame was swapped
 //! for a community-chosen, non-clickbait one.
 
 use std::collections::HashMap;
@@ -17,11 +17,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, Gradient, ImageData as PenikoImage};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use ui::ImageStore;
 
 use crate::util::{duration_hms, seed_gradient};
 
@@ -44,6 +44,15 @@ pub struct Thumbnail {
     url: String,
     rect: Rect,
     dirty: bool,
+}
+
+/// Everything about a corner pill's look and placement, apart from its text.
+struct PillSpec {
+    size: f32,
+    bg: Color,
+    fg: Color,
+    anchor: Point,
+    right_align: bool,
 }
 
 impl Thumbnail {
@@ -108,17 +117,20 @@ impl Thumbnail {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         text: &str,
-        size: f32,
-        bg: Color,
-        fg: Color,
-        anchor: Point,
-        right_align: bool,
+        spec: PillSpec,
     ) {
+        let PillSpec {
+            size,
+            bg,
+            fg,
+            anchor,
+            right_align,
+        } = spec;
         let (tw, _) = text_renderer.measure(text, size, None);
         let padx = 6.0;
         let pad_y = 3.0;
-        let w = tw as f64 + padx * 2.0;
-        let h = size as f64 + pad_y * 2.0;
+        let w = f64::from(tw) + padx * 2.0;
+        let h = f64::from(size) + pad_y * 2.0;
         let x0 = if right_align { anchor.x - w } else { anchor.x };
         let pill = RoundedRect::new(x0, anchor.y, x0 + w, anchor.y + h, 4.0);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
@@ -147,11 +159,9 @@ impl Thumbnail {
             // No image yet (loading / offline / sample): the deterministic
             // seed gradient + a faint geometric motif + a centre play glyph.
             let (top, bottom) = seed_gradient(&self.seed);
-            let grad = Gradient::new_linear(
-                (self.rect.x0, self.rect.y0),
-                (self.rect.x1, self.rect.y1),
-            )
-            .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
+            let grad =
+                Gradient::new_linear((self.rect.x0, self.rect.y0), (self.rect.x1, self.rect.y1))
+                    .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
             scene.fill(Fill::NonZero, transform, &grad, None, &shape);
 
             // Clip the decorative motif to the rounded tile so the offset
@@ -202,11 +212,13 @@ impl Thumbnail {
                 transform,
                 text_renderer,
                 "LIVE",
-                11.0,
-                Color::from_rgb8(0xcc, 0x00, 0x00),
-                Color::WHITE,
-                Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
-                true,
+                PillSpec {
+                    size: 11.0,
+                    bg: Color::from_rgb8(0xcc, 0x00, 0x00),
+                    fg: Color::WHITE,
+                    anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
+                    right_align: true,
+                },
             );
         } else {
             self.pill(
@@ -214,11 +226,13 @@ impl Thumbnail {
                 transform,
                 text_renderer,
                 &duration_hms(self.duration),
-                11.0,
-                Color::from_rgba8(0, 0, 0, 200),
-                Color::WHITE,
-                Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
-                true,
+                PillSpec {
+                    size: 11.0,
+                    bg: Color::from_rgba8(0, 0, 0, 200),
+                    fg: Color::WHITE,
+                    anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
+                    right_align: true,
+                },
             );
         }
 
@@ -229,11 +243,13 @@ impl Thumbnail {
                 transform,
                 text_renderer,
                 "DeArrow",
-                10.0,
-                Color::from_rgb8(0x9b, 0x59, 0xb6),
-                Color::WHITE,
-                Point::new(self.rect.x0 + 8.0, self.rect.y0 + 8.0),
-                false,
+                PillSpec {
+                    size: 10.0,
+                    bg: Color::from_rgb8(0x9b, 0x59, 0xb6),
+                    fg: Color::WHITE,
+                    anchor: Point::new(self.rect.x0 + 8.0, self.rect.y0 + 8.0),
+                    right_align: false,
+                },
             );
         }
 
@@ -250,7 +266,7 @@ impl Thumbnail {
             let fill = Rect::new(
                 self.rect.x0,
                 self.rect.y1 - 4.0,
-                self.rect.x0 + self.rect.width() * p as f64,
+                self.rect.x0 + self.rect.width() * f64::from(p),
                 self.rect.y1,
             );
             scene.fill(
@@ -278,13 +294,13 @@ impl Widget for Thumbnail {
         // Lazily resolve the real thumbnail. Once we have it, stop touching the
         // store; a freshly-decoded image flips `dirty` so the next frame repaints
         // it — no structural rebuild.
-        if self.image.is_none() && !self.url.is_empty() {
-            if let Some(store) = &self.store {
-                if let Some(img) = store.get(&self.url) {
-                    self.image = Some(img);
-                    self.dirty = true;
-                }
-            }
+        if self.image.is_none()
+            && !self.url.is_empty()
+            && let Some(store) = &self.store
+            && let Some(img) = store.get(&self.url)
+        {
+            self.image = Some(img);
+            self.dirty = true;
         }
     }
 
@@ -294,28 +310,23 @@ impl Widget for Thumbnail {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = super::leaf_node(
+            taffy,
+            Style {
                 size: taffy::Size {
-                    width: percent(1.0),
+                    width: percent(1.0_f32),
                     height: length(self.height),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        let new = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        let new = super::layout_rect(taffy, node, origin);
         if new != self.rect {
             self.dirty = true;
         }
@@ -347,7 +358,7 @@ impl Widget for Thumbnail {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Thumbnail"
     }
     /// Fixed intrinsic size (percent width, fixed height) — never changes
@@ -404,7 +415,10 @@ mod tests {
     #[test]
     fn thumbnail_with_image_emits_an_image_draw() {
         let mut t = Thumbnail::new("seed", 120).image(Some(tiny_image()));
-        assert!(paint_count_images(&mut t) >= 1, "expected an IMAGE draw for a real thumbnail");
+        assert!(
+            paint_count_images(&mut t) >= 1,
+            "expected an IMAGE draw for a real thumbnail"
+        );
     }
 
     /// Without an image the thumbnail paints the gradient poster (no IMAGE draw),
@@ -412,6 +426,10 @@ mod tests {
     #[test]
     fn thumbnail_without_image_paints_gradient_not_image() {
         let mut t = Thumbnail::new("seed", 120);
-        assert_eq!(paint_count_images(&mut t), 0, "no image → gradient poster, no IMAGE draw");
+        assert_eq!(
+            paint_count_images(&mut t),
+            0,
+            "no image → gradient poster, no IMAGE draw"
+        );
     }
 }

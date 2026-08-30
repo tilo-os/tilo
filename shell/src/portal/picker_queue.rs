@@ -1,26 +1,19 @@
 //! The production [`FilePickerSpawner`]: a queue the compositor drains
 //! on its own thread, every frame.
 //!
-//! ## Why a queue and not a callback
-//!
 //! [`FilePickerSpawner::spawn`] is called from the zbus dispatcher — a
-//! tokio worker thread. The dialog it has to raise is a widget in the
-//! compositor's tree, and that tree is `Rc`/`RefCell` all the way down:
-//! it is owned by the frame thread and cannot be touched from anywhere
-//! else. So the two sides meet at a mutex-guarded `Vec`, the same shape
-//! [`super::PromptQueueHandle`] uses. `spawn` pushes and returns
+//! tokio worker thread — but the dialog is a widget in the compositor's
+//! `Rc`/`RefCell` tree, owned by the frame thread and untouchable
+//! elsewhere. So the two sides meet at a mutex-guarded `Vec`, the same
+//! shape [`super::PromptQueueHandle`] uses: `spawn` pushes and returns
 //! immediately (the trait requires it not to block); the frame thread
-//! drains, mounts the dialog, and fulfils the reply when the user
-//! decides.
-//!
-//! ## Nothing is dropped silently
+//! drains, mounts the dialog, and fulfils the reply.
 //!
 //! Every queued request owns a `oneshot::Sender`. Dropping one resolves
-//! the awaiting D-Bus method as "cancelled", which is the correct answer
-//! for a dialog that can no longer be shown — but it must be a decision,
-//! not an accident. [`FilePickerQueue::drain`] hands the senders on to
-//! the frame thread; if the frame thread cannot render (no chrome yet),
-//! it answers rather than holding them.
+//! the awaiting D-Bus method as "cancelled" — correct for a dialog that
+//! can no longer be shown, but it must be a decision, not an accident:
+//! [`FilePickerQueue::drain`] hands the senders on to the frame thread,
+//! which answers rather than holds them if it can't render (no chrome yet).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -38,22 +31,19 @@ impl FilePickerQueue {
         Self::default()
     }
 
-    /// Take everything queued so far. Each entry still owns its reply
-    /// channel — whoever drains is responsible for answering it.
+    /// Take everything queued so far; each entry still owns its reply channel — whoever drains is responsible for answering it.
     pub fn drain(&self) -> Vec<FilePickerRequest> {
         match self.pending.lock() {
             Ok(mut q) => std::mem::take(&mut *q),
-            // A poisoned lock means a panic happened while holding it.
-            // Report nothing rather than a partial list; the senders in
-            // there drop with the mutex and the callers see "cancelled",
-            // which is the safe answer.
+            // A poisoned lock means a panic happened while holding it — report
+            // nothing rather than a partial list; the senders drop with the mutex and callers see "cancelled", the safe answer.
             Err(_) => Vec::new(),
         }
     }
 
     /// How many requests are waiting. For tests and for the state dump.
     pub fn len(&self) -> usize {
-        self.pending.lock().map(|q| q.len()).unwrap_or(0)
+        self.pending.lock().map_or(0, |q| q.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -65,8 +55,7 @@ impl FilePickerSpawner for FilePickerQueue {
     fn spawn(&self, req: FilePickerRequest) {
         match self.pending.lock() {
             Ok(mut q) => q.push(req),
-            // Can't queue it, so answer it. Holding a sender we will
-            // never read is the one outcome that hangs the app.
+            // Can't queue it, so answer it — holding a sender we'll never read is the one outcome that hangs the app.
             Err(_) => {
                 let _ = req.reply.send(None);
             }
@@ -78,35 +67,30 @@ impl FilePickerSpawner for FilePickerQueue {
 ///
 /// Both come from the compositor, never from the requesting app: an app
 /// that could name its own starting directory could use the dialog to
-/// probe the filesystem for what exists, and an app that could name its
-/// own roots would be granting itself the thing the dialog is supposed
-/// to be asking about.
+/// probe the filesystem, and an app that could name its own roots would
+/// be granting itself the thing the dialog is supposed to be asking about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerScope {
     /// Directory the dialog opens on.
     pub initial_dir: PathBuf,
-    /// Every directory the user may reach from the dialog. The widget
-    /// refuses to navigate outside these.
+    /// Every directory the user may reach from the dialog; the widget refuses to navigate outside these.
     pub roots: Vec<PathBuf>,
 }
 
 impl PickerScope {
     /// The baseline scope: the user's own directories.
     ///
-    /// This is the *user's* reach, not the app's. The app gets nothing
-    /// from it — it gets whatever the user then picks, and only that.
-    /// The distinction matters: scoping the dialog to what the app
-    /// already holds would make the portal incapable of granting
-    /// anything new, which is the only thing it is for.
+    /// This is the *user's* reach, not the app's — the app gets whatever the
+    /// user then picks, and only that. Scoping the dialog to what the app
+    /// already holds would make the portal incapable of granting anything new, which is the only thing it's for.
     pub fn for_user() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let mut roots: Vec<PathBuf> = Vec::new();
         if let Some(h) = home.as_ref().filter(|h| h.is_dir()) {
             roots.push(h.clone());
         }
-        // The projected workspace tree, when it is mounted. A picker
-        // that could not reach it would make every shared document
-        // unopenable through the portal.
+        // The projected workspace tree, when mounted — a picker that couldn't
+        // reach it would make every shared document unopenable through the portal.
         let workspace = PathBuf::from("/var/workspace");
         if workspace.is_dir() {
             roots.push(workspace);
@@ -121,18 +105,15 @@ impl PickerScope {
         }
     }
 
-    /// Widen the scope with the filesystem paths this workspace has
-    /// already granted the caller.
+    /// Widen the scope with the filesystem paths this workspace has already
+    /// granted the caller.
     ///
-    /// A path the app can already reach is not a new decision, so
-    /// showing it costs nothing — and leaving it out would be worse than
-    /// cosmetic. An app granted a project directory outside `$HOME`
-    /// would otherwise be unable to reach its own files through the
-    /// dialog, and the user would have no way to say "that one".
+    /// A path the app can already reach is not a new decision, so showing it
+    /// costs nothing — leaving it out would strand an app granted a project
+    /// directory outside `$HOME`, unable to reach its own files through the dialog.
     ///
-    /// Directories are added as roots. A grant on a single *file* adds
-    /// its parent, so the file is visible in a listing — the grant
-    /// itself still only covers the file.
+    /// Directories are added as roots; a grant on a single *file* adds its
+    /// parent so the file is visible in a listing, but the grant itself still only covers the file.
     pub fn with_granted_paths<I: IntoIterator<Item = PathBuf>>(mut self, granted: I) -> Self {
         for path in granted {
             let root = if path.is_dir() {
@@ -153,18 +134,14 @@ impl PickerScope {
 
 /// The user's documents directory, if there is one.
 ///
-/// Where the dialog opens is the difference between a useful dialog and
-/// a useless one. Opening on `$HOME` means the first screen is whatever
-/// sorts first there — on a developer's machine that is eighteen rows
-/// of dotfiles and not one document, so the user's first action is
-/// always to navigate away. Opening on their documents means the first
-/// screen is usually the answer.
+/// Where the dialog opens is the difference between useful and useless:
+/// `$HOME` on a developer's machine is eighteen rows of dotfiles and not
+/// one document, so the user's first action is always to navigate away.
+/// Documents is usually the answer on the first screen.
 ///
 /// `$XDG_DOCUMENTS_DIR` first (the freedesktop variable), then the
 /// `user-dirs.dirs` file the XDG spec actually stores it in, then the
-/// conventional `~/Documents`. Nothing is created: a machine without a
-/// documents directory falls back to `$HOME` rather than growing one as
-/// a side effect of opening a dialog.
+/// conventional `~/Documents`. Nothing is created — a machine without one falls back to `$HOME`.
 fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
     let home = home?;
     let configured = std::env::var_os("XDG_DOCUMENTS_DIR")
@@ -177,19 +154,10 @@ fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
     conventional.is_dir().then_some(conventional)
 }
 
-/// Is a configured documents directory worth opening on?
-///
-/// It has to exist, and it has to be somewhere other than `$HOME`.
-/// `xdg-user-dirs` writes `XDG_DOCUMENTS_DIR="$HOME/"` when the user has
-/// no documents folder — this machine does — and that value carries no
-/// information: it is the "unset" state spelled as a path. Honouring it
-/// literally lands the dialog on the home directory, whose first screen
-/// is whatever sorts first there. On a developer's machine that is
-/// eighteen rows of dotfiles and not one document.
-///
-/// So a documents directory that *is* the home directory is treated as
-/// absent, and the conventional `~/Documents` gets a look before we give
-/// up and use `$HOME` anyway.
+/// Is a configured documents directory worth opening on? It has to exist
+/// and be somewhere other than `$HOME`: `xdg-user-dirs` writes
+/// `XDG_DOCUMENTS_DIR="$HOME/"` as its "unset" state, so a documents
+/// directory that *is* home is treated as absent, and `~/Documents` gets a look before falling back to `$HOME`.
 fn is_useful_documents_dir(dir: &Path, home: &Path) -> bool {
     dir.is_dir() && dir != home
 }
@@ -197,9 +165,8 @@ fn is_useful_documents_dir(dir: &Path, home: &Path) -> bool {
 /// Parse `XDG_DOCUMENTS_DIR="$HOME/…"` out of `user-dirs.dirs`.
 ///
 /// The file is shell-fragment syntax, but only one line matters and its
-/// shape is fixed by the spec, so this reads that line rather than
-/// pulling in a shell parser. Anything unexpected yields `None` and the
-/// caller falls back.
+/// shape is fixed by the spec, so this reads that line directly rather
+/// than pulling in a shell parser. Anything unexpected yields `None` and the caller falls back.
 fn documents_from_user_dirs(home: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(home.join(".config/user-dirs.dirs")).ok()?;
     for line in text.lines() {
@@ -265,8 +232,7 @@ mod tests {
         let q = FilePickerQueue::new();
         let (r, rx) = req("Open");
         q.spawn(r);
-        // Simulate the frame thread taking the request and then going
-        // away without deciding — the app must not be left waiting.
+        // Simulate the frame thread taking the request and then going away without deciding — the app must not be left waiting.
         drop(q.drain());
         assert!(
             rx.await.is_err(),
@@ -277,10 +243,6 @@ mod tests {
 
     #[test]
     fn a_documents_dir_that_is_home_is_treated_as_unset() {
-        // `xdg-user-dirs` writes XDG_DOCUMENTS_DIR="$HOME/" when there
-        // is no documents folder. Taking that literally opens the dialog
-        // on the home directory, which on a developer's machine is a
-        // screen of dotfiles.
         let home = Path::new("/home/someone");
         assert!(
             !is_useful_documents_dir(home, home),
@@ -333,12 +295,12 @@ mod tests {
     #[test]
     fn the_user_scope_always_has_a_root_and_starts_inside_it() {
         let scope = PickerScope::for_user();
-        assert!(!scope.roots.is_empty(), "a picker with no root can browse nothing");
         assert!(
-            scope
-                .roots
-                .iter()
-                .any(|r| scope.initial_dir.starts_with(r)),
+            !scope.roots.is_empty(),
+            "a picker with no root can browse nothing"
+        );
+        assert!(
+            scope.roots.iter().any(|r| scope.initial_dir.starts_with(r)),
             "the dialog must open somewhere it is allowed to be: {scope:?}"
         );
     }

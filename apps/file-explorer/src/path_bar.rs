@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::icons::icon_for_path;
@@ -33,7 +33,7 @@ use ui::widget::{Autocomplete, AutocompleteOutcome, Suggestion, Widget};
 
 use crate::breadcrumb_bar::BreadcrumbBar;
 use crate::breadcrumbs::breadcrumb_components;
-use crate::command::{push, CommandSink, FileCommand};
+use crate::command::{CommandSink, FileCommand, push};
 use crate::model::format_path;
 
 /// Height of the bar (a single line of text plus breathing room for the
@@ -48,6 +48,9 @@ pub struct PathBar {
     editing: bool,
     current: PathBuf,
     home: Option<PathBuf>,
+    /// The workspace mounts, so the trail can name one instead of
+    /// spelling out where it happens to be mounted.
+    workspace_roots: Vec<PathBuf>,
     sink: CommandSink,
     rect: Rect,
 }
@@ -62,6 +65,7 @@ impl PathBar {
             editing: false,
             current: PathBuf::new(),
             home: None,
+            workspace_roots: Vec::new(),
             sink,
             rect: Rect::ZERO,
         }
@@ -70,12 +74,22 @@ impl PathBar {
     /// Update the trail to reflect the current directory. A no-op on the trail
     /// while editing, so navigation the user hasn't committed doesn't stomp
     /// their in-progress typing.
-    pub fn set_path(&mut self, current: PathBuf, home: Option<PathBuf>) {
+    pub fn set_path(
+        &mut self,
+        current: PathBuf,
+        home: Option<PathBuf>,
+        workspace_roots: Vec<PathBuf>,
+    ) {
         self.current = current;
         self.home = home;
+        self.crumbs.set_workspace_roots(workspace_roots.clone());
+        self.workspace_roots = workspace_roots;
         if !self.editing {
-            self.crumbs
-                .set_segments(breadcrumb_components(&self.current, self.home.as_deref()));
+            self.crumbs.set_segments(breadcrumb_components(
+                &self.current,
+                self.home.as_deref(),
+                &self.workspace_roots,
+            ));
         }
     }
 
@@ -99,8 +113,11 @@ impl PathBar {
         self.editing = false;
         self.field.close();
         self.field.set_focus(false);
-        self.crumbs
-            .set_segments(breadcrumb_components(&self.current, self.home.as_deref()));
+        self.crumbs.set_segments(breadcrumb_components(
+            &self.current,
+            self.home.as_deref(),
+            &self.workspace_roots,
+        ));
     }
 }
 
@@ -124,17 +141,17 @@ impl Widget for PathBar {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.crumbs.apply_layout_external(self.rect);
         self.field.apply_layout_external(self.rect);
@@ -164,7 +181,8 @@ impl Widget for PathBar {
         presence: &PresenceCtx,
     ) {
         if self.editing {
-            self.field.draw_overlay(scene, transform, tr, theme, presence);
+            self.field
+                .draw_overlay(scene, transform, tr, theme, presence);
         }
     }
 
@@ -182,7 +200,15 @@ impl Widget for PathBar {
     ) {
         if self.editing {
             self.field.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             match self.field.take_outcome() {
                 AutocompleteOutcome::Accepted(value) => {
@@ -195,7 +221,15 @@ impl Widget for PathBar {
             }
         } else {
             self.crumbs.handle_event(
-                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
             );
             if self.crumbs.take_edit_requested() {
                 self.begin_edit();
@@ -211,7 +245,7 @@ impl Widget for PathBar {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PathBar"
     }
 
@@ -312,7 +346,7 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
             if !lower_prefix.is_empty() && !name.to_lowercase().starts_with(&lower_prefix) {
                 return None;
             }
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
             Some((is_dir, name, e.path()))
         })
         .collect();
@@ -355,7 +389,10 @@ mod tests {
         // Directories are offered before files.
         let doc_pos = labels.iter().position(|l| *l == "Documents").unwrap();
         let file_pos = labels.iter().position(|l| *l == "Do-not-list.txt").unwrap();
-        assert!(doc_pos < file_pos, "directories sort before files: {labels:?}");
+        assert!(
+            doc_pos < file_pos,
+            "directories sort before files: {labels:?}"
+        );
         // A dir suggestion's inserted value carries a trailing slash so the next
         // keystroke drills into it.
         let docs = sugg.iter().find(|s| s.label == "Documents").unwrap();
@@ -370,7 +407,10 @@ mod tests {
         let input = format!("{}/", dir.path().display());
         let sugg = path_completions(&input, None);
         let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
-        assert!(labels.contains(&"alpha") && labels.contains(&"beta"), "{labels:?}");
+        assert!(
+            labels.contains(&"alpha") && labels.contains(&"beta"),
+            "{labels:?}"
+        );
     }
 
     #[test]
@@ -381,7 +421,11 @@ mod tests {
         assert_eq!(sugg.len(), 1);
         assert_eq!(sugg[0].label, "Projects");
         // The inserted value stays in ~-form for readability.
-        assert!(sugg[0].value.starts_with("~/Projects"), "value: {}", sugg[0].value);
+        assert!(
+            sugg[0].value.starts_with("~/Projects"),
+            "value: {}",
+            sugg[0].value
+        );
         assert_eq!(
             expand_tilde("~/Projects", Some(home.path())),
             home.path().join("Projects"),
@@ -394,8 +438,14 @@ mod tests {
         std::fs::create_dir(dir.path().join(".config")).unwrap();
         std::fs::create_dir(dir.path().join("visible")).unwrap();
         let all = path_completions(&format!("{}/", dir.path().display()), None);
-        assert!(all.iter().all(|s| s.label != ".config"), "dotfiles hidden by default");
+        assert!(
+            all.iter().all(|s| s.label != ".config"),
+            "dotfiles hidden by default"
+        );
         let dotted = path_completions(&format!("{}/.", dir.path().display()), None);
-        assert!(dotted.iter().any(|s| s.label == ".config"), "a dot prefix reveals them");
+        assert!(
+            dotted.iter().any(|s| s.label == ".config"),
+            "a dot prefix reveals them"
+        );
     }
 }

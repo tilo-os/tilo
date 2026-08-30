@@ -1,9 +1,8 @@
-name: Check + test the whole workspace
+name: Check affected workspace packages
 
-# Fast feedback that EVERY crate compiles + its tests pass — the image build only
-# compiles the OS binaries, so without this the ~45 apps could (and did) rot
-# undetected. Runs on push/PR to main; the heavier image build stays separate.
-
+# Pull requests and pushes compile/test only packages touched by the change and
+# their transitive workspace dependants. Full target and test coverage remains
+# mandatory in nightly.yml; this job is the short feedback path.
 on:
   push:
     branches: ["main"]
@@ -15,74 +14,132 @@ concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_HOME: /cargo-home
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  # Cache availability changes speed, never correctness or mergeability.
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  RUSTFLAGS: "-D warnings"
+  SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
+  WGPU_BACKEND: vulkan
+
 jobs:
-  check:
+  select:
     runs-on: runner
     container:
-      image: quay.io/fedora/fedora:42
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      full: ${{ steps.plan.outputs.full }}
+      selected_count: ${{ steps.plan.outputs.selected_count }}
+      workspace_count: ${{ steps.plan.outputs.workspace_count }}
     steps:
-      # First, because the fedora container ships neither node (which
-      # actions/checkout needs) nor the Rust build deps. capnproto is required by
-      # runtime-collab's build.rs; the Vulkan driver lets the GPU tests run headless.
-      - name: Install deps (node for checkout, capnproto for runtime-collab, build + Vulkan)
-        run: |
-          dnf install -y \
-            nodejs \
-            rust cargo sccache capnproto \
-            gcc gcc-c++ make cmake perl perl-FindBin python3 git \
-            clang clang-devel pkgconf-pkg-config \
-            libxkbcommon-devel wayland-devel \
-            libseat-devel libinput-devel systemd-devel libdrm-devel \
-            mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
-            pipewire-devel \
-            ffmpeg-free-devel libva-devel \
-            gstreamer1-devel gstreamer1-plugins-base-devel \
-            openssl-devel sqlite-devel zlib-ng-compat-devel \
-            fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
-            nasm \
-            vulkan-loader mesa-vulkan-drivers \
-          && dnf clean all
+      - name: Checkout complete history for change selection
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
 
+      - name: Workspace membership guard
+        run: ./scripts/check-workspace-complete.sh
+
+      - name: Select and balance affected packages
+        id: plan
+        shell: bash
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ] || [ "$base" = "null" ]; then
+            base='${{ github.event.before }}'
+          fi
+          if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=""
+          fi
+          python3 tools/ci_select.py --base "$base" --shards 2 \
+            --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
+          {
+            echo '```json'
+            cat ci-plan.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  affected:
+    needs: select
+    runs-on: runner
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Workspace membership guard (no crate silently dropped)
-        run: ./scripts/check-workspace-complete.sh
+      - name: Restore Cargo downloads
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
 
-      # The browser is in here too: its WPE WebKit engine sits behind the
-      # non-default `wpe` feature, so the default build is hermetic and needs
-      # no native WebKit stack.
-      #
-      # GStreamer is NOT hermetic any more, despite the comment in Cargo.toml
-      # that says the dev stack is never needed here. Two crates now enable it
-      # from their default features — `camera` (default = ["live-capture"]) and
-      # `video_editor` (default = ["decode"] -> media/decode) — so a plain
-      # `cargo check --workspace` wants gstreamer-1.0, and every run of this job
-      # has failed on the missing .pc file since those defaults changed. The
-      # headers are installed above; the alternative, taking those features back
-      # off by default, is a product decision rather than a CI one.
-      #
-      # --locked: a fresh resolve of this tree pulls a pre-release ed25519-dalek
-      # stack through iroh that does not compile, and it fails inside a
-      # dependency rather than anywhere this repo touches. --locked makes an
-      # out-of-date lockfile say so instead.
-      - name: cargo check --workspace (every app + crate must compile)
-        env:
-          RUSTC_WRAPPER: sccache
-          CARGO_BUILD_JOBS: "4"
-        run: cargo check --workspace --locked
+      - name: Prepare headless runtime and compiler cache
+        run: |
+          mkdir -p /tmp/qos-xdg-runtime
+          chmod 700 /tmp/qos-xdg-runtime
+          bash tools/ci-sccache.sh prepare
 
-      - name: cargo test --workspace
+      # Build and run tests first. The resulting rlibs/rmeta are then reusable
+      # by the all-target check; doing this in the opposite order makes rustc
+      # perform metadata-only work before doing codegen for the same crates.
+      - name: Test shard ${{ matrix.shard }}
         env:
-          RUSTC_WRAPPER: sccache
-          # Headless GPU via llvmpipe; live network tests self-skip unless opted in.
-          WGPU_BACKEND: vulkan
-          # Bound peak memory: a workspace-wide test build otherwise fans out to
-          # ~30 parallel rustc linking full-debuginfo test binaries and OOM-kills
-          # the runner mid-compile. Cap parallelism and drop test-profile
-          # debuginfo (no effect on pass/fail) — full coverage, bounded RAM.
-          CARGO_BUILD_JOBS: "4"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: cargo test --workspace --locked --no-fail-fast
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: >-
+          bash tools/ci-measure.sh "test shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
+          cargo nextest run --locked --profile ci ${{ matrix.packages }}
+
+      - name: Check all targets in shard ${{ matrix.shard }}
+        env:
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: >-
+          bash tools/ci-measure.sh "check shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
+          cargo check --locked --all-targets ${{ matrix.packages }}
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci-sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # One writer avoids two shards racing to create the same immutable key.
+      - name: Save Cargo downloads
+        if: always() && matrix.shard == 1 && steps.cargo-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}

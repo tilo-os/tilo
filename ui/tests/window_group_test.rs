@@ -30,9 +30,8 @@ fn group(width: WindowWidth, usable: f64) -> WindowGroup {
     g
 }
 
-/// Every named tier is the *same share* of the strip on every display.
-/// The old model returned 400 / 600 / 800 px flat, which on these three
-/// displays was 25 / 37 / 50 %, then 16 / 23 / 31 %, then 10 / 16 / 21 %.
+/// Every named tier is the *same share* of the strip on every display, not a
+/// flat pixel count (which would be a different fraction of each one).
 #[test]
 fn named_tiers_are_the_same_share_of_every_display() {
     for (name, usable) in DISPLAYS {
@@ -73,9 +72,8 @@ fn tiers_are_ordered_and_bounded_on_every_display() {
     }
 }
 
-/// A launched app defaults to `Normal`. On every display that has to be a
-/// dominant share of the screen — the concrete regression was a 600 px
-/// window on a 1600 px output, two thirds of the desktop left empty.
+/// A launched app defaults to `Normal`, which must be a dominant share of
+/// the screen on every display.
 #[test]
 fn a_launched_window_is_a_dominant_share_of_every_display() {
     for (name, usable) in DISPLAYS {
@@ -89,27 +87,23 @@ fn a_launched_window_is_a_dominant_share_of_every_display() {
     }
 }
 
-/// The widest setting must actually reach the screen edge. Under the old
-/// model `Custom` was clamped at 1200 px, so on a 3840 px display nothing
-/// could ever exceed 31 % — there was no way to fill a large monitor.
+/// The widest setting must actually reach the screen edge, on any display —
+/// including a large one, where a pixel-clamped width could never fill it.
 #[test]
 fn the_widest_setting_reaches_the_edge_of_every_display() {
     for (name, usable) in DISPLAYS {
         let widest = WindowWidth::Fraction(WIDTH_MAX_PERMILLE).resolve(usable);
+        assert_eq!(widest, usable, "the widest width must span {name} exactly");
         assert_eq!(
-            widest, usable,
-            "the widest width must span {name} exactly",
-        );
-        assert_eq!(
-            max_group_px(usable), usable,
+            max_group_px(usable),
+            usable,
             "the resize ceiling on {name} must be the display, not a constant",
         );
     }
 }
 
 /// A manual resize is recorded as the fraction it landed on, so replaying
-/// the same stored width onto a different display gives the same share of
-/// that display rather than the same pixel count.
+/// it onto a different display gives the same share, not the same pixel count.
 #[test]
 fn a_manual_resize_round_trips_across_displays_as_a_share() {
     // Drag the right edge of a Normal group on the 1600 px display from
@@ -133,8 +127,7 @@ fn a_manual_resize_round_trips_across_displays_as_a_share() {
         "and hands the shell that same share to persist",
     );
 
-    // Restore the very same stored width onto each display: the share
-    // holds, the pixel count scales.
+    // The share holds across displays; the pixel count scales.
     for (name, usable) in DISPLAYS {
         let restored = group(stored, usable);
         assert_eq!(

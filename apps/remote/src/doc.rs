@@ -75,7 +75,7 @@ impl RemoteDoc {
         ui::doc::splice_text_diffed(doc, &name_id, &c.name);
 
         ui::doc::put_if_changed(doc, &conn, "host", c.host.as_str());
-        ui::doc::put_if_changed(doc, &conn, "port", c.port as i64);
+        ui::doc::put_if_changed(doc, &conn, "port", i64::from(c.port));
         ui::doc::put_if_changed(doc, &conn, "user", c.user.as_str());
         ui::doc::put_if_changed(doc, &conn, "kind", c.kind.tag());
         ui::doc::put_if_changed(doc, &conn, "auth", c.auth.label());
@@ -96,7 +96,8 @@ impl RemoteDoc {
     /// connection isn't in the document — a rename can't conjure a machine.
     pub fn rename(doc: &mut AutoCommit, id: ConnectionId, name: &str) {
         let conns = Self::connections_map(doc);
-        let Ok(Some((Value::Object(ObjType::Map), conn))) = doc.get(&conns, id.to_string().as_str())
+        let Ok(Some((Value::Object(ObjType::Map), conn))) =
+            doc.get(&conns, id.to_string().as_str())
         else {
             return;
         };
@@ -114,7 +115,8 @@ impl RemoteDoc {
     /// argument and replays identically. No-op if the connection isn't present.
     pub fn set_favorite(doc: &mut AutoCommit, id: ConnectionId, favorite: bool) {
         let conns = Self::connections_map(doc);
-        let Ok(Some((Value::Object(ObjType::Map), conn))) = doc.get(&conns, id.to_string().as_str())
+        let Ok(Some((Value::Object(ObjType::Map), conn))) =
+            doc.get(&conns, id.to_string().as_str())
         else {
             return;
         };
@@ -133,16 +135,13 @@ impl RemoteDoc {
             let Ok(id) = key.parse::<ConnectionId>() else {
                 continue;
             };
-            let Ok(Some((Value::Object(ObjType::Map), conn))) =
-                doc.get(&conns, key.as_str())
+            let Ok(Some((Value::Object(ObjType::Map), conn))) = doc.get(&conns, key.as_str())
             else {
                 continue;
             };
 
             let name = match doc.get(&conn, "name") {
-                Ok(Some((Value::Object(ObjType::Text), tid))) => {
-                    doc.text(&tid).unwrap_or_default()
-                }
+                Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),
                 _ => String::new(),
             };
 
@@ -273,7 +272,10 @@ mod tests {
         RemoteDoc::upsert(&mut doc, &c);
         let grew = doc.save().len() - before;
         assert_eq!(RemoteDoc::list(&doc)[0].name, c.name, "value round-trips");
-        assert!(grew < 40, "appending one char to the name grew doc by {grew} bytes");
+        assert!(
+            grew < 40,
+            "appending one char to the name grew doc by {grew} bytes"
+        );
     }
 
     #[test]
@@ -288,7 +290,10 @@ mod tests {
             RemoteDoc::upsert(&mut doc, &c);
         }
         let b = doc.save().len();
-        assert_eq!(a, b, "re-upserting an unchanged connection grew the document {a} -> {b}");
+        assert_eq!(
+            a, b,
+            "re-upserting an unchanged connection grew the document {a} -> {b}"
+        );
     }
 
     #[test]
@@ -336,7 +341,10 @@ mod tests {
         let back = RemoteDoc::list(&doc);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].name, "After");
-        assert_eq!(back[0].host, c.host, "rename leaves the rest of the record intact");
+        assert_eq!(
+            back[0].host, c.host,
+            "rename leaves the rest of the record intact"
+        );
         assert_eq!(back[0].favorite, c.favorite);
     }
 
@@ -344,7 +352,10 @@ mod tests {
     fn rename_of_unknown_connection_is_a_noop() {
         let mut doc = AutoCommit::new();
         RemoteDoc::rename(&mut doc, Uuid::new_v4(), "Ghost");
-        assert!(RemoteDoc::list(&doc).is_empty(), "rename must not conjure a machine");
+        assert!(
+            RemoteDoc::list(&doc).is_empty(),
+            "rename must not conjure a machine"
+        );
     }
 
     #[test]

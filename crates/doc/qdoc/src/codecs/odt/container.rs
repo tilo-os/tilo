@@ -3,7 +3,7 @@
 //! re-writes byte-faithfully (mimetype first + stored, the rest deflated). It is
 //! the lossless backbone: parts the codec doesn't model are carried verbatim.
 
-use crate::codecs::safety::{read_zip_parts, ZipLimits};
+use crate::codecs::safety::{ZipLimits, read_zip_parts};
 use crate::format::CodecError;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
@@ -15,15 +15,21 @@ pub struct OdtContainer {
 }
 
 impl OdtContainer {
-    /// Read an untrusted `.odt` package. Bounded against zip bombs and rejects
-    /// DTD-bearing XML parts (XXE) via [`read_zip_parts`].
+    /// Read an untrusted `.odt` package; bounded against zip bombs and rejects DTD-bearing XML (XXE) via [`read_zip_parts`].
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if `bytes` are not a readable zip archive, if the
+    /// archive exceeds [`ZipLimits`], or if an XML part declares a DTD.
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
         let parts = read_zip_parts(bytes, &ZipLimits::default())?;
         Ok(Self { parts })
     }
 
     pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+        self.parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
     }
 
     /// Replace an existing part (preserving its position) or append a new one.
@@ -35,6 +41,11 @@ impl OdtContainer {
         }
     }
 
+    /// Serialise the parts back into a package.
+    ///
+    /// # Errors
+    /// Returns [`CodecError`] if the zip writer rejects a part name or fails to
+    /// write its bytes.
     pub fn write(&self) -> Result<Vec<u8>, CodecError> {
         let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -60,8 +71,7 @@ impl OdtContainer {
     }
 }
 
-/// Build a minimal valid `.odt` with the given `office:text` body — used by
-/// tests so the suite is self-contained (no LibreOffice dependency).
+/// Build a minimal valid `.odt` body for self-contained tests (no `LibreOffice` dependency).
 #[cfg(test)]
 pub(crate) fn minimal_odt(body_xml: &str) -> Vec<u8> {
     minimal_odt_styled("", body_xml)
@@ -83,7 +93,10 @@ pub(crate) fn minimal_odt_styled(styles_xml: &str, body_xml: &str) -> Vec<u8> {
 <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>"#;
     let mut c = OdtContainer { parts: vec![] };
-    c.set("mimetype", b"application/vnd.oasis.opendocument.text".to_vec());
+    c.set(
+        "mimetype",
+        b"application/vnd.oasis.opendocument.text".to_vec(),
+    );
     c.set("content.xml", content.into_bytes());
     c.set("META-INF/manifest.xml", manifest.as_bytes().to_vec());
     c.write().unwrap()
@@ -104,14 +117,20 @@ mod tests {
         );
         assert!(c.get("content.xml").is_some());
 
-        // Re-write and re-read → identical part names + content.
         let out = c.write().unwrap();
         let c2 = OdtContainer::read(&out).unwrap();
         let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
         let names2: Vec<_> = c2.parts.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(names1, names2, "part set + order preserved");
-        assert_eq!(c2.get("content.xml"), c.get("content.xml"), "content preserved verbatim");
-        assert_eq!(c2.parts[0].0, "mimetype", "mimetype still first after rewrite");
+        assert_eq!(
+            c2.get("content.xml"),
+            c.get("content.xml"),
+            "content preserved verbatim"
+        );
+        assert_eq!(
+            c2.parts[0].0, "mimetype",
+            "mimetype still first after rewrite"
+        );
     }
 
     #[test]
@@ -119,9 +138,9 @@ mod tests {
         let mut c = OdtContainer { parts: vec![] };
         c.set("a", b"1".to_vec());
         c.set("b", b"2".to_vec());
-        c.set("a", b"3".to_vec()); // replace in place
+        c.set("a", b"3".to_vec());
         assert_eq!(c.parts.len(), 2);
         assert_eq!(c.get("a").unwrap(), b"3");
-        assert_eq!(c.parts[0].0, "a"); // position preserved
+        assert_eq!(c.parts[0].0, "a");
     }
 }

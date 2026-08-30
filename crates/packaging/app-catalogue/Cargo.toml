@@ -38,3 +38,6 @@ pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
+
+[lints]
+workspace = true

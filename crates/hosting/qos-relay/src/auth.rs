@@ -31,9 +31,7 @@ use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use qos_user_identity::{
-    DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at,
-};
+use qos_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at};
 
 use crate::policy::TrustPolicy;
 
@@ -206,13 +204,48 @@ pub fn verify_hello_ack(
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_inner(
+        ack,
+        Some(own_user_public_key),
+        revocations,
+        now_ns,
+        challenge_client_nonce,
+    )
+}
+
+/// Verify a server reached through an already-pinned Iroh endpoint without
+/// requiring it to share the client's user root. This is the hosted-service
+/// path: Iroh authenticates the endpoint from `EndpointAddr`, while this
+/// handshake verifies that the server owns the device key in its valid cert.
+pub fn verify_pinned_host_ack(
+    ack: &HelloAck,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_inner(ack, None, revocations, now_ns, challenge_client_nonce)
+}
+
+fn verify_hello_ack_inner(
+    ack: &HelloAck,
+    expected_user_public_key: Option<&[u8; 32]>,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
     verify_device_cert_at(&ack.cert, now_ns)?;
+    if !ack.cert.capabilities.can_act_as_host {
+        return Err(AuthError::PolicyReject);
+    }
     if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
         return Err(AuthError::Revoked);
     }
-    // From the client's perspective, the server must chain to the
-    // client's user identity — the "matching user" trust policy.
-    if &ack.cert.user_public_key != own_user_public_key {
+    // A same-owner client pins the expected user root. A hosted-service
+    // client instead pins the Iroh EndpointAddr and accepts any valid server
+    // root, while still requiring proof of the certified device key.
+    if let Some(expected) = expected_user_public_key
+        && &ack.cert.user_public_key != expected
+    {
         return Err(AuthError::PolicyReject);
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
@@ -317,8 +350,18 @@ mod tests {
     #[test]
     fn happy_path_mutual_auth() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let relay = enrol(&root_sk, user.public_key, "server", DeviceCapabilities::host());
-        let client = enrol(&root_sk, user.public_key, "laptop", DeviceCapabilities::primary());
+        let relay = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let client = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let revs = RevocationList::new();
 
         let client_nonce = [1u8; 32];
@@ -339,7 +382,8 @@ mod tests {
         assert_eq!(server_peer.device_public_key, client.cert.device_public_key);
 
         let ack = build_hello_ack(relay.cert.clone(), &relay.sk, server_nonce, &client_nonce);
-        let client_peer = verify_hello_ack(&ack, &user.public_key, &revs, 1000, &client_nonce).unwrap();
+        let client_peer =
+            verify_hello_ack(&ack, &user.public_key, &revs, 1000, &client_nonce).unwrap();
         assert_eq!(client_peer.device_public_key, relay.cert.device_public_key);
 
         let ack2 = build_hello_ack2(&client.sk, &server_nonce);
@@ -351,10 +395,20 @@ mod tests {
         let (alice_root, alice) = UserIdentity::generate("Alice", 1);
         let (bob_root, bob) = UserIdentity::generate("Bob", 1);
         // Relay is Alice's; client presents Bob's cert.
-        let _relay = enrol(&alice_root, alice.public_key, "server", DeviceCapabilities::host());
-        let client = enrol(&bob_root, bob.public_key, "laptop", DeviceCapabilities::primary());
+        let _relay = enrol(
+            &alice_root,
+            alice.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let client = enrol(
+            &bob_root,
+            bob.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let hello = Hello {
-            cert: client.cert.clone(),
+            cert: client.cert,
             client_nonce: [0u8; 32],
         };
         assert!(matches!(
@@ -373,7 +427,12 @@ mod tests {
     #[test]
     fn revoked_device_rejected() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let client = enrol(&root_sk, user.public_key, "laptop", DeviceCapabilities::primary());
+        let client = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
         let mut rev = RevocationEntry {
             user_public_key: user.public_key,
             revoked_device_public_key: client.cert.device_public_key,
@@ -386,12 +445,18 @@ mod tests {
         revs.insert(rev).unwrap();
 
         let hello = Hello {
-            cert: client.cert.clone(),
+            cert: client.cert,
             client_nonce: [0u8; 32],
         };
         assert!(matches!(
-            accept_hello(&hello, &user.public_key, &TrustPolicy::default(), &revs, 1000)
-                .unwrap_err(),
+            accept_hello(
+                &hello,
+                &user.public_key,
+                &TrustPolicy::default(),
+                &revs,
+                1000
+            )
+            .unwrap_err(),
             AuthError::Revoked
         ));
     }
@@ -400,7 +465,12 @@ mod tests {
     fn client_rejects_ack_from_stranger_cert() {
         let (alice_root, alice) = UserIdentity::generate("Alice", 1);
         let (bob_root, bob) = UserIdentity::generate("Bob", 1);
-        let bob_dev = enrol(&bob_root, bob.public_key, "attacker", DeviceCapabilities::host());
+        let bob_dev = enrol(
+            &bob_root,
+            bob.public_key,
+            "attacker",
+            DeviceCapabilities::host(),
+        );
         let client_nonce = [7u8; 32];
         // Bob's device tries to answer Alice's client — signature
         // is valid but wrong-user policy rejects.
@@ -420,9 +490,37 @@ mod tests {
     }
 
     #[test]
+    fn client_rejects_pinned_server_without_host_capability() {
+        let (root, user) = UserIdentity::generate("Provider", 1);
+        let ordinary_device = enrol(
+            &root,
+            user.public_key,
+            "ordinary device",
+            DeviceCapabilities::member(),
+        );
+        let client_nonce = [8u8; 32];
+        let ack = build_hello_ack(
+            ordinary_device.cert,
+            &ordinary_device.sk,
+            [9u8; 32],
+            &client_nonce,
+        );
+
+        assert!(matches!(
+            verify_pinned_host_ack(&ack, &RevocationList::new(), 1000, &client_nonce,).unwrap_err(),
+            AuthError::PolicyReject
+        ));
+    }
+
+    #[test]
     fn tampered_challenge_signature_rejected() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let relay = enrol(&root_sk, user.public_key, "server", DeviceCapabilities::host());
+        let relay = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
         let client_nonce = [4u8; 32];
         let mut ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &client_nonce);
         ack.sig_over_client_nonce[0] ^= 0x01;
@@ -442,7 +540,12 @@ mod tests {
     #[test]
     fn replay_of_signature_under_different_nonce_rejected() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let relay = enrol(&root_sk, user.public_key, "server", DeviceCapabilities::host());
+        let relay = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
         let ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &[9u8; 32]);
         // Verify with a *different* client nonce.
         assert!(matches!(

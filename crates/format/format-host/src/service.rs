@@ -103,10 +103,11 @@ impl format_router::Server for FormatRouterService {
                 .to_str()
                 .map_err(|e| Error::failed(e.to_string()))?
                 .to_string();
-            let out = tokio::task::spawn_blocking(move || router.export_as(&canonical, &provider_id))
-                .await
-                .map_err(|e| Error::failed(format!("join: {e}")))?
-                .map_err(|e| Error::failed(format!("{}: {}", e.kind, e.message)))?;
+            let out =
+                tokio::task::spawn_blocking(move || router.export_as(&canonical, &provider_id))
+                    .await
+                    .map_err(|e| Error::failed(format!("join: {e}")))?
+                    .map_err(|e| Error::failed(format!("{}: {}", e.kind, e.message)))?;
             results.get().set_bytes(&out);
             Ok(())
         }

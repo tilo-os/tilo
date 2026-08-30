@@ -48,7 +48,10 @@ impl ExpandModal {
         let fields = s
             .placeholders()
             .into_iter()
-            .map(|name| Field { name, value: String::new() })
+            .map(|name| Field {
+                name,
+                value: String::new(),
+            })
             .collect();
         Self {
             snippet_id: s.id,
@@ -82,7 +85,14 @@ impl ExpandModal {
 
     /// Render the modal. The modal records its own button/field hit
     /// regions internally (the panes beneath are inert while it's open).
-    pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) {
         let c = &theme.tokens.colors;
         // Scrim.
         draw::fill_rect(scene, t, area, c.surfaces.overlay);
@@ -93,8 +103,21 @@ impl ExpandModal {
         let px = area.x0 + (area.width() - pw) / 2.0;
         let py = area.y0 + (area.height() - ph) / 2.0;
         let panel = Rect::new(px, py, px + pw, py + ph);
-        draw::fill_round(scene, t, panel, theme.tokens.radii.lg as f64, c.surfaces.raised);
-        draw::stroke_round(scene, t, panel, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
+        draw::fill_round(
+            scene,
+            t,
+            panel,
+            f64::from(theme.tokens.radii.lg),
+            c.surfaces.raised,
+        );
+        draw::stroke_round(
+            scene,
+            t,
+            panel,
+            f64::from(theme.tokens.radii.lg),
+            1.0,
+            c.border_standard,
+        );
 
         let pad = 24.0;
         let mut y = panel.y0 + pad;
@@ -150,21 +173,35 @@ impl ExpandModal {
                 row_y + 30.0,
             );
             let focused = i == self.focused;
-            draw::fill_round(scene, t, input, theme.tokens.radii.md as f64, c.surfaces.base);
+            draw::fill_round(
+                scene,
+                t,
+                input,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.base,
+            );
             draw::stroke_round(
                 scene,
                 t,
                 input,
-                theme.tokens.radii.md as f64,
+                f64::from(theme.tokens.radii.md),
                 if focused { 1.5 } else { 1.0 },
-                if focused { c.border_focus } else { c.border_standard },
+                if focused {
+                    c.border_focus
+                } else {
+                    c.border_standard
+                },
             );
             let shown = if f.value.is_empty() {
                 "type a value…".to_string()
             } else {
                 f.value.clone()
             };
-            let vcolor = if f.value.is_empty() { c.text_dim } else { c.text_primary };
+            let vcolor = if f.value.is_empty() {
+                c.text_dim
+            } else {
+                c.text_primary
+            };
             draw::text(
                 scene,
                 tr,
@@ -180,7 +217,7 @@ impl ExpandModal {
                 let tw = if f.value.is_empty() {
                     0.0
                 } else {
-                    tr.measure(&f.value, 13.0, None).0 as f64
+                    f64::from(tr.measure(&f.value, 13.0, None).0)
                 };
                 let cx = input.x0 + 10.0 + tw + 1.0;
                 draw::fill_rect(
@@ -226,8 +263,21 @@ impl ExpandModal {
 
         // Preview card with highlighted, substituted body.
         let card = Rect::new(panel.x0 + pad, y, panel.x1 - pad, panel.y1 - 72.0);
-        draw::fill_round(scene, t, card, theme.tokens.radii.md as f64, c.neutral[0]);
-        draw::stroke_round(scene, t, card, theme.tokens.radii.md as f64, 1.0, c.border_standard);
+        draw::fill_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.md),
+            c.neutral[0],
+        );
+        draw::stroke_round(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.md),
+            1.0,
+            c.border_standard,
+        );
         let preview = self.preview();
         let mut cy = card.y0 + 12.0;
         for line in preview.lines() {
@@ -237,7 +287,17 @@ impl ExpandModal {
             let mut sx = card.x0 + 14.0;
             for span in highlight::highlight_line(line, self.language) {
                 let color = span.kind.color(theme);
-                draw::mono(scene, tr, t, &span.text, sx, cy, 13.0, color, TextWeight::Regular);
+                draw::mono(
+                    scene,
+                    tr,
+                    t,
+                    &span.text,
+                    sx,
+                    cy,
+                    13.0,
+                    color,
+                    TextWeight::Regular,
+                );
                 sx += draw::mono_width(tr, &span.text, 13.0);
             }
             cy += 19.0;
@@ -245,8 +305,12 @@ impl ExpandModal {
 
         // Buttons.
         let by = panel.y1 - 52.0;
-        let copy_label = if self.all_filled() { "Copy" } else { "Copy (partial)" };
-        let cw = tr.measure(copy_label, 14.0, None).0 as f64 + 36.0;
+        let copy_label = if self.all_filled() {
+            "Copy"
+        } else {
+            "Copy (partial)"
+        };
+        let cw = f64::from(tr.measure(copy_label, 14.0, None).0) + 36.0;
         self.copy_rect = Rect::new(panel.x1 - pad - cw, by, panel.x1 - pad, by + 36.0);
         Button::paint(
             scene,
@@ -254,13 +318,13 @@ impl ExpandModal {
             tr,
             theme,
             &ButtonFace::new(self.copy_rect, copy_label)
-                .radius(theme.tokens.radii.md as f64)
+                .radius(f64::from(theme.tokens.radii.md))
                 .text_size(14.0)
                 .weight(TextWeight::Semibold)
                 .primary(),
         );
 
-        let cancel_w = tr.measure("Cancel", 14.0, None).0 as f64 + 36.0;
+        let cancel_w = f64::from(tr.measure("Cancel", 14.0, None).0) + 36.0;
         self.cancel_rect = Rect::new(
             self.copy_rect.x0 - 12.0 - cancel_w,
             by,
@@ -273,7 +337,7 @@ impl ExpandModal {
             tr,
             theme,
             &ButtonFace::new(self.cancel_rect, "Cancel")
-                .radius(theme.tokens.radii.md as f64)
+                .radius(f64::from(theme.tokens.radii.md))
                 .text_size(14.0)
                 .weight(TextWeight::Semibold),
         );
@@ -322,9 +386,7 @@ impl ExpandModal {
     fn handle_key(&mut self, key: &Key) -> ExpandOutcome {
         match key {
             Key::Named(NamedKey::Escape) => ExpandOutcome::Cancel,
-            Key::Named(NamedKey::Enter) => {
-                ExpandOutcome::Copy(self.preview(), self.snippet_id)
-            }
+            Key::Named(NamedKey::Enter) => ExpandOutcome::Copy(self.preview(), self.snippet_id),
             Key::Named(NamedKey::Tab) => {
                 if !self.fields.is_empty() {
                     self.focused = (self.focused + 1) % self.fields.len();

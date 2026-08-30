@@ -1,35 +1,29 @@
 //! `SidebarDrawer` — a reusable collapsible sidebar / drawer primitive.
 //!
-//! Apps hand-roll the same "dock-vs-overlay sidebar + scrim + collapse toggle
-//! + `user_toggled`" pattern over and over (the calculator alone did it three
-//! times — history, 2D functions, 3D surfaces — and weather / notes / mail
-//! carry their own copies). This is the promotion of that pattern into one
-//! theme-driven, retained-mode controller.
+//! Apps hand-rolled the same "dock-vs-overlay sidebar + scrim + collapse
+//! toggle + `user_toggled`" pattern repeatedly (the calculator alone three
+//! times), so this promotes it into one theme-driven, retained-mode
+//! controller.
 //!
 //! Unlike [`crate::widget::NavSplit`] (a full [`Widget`](crate::widget::Widget)
-//! that lays its two children out in an inner Taffy tree), `SidebarDrawer` is a
-//! *headless* geometry + state controller: it owns the responsive
-//! docked-vs-overlay decision, the eased reveal, the scrim, and the
-//! user-toggle memory, and hands back the resolved rects. That makes it usable
-//! from BOTH widget-tree hosts and the immediate-mode Vello painters that the
-//! calculator's panels are built from (which can't embed a `Widget`).
+//! with its own inner Taffy tree), `SidebarDrawer` is a *headless* geometry +
+//! state controller: it owns the responsive docked-vs-overlay decision, the
+//! eased reveal, the scrim, and the user-toggle memory, and hands back the
+//! resolved rects — usable from both widget-tree hosts and the immediate-mode
+//! Vello painters the calculator's panels are built from (which can't embed a
+//! `Widget`).
 //!
-//! Behaviour (the Adwaita `OverlaySplitView` "flap" idiom):
+//! Behaviour (the Adwaita `OverlaySplitView` "flap" idiom): **docked** (wide)
+//! sits beside the content, inset by the eased sidebar width, and collapsing
+//! either hides it or leaves a rail ([`SidebarDrawer::rail_width`]);
+//! **overlay** (narrow) draws OVER the content behind a scrim, closed by
+//! default, dismissed by the scrim or a caller-routed Esc. The
+//! docked-vs-overlay split is re-decided every frame from the available
+//! width; an explicit user toggle is remembered until the layout crosses the
+//! breakpoint, whereupon it reverts to the width-driven default.
 //!
-//! * **Docked** (wide windows): the sidebar sits beside the content and the
-//!   content is inset by the (eased) sidebar width. Collapsing either hides it
-//!   entirely or leaves a thin rail ([`SidebarDrawer::rail_width`]).
-//! * **Overlay** (narrow windows): the sidebar draws OVER the content behind a
-//!   dimming scrim, closed by default, revealed by the toggle and dismissed by
-//!   the scrim / a caller-routed Esc.
-//! * Either **[`SidebarSide::Left`] or [`SidebarSide::Right`]** — the calculator
-//!   history lives on the right.
-//! * The docked-vs-overlay split is re-decided every frame from the available
-//!   width; an explicit user toggle is remembered until the layout crosses the
-//!   breakpoint (whereupon it reverts to the width-driven default).
-//!
-//! The eased reveal reuses the exact [`FlapState`] kernel proven in weather /
-//! chat / `NavSplit`, so the slide feels identical across the OS.
+//! The eased reveal reuses the [`FlapState`] kernel from weather / chat /
+//! `NavSplit`, so the slide feels identical across the OS.
 
 use std::time::Instant;
 
@@ -41,9 +35,8 @@ use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::widget::nav_split::{FlapState, SplitLayout};
 
-/// Default fully-revealed drawer width (logical px).
 pub const DEFAULT_DRAWER_WIDTH: f64 = 320.0;
-/// Default width at/above which the drawer docks; below it overlays.
+/// At/above this width the drawer docks; below it overlays.
 pub const DEFAULT_DRAWER_BREAKPOINT: f64 = 760.0;
 /// Upper bound (seconds) on the per-frame delta used to advance the slide, so
 /// a stale clock (first frame, or a parked event loop) can't teleport it.
@@ -120,41 +113,34 @@ impl SidebarDrawer {
 
     // --- builders -----------------------------------------------------------
 
-    /// Anchor the drawer to `side`.
     pub fn side(mut self, side: SidebarSide) -> Self {
         self.side = side;
         self
     }
-    /// Anchor to the left edge (content to its right).
     pub fn left(self) -> Self {
         self.side(SidebarSide::Left)
     }
-    /// Anchor to the right edge (content to its left).
     pub fn right(self) -> Self {
         self.side(SidebarSide::Right)
     }
-    /// Override the docked / overlay width breakpoint (logical px).
     pub fn breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = px;
         self
     }
-    /// Override the fully-revealed docked width (logical px).
     pub fn docked_width(mut self, px: f64) -> Self {
         self.docked_width = px;
         self
     }
-    /// Override the overlay drawer width (logical px).
     pub fn overlay_width(mut self, px: f64) -> Self {
         self.overlay_width = px;
         self
     }
-    /// Leave a thin rail of `px` when collapsed while docked (`0.0` hides it
-    /// entirely).
+    /// `0.0` hides it entirely.
     pub fn rail_width(mut self, px: f64) -> Self {
         self.rail_width = px;
         self
     }
-    /// Start collapsed even when docked (a summon-on-demand panel).
+    /// A summon-on-demand panel.
     pub fn closed(mut self) -> Self {
         self.flap = FlapState::closed_by_default();
         self
@@ -162,44 +148,35 @@ impl SidebarDrawer {
 
     // --- dynamic setters (per-frame reconfig) -------------------------------
 
-    /// Update the docked width live (e.g. a width computed as a fraction of the
-    /// window each layout pass).
+    /// E.g. a width computed as a fraction of the window each layout pass.
     pub fn set_docked_width(&mut self, px: f64) {
         self.docked_width = px;
     }
-    /// Update the overlay width live.
     pub fn set_overlay_width(&mut self, px: f64) {
         self.overlay_width = px;
     }
-    /// Update the breakpoint live.
     pub fn set_breakpoint(&mut self, px: f64) {
         self.breakpoint = px;
     }
 
     // --- state --------------------------------------------------------------
 
-    /// The side the drawer is anchored to.
     pub fn anchored_side(&self) -> SidebarSide {
         self.side
     }
-    /// Resolve the layout for a given width (docked at/above the breakpoint).
+    /// Docked at/above the breakpoint.
     pub fn layout_for(&self, width: f64) -> SplitLayout {
         SplitLayout::from_width(width, self.breakpoint)
     }
-    /// The layout resolved by the last [`Self::resolve`].
     pub fn layout(&self) -> SplitLayout {
         self.layout
     }
-    /// Whether the drawer currently overlays the content (narrow) rather than
-    /// docking beside it.
     pub fn is_overlay(&self) -> bool {
         self.layout == SplitLayout::Overlay
     }
-    /// Whether the drawer is docked beside the content.
     pub fn is_docked(&self) -> bool {
         self.layout == SplitLayout::Docked
     }
-    /// Whether the drawer is (resolved) open.
     pub fn is_open(&self) -> bool {
         self.flap.is_open(self.layout)
     }
@@ -231,15 +208,14 @@ impl SidebarDrawer {
 
     // --- geometry -----------------------------------------------------------
 
-    /// The resolved sidebar rect (after [`Self::resolve`]).
     pub fn sidebar_rect(&self) -> Rect {
         self.sidebar_rect
     }
-    /// The resolved content rect (the usable area beside/under the drawer).
+    /// The usable area beside/under the drawer.
     pub fn content_rect(&self) -> Rect {
         self.content_rect
     }
-    /// The resolved scrim rect (overlay mode, `Rect::ZERO` when absent).
+    /// Overlay mode only; `Rect::ZERO` when absent.
     pub fn scrim_rect(&self) -> Rect {
         self.scrim_rect
     }
@@ -250,10 +226,9 @@ impl SidebarDrawer {
     /// clamped to [`MAX_FRAME_DT`]. Returns whether it is still animating.
     pub fn tick(&mut self, reduce_motion: bool) -> bool {
         let now = Instant::now();
-        let dt = self
-            .last_tick
-            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
-            .unwrap_or(0.0);
+        let dt = self.last_tick.map_or(0.0, |t| {
+            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
+        });
         self.last_tick = Some(now);
 
         if reduce_motion {
@@ -419,12 +394,18 @@ impl SidebarDrawer {
     /// Paint the standard collapse affordance inside `rect`: a pill holding a
     /// side-panel glyph, tinted with the accent when the drawer is open. Purely
     /// theme-driven so the affordance reads the same across every app.
-    pub fn draw_toggle(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, hovered: bool) {
+    pub fn draw_toggle(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        hovered: bool,
+    ) {
         let c = &theme.tokens.colors;
         let open = self.is_open();
-        let radius = (theme.tokens.radii.md as f64).min(rect.height() * 0.5);
+        let radius = f64::from(theme.tokens.radii.md).min(rect.height() * 0.5);
 
-        // Pill background.
         let bg = if open {
             mix(c.surfaces.raised, c.accent[ACCENT_IDX], 0.20)
         } else if hovered {
@@ -434,16 +415,23 @@ impl SidebarDrawer {
         };
         let pill = RoundedRect::from_rect(rect, radius);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
-        let border = if open { c.accent[ACCENT_IDX] } else { c.border_standard };
+        let border = if open {
+            c.accent[ACCENT_IDX]
+        } else {
+            c.border_standard
+        };
         scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
 
         // Panel glyph, centred: a rounded "window" with one edge filled to show
         // which side the drawer lives on.
         let g = glyph_box(rect);
         let gr = RoundedRect::from_rect(g, 2.5);
-        let outline = if open { c.accent[ACCENT_IDX] } else { c.text_dim };
+        let outline = if open {
+            c.accent[ACCENT_IDX]
+        } else {
+            c.text_dim
+        };
         scene.stroke(&Stroke::new(1.4), transform, outline, None, &gr);
-        // The filled "sidebar" bar, on the anchored side.
         let bar_w = g.width() * 0.38;
         let bar = match self.side {
             SidebarSide::Left => Rect::new(g.x0, g.y0, g.x0 + bar_w, g.y1),
@@ -487,8 +475,13 @@ fn glyph_box(rect: Rect) -> Rect {
 
 fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
-    Color::from_rgba8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()), 255)
+    let lerp = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
+    Color::from_rgba8(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        255,
+    )
 }
 
 fn with_alpha(c: Color, a: u8) -> Color {
@@ -513,7 +506,6 @@ mod tests {
         let content = d.resolve(wide());
         assert!(d.is_docked(), "wide width docks");
         assert!(d.is_open(), "docked default is open");
-        // Right-anchored: content is inset from the RIGHT by the sidebar width.
         assert!(
             (content.x0 - wide().x0).abs() < 0.5,
             "content keeps the left edge"
@@ -523,7 +515,6 @@ mod tests {
             "content right edge inset by the docked sidebar width"
         );
         assert_eq!(d.scrim_rect(), Rect::ZERO, "docked draws no scrim");
-        // The sidebar occupies the right column.
         assert!((d.sidebar_rect().x1 - wide().x1).abs() < 0.5);
         assert!((d.sidebar_rect().width() - 300.0).abs() < 0.5);
     }
@@ -539,7 +530,6 @@ mod tests {
             "closed overlay leaves the content full-width"
         );
         assert_eq!(d.scrim_rect(), Rect::ZERO, "closed overlay draws no scrim");
-        // The (closed) drawer is parked off the right edge.
         assert!(
             d.sidebar_rect().x0 >= narrow().x1 - 0.5,
             "closed right drawer is off-screen to the right"
@@ -555,7 +545,6 @@ mod tests {
         d.resolve(narrow());
         assert!(d.is_open());
         assert!(d.scrim_rect().width() > 0.0, "open overlay lays a scrim");
-        // Fully revealed: flush against the right edge.
         assert!(
             (d.sidebar_rect().x1 - narrow().x1).abs() < 0.5,
             "revealed right drawer is flush to the right edge"
@@ -572,7 +561,7 @@ mod tests {
         // A tap on the drawer panel must NOT dismiss.
         assert!(!d.press_dismisses(d.sidebar_rect().center()));
         assert!(d.is_open());
-        // A tap in the scrim region (left of the drawer) dismisses.
+        // Left of the drawer, in the scrim region.
         let scrim_pt = Point::new(narrow().x0 + 20.0, 400.0);
         assert!(d.scrim_contains(scrim_pt));
         assert!(d.press_dismisses(scrim_pt));
@@ -593,14 +582,16 @@ mod tests {
 
     #[test]
     fn rail_leaves_a_thin_strip_when_collapsed_docked() {
-        let mut d = SidebarDrawer::new().left().docked_width(280.0).rail_width(56.0).closed();
+        let mut d = SidebarDrawer::new()
+            .left()
+            .docked_width(280.0)
+            .rail_width(56.0)
+            .closed();
         let content = d.resolve(wide());
-        // Closed docked with a rail: content inset only by the rail width.
         assert!(
             (content.x0 - wide().x0 - 56.0).abs() < 0.5,
             "collapsed rail insets the content by the rail width, not the full drawer"
         );
-        // Opening reveals the full docked width.
         d.open();
         d.snap(true);
         d.resolve(wide());
@@ -618,8 +609,7 @@ mod tests {
         d.close(); // user collapses it while docked
         d.resolve(wide());
         assert!(!d.is_open(), "explicit collapse holds while docked");
-        // Shrink below the breakpoint → overlay; then grow back → the stale
-        // "closed" preference is dropped and it re-docks open.
+        // Shrink below the breakpoint, then grow back.
         d.resolve(narrow());
         d.resolve(wide());
         assert!(
@@ -630,23 +620,27 @@ mod tests {
 
     #[test]
     fn overlay_flap_slides_across_frames_from_the_tick_path() {
-        // The reveal must SLIDE (advance the eased reveal across successive
-        // ticks), not snap — the regression apps kept hitting.
+        // The reveal must SLIDE across successive ticks, not snap.
         let mut d = SidebarDrawer::new().right().overlay_width(320.0);
         d.resolve(narrow());
         d.snap(false); // deterministic closed start
         assert_eq!(d.reveal(), 0.0);
         d.open();
 
-        // First tick establishes the clock (dt == 0) → no jump.
         d.tick(false);
         assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
 
         std::thread::sleep(std::time::Duration::from_millis(16));
         d.tick(false);
         let r = d.reveal();
-        assert!(r > 0.0 && r < 1.0, "after one ~16ms frame the flap is mid-slide (reveal {r})");
-        assert!(d.is_animating(), "a mid-slide drawer keeps requesting frames");
+        assert!(
+            r > 0.0 && r < 1.0,
+            "after one ~16ms frame the flap is mid-slide (reveal {r})"
+        );
+        assert!(
+            d.is_animating(),
+            "a mid-slide drawer keeps requesting frames"
+        );
 
         for _ in 0..300 {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -655,7 +649,11 @@ mod tests {
                 break;
             }
         }
-        assert!((d.reveal() - 1.0).abs() < 0.01, "the slide settles fully open (reveal {})", d.reveal());
+        assert!(
+            (d.reveal() - 1.0).abs() < 0.01,
+            "the slide settles fully open (reveal {})",
+            d.reveal()
+        );
     }
 
     #[test]
@@ -664,9 +662,12 @@ mod tests {
         d.resolve(narrow());
         d.snap(false);
         d.open();
-        // A single reduced-motion tick jumps straight to the endpoint.
         d.tick(true);
-        assert_eq!(d.reveal(), 1.0, "reduced motion snaps the reveal to its target");
+        assert_eq!(
+            d.reveal(),
+            1.0,
+            "reduced motion snaps the reveal to its target"
+        );
         assert!(!d.is_animating());
     }
 
@@ -680,8 +681,16 @@ mod tests {
         let theme = Theme::dark();
         let mut scene = Scene::new();
         d.draw_scrim(&mut scene, Affine::IDENTITY);
-        d.draw_toggle(&mut scene, Affine::IDENTITY, &theme, Rect::new(10.0, 10.0, 54.0, 38.0), false);
-        // Something was painted (the scrim + the pill + glyph).
-        assert!(scene.encoding().draw_tags.len() >= 3, "toggle + scrim must paint");
+        d.draw_toggle(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            Rect::new(10.0, 10.0, 54.0, 38.0),
+            false,
+        );
+        assert!(
+            scene.encoding().draw_tags.len() >= 3,
+            "toggle + scrim must paint"
+        );
     }
 }

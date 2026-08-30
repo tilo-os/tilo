@@ -1,21 +1,13 @@
-//! Async image loading, decode and cache — keyed by URL.
+//! Async image loading, decode and cache — keyed by URL. Displaying remote
+//! thumbnails on the UI thread would jank every frame, so this store owns a
+//! background thread pool that fetches (via a caller-supplied [`Fetcher`])
+//! and decodes off-thread, caching the decoded [`peniko::ImageData`] and
+//! handing it back on a later frame; until then the caller paints a
+//! placeholder.
 //!
-//! System apps (e.g. Music's album/artist artwork) need to display remote
-//! images: real JPEG/WebP/PNG thumbnails fetched from a CDN, decoded to GPU
-//! textures and painted via Vello. Doing that on the UI thread would jank every
-//! frame, so this store owns a small background thread pool that **fetches**
-//! (via a caller-supplied transport) and **decodes** off-thread, caches the
-//! decoded [`peniko::ImageData`] keyed by URL, and hands it back on the next
-//! frame. Until then the caller paints a placeholder.
-//!
-//! The store deliberately does **no** networking itself — the toolkit stays
-//! HTTP-free. The consumer injects a [`Fetcher`] closure (Music uses a blocking
-//! `reqwest` client). A store built with a no-op fetcher never touches the
-//! network, so tests and the hermetic offline builds stay deterministic.
-//!
-//! Decoding uses the `image` crate (JPEG/PNG/WebP), covering the formats
-//! YouTube's image CDN serves. Cloning a returned [`peniko::ImageData`] only
-//! bumps an `Arc`, so caching + per-frame reuse is cheap.
+//! No networking here — the toolkit stays HTTP-free, and a no-op fetcher
+//! keeps tests and hermetic offline builds deterministic. Decoding uses the
+//! `image` crate; cloning a returned `ImageData` only bumps an `Arc`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -100,8 +92,7 @@ impl ImageStore {
         slots.insert(url.to_string(), Slot::Loading);
         drop(slots);
         self.shared.pending.fetch_add(1, Ordering::SeqCst);
-        // If the workers are gone the send fails; undo the pending bump so
-        // `is_idle` doesn't wedge.
+        // If the workers are gone the send fails; undo the bump so `is_idle` doesn't wedge.
         if self.tx.send(url.to_string()).is_err() {
             self.shared.pending.fetch_sub(1, Ordering::SeqCst);
         }
@@ -169,8 +160,8 @@ fn worker_loop(rx: Arc<Mutex<Receiver<String>>>, shared: Arc<Shared>, fetch: Fet
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
-/// Oversized source images are downscaled so texture memory + GPU upload stay
-/// bounded — album art never needs more than a few hundred pixels on screen.
+/// Oversized sources are downscaled to 600px so texture memory stays bounded
+/// — album art never needs more.
 fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let img = image::load_from_memory(bytes).ok()?;
     const MAX: u32 = 600;
@@ -188,8 +179,7 @@ fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 /// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect,
-/// crop the overflow) clipped to a rounded rectangle. Mirrors the album-art
-/// tile shape system apps draw, so a real cover drops straight into the slot a
+/// crop the overflow) clipped to a rounded rectangle, matching the shape a
 /// procedural placeholder occupied.
 pub fn paint_image_cover(
     scene: &mut Scene,
@@ -201,8 +191,8 @@ pub fn paint_image_cover(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let iw = img.width as f64;
-    let ih = img.height as f64;
+    let iw = f64::from(img.width);
+    let ih = f64::from(img.height);
     if iw <= 0.0 || ih <= 0.0 {
         return;
     }
@@ -218,7 +208,13 @@ pub fn paint_image_cover(
     let clip = RoundedRect::from_rect(rect, radius);
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
     let brush = ImageBrush::new(img.clone());
-    scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &rect);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &rect,
+    );
     scene.pop_layer();
 }
 
@@ -247,12 +243,9 @@ mod tests {
     #[test]
     fn get_returns_none_then_ready_after_async_decode() {
         let bytes = png_bytes(12, 8, [10, 200, 30]);
-        // Count the fetches the store actually performs. Asserting
-        // `!is_idle()` right after the miss looks like the same check but
-        // is a race: the worker is free to finish this 12x8 decode before
-        // the assertion runs, and then the store is legitimately idle. The
-        // claim worth making is that the miss caused exactly one load, and
-        // this counter says so whoever wins that race.
+        // Asserting `!is_idle()` right after the miss is a race: the worker
+        // may finish this tiny decode first. Counting fetches makes the
+        // real claim regardless of who wins that race.
         let fetches = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&fetches);
         let fetch: Fetcher = Arc::new(move |_url: &str| {
@@ -279,7 +272,13 @@ mod tests {
 
         // Painting the cached image must not panic.
         let mut scene = Scene::new();
-        paint_image_cover(&mut scene, Affine::IDENTITY, Rect::new(0.0, 0.0, 40.0, 40.0), &img, 8.0);
+        paint_image_cover(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            &img,
+            8.0,
+        );
     }
 
     #[test]

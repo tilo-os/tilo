@@ -15,30 +15,32 @@ pub fn col_to_index(letters: &str) -> Option<u32> {
         if !c.is_ascii_uppercase() {
             return None;
         }
-        idx = idx.checked_mul(26)?.checked_add((c as u32) - ('A' as u32) + 1)?;
+        // `c` is ASCII upper-case, so the offset from `A` always exists; the
+        // multiply and add reject a run that would leave the u32 range.
+        let offset = u32::from(c).checked_sub(u32::from('A'))?;
+        idx = idx.checked_mul(26)?.checked_add(offset)?.checked_add(1)?;
     }
     Some(idx)
 }
 
-/// Render a 1-based column index back into its letter run (`1` → `"A"`, `27` →
-/// `"AA"`). A zero index (invalid) renders as an empty string.
+/// Renders a 1-based column index back into its letter run (`1` → `"A"`, `27` → `"AA"`); a zero index (invalid) renders as an empty string.
 pub fn index_to_col(mut idx: u32) -> String {
-    if idx == 0 {
-        return String::new();
-    }
     let mut out = Vec::new();
-    while idx > 0 {
-        let rem = (idx - 1) % 26;
-        out.push(b'A' + rem as u8);
-        idx = (idx - 1) / 26;
+    // Step to a 0-based digit each round; a zero index has no digits at all, so
+    // the loop condition is also what makes the subtraction safe.
+    while let Some(zero_based) = idx.checked_sub(1) {
+        // `% 26` keeps the remainder below 26, so it is entirely its low byte
+        // and `A` + it stays inside `A`..=`Z`.
+        let [digit, ..] = (zero_based % 26).to_le_bytes();
+        out.push(b'A'.saturating_add(digit));
+        idx = zero_based / 26;
     }
     out.reverse();
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Split an A1 reference (`"AB12"`) into `(column, row)` 1-based coordinates, or
-/// `None` if it is malformed (missing letters, missing digits, or out of the
-/// bounded range). Any `$` absolute-reference markers are ignored.
+/// Splits an A1 reference (`"AB12"`) into `(column, row)` 1-based coordinates, or
+/// `None` if malformed (missing letters/digits, or out of the bounded range); any `$` absolute-reference markers are ignored.
 pub fn parse_ref(reference: &str) -> Option<(u32, u32)> {
     let cleaned: String = reference.chars().filter(|c| *c != '$').collect();
     let split = cleaned.find(|c: char| c.is_ascii_digit())?;
@@ -64,7 +66,15 @@ mod tests {
 
     #[test]
     fn column_roundtrip() {
-        for (letters, idx) in [("A", 1u32), ("Z", 26), ("AA", 27), ("AZ", 52), ("BA", 53), ("ZZ", 702), ("AAA", 703)] {
+        for (letters, idx) in [
+            ("A", 1u32),
+            ("Z", 26),
+            ("AA", 27),
+            ("AZ", 52),
+            ("BA", 53),
+            ("ZZ", 702),
+            ("AAA", 703),
+        ] {
             assert_eq!(col_to_index(letters), Some(idx), "{letters} → {idx}");
             assert_eq!(index_to_col(idx), letters, "{idx} → {letters}");
         }
@@ -72,7 +82,12 @@ mod tests {
 
     #[test]
     fn ref_roundtrip() {
-        for (r, col, row) in [("A1", 1u32, 1u32), ("B2", 2, 2), ("AA10", 27, 10), ("XFD1048576", 16384, 1_048_576)] {
+        for (r, col, row) in [
+            ("A1", 1u32, 1u32),
+            ("B2", 2, 2),
+            ("AA10", 27, 10),
+            ("XFD1048576", 16384, 1_048_576),
+        ] {
             assert_eq!(parse_ref(r), Some((col, row)), "{r}");
             assert_eq!(make_ref(col, row), r, "({col},{row})");
         }

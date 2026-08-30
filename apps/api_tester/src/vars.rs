@@ -22,19 +22,21 @@ pub fn substitute(input: &str, vars: &HashMap<String, String>) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
     while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            if let Some(close) = input[i + 2..].find("}}") {
-                let raw = &input[i + 2..i + 2 + close];
-                let name = raw.trim();
-                if let Some(val) = vars.get(name) {
-                    out.push_str(val);
-                } else {
-                    // Keep the placeholder verbatim — unresolved is visible.
-                    out.push_str(&input[i..i + 2 + close + 2]);
-                }
-                i = i + 2 + close + 2;
-                continue;
+        if i + 1 < bytes.len()
+            && bytes[i] == b'{'
+            && bytes[i + 1] == b'{'
+            && let Some(close) = input[i + 2..].find("}}")
+        {
+            let raw = &input[i + 2..i + 2 + close];
+            let name = raw.trim();
+            if let Some(val) = vars.get(name) {
+                out.push_str(val);
+            } else {
+                // Keep the placeholder verbatim — unresolved is visible.
+                out.push_str(&input[i..i + 2 + close + 2]);
             }
+            i = i + 2 + close + 2;
+            continue;
         }
         // Push the next char (UTF-8 safe).
         let ch_len = utf8_len(bytes[i]);
@@ -135,10 +137,7 @@ pub struct JsonLine {
 /// The input is expected to already be pretty-printed (see
 /// [`pretty_json`]); each physical line becomes one [`JsonLine`].
 pub fn tokenize_json(pretty: &str) -> Vec<JsonLine> {
-    let mut lines: Vec<JsonLine> = pretty
-        .lines()
-        .map(|raw| tokenize_line(raw))
-        .collect();
+    let mut lines: Vec<JsonLine> = pretty.lines().map(tokenize_line).collect();
 
     // Second pass: match each opener line to its closer using a stack of
     // line indices, so the viewer can collapse a block to its first line.
@@ -147,12 +146,11 @@ pub fn tokenize_json(pretty: &str) -> Vec<JsonLine> {
         if lines[idx].opens_block {
             stack.push(idx);
         }
-        if line_closes_block(&lines[idx]) {
-            if let Some(open_idx) = stack.pop() {
-                if open_idx != idx {
-                    lines[open_idx].close_line = Some(idx);
-                }
-            }
+        if line_closes_block(&lines[idx])
+            && let Some(open_idx) = stack.pop()
+            && open_idx != idx
+        {
+            lines[open_idx].close_line = Some(idx);
         }
     }
     lines
@@ -293,7 +291,10 @@ mod tests {
     use super::*;
 
     fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -337,23 +338,31 @@ mod tests {
         assert_eq!(lines[0].close_line, Some(lines.len() - 1));
         // Find the key token "name".
         let key_line = &lines[1];
-        assert!(key_line
-            .tokens
-            .iter()
-            .any(|t| t.kind == TokenKind::Key && t.text.contains("name")));
-        assert!(key_line
-            .tokens
-            .iter()
-            .any(|t| t.kind == TokenKind::StringValue && t.text.contains("Ada")));
+        assert!(
+            key_line
+                .tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::Key && t.text.contains("name"))
+        );
+        assert!(
+            key_line
+                .tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::StringValue && t.text.contains("Ada"))
+        );
         // The age line carries a number.
-        let has_number = lines
-            .iter()
-            .any(|l| l.tokens.iter().any(|t| t.kind == TokenKind::Number && t.text == "36"));
+        let has_number = lines.iter().any(|l| {
+            l.tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::Number && t.text == "36")
+        });
         assert!(has_number);
         // The active line carries the `true` keyword.
-        let has_keyword = lines
-            .iter()
-            .any(|l| l.tokens.iter().any(|t| t.kind == TokenKind::Keyword && t.text == "true"));
+        let has_keyword = lines.iter().any(|l| {
+            l.tokens
+                .iter()
+                .any(|t| t.kind == TokenKind::Keyword && t.text == "true")
+        });
         assert!(has_keyword);
     }
 

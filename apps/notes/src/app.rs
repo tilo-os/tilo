@@ -21,8 +21,8 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::Widget;
-use ui::color_compat::ColorCompat;
 use ui::collaboration::PresencePayload;
+use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -35,9 +35,10 @@ use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, Workspace};
+use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{NoteTreeView, OutEvent};
-use crate::status_bar::{count_words, StatusBarState, StatusModel};
+use crate::status_bar::{StatusBarState, StatusModel, count_words};
 use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
 /// Sidebar width when the window is wide enough to show it inline.
@@ -125,7 +126,7 @@ pub struct NotesApp {
     /// the shared doc on the next `sync` (`apply_event` has no CRDT access,
     /// and the sync pull-loop would otherwise resurrect them).
     pending_doc_removals: Vec<PageId>,
-    /// The page the MainPanel editor is currently bound to in the doc.
+    /// The page the `MainPanel` editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
     /// Desired layout mode derived from the last observed window width.
@@ -224,9 +225,7 @@ impl NotesApp {
             if let Some((id, title)) = first {
                 workspace.set_selected(Some(id));
                 let body = storage::read_page_body(&root, id).unwrap_or_default();
-                main.load_page_with_link_resolver(id, title, body, |t| {
-                    by_title.get(t).copied()
-                });
+                main.load_page_with_link_resolver(id, title, body, |t| by_title.get(t).copied());
                 sidebar.sync_from_workspace(&workspace);
             }
         }
@@ -307,13 +306,11 @@ impl NotesApp {
         let workspace_status = self
             .saver
             .as_ref()
-            .map(|s| s.status())
-            .unwrap_or(SaveStatus::Saved);
+            .map_or(SaveStatus::Saved, super::storage::Saver::status);
         let page_status = self
             .page_saver
             .as_ref()
-            .map(|s| s.status())
-            .unwrap_or(SaveStatus::Saved);
+            .map_or(SaveStatus::Saved, super::storage::PageSaver::status);
         let save_status = combine_save_status(workspace_status, page_status);
         let changed = self.status.set_state(StatusBarState {
             save_status,
@@ -408,7 +405,10 @@ impl NotesApp {
             .workspace
             .pages()
             .iter()
-            .map(|p| PageEntry { id: p.id, title: p.title.clone() })
+            .map(|p| PageEntry {
+                id: p.id,
+                title: p.title.clone(),
+            })
             .collect();
         self.main.editor_mut().set_link_pages(entries.clone());
         self.palette.set_items(entries);
@@ -528,12 +528,11 @@ impl NotesApp {
             .workspace
             .selected()
             .and_then(|id| self.workspace.get(id))
-            .map(|m| m.title.clone())
-            .unwrap_or_else(|| "notes".to_string());
+            .map_or_else(|| "notes".to_string(), |m| m.title.clone());
         let size = tokens.typography.scale.base;
         let text_x = self.menu_btn_rect.x1 + 4.0;
-        let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - size as f64) / 2.0;
-        let avail = (self.topbar_rect.x1 - text_x - 12.0).max(0.0) as f32;
+        let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
+        let avail = num::f32_of_f64((self.topbar_rect.x1 - text_x - 12.0).max(0.0));
         text_renderer.draw_text(
             scene,
             &title,
@@ -562,8 +561,7 @@ impl NotesApp {
     /// Default constructor — resolves the workspace root via `dirs`,
     /// falls back to `./notes` if the home dir is unavailable.
     pub fn spawn_default() -> Result<Self, String> {
-        let root = storage::default_root()
-            .unwrap_or_else(|| PathBuf::from("./notes"));
+        let root = storage::default_root().unwrap_or_else(|| PathBuf::from("./notes"));
         Self::spawn(root)
     }
 
@@ -585,27 +583,7 @@ impl NotesApp {
         }
         let doc_pages = NotesDoc::list_pages(state);
         if !doc_pages.is_empty() {
-            if !self.adopted {
-                // First shared state we've seen — adopt it wholesale,
-                // discarding our locally-seeded welcome so we don't push
-                // a duplicate page tree.
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!("[notes] ADOPT {} remote page(s)", doc_pages.len());
-                }
-                let ids: Vec<PageId> = doc_pages.iter().map(|p| p.id).collect();
-                self.workspace.data.pages = doc_pages;
-                self.known_in_doc.extend(ids);
-                if let Some(s) = self.workspace.selected() {
-                    if self.workspace.get(s).is_none() {
-                        self.workspace.set_selected(None);
-                    }
-                }
-                self.bound_page = None;
-                self.main.clear();
-                self.adopted = true;
-                self.seeded = true;
-                self.sidebar.sync_from_workspace(&self.workspace);
-            } else {
+            if self.adopted {
                 // Already sharing. The document is authoritative for the page
                 // tree: every local tree mutation is dispatched as an action
                 // that writes it (see `dispatch_tree_diff`), and remote peers'
@@ -621,17 +599,14 @@ impl NotesApp {
                 }
                 let mut changed = false;
                 for dp in &doc_pages {
-                    match self.workspace.get_mut(dp.id) {
-                        Some(existing) => {
-                            if existing != dp {
-                                *existing = dp.clone();
-                                changed = true;
-                            }
-                        }
-                        None => {
-                            self.workspace.data.pages.push(dp.clone());
+                    if let Some(existing) = self.workspace.get_mut(dp.id) {
+                        if existing != dp {
+                            *existing = dp.clone();
                             changed = true;
                         }
+                    } else {
+                        self.workspace.data.pages.push(dp.clone());
+                        changed = true;
                     }
                 }
                 // Drop pages the document dropped. Only pages it once held — a
@@ -649,10 +624,10 @@ impl NotesApp {
                         .pages
                         .retain(|p| !to_drop.contains(&p.id));
                     changed = true;
-                    if let Some(s) = self.workspace.selected() {
-                        if self.workspace.get(s).is_none() {
-                            self.workspace.set_selected(None);
-                        }
+                    if let Some(s) = self.workspace.selected()
+                        && self.workspace.get(s).is_none()
+                    {
+                        self.workspace.set_selected(None);
                     }
                 }
                 // Push any local page the document has never held yet (seed
@@ -666,6 +641,26 @@ impl NotesApp {
                 if changed {
                     self.sidebar.sync_from_workspace(&self.workspace);
                 }
+            } else {
+                // First shared state we've seen — adopt it wholesale,
+                // discarding our locally-seeded welcome so we don't push
+                // a duplicate page tree.
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    eprintln!("[notes] ADOPT {} remote page(s)", doc_pages.len());
+                }
+                let ids: Vec<PageId> = doc_pages.iter().map(|p| p.id).collect();
+                self.workspace.data.pages = doc_pages;
+                self.known_in_doc.extend(ids);
+                if let Some(s) = self.workspace.selected()
+                    && self.workspace.get(s).is_none()
+                {
+                    self.workspace.set_selected(None);
+                }
+                self.bound_page = None;
+                self.main.clear();
+                self.adopted = true;
+                self.seeded = true;
+                self.sidebar.sync_from_workspace(&self.workspace);
             }
         } else if !self.seeded && self.started.elapsed() > SEED_GRACE {
             // Doc still empty after the grace window — we're the origin.
@@ -685,7 +680,7 @@ impl NotesApp {
         }
     }
 
-    /// Ensure a page is selected and the MainPanel editor is bound to
+    /// Ensure a page is selected and the `MainPanel` editor is bound to
     /// that page's `blocks` List in the shared doc, so its text syncs.
     fn ensure_editor_bound(&mut self, state: &mut AutoCommit) {
         // Don't touch the doc until we've seeded or adopted the shared
@@ -696,12 +691,10 @@ impl NotesApp {
         if !self.adopted {
             return;
         }
-        if self.workspace.selected().is_none() {
-            if let Some(first) =
-                self.workspace.children_of(None).first().map(|p| p.id)
-            {
-                self.workspace.set_selected(Some(first));
-            }
+        if self.workspace.selected().is_none()
+            && let Some(first) = self.workspace.children_of(None).first().map(|p| p.id)
+        {
+            self.workspace.set_selected(Some(first));
         }
         let Some(sel) = self.workspace.selected() else {
             if self.bound_page.is_some() {
@@ -759,7 +752,7 @@ impl NotesApp {
             .editor()
             .blocks()
             .iter()
-            .map(|b| b.text())
+            .map(ui::widget::Block::text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -775,19 +768,26 @@ impl NotesApp {
     /// the caller for immediate UI feedback and reconciled from the document on
     /// the next `sync`. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: NotesAction) {
-        self.actions.dispatch(doc, actions::NOTES_ACTION_TYPE, &action);
+        self.actions
+            .dispatch(doc, actions::NOTES_ACTION_TYPE, &action);
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
     /// tree the workspace holds (which mirrors the shared `pages` map).
     pub(crate) fn notes_resource_ctx(&self) -> crate::actions::NotesResourceCtx {
-        crate::actions::NotesResourceCtx { pages: self.workspace.pages().to_vec() }
+        crate::actions::NotesResourceCtx {
+            pages: self.workspace.pages().to_vec(),
+        }
     }
 
     /// Snapshot every page's metadata by id, for the pre/post diff that turns an
     /// applied [`OutEvent`] into the matching [`NotesAction`](crate::actions).
     fn meta_map(&self) -> HashMap<PageId, crate::model::PageMeta> {
-        self.workspace.pages().iter().map(|p| (p.id, p.clone())).collect()
+        self.workspace
+            .pages()
+            .iter()
+            .map(|p| (p.id, p.clone()))
+            .collect()
     }
 
     /// Apply one sidebar [`OutEvent`] to the workspace, then dispatch the
@@ -823,8 +823,7 @@ impl NotesApp {
             }
             let parent_also_removed = meta
                 .parent
-                .map(|p| before.contains_key(&p) && !after.contains_key(&p))
-                .unwrap_or(false);
+                .is_some_and(|p| before.contains_key(&p) && !after.contains_key(&p));
             if !parent_also_removed {
                 self.perform_action(doc, actions::delete_page_action(*id));
             }
@@ -880,8 +879,7 @@ impl NotesApp {
                         .map(|p| (p.id, p.title.clone()));
                     if let Some((id, title)) = first {
                         self.workspace.set_selected(Some(id));
-                        let body =
-                            storage::read_page_body(&self.root, id).unwrap_or_default();
+                        let body = storage::read_page_body(&self.root, id).unwrap_or_default();
                         self.main.load_page(id, title, body);
                     } else {
                         self.main.clear();
@@ -895,7 +893,8 @@ impl NotesApp {
                 if let Err(e) = storage::write_page_body(&self.root, id, "") {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
-                self.main.load_page(id, "Untitled".to_string(), String::new());
+                self.main
+                    .load_page(id, "Untitled".to_string(), String::new());
             }
             OutEvent::Move { id, delta } => {
                 // Reorder among siblings. The new `order` propagates to
@@ -903,7 +902,11 @@ impl NotesApp {
                 // local page's meta) and to disk via `persist()` below.
                 self.workspace.move_sibling(id, delta);
             }
-            OutEvent::Reparent { id, new_parent, before } => {
+            OutEvent::Reparent {
+                id,
+                new_parent,
+                before,
+            } => {
                 // Drag-drop reorder / re-parent. The new `parent` + `order`
                 // propagate to the shared doc on the next `sync` and to
                 // disk via `persist()` below. `move_to` rejects cycles.
@@ -915,8 +918,7 @@ impl NotesApp {
                     // Copy each source page's body onto its fresh copy id so
                     // the duplicated subtree has independent content on disk.
                     for (old, new) in &mapping {
-                        let body =
-                            storage::read_page_body(&self.root, *old).unwrap_or_default();
+                        let body = storage::read_page_body(&self.root, *old).unwrap_or_default();
                         if let Err(e) = storage::write_page_body(&self.root, *new, &body) {
                             tracing::error!(error = %e, page = %new, "notes: duplicate body write failed");
                         }
@@ -949,9 +951,8 @@ impl NotesApp {
             .iter()
             .map(|p| (p.title.clone(), p.id))
             .collect();
-        self.main.load_page_with_link_resolver(id, title, body, |t| {
-            by_title.get(t).copied()
-        });
+        self.main
+            .load_page_with_link_resolver(id, title, body, |t| by_title.get(t).copied());
     }
 
     /// Navigate to `id`: select + load the page. Used both by the
@@ -991,7 +992,9 @@ impl NotesApp {
         if !self.main.editor_is_dirty() {
             return;
         }
-        let Some(id) = self.main.page_id() else { return };
+        let Some(id) = self.main.page_id() else {
+            return;
+        };
         let body = self.main.take_body_snapshot();
         if let Some(saver) = &self.page_saver {
             saver.request(id, body);
@@ -1360,17 +1363,19 @@ impl Widget for NotesApp {
     /// every page findable there by title, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::NoteSearchProvider::new(&self.workspace))]
+        vec![Box::new(crate::search_provider::NoteSearchProvider::new(
+            &self.workspace,
+        ))]
     }
 
     /// Navigate to the page a chosen palette row identifies. Selection is
     /// app-local presentation (per-peer, never in the shared doc), so the doc
     /// args are unused — this mirrors the click-on-link / Cmd-K page jump.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(id) = crate::search_provider::NoteSearchProvider::parse_action_id(action_id) {
-            if self.workspace.get(id).is_some() {
-                self.navigate_to(id);
-            }
+        if let Some(id) = crate::search_provider::NoteSearchProvider::parse_action_id(action_id)
+            && self.workspace.get(id).is_some()
+        {
+            self.navigate_to(id);
         }
     }
 
@@ -1381,7 +1386,9 @@ impl Widget for NotesApp {
         // two instances view different pages.
         let sel = self.workspace.selected()?;
         Some((
-            PresenceKey::Tab { id: sel.to_string() },
+            PresenceKey::Tab {
+                id: sel.to_string(),
+            },
             PresencePayload::Arrived,
         ))
     }
@@ -1427,13 +1434,13 @@ impl Widget for NotesApp {
                 Style {
                     position: taffy::Position::Absolute,
                     inset: taffy::Rect {
-                        left: length(0.0),
+                        left: length(0.0_f32),
                         right: taffy::LengthPercentageAuto::auto(),
-                        top: length(0.0),
-                        bottom: length(0.0),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
                     },
                     size: Size {
-                        width: Dimension::length(DRAWER_WIDTH as f32),
+                        width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
                         height: Dimension::percent(1.0),
                     },
                     flex_shrink: 0.0,
@@ -1447,7 +1454,7 @@ impl Widget for NotesApp {
                 sidebar_node,
                 Style {
                     size: Size {
-                        width: Dimension::length(SIDEBAR_WIDTH as f32),
+                        width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
                         height: Dimension::percent(1.0),
                     },
                     min_size: Size {
@@ -1503,8 +1510,8 @@ impl Widget for NotesApp {
                     flex_grow: 1.0,
                     flex_basis: Dimension::length(0.0),
                     gap: taffy::Size {
-                        width: length(0.0),
-                        height: length(0.0),
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
                     },
                     ..Default::default()
                 },
@@ -1521,7 +1528,7 @@ impl Widget for NotesApp {
                 .new_leaf(Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(TOPBAR_HEIGHT as f32),
+                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
                     },
                     flex_shrink: 0.0,
                     ..Default::default()
@@ -1548,25 +1555,25 @@ impl Widget for NotesApp {
                         height: Dimension::percent(1.0),
                     },
                     gap: taffy::Size {
-                        width: length(0.0),
-                        height: length(0.0),
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
                     },
                     ..Default::default()
                 },
                 &column_children,
             )
             .unwrap();
-        node_map.insert(root, self as *mut dyn Widget);
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
@@ -1577,7 +1584,10 @@ impl Widget for NotesApp {
         // own breakpoint reconciliation (in `resolve`, below).
         let width = self.rect.width();
         let want = width > 0.0
-            && matches!(self.drawer.layout_for(width), ui::widget::SplitLayout::Overlay);
+            && matches!(
+                self.drawer.layout_for(width),
+                ui::widget::SplitLayout::Overlay
+            );
         if want != self.want_narrow {
             self.want_narrow = want;
             self.self_dirty = true;
@@ -1596,14 +1606,14 @@ impl Widget for NotesApp {
         if let Some(content_node) = self.content_node {
             let content_layout = taffy.layout(content_node).unwrap();
             let content_origin = Point::new(
-                new_origin.x + content_layout.location.x as f64,
-                new_origin.y + content_layout.location.y as f64,
+                new_origin.x + f64::from(content_layout.location.x),
+                new_origin.y + f64::from(content_layout.location.y),
             );
             self.content_rect = Rect::new(
                 content_origin.x,
                 content_origin.y,
-                content_origin.x + content_layout.size.width as f64,
-                content_origin.y + content_layout.size.height as f64,
+                content_origin.x + f64::from(content_layout.size.width),
+                content_origin.y + f64::from(content_layout.size.height),
             );
             // Feed the fresh content rect to the shared drawer so its scrim
             // geometry and breakpoint memory track this frame (this is where a
@@ -1621,10 +1631,10 @@ impl Widget for NotesApp {
         if let Some(n) = self.topbar_node {
             let l = taffy.layout(n).unwrap();
             self.topbar_rect = Rect::new(
-                new_origin.x + l.location.x as f64,
-                new_origin.y + l.location.y as f64,
-                new_origin.x + l.location.x as f64 + l.size.width as f64,
-                new_origin.y + l.location.y as f64 + l.size.height as f64,
+                new_origin.x + f64::from(l.location.x),
+                new_origin.y + f64::from(l.location.y),
+                new_origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+                new_origin.y + f64::from(l.location.y) + f64::from(l.size.height),
             );
             self.menu_btn_rect = Rect::new(
                 self.topbar_rect.x0,
@@ -1660,17 +1670,20 @@ impl Widget for NotesApp {
         );
         // Editor always paints first; on a narrow window the drawer (if
         // open) composites over it below.
-        self.main.draw(scene, transform, text_renderer, theme, presence);
+        self.main
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.built_narrow {
             self.draw_topbar(scene, transform, text_renderer, theme);
             if self.drawer.is_open() {
                 // The shared drawer paints the (subtle) dimming scrim plus a
                 // soft edge shadow behind the page tree, which draws on top.
                 self.drawer.draw_scrim(scene, transform);
-                self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+                self.sidebar
+                    .draw(scene, transform, text_renderer, theme, presence);
             }
         } else {
-            self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+            self.sidebar
+                .draw(scene, transform, text_renderer, theme, presence);
         }
         // Transient floating status bubble (bottom-right), in place of the
         // old permanent bottom status strip.
@@ -1687,11 +1700,13 @@ impl Widget for NotesApp {
                 None,
                 &self.rect,
             );
-            self.palette.draw_overlay(scene, transform, text_renderer, theme);
+            self.palette
+                .draw_overlay(scene, transform, text_renderer, theme);
         }
         // Shortcuts overlay sits above every other layer when
         // visible. Drawn last so it covers the palette too.
-        self.shortcuts.draw_overlay(scene, transform, text_renderer, theme);
+        self.shortcuts
+            .draw_overlay(scene, transform, text_renderer, theme);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1710,7 +1725,7 @@ impl Widget for NotesApp {
         path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
@@ -1738,40 +1753,50 @@ impl Widget for NotesApp {
         // and types a literal `?`; when the page tree / nothing is
         // focused, `?` opens help. This is the standard "help key only
         // outside inputs" behaviour.
-        if !self.palette.is_visible() && !self.main.editor().is_focused() {
-            if let WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+        if !self.palette.is_visible()
+            && !self.main.editor().is_focused()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } = event
-            {
-                if c.as_str() == "?" {
-                    self.shortcuts.set_visible(true);
-                    *handled = true;
-                    self.refresh_status();
-                    return;
-                }
-            }
+            && c.as_str() == "?"
+        {
+            self.shortcuts.set_visible(true);
+            *handled = true;
+            self.refresh_status();
+            return;
         }
 
         // Cmd-K / Ctrl-K opens the page jump palette.
         // Intercepted BEFORE child widgets so a focused input
         // doesn't swallow the keystroke.
-        if !self.palette.is_visible() {
-            if let WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+        if !self.palette.is_visible()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } = event
-            {
-                let mods = modifiers.state();
-                if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "k" {
-                    let anchor_x =
-                        (self.rect.x0 + self.rect.x1) / 2.0 - self.palette.width() / 2.0;
-                    let anchor_y = self.rect.y0 + 80.0;
-                    self.palette.set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
-                    self.palette.set_visible(true);
-                    *handled = true;
-                    return;
-                }
+        {
+            let mods = modifiers.state();
+            if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "k" {
+                let anchor_x =
+                    f64::midpoint(self.rect.x0, self.rect.x1) - self.palette.width() / 2.0;
+                let anchor_y = self.rect.y0 + 80.0;
+                self.palette
+                    .set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
+                self.palette.set_visible(true);
+                *focus_target = Some(node_id);
+                *handled = true;
+                return;
             }
         }
 
@@ -1782,34 +1807,44 @@ impl Widget for NotesApp {
         // would silently no-op, making the welcome copy "Cmd-N adds a
         // page under the selection" a lie. `N` is modifier-qualified, so
         // it never conflicts with typing into a note.
-        if !self.palette.is_visible() {
-            if let WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+        if !self.palette.is_visible()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } = event
-            {
-                let mods = modifiers.state();
-                if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
-                    let parent = self.workspace.selected();
-                    self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
-                    self.sidebar.sync_from_workspace(&self.workspace);
-                    *handled = true;
-                    return;
-                }
+        {
+            let mods = modifiers.state();
+            if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
+                let parent = self.workspace.selected();
+                self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
+                self.sidebar.sync_from_workspace(&self.workspace);
+                *handled = true;
+                return;
             }
         }
 
         // While the palette is visible it owns ALL keystrokes.
-        if self.palette.is_visible() {
-            if let WindowEvent::KeyboardInput { .. } = event {
-                let consumed = self.palette.handle_key(event);
-                if let Some(entry) = self.palette.take_selection() {
-                    self.navigate_to(entry.id);
+        if self.palette.is_visible()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            let consumed = self.palette.handle_key(event);
+            if let Some(entry) = self.palette.take_selection() {
+                self.navigate_to(entry.id);
+            }
+            if consumed {
+                if !self.palette.is_visible() {
+                    *focus_target = self.main_node;
                 }
-                if consumed {
-                    *handled = true;
-                    return;
-                }
+                *handled = true;
+                return;
             }
         }
 
@@ -1823,12 +1858,11 @@ impl Widget for NotesApp {
                 button: MouseButton::Left,
                 ..
             } = event
+                && self.menu_btn_rect.contains(self.last_mouse)
             {
-                if self.menu_btn_rect.contains(self.last_mouse) {
-                    self.set_drawer_open(!self.drawer.is_open());
-                    *handled = true;
-                    return;
-                }
+                self.set_drawer_open(!self.drawer.is_open());
+                *handled = true;
+                return;
             }
             if self.drawer.is_open() {
                 // Escape closes the drawer.
@@ -1852,19 +1886,25 @@ impl Widget for NotesApp {
                     button: MouseButton::Left,
                     ..
                 } = event
+                    && !self.sidebar.get_rect().contains(self.last_mouse)
                 {
-                    if !self.sidebar.get_rect().contains(self.last_mouse) {
-                        self.set_drawer_open(false);
-                        *handled = true;
-                        return;
-                    }
+                    self.set_drawer_open(false);
+                    *handled = true;
+                    return;
                 }
                 // Route to the page tree; auto-close once a page is picked.
                 let sel_before = self.workspace.selected();
                 if let Some(n) = self.sidebar_node {
                     self.sidebar.handle_event(
-                        event, scale_factor, modifiers, state, path, handled,
-                        focus_target, n, taffy,
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        n,
+                        taffy,
                     );
                 }
                 self.drain_sidebar_events(state);
@@ -1872,10 +1912,8 @@ impl Widget for NotesApp {
                     self.set_drawer_open(false);
                 }
                 if let WindowEvent::CursorMoved { position, .. } = event {
-                    self.last_mouse = Point::new(
-                        position.x / scale_factor,
-                        position.y / scale_factor,
-                    );
+                    self.last_mouse =
+                        Point::new(position.x / scale_factor, position.y / scale_factor);
                 }
                 self.refresh_status();
                 return;
@@ -1888,12 +1926,11 @@ impl Widget for NotesApp {
             button: MouseButton::Left,
             ..
         } = event
+            && let Some(id) = self.link_under_last_mouse()
         {
-            if let Some(id) = self.link_under_last_mouse() {
-                self.navigate_to(id);
-                *handled = true;
-                return;
-            }
+            self.navigate_to(id);
+            *handled = true;
+            return;
         }
 
         // Modal focus capture: while the editor's `/` block menu (or the
@@ -1930,39 +1967,38 @@ impl Widget for NotesApp {
         // right-click menu OR an in-progress inline rename — so a rename
         // keystroke doesn't also type into the note behind the field.
         let sidebar_capturing_kbd = sidebar_menu_open || self.sidebar.is_renaming();
-        if !(sidebar_capturing_kbd && is_keyboard) {
-            if let Some(n) = self.main_node {
-                self.main.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-            }
+        if !(sidebar_capturing_kbd && is_keyboard)
+            && let Some(n) = self.main_node
+        {
+            self.main.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
         }
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
-        if let Some(new_title) = self.main.take_title_rename() {
-            if let Some(id) = self.workspace.selected() {
-                let trimmed = new_title.trim();
-                let changed = self
-                    .workspace
-                    .get(id)
-                    .map(|m| m.title != trimmed)
-                    .unwrap_or(false);
-                if !trimmed.is_empty() && changed {
-                    self.apply_and_dispatch(
-                        state,
-                        OutEvent::Rename { id, new_title: trimmed.to_string() },
-                    );
-                    self.sidebar.sync_from_workspace(&self.workspace);
-                }
+        if let Some(new_title) = self.main.take_title_rename()
+            && let Some(id) = self.workspace.selected()
+        {
+            let trimmed = new_title.trim();
+            let changed = self.workspace.get(id).is_some_and(|m| m.title != trimmed);
+            if !trimmed.is_empty() && changed {
+                self.apply_and_dispatch(
+                    state,
+                    OutEvent::Rename {
+                        id,
+                        new_title: trimmed.to_string(),
+                    },
+                );
+                self.sidebar.sync_from_workspace(&self.workspace);
             }
         }
         // After every event, observe the editor's dirty flag and
@@ -1972,10 +2008,8 @@ impl Widget for NotesApp {
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical = vello::kurbo::Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
-            );
+            let logical =
+                vello::kurbo::Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_mouse = logical;
         }
         // Status bar refresh runs at the tail of every event so word
@@ -1984,12 +2018,23 @@ impl Widget for NotesApp {
         self.refresh_status();
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "NotesApp"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.palette.is_visible()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.palette
+            .is_visible()
+            .then(|| Widget::ime_cursor_rect(&self.palette))
+            .flatten()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2031,8 +2076,14 @@ mod tests {
         // page: a fresh workspace opens empty onto the "New note" affordance.
         let tmp = TempDir::new().unwrap();
         let app = NotesApp::spawn(tmp.path().into()).unwrap();
-        assert!(app.workspace.pages().is_empty(), "a fresh launch seeds no pages");
-        assert!(app.workspace.selected().is_none(), "nothing selected on an empty workspace");
+        assert!(
+            app.workspace.pages().is_empty(),
+            "a fresh launch seeds no pages"
+        );
+        assert!(
+            app.workspace.selected().is_none(),
+            "nothing selected on an empty workspace"
+        );
         assert!(app.main.title().is_none(), "no page bound in the editor");
     }
 
@@ -2111,7 +2162,9 @@ mod tests {
         app.bypass_seed_grace_for_test();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        let welcome = app.selected_for_test().expect("welcome page seeded + selected");
+        let welcome = app
+            .selected_for_test()
+            .expect("welcome page seeded + selected");
         (app, state, tmp, welcome)
     }
 
@@ -2165,7 +2218,9 @@ mod tests {
             before + 1,
             "the create wrote a new page into the shared document"
         );
-        let enc = app.last_dispatched_for_test().expect("an action was dispatched");
+        let enc = app
+            .last_dispatched_for_test()
+            .expect("an action was dispatched");
         assert_eq!(enc.type_id, crate::actions::NOTES_ACTION_TYPE);
         let action: crate::actions::NotesAction =
             serde_json::from_slice(&enc.payload).expect("payload decodes");
@@ -2182,7 +2237,11 @@ mod tests {
     #[test]
     fn page_delete_records_one_undo_boundary_and_reverts_in_the_app() {
         let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        assert!(NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == welcome));
+        assert!(
+            NotesDoc::list_pages(&state.doc)
+                .iter()
+                .any(|p| p.id == welcome)
+        );
 
         // Delete through the real sidebar-event path.
         app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
@@ -2204,10 +2263,14 @@ mod tests {
         );
 
         assert!(
-            !NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == welcome),
+            !NotesDoc::list_pages(&state.doc)
+                .iter()
+                .any(|p| p.id == welcome),
             "the delete removed the page from the document"
         );
-        let entry = state.peek_last_undo().expect("exactly one undo boundary recorded");
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
         assert_eq!(
             entry.author.as_ref(),
             Some(&local_author),
@@ -2223,12 +2286,16 @@ mod tests {
             .undo_as(Some(&local_author), None, None)
             .expect("an undo entry to pop");
         assert!(
-            NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == welcome),
+            NotesDoc::list_pages(&state.doc)
+                .iter()
+                .any(|p| p.id == welcome),
             "undo restored the page in the document"
         );
         app.sync(&mut state.doc, &state.root);
         assert!(
-            app.workspace_pages_for_test().iter().any(|p| p.id == welcome),
+            app.workspace_pages_for_test()
+                .iter()
+                .any(|p| p.id == welcome),
             "the app shows the page again after undo"
         );
     }

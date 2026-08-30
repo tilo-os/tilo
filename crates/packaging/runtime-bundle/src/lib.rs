@@ -1,63 +1,14 @@
 //! qOS runtime bundle producer + verifier.
 //!
-//! ## What a runtime bundle is
+//! A bundle is a directory (`bundle.toml` + `lib/` + optional
+//! `etc/ld.so.cache`) holding a host-copied loader/libc; it is
+//! content-addressed — `bundle.toml.root_hash` is a BLAKE3 root over
+//! the sorted `(path, blake3(file))` pairs, so any byte change flips it.
 //!
-//! A directory laid out as
-//!
-//! ```text
-//! <root>/
-//!   bundle.toml           metadata: version, root hash, payload manifest, signature
-//!   lib/                  host-copied loader + libc + friends
-//!     ld-linux-x86-64.so.2       (or ld-linux-aarch64.so.1 for aarch64 bundles)
-//!     libc.so.6
-//!     libgcc_s.so.1
-//!     …
-//!   etc/ld.so.cache       (optional; copied from host if present)
-//! ```
-//!
-//! Content-addressed: `bundle.toml.root_hash` is a BLAKE3 root over the
-//! sorted list of `(payload-relative-path, blake3(file))` pairs. Any
-//! byte change in any file — or in the manifest of paths itself —
-//! flips the root hash.
-//!
-//! ## Cross-architecture
-//!
-//! The set of host source paths depends on target architecture. The
-//! [`host_minimal_paths_for`] table encodes what to copy for each
-//! architecture qOS targets (`x86_64`, `aarch64` today). At build time
-//! we probe the host for existence and silently skip anything absent —
-//! Debian layouts (`/lib/aarch64-linux-gnu/libc.so.6`) and Fedora
-//! layouts (`/usr/lib64/libc.so.6`) are both listed, only what exists
-//! is copied, the manifest records what was actually included.
-//!
-//! ## Signing
-//!
-//! When [`build_bundle_with`] is given a [`BuildOptions::identity`],
-//! it appends a detached ed25519 signature to `bundle.toml`:
-//!
-//! - `publisher_hex` — the identity's 32-byte public key, hex.
-//! - `signature_hex` — the 64-byte signature, hex.
-//!
-//! Preimage: `blake3(b"qos-runtime-bundle-v1\0" || version || root_hash)`.
-//!
-//! [`verify_bundle`] recomputes the hash covenants and (when a
-//! signature is present) checks the signature against the embedded
-//! publisher. Callers can also require a specific publisher via
-//! [`verify_bundle_with`] — see the launcher's `--require-publisher`
-//! passthrough.
-//!
-//! ## Discovery
-//!
-//! The launcher looks a bundle up by its version tag. Search order:
-//! 1. explicit `--runtime <path>` from the caller (not the library's job)
-//! 2. `$XDG_DATA_HOME/qos-runtime/<version>/` — per-user (default when
-//!    installed with `qos-install runtime install`).
-//! 3. `/usr/lib/qos-runtime/<version>/` — system-wide (baked into the
-//!    OS image at build time by `os/scripts/bake-runtime-bundle.sh`).
-//!
-//! The `default_bundle_path` and `system_bundle_path` helpers surface
-//! these paths from the library so both the CLI and the launcher agree
-//! on where to look.
+//! The source paths to copy are architecture-specific
+//! ([`host_minimal_paths_for`]); at build time each is probed against
+//! the host and silently skipped if absent, since Debian and Fedora
+//! layouts differ and only what exists is copied.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -69,42 +20,30 @@ use serde::{Deserialize, Serialize};
 /// Standard bundle manifest filename inside a bundle directory.
 pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
 
-/// Domain-separation prefix for the bundle-signing preimage. Bumped
-/// only on a wire-breaking change.
+/// Domain-separation prefix for the bundle-signing preimage; bumped only on a wire-breaking change.
 pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"qos-runtime-bundle-v1\0";
 
-/// Bundle metadata written into `bundle.toml`. All fields are stable
-/// so that a `verify` roundtrip is meaningful across tool versions.
+/// Bundle metadata written into `bundle.toml`; fields are stable so `verify` roundtrips across tool versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
-    /// Human-readable version tag — matches the manifest string
-    /// `qos-runtime/<version>` in a package manifest.
+    /// Human-readable version tag — matches `qos-runtime/<version>` in a package manifest.
     pub version: String,
-    /// Target architecture the bundle was built for. Matches
-    /// `std::env::consts::ARCH` values (`x86_64`, `aarch64`, ...).
-    /// A launcher on the wrong arch refuses the bundle rather than
-    /// getting the loader wrong at exec time.
+    /// Target architecture the bundle was built for (matches
+    /// `std::env::consts::ARCH`); a launcher on the wrong arch refuses
+    /// the bundle rather than getting the loader wrong at exec time.
     pub arch: String,
-    /// BLAKE3 root hash over the sorted `(path, file-hash)` list.
-    /// Hex, lowercase, 64 chars.
+    /// BLAKE3 root hash over the sorted (path, file-hash) list; hex, lowercase, 64 chars.
     pub root_hash: String,
-    /// Sorted list of every file in the bundle (relative to the
-    /// bundle root) with its individual BLAKE3. Sorted so the
-    /// encoding is deterministic across filesystem traversal
-    /// orderings.
+    /// Sorted list of every bundle file (relative to root) with its BLAKE3, sorted for deterministic encoding.
     #[serde(default)]
     pub files: Vec<BundleFile>,
-    /// Produced-at unix time. Informational only — the hash is what
-    /// matters for identity.
+    /// Produced-at unix time; informational only — the hash is what matters for identity.
     #[serde(default)]
     pub produced_at: u64,
-    /// Optional publisher's Ed25519 public key, hex-encoded (64
-    /// chars). Present iff the bundle was signed.
+    /// Optional publisher Ed25519 public key, hex-encoded (64 chars); present iff signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher_hex: Option<String>,
-    /// Optional Ed25519 signature over
-    /// `blake3(DOMAIN || version || root_hash)`, hex-encoded (128
-    /// chars). Present iff the bundle was signed.
+    /// Optional Ed25519 signature over `blake3(DOMAIN || version || root_hash)`, hex-encoded (128 chars); present iff signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_hex: Option<String>,
 }
@@ -112,8 +51,7 @@ pub struct BundleManifest {
 /// One `(payload-relative-path, hash)` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleFile {
-    /// Path relative to the bundle root, always using `/` as
-    /// separator so the encoding is portable.
+    /// Path relative to the bundle root, always `/`-separated for portable encoding.
     pub path: String,
     /// BLAKE3 hash of the file bytes. Hex, lowercase.
     pub hash: String,
@@ -150,9 +88,8 @@ pub enum BundleError {
     PublisherMismatch { required: String, actual: String },
     #[error("bundle arch {actual:?} does not match host arch {host:?}")]
     ArchMismatch { actual: String, host: String },
-    // The trailing argument is named: thiserror 2 rejects a format string that
-    // mixes `{0}` (the tuple field) with a bare `{}` (the extra argument),
-    // because it cannot tell which one the `{}` means.
+    // Named trailing argument: thiserror 2 rejects mixing `{0}` (tuple
+    // field) with a bare `{}` in one format string.
     #[error("no host source table for arch {0} — supported: {supported}", supported = supported_archs().join(", "))]
     UnsupportedArch(String),
     #[error("identity file: {0}")]
@@ -169,19 +106,13 @@ pub enum BundleError {
 
 /// The set of host source paths for a given target architecture.
 ///
-/// These are absolute paths on the *host*. The builder resolves each
-/// against `--from` (default `/`), and any that don't exist are
-/// silently skipped so a bundle can be built on a system whose loader
-/// lives at only one of the alternative locations. The result is still
-/// hash-stable — the manifest lists what was actually included.
-///
-/// Two layouts are covered per arch:
-///  * Fedora / RHEL-ish: `/lib64` + `/usr/lib64`.
-///  * Debian / Ubuntu-ish: `/lib/<arch>-linux-gnu`.
-///
-/// Only what exists on the source host lands in the bundle. Adding a
-/// new architecture is a matter of adding a row here (and to
-/// `CANONICAL_LOADER_PATHS` in the sandbox side).
+/// Absolute paths on the *host*, resolved against `--from` (default
+/// `/`); missing ones are silently skipped, so the result is still
+/// hash-stable since the manifest lists only what was actually
+/// included. Two layouts are covered per arch: Fedora/RHEL-ish
+/// (`/lib64`, `/usr/lib64`) and Debian/Ubuntu-ish
+/// (`/lib/<arch>-linux-gnu`). Adding an architecture means adding a
+/// row here and to `CANONICAL_LOADER_PATHS` on the sandbox side.
 pub fn host_minimal_paths_for(arch: &str) -> Option<&'static [&'static str]> {
     match arch {
         "x86_64" => Some(HOST_MINIMAL_PATHS_X86_64),
@@ -195,15 +126,13 @@ pub fn supported_archs() -> Vec<&'static str> {
     vec!["x86_64", "aarch64"]
 }
 
-/// `std::env::consts::ARCH` at build time. The default target for
-/// `build_bundle` when no explicit arch is supplied.
+/// `std::env::consts::ARCH` at build time; the default target for `build_bundle` when unset.
 pub fn host_arch() -> &'static str {
     std::env::consts::ARCH
 }
 
-/// x86_64 loader + libc set. Covers Fedora (`/lib64`), Debian
-/// (`/lib/x86_64-linux-gnu` via the `/lib64` symlink on modern
-/// distros), and the legacy `/lib/ld-linux.so.2` fallback.
+/// `x86_64` loader + libc set: Fedora (/lib64), Debian
+/// (/lib/x86_64-linux-gnu via symlink), and legacy /lib/ld-linux.so.2.
 pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
     // Dynamic loader itself.
     "/lib64/ld-linux-x86-64.so.2",
@@ -229,17 +158,15 @@ pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
     "/lib/x86_64-linux-gnu/libutil.so.1",
 ];
 
-/// aarch64 loader + libc set. Covers Debian (`/lib/aarch64-linux-gnu`)
-/// and Fedora (`/lib64` on aarch64 too — same convention as x86_64).
+/// aarch64 loader + libc set: Debian (/lib/aarch64-linux-gnu) and Fedora (/lib64, same convention as `x86_64`).
 pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     // Dynamic loader itself.
     "/lib/ld-linux-aarch64.so.1",
     "/lib64/ld-linux-aarch64.so.1",
     "/usr/lib64/ld-linux-aarch64.so.1",
     "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-    // Fedora aarch64 uses `/lib64` just like x86_64. The `/lib64`
-    // dir on aarch64 Fedora is a real directory, not a symlink to
-    // `/usr/lib64`, though `/usr/lib64` exists too — bundle both.
+    // Fedora aarch64's /lib64 is a real dir (not a symlink to
+    // /usr/lib64, which also exists) — bundle both.
     "/lib64/libc.so.6",
     "/lib64/libgcc_s.so.1",
     "/lib64/libm.so.6",
@@ -264,46 +191,38 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]. Kept only so
-/// out-of-tree consumers aren't broken by the rename. New code should
-/// use [`host_minimal_paths_for`] — the arch-aware entry point.
+/// Legacy alias for [`HOST_MINIMAL_PATHS_X86_64`]; new code should use [`host_minimal_paths_for`].
 #[deprecated(note = "use host_minimal_paths_for(arch) — HOST_MINIMAL_PATHS is x86_64-only")]
 pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
 
-/// The optional `/etc/ld.so.cache` — the loader falls back to a
-/// slower search without it; still worth including when present.
+/// Optional `/etc/ld.so.cache` — loader falls back to a slower search without it; include when present.
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
-/// Environment override naming the root that holds `<version>/`
-/// bundle directories.
+/// Environment override naming the root that holds `<version>/` bundle
+/// directories (counterpart of `QOS_APPS_DATA_DIR`).
 ///
-/// The counterpart of `QOS_APPS_DATA_DIR` on the registry side, and it
-/// exists for the same reason. A session that wants its own documents
-/// repoints `XDG_DATA_HOME`, and both the installed-app store and the
-/// runtime bundles live under it — so isolating documents silently
-/// isolates the runtime too, and every app in that session fails to
-/// launch with "no bundle was found". The two stores are shared
-/// machine state; the documents are not. This variable is what lets a
-/// caller say so about the runtime, without moving anything the
-/// session is supposed to keep to itself.
+/// Repointing `XDG_DATA_HOME` for a session's own documents would
+/// also isolate the runtime bundles living under it, breaking every
+/// app's launch — this variable lets a caller keep the (shared)
+/// runtime reachable without moving it into the session's isolated documents.
 pub const RUNTIME_DIR_ENV: &str = "QOS_RUNTIME_BUNDLE_DIR";
 
-/// Root holding the per-user bundles, before the version is appended.
-///
+/// Root holding the per-user bundles, before the version is appended:
 /// [`RUNTIME_DIR_ENV`] when set and non-empty, else
-/// `$XDG_DATA_HOME/qos-runtime` (or `~/.local/share/qos-runtime`).
+/// `$XDG_DATA_HOME/qos-runtime`.
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
-    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV) {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV)
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir));
     }
-    Ok(dirs::data_dir().ok_or(BundleError::NoDataDir)?.join("qos-runtime"))
+    Ok(dirs::data_dir()
+        .ok_or(BundleError::NoDataDir)?
+        .join("qos-runtime"))
 }
 
-/// Default per-user bundle directory: `$XDG_DATA_HOME/qos-runtime/<v>/`
-/// (or `~/.local/share/qos-runtime/<v>/`), unless [`RUNTIME_DIR_ENV`]
-/// names another root.
+/// Default per-user bundle directory: `$XDG_DATA_HOME/qos-runtime/<v>/`,
+/// unless [`RUNTIME_DIR_ENV`] names another root.
 pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
     Ok(bundle_root()?.join(version))
 }
@@ -313,8 +232,7 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
     PathBuf::from("/usr/lib/qos-runtime").join(version)
 }
 
-/// Walk the search path and return the first existing bundle directory
-/// that already has a `bundle.toml`. Ordering: per-user, then system.
+/// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     let mut checked: Vec<PathBuf> = Vec::new();
     if let Ok(p) = default_bundle_path(version) {
@@ -336,29 +254,21 @@ pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
 pub struct BuildOptions<'a> {
     /// Host root each source path is resolved against; `None` = `/`.
     pub from: Option<&'a Path>,
-    /// Target architecture. Defaults to [`host_arch`]. Explicit
-    /// override lets tests fabricate a bundle for a non-host arch by
-    /// pre-populating a fake root.
+    /// Target architecture; defaults to [`host_arch`]. Explicit override lets tests fabricate a non-host-arch bundle.
     pub arch: Option<&'a str>,
-    /// Path to an identity JSON file (see [`Identity::load`]). If
-    /// provided, the finished bundle is signed and the manifest gains
-    /// `publisher_hex` + `signature_hex`.
+    /// Path to an identity JSON file (see [`Identity::load`]); if set, the finished bundle is signed.
     pub identity: Option<&'a Path>,
-    /// Extra shared objects to place directly under `lib/` in the
-    /// bundle, by file name — the Rust `libstd-<hash>.so` and the qOS
-    /// `libruntime_dylib.so` that a thin app (`-C prefer-dynamic`)
-    /// links dynamically. Unlike the loader/libc set (re-bound at
-    /// their canonical `/lib64` paths so an ELF's `INTERP` resolves),
-    /// these sit at the top of `lib/` so the launcher's
-    /// `LD_LIBRARY_PATH=<mount>/lib` resolves them by soname. Each is
-    /// hashed into the manifest and covered by the signature like any
-    /// other bundle file. Absolute host paths; must exist.
+    /// Extra shared objects placed directly under `lib/` by file name —
+    /// e.g. `libstd-<hash>.so`, `libruntime_dylib.so` for a thin
+    /// (`-C prefer-dynamic`) app. Unlike the loader/libc set (re-bound at
+    /// canonical `/lib64` paths for `INTERP`), these sit at the top of
+    /// `lib/` so `LD_LIBRARY_PATH=<mount>/lib` resolves them by soname.
+    /// Hashed and signature-covered like any other bundle file; absolute
+    /// host paths, must exist.
     pub extra_libs: &'a [PathBuf],
 }
 
-/// The signing identity used by [`build_bundle_with`]. Format: JSON
-/// `{ "secret_key_hex": "<64-hex-chars>" }` — matches the shape used
-/// by `qos-pkg` so operators can reuse the same key material.
+/// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `qos-pkg`.
 #[derive(Clone)]
 pub struct Identity {
     signing_key: ed25519_dalek::SigningKey,
@@ -377,8 +287,8 @@ impl Identity {
         struct File {
             secret_key_hex: String,
         }
-        let f: File = serde_json::from_slice(bytes)
-            .map_err(|e| BundleError::IdentityParse(e.to_string()))?;
+        let f: File =
+            serde_json::from_slice(bytes).map_err(|e| BundleError::IdentityParse(e.to_string()))?;
         let raw = hex::decode(&f.secret_key_hex)
             .map_err(|e| BundleError::IdentityParse(format!("secret_key_hex: {e}")))?;
         if raw.len() != 32 {
@@ -394,8 +304,7 @@ impl Identity {
         })
     }
 
-    /// Generate a fresh random identity. Handy for tests; also used
-    /// by the CLI's `key generate` subcommand.
+    /// Generate a fresh random identity; used by tests and the CLI's `key generate`.
     pub fn generate() -> Self {
         let mut rng = rand::rngs::OsRng;
         Self {
@@ -420,8 +329,7 @@ impl Identity {
     }
 }
 
-/// Preimage the publisher signs: `blake3(DOMAIN || version || root_hash)`.
-/// Domain-separated so signatures over other blobs can't collide.
+/// Preimage the publisher signs: `blake3(DOMAIN || version || root_hash)`, domain-separated against other blobs.
 pub fn signing_preimage(version: &str, root_hash_hex: &str) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(BUNDLE_SIGNING_DOMAIN);
@@ -430,8 +338,7 @@ pub fn signing_preimage(version: &str, root_hash_hex: &str) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-/// Build a bundle at `out` for the host architecture. See
-/// [`build_bundle_with`] for the full-featured entry point.
+/// Build a bundle at `out` for the host architecture; see [`build_bundle_with`] for the full entry point.
 pub fn build_bundle(
     out: &Path,
     version: &str,
@@ -449,20 +356,12 @@ pub fn build_bundle(
 
 /// Build (or rebuild) a bundle at `out`.
 ///
-/// - `version` names the bundle (also written into `bundle.toml`).
-/// - `opts.from` overrides the host-root prefix each source path is
-///   resolved against; defaults to `/`. Useful for tests and for
-///   building against a distrobox rootfs from outside the container.
-/// - `opts.arch` picks the source-path table. Defaults to
-///   [`host_arch`]; explicit override lets a cross-arch fixture be
-///   built (e.g. an aarch64 bundle from an x86_64 CI runner, as long
-///   as `--from` points at an aarch64 rootfs).
-/// - `opts.identity` signs the bundle. When set, the manifest gains
-///   `publisher_hex` and `signature_hex`.
-/// - Missing source paths are silently skipped; the bundle's hash
-///   reflects what was actually copied. If *no* source resolves, we
-///   return `NoSources` so a build against the wrong `--from` or an
-///   arch mismatch surfaces immediately.
+/// `version` is written into `bundle.toml`; `opts.from` overrides the
+/// host-root prefix each source path resolves against (default `/`);
+/// `opts.arch` picks the source-path table (default [`host_arch`]);
+/// `opts.identity`, if set, signs the bundle. Missing source paths
+/// are silently skipped, but if *no* source resolves this returns
+/// `NoSources` so a wrong `--from` or arch mismatch surfaces immediately.
 pub fn build_bundle_with(
     out: &Path,
     version: &str,
@@ -474,8 +373,7 @@ pub fn build_bundle_with(
         .ok_or_else(|| BundleError::UnsupportedArch(arch.to_string()))?;
     fs::create_dir_all(out.join("lib"))?;
 
-    // Copy each candidate. Track what we got so the manifest is
-    // deterministic.
+    // Copy each candidate, tracking what we got so the manifest is deterministic.
     let mut written: Vec<(String, PathBuf)> = Vec::new(); // relative-in-bundle → absolute-in-bundle
 
     for src_abs in paths {
@@ -483,13 +381,11 @@ pub fn build_bundle_with(
         if !src.exists() {
             continue;
         }
-        // Preserve the absolute-path shape under `lib/` — e.g.
-        // `/lib64/libc.so.6` lives at `lib/lib64/libc.so.6` in the
-        // bundle. This way `LD_LIBRARY_PATH=<bundle>/lib` combined
-        // with the loader's own search inside the bundle-mount finds
-        // everything without extra symlink dances.
+        // Preserve the absolute-path shape under `lib/` (e.g.
+        // /lib64/libc.so.6 → lib/lib64/libc.so.6) so LD_LIBRARY_PATH plus the
+        // loader's own search finds everything with no symlink dances.
         let rel_no_slash = src_abs.trim_start_matches('/');
-        let rel_in_bundle = format!("lib/{}", rel_no_slash);
+        let rel_in_bundle = format!("lib/{rel_no_slash}");
         let dst = out.join(&rel_in_bundle);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
@@ -498,18 +394,21 @@ pub fn build_bundle_with(
         written.push((rel_in_bundle, dst));
     }
 
-    // Extra libs (libstd, libruntime_dylib.so): copied verbatim to the
-    // TOP of `lib/` by file name so `LD_LIBRARY_PATH=<mount>/lib`
-    // resolves them by soname. Unlike the loader/libc set these are NOT
-    // resolved against `host_root` — they're explicit absolute paths
-    // (build outputs), used as given.
+    // Extra libs (libstd, libruntime_dylib.so) copy verbatim to the TOP
+    // of lib/ by file name for soname resolution via LD_LIBRARY_PATH —
+    // unlike the loader/libc set, these are explicit absolute paths, not
+    // resolved against host_root.
     for extra in opts.extra_libs {
         if !extra.exists() {
-            return Err(BundleError::IncludeMissing { path: extra.clone() });
+            return Err(BundleError::IncludeMissing {
+                path: extra.clone(),
+            });
         }
         let name = extra
             .file_name()
-            .ok_or_else(|| BundleError::IncludeUnnamed { path: extra.clone() })?
+            .ok_or_else(|| BundleError::IncludeUnnamed {
+                path: extra.clone(),
+            })?
             .to_string_lossy()
             .to_string();
         let rel_in_bundle = format!("lib/{name}");
@@ -535,10 +434,7 @@ pub fn build_bundle_with(
 
     if written.is_empty() {
         return Err(BundleError::NoSources {
-            checked: paths
-                .iter()
-                .map(|p| resolve_from(host_root, p))
-                .collect(),
+            checked: paths.iter().map(|p| resolve_from(host_root, p)).collect(),
         });
     }
 
@@ -581,40 +477,34 @@ pub fn build_bundle_with(
     };
 
     // Persist bundle.toml.
-    let toml = toml::to_string_pretty(&manifest)
-        .map_err(|e| BundleError::ManifestParse(e.to_string()))?;
+    let toml =
+        toml::to_string_pretty(&manifest).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
     fs::write(out.join(BUNDLE_MANIFEST_FILENAME), toml)?;
 
     Ok(manifest)
 }
 
 /// Verification policy — how strict [`verify_bundle_with`] should be.
-///
-/// [`verify_bundle`] uses `default()`, which:
-///   * checks any signature that is present (rejects a bad sig)
-///   * does NOT require a signature (an unsigned bundle passes)
-///   * does NOT enforce a specific publisher
+/// [`verify_bundle`]'s `default()`: checks any present signature
+/// (rejects a bad one), does not require one, and does not enforce a
+/// specific publisher.
 #[derive(Default, Debug, Clone)]
 pub struct VerifyOptions {
-    /// If set, require the bundle to be signed AND its publisher
-    /// hex to equal this string.
+    /// If set, require the bundle to be signed AND its publisher hex to equal this string.
     pub require_publisher: Option<String>,
-    /// If set, refuse an unsigned bundle even without a specific
-    /// required-publisher.
+    /// If set, refuse an unsigned bundle even without a specific required publisher.
     pub require_signature: bool,
-    /// If set, refuse a bundle whose `arch` field disagrees with
-    /// this string. `None` = accept any arch.
+    /// If set, refuse a bundle whose `arch` disagrees with this string; `None` accepts any arch.
     pub require_arch: Option<String>,
 }
 
 /// Verify an existing bundle: recompute every file's hash + the root
-/// hash, then compare against `bundle.toml`. Returns the parsed
-/// manifest on success so callers can print / inspect it.
+/// hash and compare against `bundle.toml`; returns the parsed
+/// manifest on success.
 ///
-/// Signature policy: any signature present must verify, but a bundle
-/// without a signature is accepted. Use [`verify_bundle_with`] with
-/// `require_signature=true` (or the launcher's default policy) to
-/// refuse unsigned bundles.
+/// Signature policy: a present signature must verify, but an unsigned
+/// bundle is accepted — use [`verify_bundle_with`] with
+/// `require_signature=true` to refuse those.
 pub fn verify_bundle(root: &Path) -> Result<BundleManifest, BundleError> {
     verify_bundle_with(root, &VerifyOptions::default())
 }
@@ -631,24 +521,22 @@ pub fn verify_bundle_with(
         });
     }
     let text = fs::read_to_string(&manifest_path)?;
-    let manifest: BundleManifest = toml::from_str(&text)
-        .map_err(|e| BundleError::ManifestParse(e.to_string()))?;
+    let manifest: BundleManifest =
+        toml::from_str(&text).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
 
     // Optional arch policy.
-    if let Some(required) = opts.require_arch.as_deref() {
-        if manifest.arch != required {
-            return Err(BundleError::ArchMismatch {
-                actual: manifest.arch.clone(),
-                host: required.to_string(),
-            });
-        }
+    if let Some(required) = opts.require_arch.as_deref()
+        && manifest.arch != required
+    {
+        return Err(BundleError::ArchMismatch {
+            actual: manifest.arch,
+            host: required.to_string(),
+        });
     }
 
-    // Recompute per-file hashes; also compare against what's actually
-    // on disk. Any file listed in bundle.toml but missing on disk is
-    // a corruption; any file on disk that isn't listed is likewise
-    // suspect (unknown-provenance content in a supposedly
-    // content-addressed dir).
+    // Recompute per-file hashes and compare against disk: a listed file
+    // missing on disk is corruption; an unlisted file present is suspect
+    // (unknown-provenance content in a content-addressed dir).
     let mut on_disk: BTreeMap<String, PathBuf> = BTreeMap::new();
     walk_payload(root, &mut on_disk)?;
     // The manifest itself lives at the root; don't treat it as payload.
@@ -674,10 +562,9 @@ pub fn verify_bundle_with(
         return Err(BundleError::FileUnlisted { path });
     }
 
-    // Root hash. This is what a signature covers, so it's checked
-    // BEFORE the signature — a tampered manifest that shifts
-    // root_hash but forgets to update files (or vice versa) fails
-    // here.
+    // Root hash is what the signature covers, so it's checked BEFORE the
+    // signature — a tampered manifest that shifts root_hash without
+    // updating files (or vice versa) fails here.
     let mut sorted = manifest.files.clone();
     sorted.sort_by(|a, b| a.path.cmp(&b.path));
     let computed = compute_root_hash(&sorted);
@@ -715,23 +602,20 @@ pub fn verify_bundle_with(
             return Err(BundleError::BadSignature);
         }
 
-        if let Some(required) = opts.require_publisher.as_deref() {
-            if !eq_hex_ignore_case(publisher_hex, required) {
-                return Err(BundleError::PublisherMismatch {
-                    required: required.to_string(),
-                    actual: publisher_hex.to_string(),
-                });
-            }
+        if let Some(required) = opts.require_publisher.as_deref()
+            && !eq_hex_ignore_case(publisher_hex, required)
+        {
+            return Err(BundleError::PublisherMismatch {
+                required: required.to_string(),
+                actual: publisher_hex.to_string(),
+            });
         }
     }
 
     Ok(manifest)
 }
 
-fn decode_fixed_hex<const N: usize>(
-    s: &str,
-    field: &'static str,
-) -> Result<[u8; N], BundleError> {
+fn decode_fixed_hex<const N: usize>(s: &str, field: &'static str) -> Result<[u8; N], BundleError> {
     let raw = hex::decode(s).map_err(|e| BundleError::SignatureFieldMalformed {
         field,
         reason: e.to_string(),
@@ -751,8 +635,7 @@ fn eq_hex_ignore_case(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-/// List the immediate contents of the bundle root that constitute the
-/// payload (used by `verify_bundle`). Recursive.
+/// List the immediate contents of the bundle root that constitute the payload (used by `verify_bundle`); recursive.
 fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Result<()> {
     fn recurse(
         base: &Path,
@@ -780,9 +663,8 @@ fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Re
     recurse(root, root, out)
 }
 
-/// BLAKE3 root: hash the newline-delimited `"<path>\t<file-hash>"`
-/// concatenation, sorted by `path`. Stable + independent of file
-/// mtime / permissions / directory-traversal order.
+/// BLAKE3 root: hash of the newline-delimited "<path>\t<file-hash>"
+/// concatenation, sorted by path — stable across mtime/permissions/traversal order.
 fn compute_root_hash(files: &[BundleFile]) -> String {
     let mut hasher = blake3::Hasher::new();
     for f in files {
@@ -811,10 +693,9 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
 }
 
 fn copy_file(src: &Path, dst: &Path) -> Result<(), BundleError> {
-    // `fs::copy` follows symlinks by default — we WANT that: the
-    // point of the bundle is to capture the actual bytes, so mounting
-    // it into a sandbox doesn't depend on the symlink's target being
-    // reachable.
+    // `fs::copy` follows symlinks (intentional): the bundle must capture
+    // actual bytes so a sandbox mount doesn't depend on the symlink
+    // target being reachable.
     fs::copy(src, dst)?;
     Ok(())
 }
@@ -831,8 +712,7 @@ fn resolve_from(host_root: &Path, abs: &str) -> PathBuf {
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
@@ -840,7 +720,11 @@ mod tests {
     use super::*;
 
     fn fake_x86_64_host(root: &Path) {
-        for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6", "lib64/libm.so.6"] {
+        for rel in [
+            "lib64/ld-linux-x86-64.so.2",
+            "lib64/libc.so.6",
+            "lib64/libm.so.6",
+        ] {
             let p = root.join(rel);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(&p, format!("fake contents of {rel}")).unwrap();
@@ -920,7 +804,11 @@ mod tests {
         assert_eq!(m.arch, "aarch64");
         // Fedora layout: loader at /lib/, libc at /lib64/.
         let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(paths.iter().any(|p| p.ends_with("lib/ld-linux-aarch64.so.1")));
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with("lib/ld-linux-aarch64.so.1"))
+        );
         assert!(paths.iter().any(|p| p.ends_with("lib64/libc.so.6")));
         verify_bundle(out.path()).expect("verify");
     }
@@ -942,9 +830,11 @@ mod tests {
         )
         .expect("build");
         let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(paths
-            .iter()
-            .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6")));
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with("aarch64-linux-gnu/libc.so.6"))
+        );
         verify_bundle(out.path()).expect("verify");
     }
 
@@ -1067,7 +957,10 @@ mod tests {
             },
         )
         .expect("build signed");
-        assert_eq!(manifest.publisher_hex.as_deref(), Some(identity.public_key_hex()).as_deref());
+        assert_eq!(
+            manifest.publisher_hex.as_deref(),
+            Some(identity.public_key_hex()).as_deref()
+        );
         assert!(manifest.signature_hex.is_some());
 
         // Default verify accepts a valid signed bundle.
@@ -1141,10 +1034,9 @@ mod tests {
         )
         .unwrap();
 
-        // Tamper: rewrite root_hash to something plausible-looking. Bundle
-        // integrity check catches this before the signature — good, but we
-        // want to prove the signature side too. Do it in the other order:
-        // flip a byte in `signature_hex` and re-file the manifest.
+        // Root-hash tampering is caught by the integrity check before the
+        // signature; to test the signature path specifically, flip a byte in
+        // signature_hex instead.
         let bundle_toml = out.path().join(BUNDLE_MANIFEST_FILENAME);
         let text = fs::read_to_string(&bundle_toml).unwrap();
         let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
@@ -1212,10 +1104,9 @@ mod tests {
         }
     }
 
-    /// A session that repoints `XDG_DATA_HOME` to keep its documents to
-    /// itself must still reach the machine's runtime bundles. Without
-    /// this the isolation silently takes the runtime with it, and every
-    /// app in that session fails to launch on a missing bundle.
+    /// A session that repoints `XDG_DATA_HOME` for its own documents must
+    /// still reach the machine's runtime bundles, or every app in that
+    /// session fails to launch on a missing bundle.
     #[test]
     #[serial_test::serial(process_env)]
     fn the_env_override_names_the_bundle_root() {
@@ -1237,10 +1128,9 @@ mod tests {
         );
     }
 
-    /// An empty value is not a path. Treating it as one resolves the
-    /// bundle to `/<version>`, which exists nowhere — turning a stray
-    /// `QOS_RUNTIME_BUNDLE_DIR=` in a shell profile into "no app on
-    /// this machine launches".
+    /// An empty value is not a path — treating it as one resolves to
+    /// `/<version>` (nowhere), turning a stray `QOS_RUNTIME_BUNDLE_DIR=`
+    /// into "no app on this machine launches".
     #[test]
     #[serial_test::serial(process_env)]
     fn an_empty_override_falls_back_to_the_data_dir() {
@@ -1258,10 +1148,9 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         fake_x86_64_host(host.path());
 
-        // Two stand-in shared objects a thin app links dynamically:
-        // the Rust std dylib and the qOS runtime dylib. Content is
-        // arbitrary — the point is that they end up in the bundle,
-        // content-addressed, and pass verification.
+        // Two stand-in shared objects a thin app links dynamically (Rust std
+        // + qOS runtime dylib); content is arbitrary — the point is they land
+        // in the bundle, content-addressed, and pass verification.
         let extras_dir = tempfile::tempdir().unwrap();
         let libstd = extras_dir.path().join("libstd-deadbeef.so");
         let libruntime = extras_dir.path().join("libruntime_dylib.so");
@@ -1276,18 +1165,16 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
-                extra_libs: &[libstd.clone(), libruntime.clone()],
+                extra_libs: &[libstd, libruntime],
             },
         )
         .expect("build with extras");
 
-        // Both extras appear at the TOP of lib/ (by file name), so
-        // LD_LIBRARY_PATH=<mount>/lib resolves them by soname.
+        // Both extras appear at the TOP of lib/ (by file name) for soname resolution via LD_LIBRARY_PATH.
         assert!(out.path().join("lib/libstd-deadbeef.so").exists());
         assert!(out.path().join("lib/libruntime_dylib.so").exists());
 
-        // Both are recorded in the manifest (hashed + covered by the
-        // root hash → covered by any signature).
+        // Both are recorded in the manifest — hashed, covered by the root hash, and thus any signature.
         let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"lib/libstd-deadbeef.so"), "{paths:?}");
         assert!(paths.contains(&"lib/libruntime_dylib.so"), "{paths:?}");

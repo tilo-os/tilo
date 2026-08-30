@@ -1,14 +1,14 @@
-//! Blocking Bluetooth operations over BlueZ's D-Bus API.
+//! Blocking Bluetooth operations over `BlueZ`'s D-Bus API.
 //!
 //! The rest of this crate shells out to command-line tools, which is the
 //! right shape for a one-shot setting like screen brightness. Bluetooth is
-//! the exception, for two reasons that are properties of BlueZ rather than
+//! the exception, for two reasons that are properties of `BlueZ` rather than
 //! preferences:
 //!
 //! - **A scan lives as long as its D-Bus connection.** `bluetoothctl scan on`
 //!   from a script stops scanning the moment the process exits, so a CLI
 //!   wrapper cannot hold a discovery session open while a pane is on screen.
-//! - **Pairing is a conversation.** BlueZ calls back into a registered agent
+//! - **Pairing is a conversation.** `BlueZ` calls back into a registered agent
 //!   object mid-pairing and blocks until it answers. There is no command line
 //!   for "the daemon asks you a question".
 //!
@@ -32,7 +32,7 @@ use tokio::runtime::Runtime;
 /// One shared current-thread-pool runtime for every blocking call.
 ///
 /// Built once: a runtime per call would also mean a D-Bus connection per
-/// call, and BlueZ ties discovery to the connection.
+/// call, and `BlueZ` ties discovery to the connection.
 fn runtime() -> Result<&'static Runtime, String> {
     static RT: OnceLock<Option<Runtime>> = OnceLock::new();
     RT.get_or_init(|| {
@@ -61,7 +61,9 @@ fn block<F, T>(f: F) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, zbus::Error>>,
 {
-    runtime()?.block_on(f).map_err(|e| qos_bluez::error_text(&e))
+    runtime()?
+        .block_on(f)
+        .map_err(|e| qos_bluez::error_text(&e))
 }
 
 /// The adapter every operation here targets.
@@ -72,7 +74,7 @@ pub fn adapter_path() -> Result<String, String> {
         .ok_or_else(|| "no Bluetooth adapter on this machine".to_string())
 }
 
-/// Every device BlueZ knows about — paired or merely seen — newest signal
+/// Every device `BlueZ` knows about — paired or merely seen — newest signal
 /// first. Unlike the paired-only list, this is what a "nearby devices" view
 /// needs.
 pub fn devices() -> Result<Vec<DeviceInfo>, String> {

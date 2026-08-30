@@ -2,7 +2,7 @@
 //! (`org.freedesktop.portal.Location`, through the [`ashpd`] crate).
 //!
 //! Per the qOS HIG (§5 system integration) an app prefers host/portal services
-//! over reinventing them: the *host desktop* (GeoClue2 behind the portal on
+//! over reinventing them: the *host desktop* (`GeoClue2` behind the portal on
 //! GNOME; the compositor's portal backend on qOS) provides the fix and mediates
 //! the permission prompt — the portal is the security boundary. This module
 //! never fabricates a position: if the portal is missing, permission is denied,
@@ -43,7 +43,7 @@ pub enum LocationOutcome {
 /// A pending location request: the receiver the UI thread drains each frame.
 pub type LocationChannel = Receiver<LocationOutcome>;
 
-/// How long to wait for the first location update before giving up. GeoClue can
+/// How long to wait for the first location update before giving up. `GeoClue` can
 /// take a few seconds to acquire a fix; beyond this we report it unavailable
 /// rather than hanging the "Locating…" state forever.
 const FIX_TIMEOUT: Duration = Duration::from_secs(20);
@@ -119,13 +119,9 @@ async fn location_future() -> LocationOutcome {
             lon: location.longitude(),
             accuracy_m: location.accuracy(),
         },
-        Ok((Ok(_), None)) => {
-            LocationOutcome::Unavailable("no location fix available".to_string())
-        }
+        Ok((Ok(_), None)) => LocationOutcome::Unavailable("no location fix available".to_string()),
         Ok((Err(e), _)) => LocationOutcome::Unavailable(portal_reason(e)),
-        Err(_) => {
-            LocationOutcome::Unavailable("timed out waiting for a location fix".to_string())
-        }
+        Err(_) => LocationOutcome::Unavailable("timed out waiting for a location fix".to_string()),
     };
     let _ = session.close().await;
     outcome
@@ -173,9 +169,6 @@ mod tests {
     #[test]
     fn inject_delivers_unavailable() {
         let rx = inject_for_test(LocationOutcome::Unavailable("permission denied".into()));
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(LocationOutcome::Unavailable(_))
-        ));
+        assert!(matches!(rx.try_recv(), Ok(LocationOutcome::Unavailable(_))));
     }
 }

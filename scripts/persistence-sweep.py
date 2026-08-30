@@ -50,7 +50,7 @@ SCENARIOS = pathlib.Path(__file__).resolve().parent / "persistence-scenarios.jso
 # are reported as unswept rather than clicked at random.
 NEEDS_CURATION = {
     "terminal", "osk", "disks", "imager", "firewall", "vpn", "containers",
-    "software_store", "store", "remote", "backups", "camera",
+    "store", "remote", "backups", "camera",
 }
 
 # The generic scenario. Keystrokes first, because app-level key handling

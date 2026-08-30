@@ -68,6 +68,7 @@ impl MathField {
         }
     }
 
+    #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.base_size = size;
         self
@@ -85,7 +86,7 @@ impl MathField {
     }
 
     /// The current content as a linear string the engine parses. The editor
-    /// stores `·` for multiplication (GeoGebra style); the engine wants `*`.
+    /// stores `·` for multiplication (`GeoGebra` style); the engine wants `*`.
     pub fn linear(&self) -> String {
         engine_linear(&self.editor.to_linear())
     }
@@ -144,7 +145,7 @@ impl MathField {
     /// centered when it fits and top-aligned + scrolled when it is taller than
     /// the field, so the field never grows with the formula.
     fn content_origin(&self) -> Point {
-        let h = self.layout.as_ref().map(|l| l.height).unwrap_or(0.0);
+        let h = self.layout.as_ref().map_or(0.0, |l| l.height);
         let view_h = self.rect.height();
         let y = if h <= view_h {
             self.rect.y0 + (view_h - h) / 2.0
@@ -184,7 +185,7 @@ impl MathField {
         };
         let view_w = self.view_w();
         let view_h = self.rect.height();
-        let content_h = self.layout.as_ref().map(|l| l.height).unwrap_or(0.0);
+        let content_h = self.layout.as_ref().map_or(0.0, |l| l.height);
         let margin = 8.0f64;
         if let Some((cx, ctop, cbot)) = caret {
             if cx < self.scroll.x + margin {
@@ -231,7 +232,9 @@ impl MathField {
         focused: bool,
     ) {
         self.relayout(tr);
-        let layout = self.layout.as_ref().unwrap();
+        let Some(layout) = self.layout.as_ref() else {
+            return;
+        };
         let origin = self.content_origin();
         let steps = &self.editor.caret.steps;
         let caret = render::caret_gap(layout, steps, self.editor.caret.offset);
@@ -302,7 +305,7 @@ impl MathField {
     /// source so a subsequent [`set_source`] with the same value is a no-op.
     pub fn current_linear(&mut self) -> String {
         let s = engine_linear(&self.editor.to_linear());
-        self.source = s.clone();
+        self.source.clone_from(&s);
         s
     }
 
@@ -361,40 +364,37 @@ impl MathField {
                 self.editor.move_right(false);
                 false
             }
-            WKey::Character(s) if ctrl => {
-                match s.as_str() {
-                    "a" | "A" => {
-                        self.editor.select_all();
-                        false
+            WKey::Character(s) if ctrl => match s.as_str() {
+                "a" | "A" => {
+                    self.editor.select_all();
+                    false
+                }
+                "c" | "C" => {
+                    if let Some(lin) = self.editor.selected_linear() {
+                        ui::clipboard_copy(&lin);
                     }
-                    "c" | "C" => {
-                        if let Some(lin) = self.editor.selected_linear() {
-                            ui::clipboard_copy(&lin);
-                        }
-                        false
+                    false
+                }
+                "x" | "X" => {
+                    if let Some(lin) = self.editor.selected_linear() {
+                        ui::clipboard_copy(&lin);
+                        self.editor.delete_selection();
+                        return true;
                     }
-                    "x" | "X" => {
-                        if let Some(lin) = self.editor.selected_linear() {
-                            ui::clipboard_copy(&lin);
-                            self.editor.delete_selection();
+                    false
+                }
+                "v" | "V" => {
+                    if let Some(paste) = ui::clipboard_paste() {
+                        let cleaned: String = paste.chars().filter(|c| !c.is_control()).collect();
+                        if !cleaned.is_empty() {
+                            self.editor.paste_linear(&cleaned);
                             return true;
                         }
-                        false
                     }
-                    "v" | "V" => {
-                        if let Some(paste) = ui::clipboard_paste() {
-                            let cleaned: String =
-                                paste.chars().filter(|c| !c.is_control()).collect();
-                            if !cleaned.is_empty() {
-                                self.editor.paste_linear(&cleaned);
-                                return true;
-                            }
-                        }
-                        false
-                    }
-                    _ => false,
+                    false
                 }
-            }
+                _ => false,
+            },
             WKey::Character(s) => {
                 let mut changed = false;
                 for ch in s.chars() {
@@ -478,7 +478,7 @@ impl MathField {
     /// so a taller formula makes its card taller instead of being clipped.
     pub fn content_height(&mut self, tr: &mut TextRenderer) -> f64 {
         self.relayout(tr);
-        self.layout.as_ref().map(|l| l.height).unwrap_or(0.0)
+        self.layout.as_ref().map_or(0.0, |l| l.height)
     }
 }
 

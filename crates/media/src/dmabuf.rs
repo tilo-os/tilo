@@ -33,7 +33,15 @@ pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
 /// Render a fourcc back to its four characters, for logs and error text.
 pub fn fourcc_str(v: u32) -> String {
     let b = [v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8];
-    b.iter().map(|c| if c.is_ascii_graphic() { *c as char } else { '?' }).collect()
+    b.iter()
+        .map(|c| {
+            if c.is_ascii_graphic() {
+                *c as char
+            } else {
+                '?'
+            }
+        })
+        .collect()
 }
 
 /// 8-bit 4:2:0, two planes: Y then interleaved CbCr. What essentially every
@@ -98,11 +106,16 @@ pub struct Colorimetry {
 impl Colorimetry {
     /// The safe assumption for HD video when the stream says nothing:
     /// BT.709 coefficients over a limited range.
-    pub const BT709_LIMITED: Self =
-        Self { matrix: YuvMatrix::Bt709, range: ColorRange::Limited };
+    pub const BT709_LIMITED: Self = Self {
+        matrix: YuvMatrix::Bt709,
+        range: ColorRange::Limited,
+    };
 
     /// Straight RGB — no conversion applies.
-    pub const RGB: Self = Self { matrix: YuvMatrix::Identity, range: ColorRange::Full };
+    pub const RGB: Self = Self {
+        matrix: YuvMatrix::Identity,
+        range: ColorRange::Full,
+    };
 }
 
 impl Default for Colorimetry {
@@ -156,7 +169,9 @@ impl DmabufImage {
             _ => {
                 let first = self.planes[0].fd.try_clone().ok();
                 match first {
-                    Some(_) => self.planes[1..].iter().all(|p| same_file(&self.planes[0], p)),
+                    Some(_) => self.planes[1..]
+                        .iter()
+                        .all(|p| same_file(&self.planes[0], p)),
                     None => false,
                 }
             }
@@ -260,7 +275,10 @@ mod tests {
             colorimetry: Colorimetry::default(),
         };
         assert!(img(DRM_FORMAT_MOD_LINEAR).is_linear());
-        assert!(img(DRM_FORMAT_MOD_INVALID).is_linear(), "unstated is treated as linear");
+        assert!(
+            img(DRM_FORMAT_MOD_INVALID).is_linear(),
+            "unstated is treated as linear"
+        );
         // The AMD GFX9 tiled modifier a VA-API decoder exports. This must be
         // rejected: importing it as linear would sample garbage.
         assert!(!img(0x0200_0000_1040_1b04).is_linear());
@@ -289,7 +307,11 @@ mod tests {
         std::fs::write(&path, vec![0u8; 4096]).unwrap();
         let f = std::fs::File::open(&path).unwrap();
         let fd = OwnedFd::from(f);
-        assert_eq!(dmabuf_size(&fd), Some(4096), "SEEK_END reports the real size");
+        assert_eq!(
+            dmabuf_size(&fd),
+            Some(4096),
+            "SEEK_END reports the real size"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -306,8 +328,16 @@ mod tests {
         let fd_a2 = fd_a.try_clone().unwrap();
         let shared = DmabufImage {
             planes: vec![
-                DmabufPlane { fd: fd_a, offset: 0, stride: 8 },
-                DmabufPlane { fd: fd_a2, offset: 32, stride: 8 },
+                DmabufPlane {
+                    fd: fd_a,
+                    offset: 0,
+                    stride: 8,
+                },
+                DmabufPlane {
+                    fd: fd_a2,
+                    offset: 32,
+                    stride: 8,
+                },
             ],
             fourcc: DRM_FORMAT_NV12,
             modifier: 0,
@@ -315,7 +345,10 @@ mod tests {
             height: 4,
             colorimetry: Colorimetry::default(),
         };
-        assert!(shared.planes_share_one_buffer(), "same inode → one buffer, bind at offsets");
+        assert!(
+            shared.planes_share_one_buffer(),
+            "same inode → one buffer, bind at offsets"
+        );
 
         let split = DmabufImage {
             planes: vec![
@@ -336,7 +369,10 @@ mod tests {
             height: 4,
             colorimetry: Colorimetry::default(),
         };
-        assert!(!split.planes_share_one_buffer(), "distinct inodes → import each plane");
+        assert!(
+            !split.planes_share_one_buffer(),
+            "distinct inodes → import each plane"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

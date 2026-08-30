@@ -159,16 +159,16 @@ impl Harness {
         if self.focused == new {
             return;
         }
-        if let Some(old) = self.focused {
-            if let Some(&w) = self.node_map.get(&old) {
-                unsafe { (*w).set_focus(false) };
-            }
+        if let Some(old) = self.focused
+            && let Some(&w) = self.node_map.get(&old)
+        {
+            unsafe { (*w).set_focus(false) };
         }
         self.focused = new;
-        if let Some(id) = new {
-            if let Some(&w) = self.node_map.get(&id) {
-                unsafe { (*w).set_focus(true) };
-            }
+        if let Some(id) = new
+            && let Some(&w) = self.node_map.get(&id)
+        {
+            unsafe { (*w).set_focus(true) };
         }
     }
 
@@ -195,8 +195,15 @@ impl Harness {
         for ev in [&cursor, &press, &release] {
             let mut handled = false;
             self.app.handle_event(
-                ev, 1.0, &mods, &mut self.doc, &root(), &mut handled, &mut focus_target,
-                self.app_node, &self.taffy,
+                ev,
+                1.0,
+                &mods,
+                &mut self.doc,
+                &root(),
+                &mut handled,
+                &mut focus_target,
+                self.app_node,
+                &self.taffy,
             );
         }
         if let Some(id) = focus_target {
@@ -213,8 +220,15 @@ impl Harness {
         let mut handled = false;
         let mut focus_target = None;
         self.app.handle_event(
-            &ev, 1.0, &mods, &mut self.doc, &root(), &mut handled, &mut focus_target,
-            self.app_node, &self.taffy,
+            &ev,
+            1.0,
+            &mods,
+            &mut self.doc,
+            &root(),
+            &mut handled,
+            &mut focus_target,
+            self.app_node,
+            &self.taffy,
         );
         if let Some(id) = focus_target {
             self.set_focused(Some(id));
@@ -242,14 +256,14 @@ impl Harness {
         // The old node ids are about to be invalidated (fresh taffy tree).
         self.focused = None;
         self.layout();
-        if let Some(idx) = prev_idx {
-            if let Some(&id) = self.focus_order.get(idx) {
-                self.set_focused(Some(id));
-                if let Some(s) = &prev_state {
-                    if let Some(&w) = self.node_map.get(&id) {
-                        unsafe { (*w).set_state(s) };
-                    }
-                }
+        if let Some(idx) = prev_idx
+            && let Some(&id) = self.focus_order.get(idx)
+        {
+            self.set_focused(Some(id));
+            if let Some(s) = &prev_state
+                && let Some(&w) = self.node_map.get(&id)
+            {
+                unsafe { (*w).set_state(s) };
             }
         }
     }
@@ -275,7 +289,9 @@ impl Harness {
     }
 
     fn search_field_rect(&self) -> vello::kurbo::Rect {
-        self.search_field().expect("a search TextInput exists").get_rect()
+        self.search_field()
+            .expect("a search TextInput exists")
+            .get_rect()
     }
 
     fn sidebar_row_count(&self) -> usize {
@@ -306,8 +322,7 @@ fn search_field_is_a_top_level_focusable() {
     let has_text_input = h.focus_order.iter().any(|&id| {
         h.node_map
             .get(&id)
-            .map(|&w| unsafe { (*w).name() == "TextInput" })
-            .unwrap_or(false)
+            .is_some_and(|&w| unsafe { (*w).name() == "TextInput" })
     });
     assert!(
         has_text_input,
@@ -324,7 +339,10 @@ fn clicking_search_field_focuses_it() {
         "the field starts unfocused (no autofocus on launch)"
     );
     let rect = h.search_field_rect();
-    assert!(rect.width() > 0.0 && rect.height() > 0.0, "field has a real rect");
+    assert!(
+        rect.width() > 0.0 && rect.height() > 0.0,
+        "field has a real rect"
+    );
 
     h.click(rect.center());
 
@@ -343,14 +361,21 @@ fn typing_into_search_filters_and_keeps_focus() {
     // Click to focus, then type a query that filters to a couple of panes.
     let rect = h.search_field_rect();
     h.click(rect.center());
-    assert!(h.search_field().unwrap().is_focused(), "click focused the field");
+    assert!(
+        h.search_field().unwrap().is_focused(),
+        "click focused the field"
+    );
 
     for c in ["n", "e", "t"] {
         h.type_char(c);
     }
 
     // The query reached the app and drove the filter (real sidebar rebuild).
-    assert_eq!(h.app.search_query(), "net", "each typed char reached the query");
+    assert_eq!(
+        h.app.search_query(),
+        "net",
+        "each typed char reached the query"
+    );
     let after = h.sidebar_row_count();
     assert!(
         after < before && after >= 1,
@@ -360,7 +385,9 @@ fn typing_into_search_filters_and_keeps_focus() {
     // The field survived every per-keystroke rebuild: it is still focused and
     // still holds the full typed text (the caret never got dropped, so all
     // three characters landed — the exact thing the old bug broke).
-    let field = h.search_field().expect("field still present after filtering");
+    let field = h
+        .search_field()
+        .expect("field still present after filtering");
     assert!(field.is_focused(), "focus survived the filter rebuilds");
     assert_eq!(
         field.text_review().map(|(_, t)| t),

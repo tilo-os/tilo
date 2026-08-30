@@ -15,8 +15,8 @@ use taffy::prelude::*;
 use tempfile::TempDir;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
-use ui::presence::{PresenceCtx, PresenceKey};
 use ui::permissions::UserId;
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -24,13 +24,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-fn render(
-    app: &mut NotesApp,
-    presence: &PresenceCtx,
-    out: &str,
-    w: u32,
-    h: u32,
-) {
+fn render(app: &mut NotesApp, presence: &PresenceCtx, out: &str, w: u32, h: u32) {
     let theme = Theme::dark();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -90,8 +84,8 @@ fn render(
 #[test]
 #[ignore = "interactive PNG harness"]
 fn ghost_caret_repro() {
-    let dir = std::env::var("NOTES_CRITIQUE_DIR")
-        .unwrap_or_else(|_| "/tmp/notes-peer-caret".to_string());
+    let dir =
+        std::env::var("NOTES_CRITIQUE_DIR").unwrap_or_else(|_| "/tmp/notes-peer-caret".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
@@ -101,32 +95,60 @@ fn ghost_caret_repro() {
     //    it can only be the local TextInput drawing two carets — not a
     //    peer-data thing at all.
     let presence_empty = PresenceCtx::empty();
-    render(&mut app, &presence_empty, &format!("{dir}/01-baseline.png"), 1280, 800);
+    render(
+        &mut app,
+        &presence_empty,
+        &format!("{dir}/01-baseline.png"),
+        1280,
+        800,
+    );
 
     // 2) Local user focused, no remote peer at all.
     {
         let panel = app.main_panel_mut();
         // Mark "alice" as the local author so authorship + colours
         // pick the same id Notes will use at runtime.
-        panel.editor_mut().set_local_author(Some("alice".to_string()));
+        panel
+            .editor_mut()
+            .set_local_author(Some("alice".to_string()));
         panel.editor_mut().set_focus(true);
         // Drop the caret in block 0, byte 5.
-        panel.editor_mut().focus_block(0, ui::widget::block_editor::CursorPlacement::Byte(5));
+        panel
+            .editor_mut()
+            .focus_block(0, ui::widget::block_editor::CursorPlacement::Byte(5));
     }
-    render(&mut app, &presence_empty, &format!("{dir}/02-local-focused.png"), 1280, 800);
+    render(
+        &mut app,
+        &presence_empty,
+        &format!("{dir}/02-local-focused.png"),
+        1280,
+        800,
+    );
 
     // 3) Add a remote peer caret on block 0 byte 10 in Bob's colour.
     let mut presence_with_peer = PresenceCtx::empty();
     let bob = UserId("bob".to_string());
     let block_key = ui::widget::block_editor::block_presence_key(0);
-    presence_with_peer.set_caret(&block_key, bob.clone(), 10);
-    render(&mut app, &presence_with_peer, &format!("{dir}/03-with-peer.png"), 1280, 800);
+    presence_with_peer.set_caret(&block_key, bob, 10);
+    render(
+        &mut app,
+        &presence_with_peer,
+        &format!("{dir}/03-with-peer.png"),
+        1280,
+        800,
+    );
 
     // 4) Add the LOCAL user as a peer too (the suspected bug — the
     //    local user appearing in the remote-presence map).
     let alice = UserId("alice".to_string());
-    presence_with_peer.set_caret(&block_key, alice.clone(), 5);
-    render(&mut app, &presence_with_peer, &format!("{dir}/04-with-both.png"), 1280, 800);
+    presence_with_peer.set_caret(&block_key, alice, 5);
+    render(
+        &mut app,
+        &presence_with_peer,
+        &format!("{dir}/04-with-both.png"),
+        1280,
+        800,
+    );
 
     eprintln!("INSPECT: ls -la {dir}");
 }

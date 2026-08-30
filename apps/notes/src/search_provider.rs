@@ -39,7 +39,9 @@ pub struct NoteSearchProvider {
 impl NoteSearchProvider {
     /// Snapshot the current page tree into a provider.
     pub fn new(workspace: &Workspace) -> Self {
-        Self { pages: workspace.pages().to_vec() }
+        Self {
+            pages: workspace.pages().to_vec(),
+        }
     }
 
     /// The `action_id` for a page — what a chosen row hands back.
@@ -59,7 +61,11 @@ impl NoteSearchProvider {
     /// The display title for a page, substituting a placeholder for a blank
     /// title so an untitled page is still findable and readable in the palette.
     fn display_title(page: &PageMeta) -> &str {
-        if page.title.trim().is_empty() { UNTITLED } else { page.title.as_str() }
+        if page.title.trim().is_empty() {
+            UNTITLED
+        } else {
+            page.title.as_str()
+        }
     }
 }
 
@@ -113,7 +119,10 @@ mod tests {
             "the provider surfaces the matching page, got {:?}",
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
-        assert!(hits.iter().all(|r| r.kind == NOTE_KIND), "all hits are tagged Notes");
+        assert!(
+            hits.iter().all(|r| r.kind == NOTE_KIND),
+            "all hits are tagged Notes"
+        );
     }
 
     #[test]
@@ -134,10 +143,17 @@ mod tests {
         let top = &groups[0].results[0];
         assert_eq!(top.title, "Trip planning", "the best match leads");
 
-        let id =
-            NoteSearchProvider::parse_action_id(&top.action_id).expect("action_id parses to a PageId");
-        assert!(ws.get(id).is_some(), "the id resolves to a real stored page");
-        assert_eq!(ws.get(id).unwrap().title, top.title, "activation lands on the right page");
+        let id = NoteSearchProvider::parse_action_id(&top.action_id)
+            .expect("action_id parses to a PageId");
+        assert!(
+            ws.get(id).is_some(),
+            "the id resolves to a real stored page"
+        );
+        assert_eq!(
+            ws.get(id).unwrap().title,
+            top.title,
+            "activation lands on the right page"
+        );
     }
 
     #[test]
@@ -152,6 +168,10 @@ mod tests {
         ws.create_page(None); // left untitled
         let provider = NoteSearchProvider::new(&ws);
         let hits = provider.search("untitled");
-        assert_eq!(hits.len(), 1, "a blank-titled page surfaces under its placeholder");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a blank-titled page surfaces under its placeholder"
+        );
     }
 }

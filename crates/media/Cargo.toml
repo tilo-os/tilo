@@ -25,6 +25,10 @@ encode = ["dep:gstreamer"]
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
 automerge.workspace = true
+
+# Decode diagnostics: which decoder was plugged, why a hardware path was
+# refused, what `QOS_MEDIA_HWDEC` / `QOS_MEDIA_HWENC` were read as. Same pin the
+# rest of the workspace resolves, so log filtering behaves identically.
 tracing.workspace = true
 
 # The audio graph client reads `pw-dump`'s JSON to enumerate the
@@ -48,3 +52,6 @@ gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
 # The decode probe example prints pipeline diagnostics; the same subscriber the
 # rest of the workspace uses, so log filtering behaves identically.
 tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

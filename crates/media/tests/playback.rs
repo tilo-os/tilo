@@ -23,7 +23,10 @@ mod real {
 
     fn engine() -> MediaEngine {
         let mut e = MediaEngine::with_config(EngineConfig::default().silent());
-        assert!(e.is_real_decode(), "these assertions require the real pipeline");
+        assert!(
+            e.is_real_decode(),
+            "these assertions require the real pipeline"
+        );
         e.open(fixture_source());
         e
     }
@@ -54,7 +57,12 @@ mod real {
 
         let seen = pump(&mut e, Duration::from_millis(1_200));
         println!("decoder: {}", e.hw_report().describe());
-        println!("{} distinct frames in 1.2s, first {:?} last {:?}", seen.len(), seen.first(), seen.last());
+        println!(
+            "{} distinct frames in 1.2s, first {:?} last {:?}",
+            seen.len(),
+            seen.first(),
+            seen.last()
+        );
 
         // At 30fps, a second of real playback is ~30 pictures. Requiring well
         // over a handful is what distinguishes continuous decode from the old
@@ -158,7 +166,10 @@ mod real {
         e.set_volume(0.6);
         e.set_muted(true);
         assert!(e.is_muted());
-        assert!((e.volume() - 0.6).abs() < 1e-6, "mute preserves the volume setting");
+        assert!(
+            (e.volume() - 0.6).abs() < 1e-6,
+            "mute preserves the volume setting"
+        );
         e.set_muted(false);
         assert!(!e.is_muted());
         assert!((e.volume() - 0.6).abs() < 1e-6);
@@ -196,7 +207,9 @@ mod hermetic {
     #[test]
     fn the_fallback_playhead_advances_while_playing_and_holds_while_paused() {
         let mut e = MediaEngine::new_synthesized();
-        e.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        e.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
         e.play();
         e.poll_at(0);
         e.poll_at(1_000);

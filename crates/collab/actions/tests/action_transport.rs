@@ -16,12 +16,12 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ReadDoc, ScalarValue, ROOT};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    dispatch, read_message, replay, Action, ActionError, ActionRegistry, Dispatched, Doc,
-    EncodedAction, ExecutionLocus, IoTransport, WireMessage,
+    Action, ActionError, ActionRegistry, Dispatched, Doc, EncodedAction, ExecutionLocus,
+    IoTransport, WireMessage, dispatch, read_message, replay,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

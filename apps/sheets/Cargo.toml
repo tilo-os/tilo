@@ -20,8 +20,6 @@ ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -34,3 +32,6 @@ dirs.workspace = true
 calamine = "0.26"
 rust_xlsxwriter = "0.79"
 zip.workspace = true
+
+[lints]
+workspace = true

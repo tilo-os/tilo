@@ -16,7 +16,7 @@
 //! trailing currency symbols, surrounding spaces, and a parenthesised
 //! negative (`(1,200)`) are all accepted.
 
-use crate::model::{date_to_serial, CellFormat, Currency, DateStyle, TimeStyle};
+use crate::model::{CellFormat, Currency, DateStyle, TimeStyle, date_to_serial};
 
 /// The outcome of inferring a freshly-typed literal.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,36 +56,36 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
             return Inferred {
                 raw: "TRUE".into(),
                 format: CellFormat::Boolean,
-            }
+            };
         }
         "FALSE" => {
             return Inferred {
                 raw: "FALSE".into(),
                 format: CellFormat::Boolean,
-            }
+            };
         }
         _ => {}
     }
 
     // Percent: a trailing `%`.
-    if let Some(body) = trimmed.strip_suffix('%') {
-        if let Some(n) = parse_number_loose(body.trim()) {
-            // Store the underlying fraction; Percent format multiplies by 100.
-            return Inferred {
-                raw: trim_float(n / 100.0),
-                format: CellFormat::Percent,
-            };
-        }
+    if let Some(body) = trimmed.strip_suffix('%')
+        && let Some(n) = parse_number_loose(body.trim())
+    {
+        // Store the underlying fraction; Percent format multiplies by 100.
+        return Inferred {
+            raw: trim_float(n / 100.0),
+            format: CellFormat::Percent,
+        };
     }
 
     // Currency: a leading or trailing currency symbol/code.
-    if let Some((cur, amount)) = strip_currency(trimmed, default_currency) {
-        if let Some(n) = parse_number_loose(amount) {
-            return Inferred {
-                raw: trim_float(n),
-                format: CellFormat::Currency(cur),
-            };
-        }
+    if let Some((cur, amount)) = strip_currency(trimmed, default_currency)
+        && let Some(n) = parse_number_loose(amount)
+    {
+        return Inferred {
+            raw: trim_float(n),
+            format: CellFormat::Currency(cur),
+        };
     }
 
     // Date / time literals.
@@ -104,13 +104,13 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
 
     // Number with grouping separators (`1,234.5`) → store the bare number,
     // adopt the Number format so the grouping shows on render.
-    if has_grouping(trimmed) {
-        if let Some(n) = parse_number_loose(trimmed) {
-            return Inferred {
-                raw: trim_float(n),
-                format: CellFormat::Number,
-            };
-        }
+    if has_grouping(trimmed)
+        && let Some(n) = parse_number_loose(trimmed)
+    {
+        return Inferred {
+            raw: trim_float(n),
+            format: CellFormat::Number,
+        };
     }
 
     // Plain number (no grouping) → keep raw, leave General so integers
@@ -154,10 +154,13 @@ fn has_grouping(s: &str) -> bool {
     // A comma flanked by digits, e.g. "1,234" or "12,000.50".
     let bytes: Vec<char> = s.chars().collect();
     for (i, c) in bytes.iter().enumerate() {
-        if *c == ',' && i > 0 && i + 1 < bytes.len() {
-            if bytes[i - 1].is_ascii_digit() && bytes[i + 1].is_ascii_digit() {
-                return true;
-            }
+        if *c == ','
+            && i > 0
+            && i + 1 < bytes.len()
+            && bytes[i - 1].is_ascii_digit()
+            && bytes[i + 1].is_ascii_digit()
+        {
+            return true;
         }
     }
     false
@@ -169,16 +172,18 @@ fn has_grouping(s: &str) -> bool {
 /// to the symbol's canonical owner.
 fn strip_currency(s: &str, default_currency: Currency) -> Option<(Currency, &str)> {
     // Multi-char codes first (CHF, EUR) so they don't get mis-split.
-    for code in ["CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "CNY", "INR"] {
-        if let Some(rest) = s.strip_prefix(code) {
-            if let Some(c) = Currency::from_code(code) {
-                return Some((c, rest.trim_start()));
-            }
+    for code in [
+        "CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "CNY", "INR",
+    ] {
+        if let Some(rest) = s.strip_prefix(code)
+            && let Some(c) = Currency::from_code(code)
+        {
+            return Some((c, rest.trim_start()));
         }
-        if let Some(rest) = s.strip_suffix(code) {
-            if let Some(c) = Currency::from_code(code) {
-                return Some((c, rest.trim_end()));
-            }
+        if let Some(rest) = s.strip_suffix(code)
+            && let Some(c) = Currency::from_code(code)
+        {
+            return Some((c, rest.trim_end()));
         }
     }
     // Single-glyph symbols.
@@ -208,12 +213,11 @@ fn resolve_symbol(sym: &str, default_currency: Currency) -> Currency {
 /// Parse an ISO / US / EU date literal into an Excel serial.
 fn parse_date(s: &str) -> Option<f64> {
     // ISO: YYYY-MM-DD
-    if let Some((y, rest)) = split_int(s, '-') {
-        if let Some((m, d)) = split_two(rest, '-') {
-            if valid_ymd(y, m, d) {
-                return Some(date_to_serial(y, m as u32, d as u32));
-            }
-        }
+    if let Some((y, rest)) = split_int(s, '-')
+        && let Some((m, d)) = split_two(rest, '-')
+        && valid_ymd(y, m, d)
+    {
+        return Some(date_to_serial(y, m as u32, d as u32));
     }
     // Slash forms: try US (M/D/Y) and EU (D/M/Y). Prefer the one that is
     // unambiguously valid; if both are valid, US wins (matching the ISO
@@ -305,7 +309,7 @@ fn trim_float(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         return format!("{}", n as i64);
     }
-    let s = format!("{:.10}", n);
+    let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
@@ -388,7 +392,10 @@ mod tests {
         let r = infer("03/15/2023");
         assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
         let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(n, DateStyle::Iso), "2023-03-15");
+        assert_eq!(
+            crate::model::serial_to_date(n, DateStyle::Iso),
+            "2023-03-15"
+        );
     }
 
     #[test]
@@ -397,7 +404,10 @@ mod tests {
         let r = infer("25/03/2023");
         assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
         let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_date(n, DateStyle::Iso), "2023-03-25");
+        assert_eq!(
+            crate::model::serial_to_date(n, DateStyle::Iso),
+            "2023-03-25"
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "contacts"
 version = "0.1.0"
 edition = "2024"
@@ -23,14 +25,12 @@ ui = { path = "../../ui", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 
 # --- Host-native file open/save (XDG Desktop Portal) ------------------
 # Import (open) and Export (save) go through
@@ -51,3 +51,10 @@ tempfile.workspace = true
 # file-type association it declares is checked against the real packaging
 # schema, not just eyeballed. Already resolved in the workspace lockfile.
 pkg = { path = "../../crates/packaging/pkg" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -21,7 +21,7 @@
 //! blob) is what lets two peers concurrently edit the fleet and converge.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ROOT, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{ConnId, ConnKind, ConnStatus, Connection, Vault};
 
@@ -78,13 +78,17 @@ impl VpnDoc {
         let _ = doc.put(
             &obj,
             "last_handshake",
-            c.last_handshake_secs.map(|s| s as i64).unwrap_or(-1),
+            c.last_handshake_secs.map_or(-1, |s| s as i64),
         );
         let _ = doc.put(&obj, "rx", c.rx_bytes as i64);
         let _ = doc.put(&obj, "tx", c.tx_bytes as i64);
         let _ = doc.put(&obj, "base_down", c.base_down_mbps);
         let _ = doc.put(&obj, "base_up", c.base_up_mbps);
-        let _ = doc.put(&obj, "config_path", c.config_path.clone().unwrap_or_default());
+        let _ = doc.put(
+            &obj,
+            "config_path",
+            c.config_path.clone().unwrap_or_default(),
+        );
     }
 
     /// Update just the live status of a connection (connect/disconnect).
@@ -122,7 +126,11 @@ impl VpnDoc {
     }
 
     pub fn set_selected(doc: &mut AutoCommit, id: Option<ConnId>) {
-        let _ = doc.put(&ROOT, "selected", id.map(|s| s.to_string()).unwrap_or_default());
+        let _ = doc.put(
+            &ROOT,
+            "selected",
+            id.map(|s| s.to_string()).unwrap_or_default(),
+        );
     }
 
     pub fn set_tor_global(doc: &mut AutoCommit, on: bool) {
@@ -139,9 +147,10 @@ impl VpnDoc {
         let mut connections = Vec::new();
         if let Ok(Some((Value::Object(ObjType::Map), conns))) = doc.get(&ROOT, "connections") {
             for key in doc.keys(&conns) {
-                let Ok(id) = key.parse::<ConnId>() else { continue };
-                let Ok(Some((Value::Object(ObjType::Map), obj))) =
-                    doc.get(&conns, key.as_str())
+                let Ok(id) = key.parse::<ConnId>() else {
+                    continue;
+                };
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&conns, key.as_str())
                 else {
                     continue;
                 };
@@ -157,7 +166,11 @@ impl VpnDoc {
                     public_key: s("public_key"),
                     allowed_ips: s("allowed_ips"),
                     status: ConnStatus::from_str(&s("status")),
-                    last_handshake_secs: if last_hs < 0 { None } else { Some(last_hs as u64) },
+                    last_handshake_secs: if last_hs < 0 {
+                        None
+                    } else {
+                        Some(last_hs as u64)
+                    },
                     last_used: s("last_used"),
                     tor: get_bool(doc, &obj, "tor"),
                     rx_bytes: get_int(doc, &obj, "rx").max(0) as u64,
@@ -185,7 +198,11 @@ impl VpnDoc {
             _ => None,
         };
         let tor_global = get_bool(doc, &ROOT, "tor_global");
-        Vault { connections, selected, tor_global }
+        Vault {
+            connections,
+            selected,
+            tor_global,
+        }
     }
 }
 
@@ -271,8 +288,11 @@ mod tests {
         VpnDoc::write_connection(&mut b, &extra);
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b_loaded).unwrap();
-        let names: Vec<String> =
-            VpnDoc::read_vault(&a).connections.into_iter().map(|c| c.name).collect();
+        let names: Vec<String> = VpnDoc::read_vault(&a)
+            .connections
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
         assert!(names.contains(&"Travel".to_string()));
         assert!(names.contains(&"Home".to_string()));
     }

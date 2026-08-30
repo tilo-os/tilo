@@ -16,14 +16,11 @@ ui = { path = "../../ui", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 similar = "2.6"
 # Host-native file open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
@@ -31,3 +28,6 @@ similar = "2.6"
 # portal call runs off the UI thread on its own small Tokio runtime and the
 # chosen path is delivered back over a channel (see `app::portal`). An app
 # never draws its own file picker (HIG §5).
+
+[lints]
+workspace = true

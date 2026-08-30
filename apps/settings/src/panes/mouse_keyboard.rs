@@ -21,17 +21,17 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Slider, Toggle, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{InputPrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row, setting_row_described};
+use crate::widgets::{caption, card, choice_row, rows, setting_row, setting_row_described};
 
 pub const POINTER_SPEED_KEY: &str = "input.pointer_speed";
 pub const NATURAL_SCROLL_KEY: &str = "input.natural_scroll";
@@ -56,8 +56,7 @@ fn layout_label(code: &str) -> &'static str {
     LAYOUTS
         .iter()
         .find(|(_, c)| *c == code)
-        .map(|(label, _)| *label)
-        .unwrap_or("English (US)")
+        .map_or("English (US)", |(label, _)| *label)
 }
 
 /// Map a display name to its xkb code, if recognised.
@@ -227,47 +226,50 @@ impl Widget for MouseKeyboardPane {
                 KEY_REPEAT_KEY,
                 automerge::ScalarValue::F64(self.initial.key_repeat),
             );
-            let _ = state.put(root, LAYOUT_KEY, layout_label(&self.initial.keyboard_layout));
+            let _ = state.put(
+                root,
+                LAYOUT_KEY,
+                layout_label(&self.initial.keyboard_layout),
+            );
             self.last = self.initial.clone();
             self.needs_seed = false;
         }
 
-        if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY) {
-            if (v - self.last.pointer_speed).abs() > 0.001 {
-                self.last.pointer_speed = v;
-                Self::persist_input(|i| i.pointer_speed = v);
-            }
+        if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY)
+            && (v - self.last.pointer_speed).abs() > 0.001
+        {
+            self.last.pointer_speed = v;
+            Self::persist_input(|i| i.pointer_speed = v);
         }
-        if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY) {
-            if (v - self.last.key_repeat).abs() > 0.001 {
-                self.last.key_repeat = v;
-                Self::persist_input(|i| i.key_repeat = v);
-            }
+        if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY)
+            && (v - self.last.key_repeat).abs() > 0.001
+        {
+            self.last.key_repeat = v;
+            Self::persist_input(|i| i.key_repeat = v);
         }
-        if let Some(b) = read_bool(state, root, NATURAL_SCROLL_KEY) {
-            if b != self.last.natural_scroll {
-                self.last.natural_scroll = b;
-                Self::persist_input(|i| i.natural_scroll = b);
-            }
+        if let Some(b) = read_bool(state, root, NATURAL_SCROLL_KEY)
+            && b != self.last.natural_scroll
+        {
+            self.last.natural_scroll = b;
+            Self::persist_input(|i| i.natural_scroll = b);
         }
-        if let Some(b) = read_bool(state, root, TAP_CLICK_KEY) {
-            if b != self.last.tap_to_click {
-                self.last.tap_to_click = b;
-                Self::persist_input(|i| i.tap_to_click = b);
-            }
+        if let Some(b) = read_bool(state, root, TAP_CLICK_KEY)
+            && b != self.last.tap_to_click
+        {
+            self.last.tap_to_click = b;
+            Self::persist_input(|i| i.tap_to_click = b);
         }
         // Keyboard layout → apply via localectl AND persist the choice.
-        if let Some(label) = read_str(state, root, LAYOUT_KEY) {
-            if let Some(code) = layout_code(&label) {
-                if code != self.last.keyboard_layout.as_str() {
-                    self.last.keyboard_layout = code.to_string();
-                    if let Err(e) = self.layout_setter.set_layout(code) {
-                        warn!(target: "qos::settings", op = "set_layout", error = %e, "keyboard layout apply failed");
-                    }
-                    let owned = code.to_string();
-                    Self::persist_input(|i| i.keyboard_layout = owned);
-                }
+        if let Some(label) = read_str(state, root, LAYOUT_KEY)
+            && let Some(code) = layout_code(&label)
+            && code != self.last.keyboard_layout.as_str()
+        {
+            self.last.keyboard_layout = code.to_string();
+            if let Err(e) = self.layout_setter.set_layout(code) {
+                warn!(target: "qos::settings", op = "set_layout", error = %e, "keyboard layout apply failed");
             }
+            let owned = code.to_string();
+            Self::persist_input(|i| i.keyboard_layout = owned);
         }
 
         if let Some(c) = &mut self.composed {
@@ -294,24 +296,23 @@ impl Widget for MouseKeyboardPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -340,22 +341,21 @@ impl Widget for MouseKeyboardPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -375,7 +375,7 @@ impl Widget for MouseKeyboardPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "MouseKeyboardPane"
     }
 
@@ -460,7 +460,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(setter.calls.lock().unwrap().is_empty(), "seed must not apply");
+        assert!(
+            setter.calls.lock().unwrap().is_empty(),
+            "seed must not apply"
+        );
         // Dropdown writes the display name into a Text object; emulate that.
         let _ = doc.put(&root, LAYOUT_KEY, "German");
         pane.sync(&mut doc, &root);

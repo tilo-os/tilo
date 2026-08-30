@@ -9,7 +9,6 @@
 //! export LD_LIBRARY_PATH=$HOME/.cache/qos-wpe/prefix/lib64
 //! cargo test -p ui --features webview-wpe --test wpe_engine
 //! ```
-#![cfg(feature = "webview-wpe")]
 
 use std::time::{Duration, Instant};
 
@@ -30,8 +29,7 @@ fn wpe_engine_renders_a_page_offscreen() {
         scale_factor: 1.0,
     });
     engine.send(WebViewCommand::Navigate(
-        "data:text/html,<body style=\"background:%23ff0000;margin:0\"><h1>qOS</h1></body>"
-            .into(),
+        "data:text/html,<body style=\"background:%23ff0000;margin:0\"><h1>qOS</h1></body>".into(),
     ));
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -65,9 +63,7 @@ fn wpe_engine_renders_a_page_offscreen() {
         "tightly packed RGBA"
     );
 
-    // The red page background must dominate the centre pixel.
-    let centre =
-        ((frame.height / 2) * frame.width + frame.width / 2) as usize * 4;
+    let centre = ((frame.height / 2) * frame.width + frame.width / 2) as usize * 4;
     let px = &frame.rgba[centre..centre + 4];
     assert!(
         px[0] > 150 && px[1] < 100 && px[2] < 100,

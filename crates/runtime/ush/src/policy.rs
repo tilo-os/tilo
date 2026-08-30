@@ -2,15 +2,10 @@
 //!
 //! # There is no `ush` permission type
 //!
-//! A decision here is a `collab_types::caps::CapOverride`, and a question here
-//! is `collab_types::caps::decide_capability`. That is the same record the
-//! compositor stores on a workspace, renders in its permissions panel and can
-//! revoke, and the same deny-biased function `qos-launcher` and the FUSE mount
-//! call. A directory you trust with `perm trust-dir` is not a second kind of
-//! grant that happens to look similar — it is the grant, written against the
-//! subject [`crate::RUNTIME_APP_ID`].
-//!
-//! Concretely, `perm trust-dir ~/src` mints:
+//! A decision here is a `collab_types::caps::CapOverride`, evaluated by the
+//! same `decide_capability` the compositor's permissions panel and
+//! `qos-launcher`/the FUSE mount use. `perm trust-dir ~/src` is not a
+//! second kind of grant — it mints exactly:
 //!
 //! ```text
 //! CapOverride { subject: Principal::App("dev.qos.ush"),
@@ -19,16 +14,17 @@
 //!               verb:    Verb::Write }
 //! ```
 //!
-//! which is byte-for-byte what the compositor writes when a user answers
-//! "Always allow" to a filesystem prompt. A revocation from the panel removes
-//! it, and the next session does not bind the directory.
+//! byte-for-byte what the compositor writes for "Always allow" on a
+//! filesystem prompt, against the subject [`crate::RUNTIME_APP_ID`]. A
+//! revocation from the panel removes it, and the next session doesn't
+//! bind the directory.
 //!
 //! # Deny by default
 //!
 //! [`Policy::load`] returns an empty policy for a file that is missing,
-//! unreadable or malformed. Every failure mode grants nothing: the guest gets
-//! the base and its own layer, which is a working shell with no access to your
-//! files. Nothing in this module can widen a decision the user did not make.
+//! unreadable or malformed — every failure mode grants nothing, so the
+//! guest gets the base and its own layer, a working shell with no access
+//! to your files. Nothing here can widen a decision the user did not make.
 
 use std::path::{Path, PathBuf};
 
@@ -73,11 +69,10 @@ impl Policy {
         }
     }
 
-    /// Write `policy.json`, creating its directory.
-    ///
-    /// Only decisions that outlive a restart are written — a session-scoped
-    /// grant that survived into the next session would be a grant the user
-    /// never made. This mirrors `shell/src/shell/persist.rs`.
+    /// Write `policy.json`, creating its directory. Only decisions that
+    /// outlive a restart are written — a session-scoped grant surviving into
+    /// the next session would be one the user never made (mirrors
+    /// `shell/src/shell/persist.rs`).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -95,19 +90,16 @@ impl Policy {
         std::fs::rename(&tmp, path)
     }
 
-    /// The actor every question is asked about.
-    ///
-    /// `role: None` is load-bearing. `collab_types::role_base_applies` returns
-    /// false for `FsPath`, `Device` and `NetHost`, so no role — not even Owner
-    /// — reaches a path. Every bind below exists because a capability says so.
+    /// The actor every question is asked about. `role: None` is load-bearing:
+    /// `collab_types::role_base_applies` returns false for `FsPath`, `Device`
+    /// and `NetHost`, so no role — not even Owner — reaches a path; every bind
+    /// below exists because a capability says so.
     pub fn actor() -> Actor {
         Actor::app(RUNTIME_APP_ID)
     }
 
-    /// Trust a directory: read *and* write, for good.
-    ///
-    /// Returns the capability id, or `None` when the directory is one the
-    /// runtime refuses to bind ([`is_trustable`]).
+    /// Trust a directory: read *and* write, for good. Returns the capability
+    /// id, or `None` when the runtime refuses to bind it ([`is_trustable`]).
     pub fn trust_dir(&mut self, dir: &Path) -> Option<String> {
         let raw = dir.to_string_lossy().into_owned();
         if !is_trustable(dir) {
@@ -154,9 +146,8 @@ impl Policy {
         let actor = Self::actor();
         let mut out: Vec<PathBuf> = Vec::new();
         for cap in &self.capabilities {
-            // Only a Grant nominates a path. A Restrict can take one away —
-            // which it does, through `decide_capability` below — but it can
-            // never introduce one.
+            // Only a Grant nominates a path; a Restrict can take one away (through
+            // `decide_capability` below) but never introduce one.
             if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
                 continue;
             }
@@ -190,12 +181,10 @@ impl Policy {
     }
 }
 
-/// A path the runtime is willing to bind into a guest.
-///
-/// Absolute, not the root, and not one of the base subtrees the overlay owns.
-/// Binding `/usr` on top of the guest's `/usr` would replace the layer with the
-/// host's copy and silently undo the read-only base; binding `/` would replace
-/// the namespace itself.
+/// A path the runtime is willing to bind into a guest: absolute, not the
+/// root, and not a base subtree the overlay owns — binding `/usr` would put
+/// the host's copy back on top of the layer and undo the read-only base;
+/// binding `/` would replace the namespace itself.
 pub fn is_trustable(path: &Path) -> bool {
     let Some(raw) = path.to_str() else {
         return false;
@@ -222,7 +211,7 @@ fn stable_id(raw: &str) -> String {
     // short enough to read in `perm list`.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in raw.as_bytes() {
-        hash ^= *byte as u64;
+        hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     format!("{hash:016x}")
@@ -263,7 +252,11 @@ mod tests {
         );
         assert!(policy.permits(Path::new("/var/home/you/src"), Verb::Write, Some(1_000)));
         assert!(
-            policy.permits(Path::new("/var/home/you/src/deep/file.rs"), Verb::Write, Some(1_000)),
+            policy.permits(
+                Path::new("/var/home/you/src/deep/file.rs"),
+                Verb::Write,
+                Some(1_000)
+            ),
             "a filesystem grant is recursive; that is what `path_covers` means"
         );
         assert!(
@@ -271,7 +264,11 @@ mod tests {
             "a sibling directory must not come along with the grant"
         );
         assert!(
-            !policy.permits(Path::new("/var/home/you/srcextra"), Verb::Write, Some(1_000)),
+            !policy.permits(
+                Path::new("/var/home/you/srcextra"),
+                Verb::Write,
+                Some(1_000)
+            ),
             "a component-boundary check must not be a prefix check"
         );
     }
@@ -338,14 +335,25 @@ mod tests {
     /// layer and quietly undo the read-only base.
     #[test]
     fn the_runtime_refuses_to_trust_the_paths_the_overlay_owns() {
-        for bad in ["/", "/usr", "/usr/bin", "/etc", "/etc/ssh", "relative/path", ""] {
+        for bad in [
+            "/",
+            "/usr",
+            "/usr/bin",
+            "/etc",
+            "/etc/ssh",
+            "relative/path",
+            "",
+        ] {
             assert!(
                 !is_trustable(Path::new(bad)),
                 "{bad:?} must not be trustable"
             );
         }
         for good in ["/var/home/you/src", "/var/workspace/notes", "/opt/thing"] {
-            assert!(is_trustable(Path::new(good)), "{good:?} should be trustable");
+            assert!(
+                is_trustable(Path::new(good)),
+                "{good:?} should be trustable"
+            );
         }
 
         let mut policy = Policy::default();
@@ -361,14 +369,18 @@ mod tests {
     #[test]
     fn a_missing_or_malformed_policy_grants_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(Policy::load(&dir.path().join("absent.json")).capabilities.is_empty());
+        assert!(
+            Policy::load(&dir.path().join("absent.json"))
+                .capabilities
+                .is_empty()
+        );
 
         let bad = dir.path().join("bad.json");
         std::fs::write(&bad, b"{ not json ").unwrap();
         assert!(Policy::load(&bad).capabilities.is_empty());
 
         let wrong = dir.path().join("wrong.json");
-        std::fs::write(&wrong, br#"[1,2,3]"#).unwrap();
+        std::fs::write(&wrong, br"[1,2,3]").unwrap();
         assert!(Policy::load(&wrong).capabilities.is_empty());
     }
 
@@ -379,7 +391,9 @@ mod tests {
 
         let mut policy = Policy::default();
         policy.trust_dir(Path::new("/var/home/you/src")).unwrap();
-        let session_id = policy.trust_dir(Path::new("/var/home/you/scratch")).unwrap();
+        let session_id = policy
+            .trust_dir(Path::new("/var/home/you/scratch"))
+            .unwrap();
         let idx = policy
             .capabilities
             .iter()

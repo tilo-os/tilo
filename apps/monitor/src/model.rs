@@ -18,7 +18,10 @@ pub struct Ring {
 
 impl Ring {
     pub fn new(cap: usize) -> Self {
-        Self { data: Vec::with_capacity(cap), cap }
+        Self {
+            data: Vec::with_capacity(cap),
+            cap,
+        }
     }
 
     /// Seed a ring from an iterator, keeping only the last `cap` values.
@@ -199,8 +202,7 @@ impl MonitorModel {
             HISTORY,
             (0..HISTORY).map(|i| {
                 let t = i as f32;
-                (0.54 + 0.06 * (t * 0.05).sin() + 0.02 * (t * 0.21).cos())
-                    .clamp(0.30, 0.95)
+                (0.54 + 0.06 * (t * 0.05).sin() + 0.02 * (t * 0.21).cos()).clamp(0.30, 0.95)
             }),
         );
         let mem_used = (mem_total as f32 * mem_hist.last()) as u64;
@@ -210,7 +212,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = 2.4 + 2.0 * (t * 0.17).sin().max(0.0) + 0.8 * (t * 0.6).sin();
-                (mb.max(0.05) * 1_000_000.0) as f32
+                mb.max(0.05) * 1_000_000.0
             }),
         );
         let net_tx_hist = Ring::from_iter(
@@ -218,7 +220,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = 0.8 + 0.9 * (t * 0.11 + 1.0).sin().max(0.0);
-                (mb.max(0.02) * 1_000_000.0) as f32
+                mb.max(0.02) * 1_000_000.0
             }),
         );
         let disk_read_hist = Ring::from_iter(
@@ -226,7 +228,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = (3.0 * (t * 0.27).sin()).max(0.0) + 0.4 * (t * 0.9).cos().abs();
-                (mb.max(0.0) * 1_000_000.0) as f32
+                mb.max(0.0) * 1_000_000.0
             }),
         );
         let disk_write_hist = Ring::from_iter(
@@ -234,7 +236,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = (2.0 * (t * 0.19 + 2.0).sin()).max(0.0);
-                (mb.max(0.0) * 1_000_000.0) as f32
+                mb.max(0.0) * 1_000_000.0
             }),
         );
 
@@ -261,14 +263,17 @@ impl MonitorModel {
             disk_write_hist,
         };
 
-        Self { metrics, processes: sample_processes() }
+        Self {
+            metrics,
+            processes: sample_processes(),
+        }
     }
 
     /// Empty model used as the initial state for the live sampler before
     /// the first refresh. Histories are pre-filled with zeros so the
     /// charts don't visibly "grow in" from the left edge.
     pub fn empty() -> Self {
-        let z = || Ring::from_iter(HISTORY, std::iter::repeat(0.0).take(HISTORY));
+        let z = || Ring::from_iter(HISTORY, std::iter::repeat_n(0.0, HISTORY));
         let metrics = Metrics {
             cpu_brand: "CPU".into(),
             host: "localhost".into(),
@@ -291,7 +296,10 @@ impl MonitorModel {
             disk_read_hist: z(),
             disk_write_hist: z(),
         };
-        Self { metrics, processes: Vec::new() }
+        Self {
+            metrics,
+            processes: Vec::new(),
+        }
     }
 }
 
@@ -311,43 +319,208 @@ fn sample_processes() -> Vec<ProcessInfo> {
     let rows: &[(&str, &str, &str, f32, u64, usize, &str, bool)] = &[
         // ---- the user session, rooted at the compositor ----------------
         ("shell", "", "quinten", 14.6, 412, 24, "Running", false),
-        ("browser", "shell", "quinten", 12.3, 643, 14, "Running", false),
-        ("Web Content", "browser", "quinten", 31.8, 988, 22, "Running", false),
-        ("Web Content", "browser", "quinten", 48.1, 1210, 19, "Running", false),
-        ("GPU Process", "browser", "quinten", 9.4, 512, 8, "Running", false),
+        (
+            "browser", "shell", "quinten", 12.3, 643, 14, "Running", false,
+        ),
+        (
+            "Web Content",
+            "browser",
+            "quinten",
+            31.8,
+            988,
+            22,
+            "Running",
+            false,
+        ),
+        (
+            "Web Content",
+            "browser",
+            "quinten",
+            48.1,
+            1210,
+            19,
+            "Running",
+            false,
+        ),
+        (
+            "GPU Process",
+            "browser",
+            "quinten",
+            9.4,
+            512,
+            8,
+            "Running",
+            false,
+        ),
         ("code", "shell", "quinten", 6.4, 420, 18, "Sleeping", false),
-        ("rust-analyzer", "code", "quinten", 63.9, 2680, 12, "Running", false),
+        (
+            "rust-analyzer",
+            "code",
+            "quinten",
+            63.9,
+            2680,
+            12,
+            "Running",
+            false,
+        ),
         ("cargo", "code", "quinten", 11.2, 140, 4, "Running", false),
         ("rustc", "cargo", "quinten", 88.7, 760, 1, "Running", false),
-        ("firefox", "shell", "quinten", 47.1, 2210, 51, "Running", false),
-        ("terminal", "shell", "quinten", 3.2, 142, 6, "Sleeping", false),
+        (
+            "firefox", "shell", "quinten", 47.1, 2210, 51, "Running", false,
+        ),
+        (
+            "terminal", "shell", "quinten", 3.2, 142, 6, "Sleeping", false,
+        ),
         ("fish", "terminal", "quinten", 0.4, 28, 1, "Sleeping", false),
         ("monitor", "shell", "quinten", 5.7, 96, 5, "Running", false),
-        ("file-explorer", "shell", "quinten", 1.1, 188, 8, "Sleeping", false),
-        ("Xwayland", "shell", "quinten", 4.3, 176, 5, "Running", false),
+        (
+            "file-explorer",
+            "shell",
+            "quinten",
+            1.1,
+            188,
+            8,
+            "Sleeping",
+            false,
+        ),
+        (
+            "Xwayland", "shell", "quinten", 4.3, 176, 5, "Running", false,
+        ),
         // ---- the system service tree, rooted at systemd ----------------
         ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
         ("qos-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
-        ("iroh-node", "qos-fs", "quinten", 6.1, 310, 16, "Running", false),
-        ("gossipsub", "iroh-node", "quinten", 2.2, 88, 6, "Running", false),
-        ("systemd-journald", "systemd", "root", 1.7, 96, 1, "Sleeping", false),
-        ("systemd-logind", "systemd", "root", 0.1, 12, 1, "Sleeping", false),
-        ("systemd-resolved", "systemd", "systemd+", 0.3, 22, 2, "Sleeping", false),
-        ("NetworkManager", "systemd", "root", 0.6, 38, 3, "Sleeping", false),
-        ("dbus-broker", "systemd", "dbus", 0.8, 16, 1, "Running", false),
+        (
+            "iroh-node",
+            "qos-fs",
+            "quinten",
+            6.1,
+            310,
+            16,
+            "Running",
+            false,
+        ),
+        (
+            "gossip",
+            "iroh-node",
+            "quinten",
+            2.2,
+            88,
+            6,
+            "Running",
+            false,
+        ),
+        (
+            "systemd-journald",
+            "systemd",
+            "root",
+            1.7,
+            96,
+            1,
+            "Sleeping",
+            false,
+        ),
+        (
+            "systemd-logind",
+            "systemd",
+            "root",
+            0.1,
+            12,
+            1,
+            "Sleeping",
+            false,
+        ),
+        (
+            "systemd-resolved",
+            "systemd",
+            "systemd+",
+            0.3,
+            22,
+            2,
+            "Sleeping",
+            false,
+        ),
+        (
+            "NetworkManager",
+            "systemd",
+            "root",
+            0.6,
+            38,
+            3,
+            "Sleeping",
+            false,
+        ),
+        (
+            "dbus-broker",
+            "systemd",
+            "dbus",
+            0.8,
+            16,
+            1,
+            "Running",
+            false,
+        ),
         ("greetd", "systemd", "root", 0.0, 8, 1, "Sleeping", false),
         ("chronyd", "systemd", "chrony", 0.1, 6, 1, "Sleeping", false),
         ("sshd", "systemd", "root", 0.0, 11, 1, "Sleeping", false),
-        ("avahi-daemon", "systemd", "avahi", 0.2, 9, 2, "Sleeping", false),
-        ("pipewire", "systemd", "quinten", 2.4, 64, 4, "Sleeping", false),
-        ("wireplumber", "pipewire", "quinten", 1.3, 52, 4, "Sleeping", false),
-        ("pulseaudio", "systemd", "quinten", 0.9, 41, 3, "Sleeping", false),
-        ("podman", "systemd", "quinten", 0.5, 64, 7, "Sleeping", false),
+        (
+            "avahi-daemon",
+            "systemd",
+            "avahi",
+            0.2,
+            9,
+            2,
+            "Sleeping",
+            false,
+        ),
+        (
+            "pipewire", "systemd", "quinten", 2.4, 64, 4, "Sleeping", false,
+        ),
+        (
+            "wireplumber",
+            "pipewire",
+            "quinten",
+            1.3,
+            52,
+            4,
+            "Sleeping",
+            false,
+        ),
+        (
+            "pulseaudio",
+            "systemd",
+            "quinten",
+            0.9,
+            41,
+            3,
+            "Sleeping",
+            false,
+        ),
+        (
+            "podman", "systemd", "quinten", 0.5, 64, 7, "Sleeping", false,
+        ),
         ("conmon", "podman", "quinten", 0.1, 14, 1, "Sleeping", false),
         ("swaybg", "shell", "quinten", 0.2, 44, 2, "Sleeping", false),
-        ("gnome-keyring-d", "systemd", "quinten", 0.1, 19, 3, "Sleeping", false),
+        (
+            "gnome-keyring-d",
+            "systemd",
+            "quinten",
+            0.1,
+            19,
+            3,
+            "Sleeping",
+            false,
+        ),
         ("upowerd", "systemd", "root", 0.1, 10, 1, "Sleeping", false),
-        ("bluetoothd", "systemd", "root", 0.2, 13, 1, "Sleeping", false),
+        (
+            "bluetoothd",
+            "systemd",
+            "root",
+            0.2,
+            13,
+            1,
+            "Sleeping",
+            false,
+        ),
         ("cupsd", "systemd", "root", 0.0, 15, 1, "Sleeping", false),
         // ---- kernel worker threads (own forest; hidden by default) -----
         ("kworker/0:1", "", "root", 1.4, 0, 1, "Idle", true),
@@ -370,53 +543,52 @@ fn sample_processes() -> Vec<ProcessInfo> {
     }
     rows.iter()
         .enumerate()
-        .map(|(i, (name, parent, user, cpu, mem_mib, threads, status, kernel))| {
-            let ppid = if parent.is_empty() {
-                None
-            } else {
-                rows
-                    .iter()
-                    .position(|r| r.0 == *parent)
-                    .map(|j| pids[j])
-            };
-            let mem_bytes = *mem_mib * 1024 * 1024;
-            // Synthesise a believable command line, virtual size, run time and
-            // fd count from the row's stable inputs so the detail pane reads as
-            // "alive" in the hermetic `--shots` frame (which never samples).
-            let cmd = if *kernel {
-                format!("[{name}]")
-            } else {
-                sample_cmdline(name, user)
-            };
-            // Virtual size runs a few× RSS (shared libs + reserved heap/stack).
-            let virt_bytes = if mem_bytes == 0 {
-                0
-            } else {
-                mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
-            };
-            // Deterministic run time from the pid so rows differ but are stable.
-            let run_secs = 37 + (pids[i] as u64 * 7) % 90_000;
-            let open_files = if *kernel {
-                None
-            } else {
-                Some(*threads * 2 + (pids[i] as usize % 17) + 4)
-            };
-            ProcessInfo {
-                pid: pids[i],
-                ppid,
-                name: (*name).to_string(),
-                user: (*user).to_string(),
-                cpu: *cpu,
-                mem_bytes,
-                virt_bytes,
-                threads: *threads,
-                status: (*status).to_string(),
-                cmd,
-                run_secs,
-                open_files,
-                kernel: *kernel,
-            }
-        })
+        .map(
+            |(i, (name, parent, user, cpu, mem_mib, threads, status, kernel))| {
+                let ppid = if parent.is_empty() {
+                    None
+                } else {
+                    rows.iter().position(|r| r.0 == *parent).map(|j| pids[j])
+                };
+                let mem_bytes = *mem_mib * 1024 * 1024;
+                // Synthesise a believable command line, virtual size, run time and
+                // fd count from the row's stable inputs so the detail pane reads as
+                // "alive" in the hermetic `--shots` frame (which never samples).
+                let cmd = if *kernel {
+                    format!("[{name}]")
+                } else {
+                    sample_cmdline(name, user)
+                };
+                // Virtual size runs a few× RSS (shared libs + reserved heap/stack).
+                let virt_bytes = if mem_bytes == 0 {
+                    0
+                } else {
+                    mem_bytes.saturating_mul(3) + 220 * 1024 * 1024
+                };
+                // Deterministic run time from the pid so rows differ but are stable.
+                let run_secs = 37 + (u64::from(pids[i]) * 7) % 90_000;
+                let open_files = if *kernel {
+                    None
+                } else {
+                    Some(*threads * 2 + (pids[i] as usize % 17) + 4)
+                };
+                ProcessInfo {
+                    pid: pids[i],
+                    ppid,
+                    name: (*name).to_string(),
+                    user: (*user).to_string(),
+                    cpu: *cpu,
+                    mem_bytes,
+                    virt_bytes,
+                    threads: *threads,
+                    status: (*status).to_string(),
+                    cmd,
+                    run_secs,
+                    open_files,
+                    kernel: *kernel,
+                }
+            },
+        )
         .collect()
 }
 
@@ -462,9 +634,9 @@ pub fn fmt_bytes(b: u64) -> String {
 /// Human-readable throughput: 0 / 84 KB/s / 2.4 MB/s (decimal, like most
 /// network tools).
 pub fn fmt_rate(bytes_per_sec: f32) -> String {
-    let bps = bytes_per_sec.max(0.0) as f64;
+    let bps = f64::from(bytes_per_sec.max(0.0));
     if bps < 1000.0 {
-        format!("{:.0} B/s", bps)
+        format!("{bps:.0} B/s")
     } else if bps < 1_000_000.0 {
         format!("{:.0} KB/s", bps / 1000.0)
     } else if bps < 1_000_000_000.0 {
@@ -481,11 +653,11 @@ pub fn fmt_uptime(secs: u64) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     if d > 0 {
-        format!("{}d {}h {}m", d, h, m)
+        format!("{d}d {h}h {m}m")
     } else if h > 0 {
-        format!("{}h {}m {}s", h, m, s)
+        format!("{h}h {m}m {s}s")
     } else {
-        format!("{}m {}s", m, s)
+        format!("{m}m {s}s")
     }
 }
 

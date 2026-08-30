@@ -53,7 +53,10 @@ pub struct CurvePoint {
 
 impl CurvePoint {
     pub fn new(x: f64, y: f64) -> Self {
-        Self { x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0) }
+        Self {
+            x: x.clamp(0.0, 1.0),
+            y: y.clamp(0.0, 1.0),
+        }
     }
 }
 
@@ -113,7 +116,9 @@ pub struct Spline {
 
 impl Default for Spline {
     fn default() -> Self {
-        Self { points: vec![CurvePoint::new(0.0, 0.0), CurvePoint::new(1.0, 1.0)] }
+        Self {
+            points: vec![CurvePoint::new(0.0, 0.0), CurvePoint::new(1.0, 1.0)],
+        }
     }
 }
 
@@ -171,7 +176,11 @@ impl Spline {
     /// neighbour for a new point to mean anything.
     pub fn set_point(&mut self, x: f64, y: f64) -> Option<usize> {
         let (x, y) = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        if let Some(i) = self.points.iter().position(|p| (p.x - x).abs() < MIN_X_GAP / 2.0) {
+        if let Some(i) = self
+            .points
+            .iter()
+            .position(|p| (p.x - x).abs() < MIN_X_GAP / 2.0)
+        {
             // An endpoint keeps its x — moving it inward would leave the end
             // of the curve undefined.
             let keep_x = i == 0 || i + 1 == self.points.len();
@@ -184,7 +193,11 @@ impl Spline {
         if self.points.iter().any(|p| (p.x - x).abs() < MIN_X_GAP) {
             return None;
         }
-        let at = self.points.iter().position(|p| p.x > x).unwrap_or(self.points.len());
+        let at = self
+            .points
+            .iter()
+            .position(|p| p.x > x)
+            .unwrap_or(self.points.len());
         self.points.insert(at, CurvePoint::new(x, y));
         Some(at)
     }
@@ -205,7 +218,11 @@ impl Spline {
         let hi = self.points[idx + 1].x - MIN_X_GAP;
         // Two neighbours already MIN_X_GAP apart leave no room; the point
         // then only moves vertically rather than jumping to a bogus x.
-        let x = if lo <= hi { x.clamp(lo, hi) } else { self.points[idx].x };
+        let x = if lo <= hi {
+            x.clamp(lo, hi)
+        } else {
+            self.points[idx].x
+        };
         self.points[idx] = CurvePoint::new(x, y);
         true
     }
@@ -247,7 +264,11 @@ impl Spline {
         if x >= p[p.len() - 1].x {
             return p[p.len() - 1].y;
         }
-        let i = p.iter().rposition(|q| q.x <= x).unwrap_or(0).min(p.len() - 2);
+        let i = p
+            .iter()
+            .rposition(|q| q.x <= x)
+            .unwrap_or(0)
+            .min(p.len() - 2);
         let (a, b) = (p[i], p[i + 1]);
         let h = b.x - a.x;
         if h <= 1e-12 {
@@ -277,7 +298,11 @@ impl Spline {
         let n = p.len();
         let slope = |k: usize| -> f64 {
             let h = p[k + 1].x - p[k].x;
-            if h <= 1e-12 { 0.0 } else { (p[k + 1].y - p[k].y) / h }
+            if h <= 1e-12 {
+                0.0
+            } else {
+                (p[k + 1].y - p[k].y) / h
+            }
         };
         let tangent = |k: usize| -> f64 {
             if k == 0 {
@@ -375,7 +400,10 @@ impl Curve {
 
     /// Which channels have been shaped, for a one-line summary.
     pub fn shaped_channels(&self) -> Vec<Channel> {
-        Channel::ALL.into_iter().filter(|c| !self.spline(*c).is_identity()).collect()
+        Channel::ALL
+            .into_iter()
+            .filter(|c| !self.spline(*c).is_identity())
+            .collect()
     }
 
     /// Repair every spline (see [`Spline::normalised`]) and hold `mix` in
@@ -386,7 +414,11 @@ impl Curve {
             red: self.red.normalised(),
             green: self.green.normalised(),
             blue: self.blue.normalised(),
-            mix: if self.mix.is_finite() { self.mix.clamp(0.0, 1.0) } else { 1.0 },
+            mix: if self.mix.is_finite() {
+                self.mix.clamp(0.0, 1.0)
+            } else {
+                1.0
+            },
         }
     }
 
@@ -403,7 +435,11 @@ impl Curve {
             let shaped = self.master.eval(self.spline(ch).eval(v));
             v + (shaped - v) * m
         };
-        (one(r, Channel::Red), one(g, Channel::Green), one(b, Channel::Blue))
+        (
+            one(r, Channel::Red),
+            one(g, Channel::Green),
+            one(b, Channel::Blue),
+        )
     }
 
     /// Bake the curve into a `LUT_SIZE`-entry RGBA8 row, `mix` folded in.
@@ -461,9 +497,15 @@ mod tests {
         c.master.set_point(0.5, 0.75);
         assert!(!c.is_identity());
         assert!(c.apply(0.0, 0.0, 0.0).0.abs() < 1e-9, "black stays black");
-        assert!((c.apply(1.0, 1.0, 1.0).0 - 1.0).abs() < 1e-9, "white stays white");
+        assert!(
+            (c.apply(1.0, 1.0, 1.0).0 - 1.0).abs() < 1e-9,
+            "white stays white"
+        );
         let mid = c.apply(0.5, 0.5, 0.5).0;
-        assert!((mid - 0.75).abs() < 1e-6, "the point the user placed is honoured: {mid}");
+        assert!(
+            (mid - 0.75).abs() < 1e-6,
+            "the point the user placed is honoured: {mid}"
+        );
         // And it lifts a range, not only the one sampled tone.
         assert!(c.apply(0.3, 0.3, 0.3).0 > 0.35);
         assert!(c.apply(0.7, 0.7, 0.7).0 > 0.72);
@@ -511,8 +553,14 @@ mod tests {
         let lut = c.bake();
         let mid = lut[128 * 4] as f64 / 255.0;
         let want = c.apply(128.0 / 255.0, 0.0, 0.0).0;
-        assert!((mid - want).abs() < 1.0 / 255.0, "baked {mid} vs computed {want}");
-        assert!(mid > 0.6, "and it really is lifted, not the identity: {mid}");
+        assert!(
+            (mid - want).abs() < 1.0 / 255.0,
+            "baked {mid} vs computed {want}"
+        );
+        assert!(
+            mid > 0.6,
+            "and it really is lifted, not the identity: {mid}"
+        );
     }
 
     #[test]
@@ -526,13 +574,19 @@ mod tests {
         for i in 0..=1000 {
             let t = i as f64 / 1000.0;
             let v = c.master.eval(t);
-            assert!((0.0..=1.0).contains(&v), "eval({t}) = {v} left the unit range");
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "eval({t}) = {v} left the unit range"
+            );
         }
         // Between two points the curve stays between their values.
         for i in 0..=200 {
             let t = 0.25 + 0.5 * i as f64 / 200.0;
             let v = c.master.eval(t);
-            assert!((0.05 - 1e-9..=0.95 + 1e-9).contains(&v), "eval({t}) = {v} left the segment");
+            assert!(
+                (0.05 - 1e-9..=0.95 + 1e-9).contains(&v),
+                "eval({t}) = {v} left the segment"
+            );
         }
     }
 
@@ -550,11 +604,17 @@ mod tests {
 
     #[test]
     fn two_points_is_exactly_the_straight_line_between_them() {
-        let mut s = Spline { points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)] };
+        let mut s = Spline {
+            points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)],
+        };
         for i in 0..=100 {
             let t = i as f64 / 100.0;
             let want = 0.2 + 0.6 * t;
-            assert!((s.eval(t) - want).abs() < 1e-9, "eval({t}) = {}, want {want}", s.eval(t));
+            assert!(
+                (s.eval(t) - want).abs() < 1e-9,
+                "eval({t}) = {}, want {want}",
+                s.eval(t)
+            );
         }
         // And moving an endpoint keeps it a line, not a curve with a kink.
         s.move_point(0, 0.5, 0.0);
@@ -617,7 +677,10 @@ mod tests {
             points: vec![
                 CurvePoint { x: 0.8, y: 2.0 },
                 CurvePoint { x: 0.2, y: -1.0 },
-                CurvePoint { x: f64::NAN, y: 0.5 },
+                CurvePoint {
+                    x: f64::NAN,
+                    y: 0.5,
+                },
             ],
         };
         let s = bad.normalised();
@@ -638,8 +701,16 @@ mod tests {
         let mut s = Spline::identity();
         s.set_point(0.5, 0.5);
         assert_eq!(s.point_near(0.52, 0.48, 0.05), Some(1));
-        assert_eq!(s.point_near(0.52, 0.48, 0.01), None, "outside the tolerance");
-        assert_eq!(s.point_near(0.02, 0.02, 0.05), Some(0), "the endpoint counts too");
+        assert_eq!(
+            s.point_near(0.52, 0.48, 0.01),
+            None,
+            "outside the tolerance"
+        );
+        assert_eq!(
+            s.point_near(0.02, 0.02, 0.05),
+            Some(0),
+            "the endpoint counts too"
+        );
     }
 
     #[test]

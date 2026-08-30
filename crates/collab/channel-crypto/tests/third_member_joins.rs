@@ -1,22 +1,17 @@
 //! Three-member group: alice creates, adds bob, then adds carol.
 //!
 //! Going past two members exercises the openmls commit-fan-out path:
-//! when a third member joins, existing members need to process the
-//! commit so their epoch advances in lockstep. The
+//! when a third member joins, existing members must process the commit
+//! so their epoch advances in lockstep — handled by the
 //! [`ChannelGroup::add_member_with_commit`] /
-//! [`ChannelGroup::process_commit`] pair handles this.
+//! [`ChannelGroup::process_commit`] pair.
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 
 /// Build a fully-wired (alice, bob) two-member group + a fresh
 /// `carol` `MemberKey` ready to join.
-fn two_member_group_plus_carol() -> (
-    ChannelId,
-    ChannelGroup,
-    ChannelGroup,
-    MemberKey,
-) {
+fn two_member_group_plus_carol() -> (ChannelId, ChannelGroup, ChannelGroup, MemberKey) {
     let cid = ChannelId::new();
     let alice = MemberKey::generate("alice").unwrap();
     let bob = MemberKey::generate("bob").unwrap();
@@ -57,9 +52,9 @@ fn carol_can_encrypt_for_alice_and_bob() {
 
     let ct = carol_g.encrypt(b"hi from carol").unwrap();
     let pt_a = alice_g.decrypt(&ct).unwrap();
-    // We can only decrypt a given ciphertext once on each receiver
+    // A given ciphertext can only be decrypted once per receiver
     // (openmls advances its inbound-key-schedule cursor on
-    // process_message), so we send a second ciphertext to bob.
+    // process_message), so send a second ciphertext to bob.
     let ct2 = carol_g.encrypt(b"hi from carol").unwrap();
     let pt_b = bob_g.decrypt(&ct2).unwrap();
     assert_eq!(pt_a, b"hi from carol");
@@ -87,11 +82,10 @@ fn alice_can_encrypt_after_third_member_joins() {
 
 #[test]
 fn bob_who_missed_the_commit_cannot_decrypt_post_join_ciphertexts() {
-    // Verification of the failure mode: if a peer misses the commit
-    // (e.g. broker offline at the wrong moment), it stays at the old
-    // epoch and reading post-join ciphertexts fails. This is the
-    // *correct* MLS behaviour — the test pins it so a future
-    // "helpful" auto-catchup doesn't silently weaken it.
+    // The failure mode: if a peer misses the commit (e.g. broker offline
+    // at the wrong moment), it stays at the old epoch and reading
+    // post-join ciphertexts fails — the *correct* MLS behaviour, pinned
+    // here so a future "helpful" auto-catchup doesn't silently weaken it.
     let (_cid, mut alice_g, mut bob_g_stuck, carol) = two_member_group_plus_carol();
     let bob_pre_epoch = bob_g_stuck.epoch();
     let carol_kp = carol.fresh_key_package().unwrap();

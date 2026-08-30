@@ -1,17 +1,14 @@
 //! Manifest schema validation.
 //!
-//! This is the second pass after TOML decode: structural fields
-//! are guaranteed to exist (else decode would have failed), and
-//! we now check the cross-field invariants:
+//! Second pass after TOML decode: structural fields are guaranteed to
+//! exist, so this checks cross-field invariants:
 //!
 //! - `package.version` parses as semver.
-//! - `package.runtime` is `<name>/<semver>` and is absent for
-//!   `kind = "runtime"`.
+//! - `package.runtime` is `<name>/<semver>`, absent for `kind = "runtime"`.
 //! - `kind = "app"` has `[entrypoint]` with `bin` set.
-//! - `kind = "format-provider"` has `providers.mime` non-empty
-//!   and ships a `component.wasm` (see [`validate_manifest_with_payload`]
-//!   for the payload-side counterpart; the manifest-only check
-//!   only enforces the `providers.mime` half).
+//! - `kind = "format-provider"` has non-empty `providers.mime` and
+//!   ships `component.wasm` (payload-side counterpart in
+//!   [`validate_manifest_with_payload`]; this only enforces the mime half).
 //! - `publisher.identity` parses as `ed25519:<32-byte-hex>`.
 //! - `publisher.signature`, if present, parses as 64-byte hex.
 
@@ -20,9 +17,7 @@ use semver::Version;
 use crate::id::Kind;
 use crate::manifest::{EntrypointType, Manifest};
 
-/// Validation failure reasons. Each variant is a single concrete
-/// invariant a manifest can violate; the CLI surfaces these
-/// verbatim.
+/// Validation failure reasons; each variant is one concrete invariant a manifest can violate, surfaced verbatim by the CLI.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ManifestError {
     #[error("package.version {0:?} is not valid semver: {1}")]
@@ -63,19 +58,14 @@ pub enum ManifestError {
     FsReadDeclared { package: String, entry: String },
 }
 
-/// Validate the manifest against the schema rules that don't
-/// require touching the payload.
-///
-/// Payload-side checks (e.g. `format-provider` needs a
-/// `component.wasm` file) live in [`crate::pack::pack`] and
-/// [`validate_manifest_with_payload`].
+/// Validate the manifest against schema rules that don't require
+/// touching the payload; payload-side checks live in
+/// [`crate::pack::pack`] and [`validate_manifest_with_payload`].
 pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
-    // Filesystem policy first. It is the check most likely to reject a
-    // package a publisher believed was fine, so it should be the line
-    // they read rather than the fourth error after a semver nit.
-    //
-    // Writes before reads: a package asking for `/` is the more alarming
-    // of the two.
+    // Filesystem policy first — the check most likely to reject a
+    // package a publisher believed was fine, so it's the line they read
+    // rather than the fourth error after a semver nit. Writes before
+    // reads: a package asking for `/` is the more alarming of the two.
     if let Some(entry) = m.sandbox.fs.write.first() {
         return Err(ManifestError::FsWriteDeclared {
             package: m.package.id.clone(),
@@ -97,8 +87,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         (Kind::Runtime, None) => {}
         (_, Some(rt)) => validate_runtime_string(rt)?,
         (_, None) => {
-            // The schema allows runtime to be omitted for non-runtime
-            // kinds; loader applies a default. Not an error here.
+            // Schema allows runtime to be omitted for non-runtime kinds; the loader applies a default, not an error here.
         }
     }
 
@@ -108,42 +97,32 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
                 .entrypoint
                 .as_ref()
                 .ok_or(ManifestError::AppMissingEntrypoint)?;
-            // Which paths are load-bearing depends on the
-            // entrypoint's declared flavour. `Gui` and `Cli` both
-            // fall back to the top-level `bin`; `Both` requires
-            // at least one of `gui_bin` / `cli_bin` (or the
-            // legacy `bin` in the fallback slot).
+            // Which paths are load-bearing depends on the entrypoint's flavour:
+            // `Gui`/`Cli` fall back to top-level `bin`; `Both` requires
+            // `gui_bin`/`cli_bin` (or legacy `bin` as fallback).
             let has_bin = match ep.r#type {
                 EntrypointType::Gui | EntrypointType::Cli => !ep.bin.as_os_str().is_empty(),
                 EntrypointType::Both => {
                     ep.gui_bin
                         .as_ref()
-                        .map(|p| !p.as_os_str().is_empty())
-                        .unwrap_or(false)
+                        .is_some_and(|p| !p.as_os_str().is_empty())
                         || ep
                             .cli_bin
                             .as_ref()
-                            .map(|p| !p.as_os_str().is_empty())
-                            .unwrap_or(false)
+                            .is_some_and(|p| !p.as_os_str().is_empty())
                         || !ep.bin.as_os_str().is_empty()
                 }
             };
             if !has_bin {
                 return Err(ManifestError::AppMissingEntrypoint);
             }
-            // A `[cli]` block is meaningful iff the entrypoint
-            // opts in. We do NOT reject a `[cli]` block on a
-            // `Gui` entrypoint — the schema is forward-compatible;
-            // the installer just refuses to install shims from it.
+            // A [cli] block only takes effect if the entrypoint opts in — not
+            // rejected on a Gui entrypoint (forward-compatible schema); the
+            // installer just won't install shims from it.
             if matches!(ep.r#type, EntrypointType::Cli | EntrypointType::Both)
-                && m.cli
-                    .as_ref()
-                    .map(|c| c.commands.is_empty())
-                    .unwrap_or(true)
+                && m.cli.as_ref().is_none_or(|c| c.commands.is_empty())
             {
-                // A CLI entrypoint with no commands is fine —
-                // the package is still runnable via
-                // `qos-install run <id>`. No error surfaced.
+                // A CLI entrypoint with no commands is fine — still runnable via `qos-install run <id>`, no error.
             }
         }
         Kind::FormatProvider => {
@@ -171,10 +150,9 @@ fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
     if name.is_empty() || ver.is_empty() {
         return Err(ManifestError::BadRuntimeForm(raw.to_string()));
     }
-    // Some real-world runtime versions look like `2025.06`, not
-    // semver. The spec example uses `qos-runtime/2025.06`. We
-    // accept either a strict semver or a `YYYY.MM[.MICRO]`
-    // calendar form (digits + dots only, leading zeros allowed).
+    // Some real-world runtime versions look like 2025.06, not semver (the
+    // spec example uses qos-runtime/2025.06) — accept strict semver or a
+    // YYYY.MM[.MICRO] calendar form.
     if is_calver(ver) || Version::parse(ver).is_ok() {
         Ok(())
     } else {
@@ -185,19 +163,19 @@ fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
     }
 }
 
-/// Calendar-version recogniser: 2 or 3 dot-separated non-empty
-/// digit groups, leading zeros permitted.
+/// Calendar-version recogniser: 2 or 3 dot-separated non-empty digit groups, leading zeros permitted.
 fn is_calver(ver: &str) -> bool {
     let parts: Vec<&str> = ver.split('.').collect();
     if !matches!(parts.len(), 2 | 3) {
         return false;
     }
-    parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Payload-aware validation. Called after walking the payload
-/// directory; lists payload-relative paths so we can check that
-/// `format-provider` ships a `component.wasm` and that
+/// Payload-aware validation, called after walking the payload
+/// directory: checks `format-provider` ships `component.wasm` and
 /// `entrypoint.bin` resolves.
 pub fn validate_manifest_with_payload(
     m: &Manifest,
@@ -209,9 +187,8 @@ pub fn validate_manifest_with_payload(
             .iter()
             .any(|p| p.file_name().is_some_and(|n| n == "component.wasm"))
     {
-        // Promoting this from the docstring rule to an enforced
-        // payload-side check. Use the same enum so the CLI handler
-        // can render one error message.
+        // Promoting this from the docstring rule to an enforced payload-side
+        // check, using the same enum so the CLI handler renders one error message.
         return Err(ManifestError::FormatProviderMissingMime); // re-used; see below
     }
     Ok(())
@@ -251,7 +228,10 @@ mode = "off"
     fn runtime_kind_with_runtime_field_rejected() {
         let mut m = minimal_runtime_manifest();
         m.package.runtime = Some("qos-runtime/2025.06".into());
-        assert_eq!(validate_manifest(&m), Err(ManifestError::RuntimeKindHasRuntime));
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::RuntimeKindHasRuntime)
+        );
     }
 
     #[test]
@@ -259,9 +239,9 @@ mode = "off"
         let mut m = minimal_runtime_manifest();
         m.package.kind = Kind::App;
         m.package.runtime = Some("qos-runtime/2025.06".into());
-        // Will still fail because no entrypoint is set; but
-        // runtime-version parse should pass before that. Make
-        // sure the error is App-specific, not runtime-version.
+        // Will still fail because no entrypoint is set, but the
+        // runtime-version parse should pass before that — make sure the
+        // error is App-specific, not runtime-version.
         let e = validate_manifest(&m).unwrap_err();
         assert!(
             matches!(e, ManifestError::AppMissingEntrypoint),

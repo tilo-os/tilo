@@ -1,35 +1,15 @@
-//! The headline integration test: the full Phase 2 + 3 + 6 + 7 + 8
-//! stack composes into one working end-to-end flow.
+//! The headline integration test: the whole collaboration stack composes
+//! into one end-to-end flow.
 //!
-//! The scenario this exercises matches what the spec promises:
-//!
-//! 1. Two devices (Alice's laptop + Alice's phone) hold one
-//!    threshold-shared identity via FROST (Phase 8 — the secret half
-//!    is split across the two devices; the public half is a single
-//!    Ed25519 key).
-//! 2. Channel owner Olga has authorised Alice as an Editor on a
-//!    Note artifact (Phase 2 attestation, registered in the
-//!    channel's role table).
-//! 3. Alice's laptop encrypts an op's payload via the channel's
-//!    MLS group (Phase 7), then her laptop + phone collaboratively
-//!    sign the envelope across the ciphertext (Phase 8 +
-//!    Phase 3 — outer signature covers the ciphertext, the broker
-//!    validates the envelope without ever touching the cleartext).
-//! 4. The envelope crosses the broker (Phase 3 wire enforcement) and
-//!    reaches a second connected peer, Bob, who has also joined the
-//!    MLS group.
-//! 5. Bob's app receives `CollabEvent::SignedCRDTIncremental`,
-//!    decrypts the payload via Bob's mirror of the MLS group, and
-//!    surfaces the cleartext.
-//! 6. Olga publishes a Compaction op (Phase 6), signed by her
-//!    (Owner-only role permit). Older ops are evicted from the
-//!    broker's in-memory log.
-//! 7. A `FetchScrollback` request for the compacted prefix returns
-//!    an empty batch with `exhausted = true` — the compaction is
-//!    effective.
-//!
-//! If this test passes, every numbered Phase in the spec is
-//! observably real: foundations compose into a working system.
+//! Alice's laptop and phone hold one FROST threshold identity (secret half
+//! split, public half a single Ed25519 key). Channel owner Olga authorises
+//! Alice as an Editor on a Note artifact, and Alice's devices encrypt an
+//! op's payload through the channel's MLS group then collaboratively sign
+//! the envelope across the ciphertext — so the broker validates it without
+//! ever touching cleartext, and Bob, mirroring the same MLS group,
+//! decrypts what arrives. Olga then compacts the log, and a
+//! `FetchScrollback` over the evicted prefix comes back
+//! `exhausted = true`. Numbered markers below follow that order.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -37,24 +17,22 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use channel_crypto::{ChannelGroup, MemberKey};
+use collab_fixtures::role_attestation;
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, Role, RoleAttestation,
-    Signature, SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
-    sign_op,
+    ArtifactId, ArtifactKind, ChannelId, ChannelState, CompactionCheckpoint, EncryptionMetadata,
+    OpClass, Role, Signature, SignedOp, encode_compaction_payload, generate_keypair,
+    hash_op_prefix, sign_op,
 };
-use collab_fixtures::{role_attestation};
-use ed25519_dalek::SigningKey;
 use rand_08::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use shell::shell::collab_broker;
 use threshold_identity::{
-    EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
+    ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
     signing::SigningRound2Partial,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
-// ---- wire framing (matches broker exactly) ----
+// wire framing (matches broker exactly)
 
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
     let bytes = serde_json::to_vec(v).expect("serialize");
@@ -77,29 +55,21 @@ fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     std::env::temp_dir().join(format!("qos-everything-{label}-{pid}-{nanos}.sock"))
 }
 
-/// The collaboration cluster every client in these scenarios joins.
-///
-/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
-/// client announces on its `Hello`, so peers that are meant to observe
-/// each other's edits must announce the same pair — these scenarios
-/// pair this cluster with a single app id per file. A per-client
-/// random uuid would put every client in a cluster of its own, which
-/// is how a real deployment keeps unrelated documents apart.
+/// The collaboration cluster every client here joins. The broker routes
+/// CRDT traffic by the `(app_id, cluster_id)` pair announced on `Hello`,
+/// so peers meant to observe each other must announce the same pair — a
+/// per-client uuid would put each in a cluster of its own.
 fn test_cluster() -> uuid::Uuid {
     uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
 }
 
-/// Block until `n` clients have announced their route.
-///
-/// Connecting and saying `Hello` are separate steps, and only the
-/// second makes a client addressable — the broker routes CRDT traffic
-/// by the announced `(app_id, cluster_id)` pair. A send that races
-/// another client's `Hello` would reach nobody.
+/// Block until `n` clients have announced their route: only the `Hello`
+/// (not the connect) makes a client addressable, so a send that races it
+/// would reach nobody.
 fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -127,7 +97,7 @@ fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     }
 }
 
-// ---- FROST helpers, lifted from qos-threshold-identity's interop test ----
+// FROST helpers, lifted from qos-threshold-identity's interop test
 
 fn dkg_alice_2_of_2() -> (ThresholdIdentity, ThresholdIdentity) {
     let mut rng_a = ChaCha20Rng::from_seed([7u8; 32]);
@@ -167,16 +137,16 @@ fn threshold_sign(
     laptop.aggregate_signature(&[p_a, p_b]).unwrap()
 }
 
-// ---- attestation fixture ----
+// attestation fixture
 
 #[test]
 fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
-    // === 1. Olga owns the channel; one Note artifact. ===
+    // 1. Olga owns the channel; one Note artifact.
     let (olga_sk, olga_pk) = generate_keypair();
     let channel_id = ChannelId::new();
     let artifact = ArtifactId::new();
 
-    // === 2. Alice's 2-of-2 threshold identity. ===
+    // 2. Alice's 2-of-2 threshold identity.
     let (alice_laptop, alice_phone) = dkg_alice_2_of_2();
     let alice_group_pk = *alice_laptop.group_public_key();
     assert_eq!(
@@ -185,25 +155,21 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         "Alice's two devices must share the same group public key",
     );
 
-    // === 3. Bob's plain single-device identity (a third party who
-    //         also got Editor + MLS membership). ===
-    let (bob_sk, bob_pk) = generate_keypair();
+    // 3. Bob's plain single-device identity (third party, also Editor + MLS).
+    let (_bob_sk, bob_pk) = generate_keypair();
 
-    // === 4. Olga mints Editor attestations for Alice's threshold key
-    //         and Bob's plain key. ===
-    let alice_att =
-        role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
+    // 4. Olga mints Editor attestations for Alice's threshold key and Bob's plain key.
+    let alice_att = role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
     let bob_att = role_attestation(&olga_sk, olga_pk, bob_pk, channel_id, Role::Editor);
     let alice_att_id = alice_att.attestation.id;
-    let bob_att_id = bob_att.attestation.id;
+    let _bob_att_id = bob_att.attestation.id;
 
     // Olga also self-attests as Owner so she can sign compaction ops.
     let olga_att = role_attestation(&olga_sk, olga_pk, olga_pk, channel_id, Role::Owner);
     let olga_att_id = olga_att.attestation.id;
 
-    // === 5. MLS group: Olga creates, Alice joins, Bob joins. ===
-    //         Each member uses MemberKey for their MLS-level identity
-    //         (separate from their outer-envelope signing identity).
+    // 5. MLS group: Olga creates, Alice and Bob join. Each member's
+    // MemberKey is separate from their outer-envelope signing identity.
     let olga_mls = MemberKey::generate("olga").unwrap();
     let alice_mls = MemberKey::generate("alice").unwrap();
     let bob_mls = MemberKey::generate("bob").unwrap();
@@ -220,8 +186,8 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     alice_g.process_commit(&commit_for_existing).unwrap();
     let mut bob_g = ChannelGroup::process_welcome(channel_id, &welcome_bob, bob_mls).unwrap();
 
-    // === 6. Channel state: register all three attestations, the
-    //         artifact, and Olga as the authorised signer. ===
+    // 6. Channel state: register all three attestations, the artifact, and
+    // Olga as authorised signer.
     let mut state = ChannelState::default();
     state.authorised_signers.push(olga_pk);
     state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -229,7 +195,7 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     state.register_attestation(bob_att);
     state.register_attestation(olga_att);
 
-    // === 7. Spawn broker, register channel state. ===
+    // 7. Spawn broker, register channel state.
     let socket = unique_socket("everything");
     let handle = collab_broker::spawn(socket.clone()).expect("spawn broker");
     handle.register_channel_state(artifact, state);
@@ -250,8 +216,8 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     }
     wait_for_announced(&handle, 3);
 
-    // === 8. Alice publishes 3 MLS-encrypted, threshold-signed
-    //         ops. Bob's app receives + decrypts each one. ===
+    // 8. Alice publishes 3 MLS-encrypted, threshold-signed ops; Bob's app
+    // receives + decrypts each.
     let mut alice_seq: u64 = 0;
     for (i, plaintext) in [
         b"first edit from alice".to_vec(),
@@ -277,7 +243,6 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
             alice_seq,
             encryption,
         );
-        // Threshold sign across both Alice devices.
         let canon = op.signing_bytes().unwrap();
         op.signature = threshold_sign(
             &alice_laptop,
@@ -295,15 +260,14 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         );
 
         let event = read_event(&mut bob_app, Duration::from_millis(500));
-        let event = match event {
-            Some(e) => e,
-            None => {
-                let audit = handle.audit_for(artifact);
-                panic!(
-                    "bob did not receive op #{i}; audit: {:?}",
-                    audit.iter().map(|e| &e.rejection).collect::<Vec<_>>()
-                );
-            }
+        let event = if let Some(e) = event {
+            e
+        } else {
+            let audit = handle.audit_for(artifact);
+            panic!(
+                "bob did not receive op #{i}; audit: {:?}",
+                audit.iter().map(|e| &e.rejection).collect::<Vec<_>>()
+            );
         };
         match event {
             CollabEvent::SignedCRDTIncremental { envelope, .. } => {
@@ -320,22 +284,17 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         }
     }
 
-    // Drain everything currently queued on olga's stream — she
-    // received Alice's three ops via fan-out and we need a clean
-    // slate before driving FetchScrollback through her socket.
+    // Drain olga's stream — she saw Alice's three ops via fan-out, and
+    // FetchScrollback below needs a clean slate.
     fn drain_all(stream: &mut UnixStream) {
         while read_event(stream, Duration::from_millis(50)).is_some() {}
     }
     drain_all(&mut olga_app);
 
-    // === 9. Olga publishes a Compaction op covering Alice's first
-    //         two ops. The payload is the canonical-encoded
-    //         CompactionCheckpoint; the seq is *Olga's* per-author
-    //         seq, NOT the artifact's overall seq. ===
-    // Hash the prefix Olga claims to be summarising. We need the
-    // ops as they sit in the broker's log — the broker has been
-    // appending them via record_validated_op as they validated.
-    // Reconstruct by inspecting the broker's scrollback.
+    // 9. Olga publishes a Compaction op covering Alice's first two ops. The
+    // payload is the canonical-encoded CompactionCheckpoint and the seq is
+    // *Olga's* per-author seq, not the artifact's; the prefix hash is taken
+    // from the log as the broker holds it.
     write_frame(
         &mut olga_app,
         &CollabRequest::FetchScrollback {
@@ -355,7 +314,6 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         "scrollback should hand us the two ops with seq < 3",
     );
 
-    // Build the checkpoint that covers seq 1 and 2.
     let prefix_owned: Vec<SignedOp> = prefix_ops.iter().map(|b| (**b).clone()).collect();
     let prefix_hash = hash_op_prefix(&prefix_owned).expect("hash prefix");
     let checkpoint = CompactionCheckpoint {
@@ -365,12 +323,10 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     };
     let payload = encode_compaction_payload(&checkpoint).expect("encode compaction payload");
 
-    // Per the agent's Phase 6 convention (see
-    // `tests/scrollback_pipeline.rs::compaction_evicts_log_then_scrollback_returns_exhausted`),
-    // the compaction op's seq must be greater than the
-    // checkpoint's `up_to_seq` so the compaction-op itself doesn't
-    // fall inside the prefix being evicted. Per-author seq only needs
-    // to be monotonic — we can skip numbers freely.
+    // The compaction op's seq must exceed the checkpoint's `up_to_seq` so it
+    // doesn't fall inside the evicted prefix (see
+    // `scrollback_pipeline.rs::compaction_evicts_log_then_scrollback_returns_exhausted`).
+    // Per-author seq only needs to be monotonic.
     let mut olga_op = SignedOp::new_unsigned(
         payload,
         artifact,
@@ -388,19 +344,14 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         },
     );
 
-    // === 10. Wait briefly for the broker to apply the compaction. ===
-    //          Both alice and bob receive the compaction op as a
-    //          regular SignedCRDTIncremental event — drain everything
-    //          queued on each socket so subsequent FetchScrollback
-    //          calls don't trip over a stray frame.
+    // 10. Let the broker apply the compaction, then drain the ordinary
+    // SignedCRDTIncremental events it fans out for it.
     drain_all(&mut alice_app);
     drain_all(&mut bob_app);
     drain_all(&mut olga_app);
 
-    // === 11. Bob asks for scrollback BEFORE the compaction
-    //          checkpoint. After the eviction, ops 1+2 are no longer
-    //          in the broker's log — the response should hand back
-    //          nothing for the requested range. ===
+    // 11. Scrollback BEFORE the checkpoint: ops 1+2 are evicted, so this
+    // range comes back empty.
     write_frame(
         &mut bob_app,
         &CollabRequest::FetchScrollback {
@@ -412,9 +363,7 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     let event = read_event(&mut bob_app, Duration::from_millis(500))
         .expect("scrollback returns after compaction");
     match event {
-        CollabEvent::ScrollbackBatch {
-            ops, exhausted: _, ..
-        } => {
+        CollabEvent::ScrollbackBatch { ops, .. } => {
             if !ops.is_empty() {
                 let audit = handle.audit_for(artifact);
                 panic!(
@@ -433,9 +382,7 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         other => panic!("expected ScrollbackBatch, got {other:?}"),
     }
 
-    // === 12. Asking for scrollback at the upper end (seq <= 3
-    //          which is alice's third op) should still return the
-    //          untouched tail. ===
+    // 12. The upper end (seq <= 3) still returns the untouched tail.
     write_frame(
         &mut bob_app,
         &CollabRequest::FetchScrollback {
@@ -448,10 +395,9 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         read_event(&mut bob_app, Duration::from_millis(500)).expect("scrollback returns for tail");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
-            // After compaction the log retains alice's op #3 (seq=3
-            // > checkpoint.up_to_seq=2). Olga's compaction op has
-            // seq=100, which is > before_seq=5, so it's excluded by
-            // the scrollback's own filter. Exactly one entry remains.
+            // After compaction the log retains alice's op #3 (seq=3 > up_to_seq=2);
+            // Olga's compaction op (seq=100) is excluded by before_seq=5. Exactly
+            // one entry remains.
             assert_eq!(
                 ops.len(),
                 1,
@@ -466,7 +412,6 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         other => panic!("expected ScrollbackBatch, got {other:?}"),
     }
 
-    // === The whole stack composes. ===
     drop(alice_app);
     drop(bob_app);
     drop(olga_app);

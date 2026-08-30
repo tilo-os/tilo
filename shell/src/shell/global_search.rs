@@ -6,25 +6,17 @@
 //! id (`ws.*`, `file.*`, `app.*`, `settings.*`) so context switching just
 //! installs a `set_filter` closure that keeps the matching prefixes plus
 //! `settings.*`, which is always reachable.
-//!
-//! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — line 210
-//! (GlobalSearch: command palette + context-aware filters).
 
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
-/// Alpha the shell overlay host tints the GlobalSearch palette surface
-/// with. Bumped from the concept's 0.70 to fully opaque after the
-/// 2026-07-09 legibility complaint — see
-/// [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`] for the full
-/// rationale. Kept in sync with that constant.
+/// Alpha the shell overlay host tints the `GlobalSearch` surface with. Kept
+/// in sync with [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`].
 pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 
-/// Which slice of the command catalog the palette is focusing on.
-///
-/// `Any` shows everything; the narrower variants restrict to a prefix family
-/// (`file.*`, `ws.*`, `app.*`) while always leaving `settings.*` visible so
-/// the user never loses the escape hatch to Settings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Which slice of the command catalog the palette is focusing on. `Any`
+/// shows everything; narrower variants restrict to a prefix family while
+/// always leaving `settings.*` visible as the escape hatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchContext {
     Any,
     Files,
@@ -46,8 +38,6 @@ impl GlobalSearch {
         }
     }
 
-    /// Seed the default system command set. Idempotent-safe to call once at
-    /// construction; see spec §9 for the canonical v1 list.
     pub fn seed_default_commands(&mut self) {
         let defaults: &[(&str, &str)] = &[
             ("ws.create", "Create Workspace"),
@@ -73,24 +63,19 @@ impl GlobalSearch {
         &self.context
     }
 
-    /// Tint alpha for the palette surface. See
-    /// [`PALETTE_SURFACE_ALPHA`] for background — the palette paints
-    /// solid slate-900 and gets its depth from the scrim beneath it, not
-    /// from letting the desktop through the card.
+    /// Tint alpha for the palette surface — solid slate-900, depth comes
+    /// from the scrim beneath it, not from letting the desktop through.
     pub fn surface_alpha() -> f32 {
         PALETTE_SURFACE_ALPHA
     }
 
-    /// Install a context-aware filter on the underlying palette.
-    ///
-    /// `settings.*` entries are always kept visible so the user can reach
-    /// Settings from any context; the narrow contexts additionally keep the
-    /// matching prefix family (`file.*`, `ws.*`, `app.*`).
+    /// Install a context-aware filter: `settings.*` always stays visible
+    /// as the escape hatch, narrow contexts additionally keep their prefix
+    /// family (`file.*`, `ws.*`, `app.*`).
     pub fn set_context_kind(&mut self, ctx: SearchContext) {
-        self.context = ctx.clone();
+        self.context = ctx;
         match ctx {
             SearchContext::Any => {
-                // Restore "everything visible" by installing a pass-all filter.
                 self.palette
                     .set_filter(Box::new(|_entry: &CommandEntry| true));
             }

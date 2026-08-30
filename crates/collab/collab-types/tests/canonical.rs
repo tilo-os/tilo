@@ -7,15 +7,15 @@
 
 use std::time::{Duration, SystemTime};
 
+use collab_types::canonical::from_canonical_bytes;
+use collab_types::channel::DocumentHandle;
+use collab_types::identity::{AvatarBytes, Identity};
 use collab_types::{
     Artifact, ArtifactId, ArtifactKind, Attestation, AttestationId, Channel, ChannelEvent,
     ChannelId, ChannelSettingsDelta, Claim, Clearance, Ed25519PublicKey, MemberRef, OpClass, Role,
     RoleAttestation, Signature, SignedOp, Space, SpaceId, canonical_bytes, generate_keypair,
     sign_event, sign_op, verify_event, verify_op,
 };
-use collab_types::canonical::from_canonical_bytes;
-use collab_types::channel::DocumentHandle;
-use collab_types::identity::{AvatarBytes, Identity};
 
 // ---------- helpers ----------
 

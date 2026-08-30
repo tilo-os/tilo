@@ -2,15 +2,18 @@
 //! no network, so the app must look fully alive from a cold start — this
 //! module hands back a populated [`TubeModel`] the moment the app boots.
 //!
-//! Live fetch (Invidious / SponsorBlock / DeArrow) folds real data on top
+//! Live fetch (Invidious / `SponsorBlock` / `DeArrow`) folds real data on top
 //! of this once the user interacts; see `api.rs` + `app::TubeApp::pump`.
 
-use crate::model::{
-    Category, Channel, Comment, Route, Segment, Settings, TubeModel, Video,
-};
+use crate::model::{Category, Channel, Comment, Route, Segment, Settings, TubeModel, Video};
 
 fn seg(category: Category, start: f64, end: f64, votes: i64) -> Segment {
-    Segment { category, start, end, votes }
+    Segment {
+        category,
+        start,
+        end,
+        votes,
+    }
 }
 
 fn comment(author: &str, initials: &str, text: &str, likes: u64, ago: &str) -> Comment {
@@ -44,7 +47,7 @@ fn video(
     Video {
         id: id.into(),
         title: title.into(),
-        dearrow_title: dearrow.map(|s| s.to_string()),
+        dearrow_title: dearrow.map(std::string::ToString::to_string),
         channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),
         channel_seed: channel.seed.clone(),
@@ -153,10 +156,42 @@ pub fn model() -> TubeModel {
                 seg(Category::Outro, 1565.0, 1620.0, 188),
             ],
             vec![
-                Comment { pinned: true, hearted: true, replies: 41, ..comment("Low Level Learning", "LL", "Pinned: benchmark methodology + the full flamegraphs are linked in the description. Ask away!", 2_300, "3 days ago") },
-                comment("ferris_fan", "FF", "The borrow checker is the real compositor.", 5_400, "3 days ago"),
-                Comment { replies: 7, ..comment("anna.dev", "AD", "Finally a channel that shows the FAILED attempts too. Subscribed.", 1_120, "2 days ago") },
-                comment("oxidize_me", "OM", "24:00 sponsor segment is already on SponsorBlock, this client skipped it automatically. Beautiful.", 880, "1 day ago"),
+                Comment {
+                    pinned: true,
+                    hearted: true,
+                    replies: 41,
+                    ..comment(
+                        "Low Level Learning",
+                        "LL",
+                        "Pinned: benchmark methodology + the full flamegraphs are linked in the description. Ask away!",
+                        2_300,
+                        "3 days ago",
+                    )
+                },
+                comment(
+                    "ferris_fan",
+                    "FF",
+                    "The borrow checker is the real compositor.",
+                    5_400,
+                    "3 days ago",
+                ),
+                Comment {
+                    replies: 7,
+                    ..comment(
+                        "anna.dev",
+                        "AD",
+                        "Finally a channel that shows the FAILED attempts too. Subscribed.",
+                        1_120,
+                        "2 days ago",
+                    )
+                },
+                comment(
+                    "oxidize_me",
+                    "OM",
+                    "24:00 sponsor segment is already on SponsorBlock, this client skipped it automatically. Beautiful.",
+                    880,
+                    "1 day ago",
+                ),
             ],
         ),
         video(
@@ -176,9 +211,32 @@ pub fn model() -> TubeModel {
                 seg(Category::Outro, 585.0, 612.0, 902),
             ],
             vec![
-                Comment { pinned: true, hearted: true, replies: 120, ..comment("Kurzgesagt", "KG", "Sources & further reading are in the description. This one took 1,400 hours to animate.", 41_000, "1 week ago") },
-                comment("astro_amy", "AA", "optimistic nihilism is exactly the energy I need on a Monday", 12_300, "6 days ago"),
-                comment("void_walker", "VW", "the duck at 4:32 again. always the duck.", 8_900, "5 days ago"),
+                Comment {
+                    pinned: true,
+                    hearted: true,
+                    replies: 120,
+                    ..comment(
+                        "Kurzgesagt",
+                        "KG",
+                        "Sources & further reading are in the description. This one took 1,400 hours to animate.",
+                        41_000,
+                        "1 week ago",
+                    )
+                },
+                comment(
+                    "astro_amy",
+                    "AA",
+                    "optimistic nihilism is exactly the energy I need on a Monday",
+                    12_300,
+                    "6 days ago",
+                ),
+                comment(
+                    "void_walker",
+                    "VW",
+                    "the duck at 4:32 again. always the duck.",
+                    8_900,
+                    "5 days ago",
+                ),
             ],
         ),
         video(
@@ -197,8 +255,20 @@ pub fn model() -> TubeModel {
                 seg(Category::Interaction, 120.0, 134.0, 350),
             ],
             vec![
-                comment("new_to_3d", "NT", "Came for the donut, stayed for the existential dread of UV unwrapping.", 4_100, "1 month ago"),
-                comment("blendr", "BL", "the coffee cup is the real final boss", 2_050, "3 weeks ago"),
+                comment(
+                    "new_to_3d",
+                    "NT",
+                    "Came for the donut, stayed for the existential dread of UV unwrapping.",
+                    4_100,
+                    "1 month ago",
+                ),
+                comment(
+                    "blendr",
+                    "BL",
+                    "the coffee cup is the real final boss",
+                    2_050,
+                    "3 weeks ago",
+                ),
             ],
         ),
         video(
@@ -218,8 +288,24 @@ pub fn model() -> TubeModel {
                 seg(Category::Filler, 300.0, 360.0, 120),
             ],
             vec![
-                Comment { pinned: true, replies: 33, ..comment("Privacy Guides", "PG", "We are a non-profit. No segment of this video is paid — the 'sponsor' tag is our own recommendations, flagged honestly.", 9_800, "5 days ago") },
-                comment("threat_model", "TM", "metadata is the message. great breakdown.", 3_300, "4 days ago"),
+                Comment {
+                    pinned: true,
+                    replies: 33,
+                    ..comment(
+                        "Privacy Guides",
+                        "PG",
+                        "We are a non-profit. No segment of this video is paid — the 'sponsor' tag is our own recommendations, flagged honestly.",
+                        9_800,
+                        "5 days ago",
+                    )
+                },
+                comment(
+                    "threat_model",
+                    "TM",
+                    "metadata is the message. great breakdown.",
+                    3_300,
+                    "4 days ago",
+                ),
             ],
         ),
         video(
@@ -239,8 +325,20 @@ pub fn model() -> TubeModel {
                 seg(Category::Outro, 980.0, 1024.0, 410),
             ],
             vec![
-                comment("groove_is", "GI", "harder. better. faster. *vocoder intensifies*", 6_700, "2 weeks ago"),
-                comment("eternal_synth", "ES", "the MusicOfftopic tag skipping straight to the song is god-tier", 3_100, "1 week ago"),
+                comment(
+                    "groove_is",
+                    "GI",
+                    "harder. better. faster. *vocoder intensifies*",
+                    6_700,
+                    "2 weeks ago",
+                ),
+                comment(
+                    "eternal_synth",
+                    "ES",
+                    "the MusicOfftopic tag skipping straight to the song is god-tier",
+                    3_100,
+                    "1 week ago",
+                ),
             ],
         ),
         video(
@@ -256,8 +354,20 @@ pub fn model() -> TubeModel {
             980_000,
             vec![],
             vec![
-                comment("midnight_dev", "MD", "anyone else here at 3am shipping a feature nobody asked for", 22_000, "now"),
-                comment("studious", "ST", "the cat moved. THE CAT MOVED.", 14_500, "2 hours ago"),
+                comment(
+                    "midnight_dev",
+                    "MD",
+                    "anyone else here at 3am shipping a feature nobody asked for",
+                    22_000,
+                    "now",
+                ),
+                comment(
+                    "studious",
+                    "ST",
+                    "the cat moved. THE CAT MOVED.",
+                    14_500,
+                    "2 hours ago",
+                ),
             ],
         ),
         video(
@@ -275,7 +385,13 @@ pub fn model() -> TubeModel {
                 seg(Category::Intro, 0.0, 14.0, 210),
                 seg(Category::Sponsor, 300.0, 372.0, 940),
             ],
-            vec![comment("simd_enjoyer", "SE", "occupancy is the new cache miss", 1_900, "3 days ago")],
+            vec![comment(
+                "simd_enjoyer",
+                "SE",
+                "occupancy is the new cache miss",
+                1_900,
+                "3 days ago",
+            )],
         ),
         video(
             "vid_solar",
@@ -292,7 +408,13 @@ pub fn model() -> TubeModel {
                 seg(Category::Sponsor, 480.0, 560.0, 3300),
                 seg(Category::Preview, 0.0, 30.0, 700),
             ],
-            vec![comment("planet9", "P9", "it's always 'a possible ninth planet' and never an invitation to dinner", 18_000, "3 weeks ago")],
+            vec![comment(
+                "planet9",
+                "P9",
+                "it's always 'a possible ninth planet' and never an invitation to dinner",
+                18_000,
+                "3 weeks ago",
+            )],
         ),
         video(
             "vid_fuse",
@@ -305,8 +427,17 @@ pub fn model() -> TubeModel {
             "Programming",
             "Projection vs hydration, content addressing with blake3, and why your open() doesn't mean the bytes are local. A tour of a real P2P FUSE design.",
             14_000,
-            vec![seg(Category::Sponsor, 600.0, 690.0, 510), seg(Category::Interaction, 200.0, 210.0, 88)],
-            vec![comment("mountpoint", "MP", "10s metadata TTL is a bold choice and I respect it", 920, "5 days ago")],
+            vec![
+                seg(Category::Sponsor, 600.0, 690.0, 510),
+                seg(Category::Interaction, 200.0, 210.0, 88),
+            ],
+            vec![comment(
+                "mountpoint",
+                "MP",
+                "10s metadata TTL is a bold choice and I respect it",
+                920,
+                "5 days ago",
+            )],
         ),
         video(
             "vid_color",
@@ -320,7 +451,13 @@ pub fn model() -> TubeModel {
             "Magenta isn't on the rainbow. Your brain invents it. A short, beautiful detour into how colour perception actually works.",
             260_000,
             vec![seg(Category::Sponsor, 240.0, 300.0, 1600)],
-            vec![comment("rgb_to_xyz", "RX", "magenta is a vibe your visual cortex made up and honestly same", 7_700, "1 week ago")],
+            vec![comment(
+                "rgb_to_xyz",
+                "RX",
+                "magenta is a vibe your visual cortex made up and honestly same",
+                7_700,
+                "1 week ago",
+            )],
         ),
         video(
             "vid_amp",
@@ -333,8 +470,17 @@ pub fn model() -> TubeModel {
             "Music",
             "Why a stadium gig sounds like mud — and the delay towers, line arrays and psychoacoustics that fix it.",
             58_000,
-            vec![seg(Category::Sponsor, 540.0, 620.0, 720), seg(Category::Outro, 700.0, 740.0, 230)],
-            vec![comment("front_of_house", "FH", "delay towers are the unsung heroes of every festival", 2_400, "5 days ago")],
+            vec![
+                seg(Category::Sponsor, 540.0, 620.0, 720),
+                seg(Category::Outro, 700.0, 740.0, 230),
+            ],
+            vec![comment(
+                "front_of_house",
+                "FH",
+                "delay towers are the unsung heroes of every festival",
+                2_400,
+                "5 days ago",
+            )],
         ),
         video(
             "vid_compose",
@@ -352,7 +498,13 @@ pub fn model() -> TubeModel {
                 seg(Category::Sponsor, 410.0, 500.0, 1100),
                 seg(Category::SelfPromo, 880.0, 920.0, 260),
             ],
-            vec![comment("tile_or_die", "TD", "2D clusters on an infinite canvas is the first new idea in WMs in a decade", 4_900, "1 day ago")],
+            vec![comment(
+                "tile_or_die",
+                "TD",
+                "2D clusters on an infinite canvas is the first new idea in WMs in a decade",
+                4_900,
+                "1 day ago",
+            )],
         ),
     ];
 

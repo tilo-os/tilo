@@ -1,0 +1,13 @@
+# Pinned: changing compiler invalidates the whole sccache.
+#
+# Stable, not nightly: on nightly-2026-08-17, cranelift built `ui` 23% slower and
+# --jobs-frontend gained 13% at 4 threads, 0% at 8. `-Z time-passes`: type check is
+# 14% of a debug build, LLVM passes 29%, rest is rustc lowering MIR to IR.
+[toolchain]
+channel = "1.97.1"
+# rust-analyzer is a test subject, not an editor convenience: the code
+# editor's language-server suite drives the real binary and fails rather
+# than skips without it. The rustup shim shadows any system package, so it
+# has to come from the toolchain.
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
+profile = "minimal"

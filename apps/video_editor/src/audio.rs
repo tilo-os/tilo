@@ -68,7 +68,9 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
     let soloed = soloing(project, TrackKind::Audio);
     let mut out = Vec::new();
     for clip in &project.clips {
-        let Some(track) = project.track(clip.track) else { continue };
+        let Some(track) = project.track(clip.track) else {
+            continue;
+        };
         if track.kind != TrackKind::Audio || track.muted || (soloed && !track.solo) {
             continue;
         }
@@ -224,7 +226,11 @@ fn fetch_at_rate(
             // interpolate toward. Hold it for that one frame rather than
             // ramping into a zero the source never contained, which would
             // put a click on the edge of every block that lands there.
-            let b = if j + 1 < have { src[(j + 1) * CHANNELS + ch] } else { a };
+            let b = if j + 1 < have {
+                src[(j + 1) * CHANNELS + ch]
+            } else {
+                a
+            };
             out[i * CHANNELS + ch] = a + (b - a) * frac;
         }
     }
@@ -243,7 +249,6 @@ pub fn to_s16le(block: &[f32]) -> Vec<u8> {
     }
     out
 }
-
 
 /// A [`PcmSource`] that decodes the project's media for real.
 ///
@@ -274,7 +279,10 @@ impl DecodedPcm {
                 crate::media::engine_source(&resolved.abs_path).to_uri(),
             );
         }
-        Self { paths, loaded: std::collections::HashMap::new() }
+        Self {
+            paths,
+            loaded: std::collections::HashMap::new(),
+        }
     }
 
     /// How many media this source could read audio from.
@@ -339,9 +347,9 @@ fn no_audio_concluded(pads_settled: bool, audio_linked: bool) -> bool {
 /// has no audio stream at all — a silent video is not an error.
 #[cfg(any(feature = "gst", feature = "decode"))]
 fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
+    use gstreamer_app as gst_app;
     use media::gst;
     use media::gst::prelude::*;
-    use gstreamer_app as gst_app;
 
     gst::init().ok()?;
     let pipeline = gst::Pipeline::new();
@@ -369,8 +377,8 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
 
     // `uridecodebin` exposes pads once it knows the streams; take the audio
     // one and leave video alone.
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     let linked = Arc::new(AtomicBool::new(false));
     let convert_weak = convert.downgrade();
     let linked_in = linked.clone();
@@ -429,8 +437,12 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
         }
         match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
             Some(sample) => {
-                let Some(buffer) = sample.buffer() else { continue };
-                let Ok(map) = buffer.map_readable() else { continue };
+                let Some(buffer) = sample.buffer() else {
+                    continue;
+                };
+                let Ok(map) = buffer.map_readable() else {
+                    continue;
+                };
                 for chunk in map.chunks_exact(4) {
                     out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
@@ -457,7 +469,6 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     let _ = pipeline.set_state(gst::State::Null);
     (!out.is_empty()).then_some(out)
 }
-
 
 // ---------------------------------------------------------------------------
 // Monitoring — hearing the timeline while it plays.
@@ -675,7 +686,11 @@ impl SystemSink {
             .ok()?;
         gst::Element::link_many([src.upcast_ref(), &convert, &resample, &out]).ok()?;
         pipeline.set_state(gst::State::Playing).ok()?;
-        Some(Self { pipeline, src, pushed: 0 })
+        Some(Self {
+            pipeline,
+            src,
+            pushed: 0,
+        })
     }
 }
 
@@ -693,12 +708,16 @@ impl MonitorSink for SystemSink {
             return false;
         };
         {
-            let Some(bref) = buffer.get_mut() else { return false };
+            let Some(bref) = buffer.get_mut() else {
+                return false;
+            };
             let frames = (block.len() / CHANNELS) as u64;
             let ns = |f: u64| f * 1_000_000_000 / SAMPLE_RATE as u64;
             bref.set_pts(gst::ClockTime::from_nseconds(ns(self.pushed)));
             bref.set_duration(gst::ClockTime::from_nseconds(ns(frames)));
-            let Ok(mut map) = bref.map_writable() else { return false };
+            let Ok(mut map) = bref.map_writable() else {
+                return false;
+            };
             map.copy_from_slice(&bytes);
             self.pushed += frames;
         }
@@ -775,8 +794,7 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn an_unreadable_source_gives_up_long_before_the_deadline() {
-        let junk = std::env::temp_dir()
-            .join(format!("qos-ve-junk-{}.mp4", std::process::id()));
+        let junk = std::env::temp_dir().join(format!("qos-ve-junk-{}.mp4", std::process::id()));
         std::fs::write(&junk, b"not a container, not even close").expect("write the fixture");
         let uri = crate::media::engine_source(&junk).to_uri();
 
@@ -785,13 +803,16 @@ mod tests {
         let took = began.elapsed();
         std::fs::remove_file(&junk).ok();
 
-        assert!(got.is_none(), "there is no audio to be had in {} bytes of junk", 31);
+        assert!(
+            got.is_none(),
+            "there is no audio to be had in {} bytes of junk",
+            31
+        );
         assert!(
             took < std::time::Duration::from_secs(30),
             "gave up after {took:?}; the pipeline's failure has to end the wait",
         );
     }
-
 
     /// A source whose samples encode *where they came from*: frame `n` of a
     /// media is the value `n`. A resampler's output can then be read
@@ -966,7 +987,9 @@ mod tests {
     #[test]
     fn at_normal_speed_a_block_covers_exactly_its_own_frames() {
         let (p, _) = speed_project(1.0, false, 10.0);
-        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let mut src = RampSource {
+            len: 10 * SAMPLE_RATE as usize,
+        };
         let block = mix_block(&p, 0.0, 1000, &mut src);
         let (a, b) = span_of(&block, src.len);
         assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
@@ -976,7 +999,9 @@ mod tests {
     #[test]
     fn doubling_the_rate_covers_twice_as_much_source_in_a_block() {
         let (p, _) = speed_project(2.0, false, 10.0);
-        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let mut src = RampSource {
+            len: 10 * SAMPLE_RATE as usize,
+        };
         let block = mix_block(&p, 0.0, 1000, &mut src);
         let (a, b) = span_of(&block, src.len);
         assert!(a.abs() < 2.0, "still starts at the in-point, got {a}");
@@ -989,7 +1014,9 @@ mod tests {
     #[test]
     fn halving_the_rate_covers_half_as_much() {
         let (p, _) = speed_project(0.5, false, 10.0);
-        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let mut src = RampSource {
+            len: 10 * SAMPLE_RATE as usize,
+        };
         let block = mix_block(&p, 0.0, 1000, &mut src);
         let (a, b) = span_of(&block, src.len);
         assert!(a.abs() < 2.0, "starts at the in-point, got {a}");
@@ -1002,11 +1029,16 @@ mod tests {
     #[test]
     fn reversing_walks_the_source_backwards() {
         let (p, _) = speed_project(1.0, true, 10.0);
-        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let mut src = RampSource {
+            len: 10 * SAMPLE_RATE as usize,
+        };
         // A block partway in, so there is source on both sides of it.
         let block = mix_block(&p, 2.0, 1000, &mut src);
         let (a, b) = span_of(&block, src.len);
-        assert!(a > b, "a reversed clip's block runs from later source to earlier: {a} → {b}");
+        assert!(
+            a > b,
+            "a reversed clip's block runs from later source to earlier: {a} → {b}"
+        );
         assert!(
             (a - b - 999.0).abs() < 6.0,
             "and covers a block's worth of it: {a} → {b}",
@@ -1027,7 +1059,9 @@ mod tests {
         // must lie between their neighbours — a resampler that returned
         // zeroes would show up as a block full of holes.
         let (p, _) = speed_project(0.25, false, 10.0);
-        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let mut src = RampSource {
+            len: 10 * SAMPLE_RATE as usize,
+        };
         let block = mix_block(&p, 0.0, 400, &mut src);
         assert!(
             block.iter().all(|s| s.is_finite()),
@@ -1039,16 +1073,24 @@ mod tests {
             .chunks(CHANNELS)
             .zip(block.chunks(CHANNELS).skip(1))
             .all(|(a, b)| b[0] >= a[0] - 1e-6);
-        assert!(mono, "a slowed ramp is still a ramp, not a staircase with gaps");
+        assert!(
+            mono,
+            "a slowed ramp is still a ramp, not a staircase with gaps"
+        );
         let zeros = block.iter().filter(|s| **s == 0.0).count();
-        assert!(zeros < 8, "a slowed block is not mostly silence, got {zeros} zero samples");
+        assert!(
+            zeros < 8,
+            "a slowed block is not mostly silence, got {zeros} zero samples"
+        );
     }
 
     #[test]
     fn a_speed_change_moves_where_a_later_block_reads_from() {
         // The whole point: the same timeline instant reads different source
         // depending on the rate.
-        let mut src = RampSource { len: 60 * SAMPLE_RATE as usize };
+        let mut src = RampSource {
+            len: 60 * SAMPLE_RATE as usize,
+        };
         let (slow, _) = speed_project(1.0, false, 30.0);
         let (fast, _) = speed_project(3.0, false, 30.0);
         let n = src.len;
@@ -1066,15 +1108,31 @@ mod tests {
         let cid = p.clips[0].id;
         {
             let c = p.clip_mut(cid).unwrap();
-            c.set_key_at(crate::param::Param::Volume, 0.0, 0.0, crate::param::Interp::Linear);
-            c.set_key_at(crate::param::Param::Volume, 8.0, 1.0, crate::param::Interp::Linear);
+            c.set_key_at(
+                crate::param::Param::Volume,
+                0.0,
+                0.0,
+                crate::param::Interp::Linear,
+            );
+            c.set_key_at(
+                crate::param::Param::Volume,
+                8.0,
+                1.0,
+                crate::param::Interp::Linear,
+            );
         }
         let plan = |t: f64| plan_audio(&p, t)[0].gain;
         let early = plan(1.0);
         let mid = plan(4.0);
         let late = plan(7.0);
-        assert!(early < mid && mid < late, "the curve rises: {early} {mid} {late}");
-        assert!((mid - 0.5).abs() < 0.02, "and is linear through the middle: {mid}");
+        assert!(
+            early < mid && mid < late,
+            "the curve rises: {early} {mid} {late}"
+        );
+        assert!(
+            (mid - 0.5).abs() < 0.02,
+            "and is linear through the middle: {mid}"
+        );
     }
 
     use super::*;
@@ -1138,7 +1196,6 @@ mod tests {
     fn constant(pairs: &[(MediaId, f32)]) -> Constant {
         Constant(pairs.iter().copied().collect())
     }
-
 
     // --- monitoring -------------------------------------------------------
 
@@ -1359,7 +1416,11 @@ mod tests {
         p.clip_mut(c1).unwrap().volume = 0.5;
         let mut src = constant(&[(m1, 0.4), (m2, 0.0)]);
         let block = mix_block(&p, 1.0, 16, &mut src);
-        assert!((block[0] - 0.2).abs() < 1e-6, "half volume halves it: {}", block[0]);
+        assert!(
+            (block[0] - 0.2).abs() < 1e-6,
+            "half volume halves it: {}",
+            block[0]
+        );
     }
 
     #[test]
@@ -1371,7 +1432,10 @@ mod tests {
         let head = mix_block(&p, 0.0, 16, &mut src)[0];
         let mid = mix_block(&p, 2.0, 16, &mut src)[0];
         let after = mix_block(&p, 6.0, 16, &mut src)[0];
-        assert!(head < mid && mid < after, "the ramp climbs: {head} {mid} {after}");
+        assert!(
+            head < mid && mid < after,
+            "the ramp climbs: {head} {mid} {after}"
+        );
         assert!((after - 1.0).abs() < 1e-6, "and reaches full past the fade");
     }
 
@@ -1410,7 +1474,11 @@ mod tests {
     fn a_video_track_never_contributes_to_the_mix() {
         let (mut p, _, _, _) = project_with_audio();
         let (m1, m2) = (p.media[0].id, p.media[1].id);
-        let idx = p.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let idx = p
+            .tracks
+            .iter()
+            .position(|t| t.kind == TrackKind::Audio)
+            .unwrap();
         p.tracks[idx].kind = TrackKind::Video;
         let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
         assert!(
@@ -1435,7 +1503,10 @@ mod tests {
         assert!((block[0] - 1.0).abs() < 1e-6, "and saturates at full scale");
         let pcm = to_s16le(&block);
         let first = i16::from_le_bytes([pcm[0], pcm[1]]);
-        assert!(first > 32_000, "full scale encodes as a large positive: {first}");
+        assert!(
+            first > 32_000,
+            "full scale encodes as a large positive: {first}"
+        );
     }
 
     #[test]
@@ -1445,7 +1516,10 @@ mod tests {
         let mut src = constant(&[(m1, -1.0), (m2, 0.0)]);
         let pcm = to_s16le(&mix_block(&p, 1.0, 4, &mut src));
         let v = i16::from_le_bytes([pcm[0], pcm[1]]);
-        assert_eq!(v, -32767, "the negative limit is representable, not wrapped");
+        assert_eq!(
+            v, -32767,
+            "the negative limit is representable, not wrapped"
+        );
     }
 
     #[test]
@@ -1456,7 +1530,11 @@ mod tests {
         let m2 = p.media[1].id;
         let mut src = constant(&[(m2, 0.4)]); // media 1 absent
         let block = mix_block(&p, 1.0, 16, &mut src);
-        assert!((block[0] - 0.4).abs() < 1e-6, "the readable clip still plays: {}", block[0]);
+        assert!(
+            (block[0] - 0.4).abs() < 1e-6,
+            "the readable clip still plays: {}",
+            block[0]
+        );
     }
 
     #[test]
@@ -1472,7 +1550,11 @@ mod tests {
         let block = mix_block(&p, 1.0, 16, &mut Short);
         assert_eq!(block.len(), 16 * CHANNELS, "the block is still full length");
         assert!(block[0] > 0.0, "what the source gave is mixed");
-        assert_eq!(block[15 * CHANNELS], 0.0, "past the end of the source is silence");
+        assert_eq!(
+            block[15 * CHANNELS],
+            0.0,
+            "past the end of the source is silence"
+        );
     }
 
     #[test]
@@ -1481,7 +1563,10 @@ mod tests {
         let (m1, m2) = (p.media[0].id, p.media[1].id);
         let mut src = constant(&[(m1, 1.0), (m2, 1.0)]);
         let block = mix_block(&p, 500.0, 32, &mut src);
-        assert!(block.iter().all(|s| *s == 0.0), "past every clip the mix is silent");
+        assert!(
+            block.iter().all(|s| *s == 0.0),
+            "past every clip the mix is silent"
+        );
         assert_eq!(peak(&block), 0.0);
     }
 
@@ -1495,7 +1580,10 @@ mod tests {
             c.out_point = 15.0;
         }
         let layers = plan_audio(&p, 2.0);
-        let l = layers.iter().find(|l| l.clip == c1).expect("clip is audible");
+        let l = layers
+            .iter()
+            .find(|l| l.clip == c1)
+            .expect("clip is audible");
         assert!(
             (l.source_time - 7.0).abs() < 1e-9,
             "2s into a clip cut at 5s reads 7s of source: {l:?}",

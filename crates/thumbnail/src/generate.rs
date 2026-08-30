@@ -42,7 +42,7 @@ pub enum Source<'a> {
     Path(&'a Path),
 }
 
-impl<'a> Source<'a> {
+impl Source<'_> {
     /// Materialise the source bytes, reading the file if necessary.
     fn read(&self) -> Option<Vec<u8>> {
         match self {
@@ -129,7 +129,11 @@ fn downscale_to_rgba(img: image::DynamicImage, max_edge: u32) -> Option<RgbaThum
     };
     let rgba = scaled.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
-    let out = RgbaThumb { rgba: rgba.into_raw(), width, height };
+    let out = RgbaThumb {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    };
     out.is_valid().then_some(out)
 }
 
@@ -164,7 +168,11 @@ pub fn decode_png(bytes: &[u8]) -> Option<RgbaThumb> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
     let rgba = img.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
-    let out = RgbaThumb { rgba: rgba.into_raw(), width, height };
+    let out = RgbaThumb {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    };
     out.is_valid().then_some(out)
 }
 
@@ -196,7 +204,11 @@ mod tests {
     fn small_images_are_not_upscaled() {
         let png = solid_png(40, 30, [255, 0, 0]);
         let t = image_thumb(&png, 256).expect("decodes");
-        assert_eq!((t.width, t.height), (40, 30), "never enlarged past the source");
+        assert_eq!(
+            (t.width, t.height),
+            (40, 30),
+            "never enlarged past the source"
+        );
     }
 
     #[test]

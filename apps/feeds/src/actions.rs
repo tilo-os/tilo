@@ -82,7 +82,11 @@ pub enum FeedsAction {
     /// Move a feed into `folder` (`""` = uncategorised).
     MoveFeed { id: String, folder: String },
     /// Create a folder row with a pre-minted id.
-    AddFolder { id: String, name: String, order: u32 },
+    AddFolder {
+        id: String,
+        name: String,
+        order: u32,
+    },
     /// Rename a folder.
     RenameFolder { id: String, name: String },
     /// Delete a folder; its feeds survive, unparented to uncategorised.
@@ -100,7 +104,13 @@ pub enum FeedsAction {
 impl Action for FeedsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            FeedsAction::AddSubscription { id, url, folder, order, kind } => {
+            FeedsAction::AddSubscription {
+                id,
+                url,
+                folder,
+                order,
+                kind,
+            } => {
                 if let Ok(uuid) = id.parse::<Id>() {
                     let feed = Feed {
                         id: uuid,
@@ -205,12 +215,7 @@ pub fn encode(action: &FeedsAction) -> EncodedAction {
 
 /// Build the create-subscription action for a freshly typed url. `id` is minted
 /// at the call site (once), `order` resolved from the target folder.
-pub fn add_subscription_action(
-    id: Id,
-    url: &str,
-    folder: Option<Id>,
-    order: u32,
-) -> FeedsAction {
+pub fn add_subscription_action(id: Id, url: &str, folder: Option<Id>, order: u32) -> FeedsAction {
     FeedsAction::AddSubscription {
         id: id.to_string(),
         url: url.trim().to_string(),
@@ -225,7 +230,10 @@ pub fn remove_subscription_action(id: Id) -> FeedsAction {
 }
 
 pub fn rename_feed_action(id: Id, title: &str) -> FeedsAction {
-    FeedsAction::RenameFeed { id: id.to_string(), title: title.trim().to_string() }
+    FeedsAction::RenameFeed {
+        id: id.to_string(),
+        title: title.trim().to_string(),
+    }
 }
 
 pub fn move_feed_action(id: Id, folder: Option<Id>) -> FeedsAction {
@@ -236,11 +244,18 @@ pub fn move_feed_action(id: Id, folder: Option<Id>) -> FeedsAction {
 }
 
 pub fn add_folder_action(id: Id, name: &str, order: u32) -> FeedsAction {
-    FeedsAction::AddFolder { id: id.to_string(), name: name.trim().to_string(), order }
+    FeedsAction::AddFolder {
+        id: id.to_string(),
+        name: name.trim().to_string(),
+        order,
+    }
 }
 
 pub fn rename_folder_action(id: Id, name: &str) -> FeedsAction {
-    FeedsAction::RenameFolder { id: id.to_string(), name: name.trim().to_string() }
+    FeedsAction::RenameFolder {
+        id: id.to_string(),
+        name: name.trim().to_string(),
+    }
 }
 
 pub fn delete_folder_action(id: Id) -> FeedsAction {
@@ -248,15 +263,23 @@ pub fn delete_folder_action(id: Id) -> FeedsAction {
 }
 
 pub fn mark_read_action(id: Id, read: bool) -> FeedsAction {
-    FeedsAction::MarkRead { id: id.to_string(), read }
+    FeedsAction::MarkRead {
+        id: id.to_string(),
+        read,
+    }
 }
 
 pub fn set_starred_action(id: Id, starred: bool) -> FeedsAction {
-    FeedsAction::SetStarred { id: id.to_string(), starred }
+    FeedsAction::SetStarred {
+        id: id.to_string(),
+        starred,
+    }
 }
 
 pub fn mark_all_read_action(ids: &[Id]) -> FeedsAction {
-    FeedsAction::MarkAllRead { ids: ids.iter().map(|i| i.to_string()).collect() }
+    FeedsAction::MarkAllRead {
+        ids: ids.iter().map(|i| i.to_string()).collect(),
+    }
 }
 
 // ===========================================================================
@@ -348,7 +371,11 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             ExecutionLocus::ClientLocal,
             move |name: &str| encode(&rename_folder_action(id, name)),
         ))
-        .with_action(immediate_spec("delete", "Delete folder", &delete_folder_action(id)));
+        .with_action(immediate_spec(
+            "delete",
+            "Delete folder",
+            &delete_folder_action(id),
+        ));
         root = root.with_child(child);
     }
 
@@ -490,8 +517,14 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New folder")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Rename folder")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("New folder")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("Rename folder")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -529,10 +562,16 @@ mod tests {
             "the action removed a feed"
         );
         assert!(
-            !FeedsDoc::load(&state.doc).feeds.iter().any(|f| f.id == victim),
+            !FeedsDoc::load(&state.doc)
+                .feeds
+                .iter()
+                .any(|f| f.id == victim),
             "the right feed is gone"
         );
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
+        );
 
         state
             .undo_as(Some(&local_author), None, None)
@@ -543,7 +582,10 @@ mod tests {
             "undo reverted the removal and nothing else"
         );
         assert!(
-            FeedsDoc::load(&state.doc).feeds.iter().any(|f| f.id == victim),
+            FeedsDoc::load(&state.doc)
+                .feeds
+                .iter()
+                .any(|f| f.id == victim),
             "the feed is back after undo"
         );
     }
@@ -558,7 +600,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Star an article: a single field write, deterministic against the base.
         let article = app.store_article_ids()[0];
@@ -568,7 +614,11 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
         assert!(
             FeedsDoc::load(&a).article(article).unwrap().starred,
             "the star landed on both replicas"
@@ -594,7 +644,10 @@ mod tests {
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
-        let feed = FeedsDoc::load(&b).feed(id).cloned().expect("the feed exists on the peer");
+        let feed = FeedsDoc::load(&b)
+            .feed(id)
+            .cloned()
+            .expect("the feed exists on the peer");
         assert_eq!(feed.url, "https://blog.rust-lang.org/feed.xml");
         assert_eq!(feed.site_url, "https://blog.rust-lang.org");
     }
@@ -622,12 +675,18 @@ mod tests {
         let from_spec = immediate_encode(unsub_spec);
         let from_builder = encode(&remove_subscription_action(id));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "unsubscribe is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "unsubscribe is one source of truth"
+        );
 
         let rename_spec = feed.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "My Feed");
         let from_builder = encode(&rename_feed_action(id, "My Feed"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
 
         // The palette's "Mark all as read" resolves the same unread ids the
         // context menu's per-feed mark-all does.
@@ -635,7 +694,10 @@ mod tests {
         let from_spec = immediate_encode(mark_spec);
         let unread: Vec<Id> = app.store_unread_ids(Filter::Feed(id));
         let from_builder = encode(&mark_all_read_action(&unread));
-        assert_eq!(from_spec.payload, from_builder.payload, "mark-all-read is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "mark-all-read is one source of truth"
+        );
     }
 
     /// Deleting a folder through its action drops the folder but keeps its feeds,
@@ -661,7 +723,9 @@ mod tests {
         let loaded = FeedsDoc::load(&doc);
         assert!(loaded.folder(folder).is_none(), "the folder is gone");
         for fid in &feeds_in {
-            let feed = loaded.feed(*fid).expect("the feed survives the folder deletion");
+            let feed = loaded
+                .feed(*fid)
+                .expect("the feed survives the folder deletion");
             assert_eq!(feed.folder, None, "the feed is now uncategorised");
         }
     }

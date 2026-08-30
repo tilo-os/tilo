@@ -1,19 +1,12 @@
 //! Integration tests for the Workspace Settings permission panel.
 //!
-//! Every test here drives the chrome ↔ overlay-host wiring end-to-end:
-//!
-//!   1. Build a workspace with a real owner (and, where relevant, real
-//!      members and capabilities), written through `grant_as`.
-//!   2. Open the modal at the tab under test.
-//!   3. Render once, so `draw_ws_settings` populates the control rects.
-//!   4. Read those rects back and synthesize a click on one.
-//!   5. Assert against `Workspace::capabilities` and the decision
-//!      function — never against a widget's own cache. A control that
-//!      only updates the thing that painted it is the defect this panel
-//!      replaces.
-//!
-//! The harness mirrors `e2e_shell_flows.rs` and `concept_parity_spec.rs`
-//! — full build/layout/draw cycle with no GPU.
+//! Every test drives the chrome/overlay-host wiring end-to-end: build a
+//! workspace with a real owner (members and capabilities via `grant_as`),
+//! open the modal at the tab under test, render once so
+//! `draw_ws_settings` populates control rects, read those rects back and
+//! synthesize a click, then assert against `Workspace::capabilities` and
+//! the decision function — never a widget's own cache. Full
+//! build/layout/draw cycle, no GPU.
 
 use std::collections::HashMap;
 
@@ -71,23 +64,18 @@ fn left_release() -> WindowEvent {
     }
 }
 
-/// Build a tree with a single workspace that holds the supplied grants.
-/// Mirrors `permission_prompt_pump.rs::chrome_with_pending_grant`'s
-/// shape so test setup stays compact.
 fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
-    // Revoking is an administrator's act, and `Workspace::new` leaves a
-    // room ownerless. Install the identity the chrome will be acting as,
-    // so the click exercises the real authority check rather than an
-    // override.
+    // Revoking is an administrator's act, and `Workspace::new` leaves a room
+    // ownerless — install the identity the chrome acts as, so the click
+    // exercises the real authority check.
     ws.set_owner(shell::shell::state::local_user_id());
     for (app_id, caps) in entries {
-        // Seed through the production granting path. `grants()` is a
-        // *derived* view — it rebuilds the per-app map from
-        // `capabilities` and returns it by value, so inserting into it
-        // writes to a temporary and seeds nothing.
+        // Seed through the production granting path — `grants()` is a *derived*
+        // view rebuilt from `capabilities` and returned by value, so inserting
+        // into it would seed nothing.
         for cap in &caps {
             ws.grant_app(app_id, cap);
         }
@@ -97,9 +85,8 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     tree
 }
 
-/// Render the host once with the chrome configured for `tab`. Returns
-/// the produced Scene + the host so the caller can read back hit rects
-/// and dispatch synthesized events.
+/// Returns the host too, so the caller can read back hit rects and
+/// dispatch synthesized events.
 fn render_at_tab(tree: &WorkspaceTree, tab: WsTab) -> (ShellOverlayHost, Chrome, Scene) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
@@ -148,9 +135,6 @@ fn render_at_tab(tree: &WorkspaceTree, tab: WsTab) -> (ShellOverlayHost, Chrome,
     (host, chrome, scene)
 }
 
-/// Forward a `WindowEvent` through the host's handle_event with stub
-/// scaffolding. Mirrors the `dispatch` helper in
-/// `permission_prompt_pump.rs`.
 fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
     use automerge::AutoCommit;
     let mut tree = TaffyTree::<()>::new();
@@ -172,9 +156,8 @@ fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
     );
 }
 
-
-/// Click a rect through the production event path: a cursor move to seed
-/// `last_cursor`, then a left press that lands on it.
+/// A cursor move to seed `last_cursor`, then a left press that lands on
+/// the rect.
 fn click(host: &mut ShellOverlayHost, rect: vello::kurbo::Rect) {
     dispatch_to_host(host, &cursor_at(rect.center()));
     dispatch_to_host(host, &left_press());
@@ -190,9 +173,8 @@ fn repaint(host: &mut ShellOverlayHost) {
     host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
-/// A tree whose active workspace is owned by the local user and has two
-/// invited members. Memberships go in through `grant_as`, so the fixture
-/// itself exercises the authority check.
+/// Memberships go in through `grant_as`, so the fixture itself exercises
+/// the authority check.
 fn tree_with_members() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
@@ -212,7 +194,6 @@ fn tree_with_members() -> WorkspaceTree {
     tree
 }
 
-/// The active workspace's capabilities, read straight off the tree.
 fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
     let st = chrome.borrow();
     let tree = st.tree();
@@ -221,16 +202,12 @@ fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
         .unwrap_or_default()
 }
 
-// =====================================================================
 // The Permissions tab is always reachable
-// =====================================================================
 
 #[test]
 fn the_permissions_pill_is_painted_on_a_workspace_with_no_grants() {
-    // The tab used to be filtered out of the strip until a grant already
-    // existed, which meant the only way to create the first grant was a
-    // portal prompt — a host could not grant anything proactively. The
-    // pill must be on screen for an empty workspace.
+    // The pill must be on screen for an empty workspace, so a host can
+    // grant proactively rather than only in response to a portal prompt.
     let tree = tree_with_grants(vec![]);
     let (host, chrome, _scene) = render_at_tab(&tree, WsTab::General);
     {
@@ -262,9 +239,7 @@ fn clicking_the_permissions_pill_switches_to_it() {
     assert_eq!(chrome.borrow().ws_settings_tab, WsTab::Permissions);
 }
 
-// =====================================================================
 // Rendering the real capability list
-// =====================================================================
 
 #[test]
 fn permissions_tab_renders_zero_revoke_rects_when_no_grants() {
@@ -315,9 +290,7 @@ fn permissions_tab_renders_one_row_per_capability() {
     }
 }
 
-// =====================================================================
-// Granting — the affordance the panel previously had no equivalent of
-// =====================================================================
+// Granting
 
 #[test]
 fn clicking_grant_writes_a_capability_the_decision_function_honours() {
@@ -391,7 +364,11 @@ fn clicking_grant_writes_a_capability_the_decision_function_honours() {
         .iter()
         .find(|c| matches!(&c.scope, Scope::Device(d) if d == "microphone"))
         .expect("the capability is on the workspace");
-    assert_eq!(written.expiry, Expiry::EndOfSession, "chosen expiry is kept");
+    assert_eq!(
+        written.expiry,
+        Expiry::EndOfSession,
+        "chosen expiry is kept"
+    );
     assert!(
         written.granted_by.is_some(),
         "grant_as records the grantor; a grant with no recorded author \
@@ -427,9 +404,7 @@ fn a_non_owner_clicking_grant_changes_nothing() {
     assert_eq!(chrome.borrow().ws_settings_tab, WsTab::Permissions);
 }
 
-// =====================================================================
 // Revoking
-// =====================================================================
 
 #[test]
 fn revoke_click_removes_the_capability_it_was_painted_for() {
@@ -487,9 +462,7 @@ fn revoke_button_is_inert_for_a_non_owner() {
     );
 }
 
-// =====================================================================
 // Members
-// =====================================================================
 
 #[test]
 fn the_members_tab_renders_the_roster_with_controls() {
@@ -649,9 +622,7 @@ fn the_owner_row_offers_no_role_change_and_no_removal() {
     );
 }
 
-// =====================================================================
 // Grant draft plumbing
-// =====================================================================
 
 #[test]
 fn the_draft_survives_a_tab_round_trip() {

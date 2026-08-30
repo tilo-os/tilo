@@ -1,11 +1,9 @@
-//! `Table` — a CRDT-native **editable grid**.
-//!
-//! Unlike [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
-//! sortable list view), this widget is a structural editor: the user types
-//! into cells and adds / removes rows and columns *anywhere* in the grid via
-//! hover affordances in the gutters. Every mutation writes straight through to
-//! the Automerge document, so two collaborators editing the same table
-//! converge.
+//! `Table` — a CRDT-native **editable grid**. Unlike
+//! [`crate::widget::data_table::DataTable`] (a read-oriented, typed,
+//! sortable list view), this is a structural editor: the user types into
+//! cells and adds / removes rows and columns anywhere via hover affordances
+//! in the gutters, with every mutation writing straight through to the
+//! Automerge document.
 //!
 //! # Data model (under the widget's `path`, a Map)
 //!
@@ -16,33 +14,30 @@
 //! * `header` — `Bool`: render the first row as a header band.
 //! * `seq`    — `Int`: monotonic id counter (combined with the actor id).
 //!
-//! Row and column ids are stable and are never renumbered on insert/delete —
-//! only the `rows`/`cols` *order lists* change. Inserting a column in the
-//! middle is therefore a single list insert plus one empty `Text` per row, and
-//! it merges cleanly with a concurrent edit to any other cell. This flat
-//! `(row, col) -> text` shape maps directly onto the `qdoc` table
-//! representation (a `cell` block tagged `table`/`row`/`col`), so a table
-//! authored here can be lowered into a document later.
+//! Row and column ids are stable and never renumbered on insert/delete — only
+//! the `rows`/`cols` *order lists* change, so inserting a column in the
+//! middle is a single list insert plus one empty `Text` per row, merging
+//! cleanly with a concurrent edit to any other cell.
 //!
 //! # Rendering
 //!
 //! Each cell is a real [`crate::widget::TextInput`] in plain-chrome mode, so
-//! caret placement, selection, word navigation and clipboard all come for
-//! free. The cells are laid out with a CSS-grid Taffy node (one track per
-//! column, fixed row height); the widget itself paints the grid lines, the
-//! header band, row banding, and the insert / delete / resize affordances in
-//! the gutters on top. All colours and spacing come from the [`Theme`].
+//! caret placement, selection, word navigation and clipboard come for free.
+//! Cells are laid out with a CSS-grid Taffy node (one track per column, fixed
+//! row height); the widget paints the grid lines, header band, row banding,
+//! and the insert / delete / resize affordances in the gutters on top.
 
 use std::collections::HashMap;
 
+use crate::widget::TaffyTreeExt;
 use automerge::{
-    transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value,
+    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use taffy::style_helpers::length;
 use taffy::{Display, NodeId, Rect as TaffyRect, Size, Style, TaffyTree};
+use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -63,7 +58,6 @@ const TOP_GUTTER: f64 = 24.0;
 /// Trailing padding so the far-edge insert pill isn't clipped.
 const RIGHT_PAD: f64 = 12.0;
 const BOTTOM_PAD: f64 = 12.0;
-/// Default width of a freshly created column.
 const DEFAULT_COL_W: f64 = 152.0;
 /// Columns never shrink below this when dragged.
 const MIN_COL_W: f64 = 56.0;
@@ -74,11 +68,8 @@ const ROW_H: f64 = 40.0;
 const BOUNDARY_HIT: f64 = 11.0;
 /// Half-width of the drag zone around an interior column boundary (resize).
 const RESIZE_HIT: f64 = 4.0;
-/// Radius of the round insert "+" pill.
 const PILL_R: f64 = 8.0;
-/// Side of the square delete "×" handle.
 const DELETE_SIDE: f64 = 15.0;
-/// Cell body font size.
 const CELL_FONT: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
@@ -144,10 +135,10 @@ fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     let n = doc.length(list);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(list, i) {
-            if let ScalarValue::Str(v) = s.as_ref() {
-                out.push(v.to_string());
-            }
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(list, i)
+            && let ScalarValue::Str(v) = s.as_ref()
+        {
+            out.push(v.to_string());
         }
     }
     out
@@ -155,19 +146,23 @@ fn list_ids(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
 
 /// Row ids in display order.
 pub fn row_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
-    rows_list(doc, t).map(|l| list_ids(doc, &l)).unwrap_or_default()
+    rows_list(doc, t)
+        .map(|l| list_ids(doc, &l))
+        .unwrap_or_default()
 }
 
 /// Column ids in display order.
 pub fn col_ids(doc: &AutoCommit, t: &ObjId) -> Vec<String> {
-    cols_list(doc, t).map(|l| list_ids(doc, &l)).unwrap_or_default()
+    cols_list(doc, t)
+        .map(|l| list_ids(doc, &l))
+        .unwrap_or_default()
 }
 
 /// `(rows, cols)` dimensions.
 pub fn dims(doc: &AutoCommit, t: &ObjId) -> (usize, usize) {
     (
-        rows_list(doc, t).map(|l| doc.length(&l)).unwrap_or(0),
-        cols_list(doc, t).map(|l| doc.length(&l)).unwrap_or(0),
+        rows_list(doc, t).map_or(0, |l| doc.length(&l)),
+        cols_list(doc, t).map_or(0, |l| doc.length(&l)),
     )
 }
 
@@ -192,7 +187,12 @@ fn next_id(doc: &mut AutoCommit, t: &ObjId) -> String {
 pub fn cell_obj(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> Option<ObjId> {
     let rid = row_ids(doc, t).into_iter().nth(r)?;
     let cid = col_ids(doc, t).into_iter().nth(c)?;
-    child_obj(doc, &cells_map(doc, t)?, &cell_key(&rid, &cid), ObjType::Text)
+    child_obj(
+        doc,
+        &cells_map(doc, t)?,
+        &cell_key(&rid, &cid),
+        ObjType::Text,
+    )
 }
 
 /// Current text of cell `(r, c)`; empty string when the cell has no content.
@@ -213,7 +213,9 @@ pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, r: usize, c: usize, s: &st
     ) else {
         return;
     };
-    let Some(cells) = cells_map(doc, t) else { return };
+    let Some(cells) = cells_map(doc, t) else {
+        return;
+    };
     let key = cell_key(&rid, &cid);
     let obj = match child_obj(doc, &cells, &key, ObjType::Text) {
         Some(o) => o,
@@ -262,7 +264,9 @@ pub fn insert_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
 /// Remove the row at display index `at`, deleting its cells.
 pub fn remove_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
     let rows_v = row_ids(doc, t);
-    let Some(rid) = rows_v.get(at).cloned() else { return };
+    let Some(rid) = rows_v.get(at).cloned() else {
+        return;
+    };
     let cols = col_ids(doc, t);
     if let Some(rows) = rows_list(doc, t) {
         let _ = doc.delete(&rows, at);
@@ -277,7 +281,9 @@ pub fn remove_row(doc: &mut AutoCommit, t: &ObjId, at: usize) {
 /// Remove the column at display index `at`, deleting its cells + width.
 pub fn remove_column(doc: &mut AutoCommit, t: &ObjId, at: usize) {
     let cols_v = col_ids(doc, t);
-    let Some(cid) = cols_v.get(at).cloned() else { return };
+    let Some(cid) = cols_v.get(at).cloned() else {
+        return;
+    };
     let rows = row_ids(doc, t);
     if let Some(cols) = cols_list(doc, t) {
         let _ = doc.delete(&cols, at);
@@ -300,7 +306,6 @@ pub fn header(doc: &AutoCommit, t: &ObjId) -> bool {
     )
 }
 
-/// Set the header-band flag.
 pub fn set_header(doc: &mut AutoCommit, t: &ObjId, on: bool) {
     ensure(doc, t);
     let _ = doc.put(t, K_HEADER, on);
@@ -372,7 +377,7 @@ pub struct Table {
 
     /// Cell editors in row-major order (`len == rows * cols`). Rebuilt only
     /// when the set of `(row, col)` ids changes.
-    cells: Vec<Box<TextInput>>,
+    cells: Vec<TextInput>,
     /// Resolved `cells` map, so children are rooted correctly.
     cells_obj: Option<ObjId>,
 
@@ -433,15 +438,12 @@ impl Table {
         self.n_rows() == 0 || self.n_cols() == 0
     }
 
-    /// Build a fresh, plain-chrome cell editor bound to `(rid, cid)`.
-    fn make_cell(rid: &str, cid: &str) -> Box<TextInput> {
-        Box::new(
-            TextInput::new(vec![])
-                .with_id(&format!("cell_{rid}_{cid}"))
-                .with_on_change_path(&cell_key(rid, cid))
-                .with_plain_chrome()
-                .with_font_size(CELL_FONT),
-        )
+    fn make_cell(rid: &str, cid: &str) -> TextInput {
+        TextInput::new(vec![])
+            .with_id(&format!("cell_{rid}_{cid}"))
+            .with_on_change_path(&cell_key(rid, cid))
+            .with_plain_chrome()
+            .with_font_size(CELL_FONT)
     }
 
     /// Analytic grid geometry from the widget rect + stored widths — matches
@@ -476,14 +478,14 @@ impl Table {
 
     /// Rect of the delete handle for column `c` (centred in the top gutter).
     fn delete_col_rect(&self, xs: &[f64], c: usize) -> Rect {
-        let cx = (xs[c] + xs[c + 1]) / 2.0;
+        let cx = f64::midpoint(xs[c], xs[c + 1]);
         let cy = self.rect.y0 + TOP_GUTTER / 2.0;
         Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
     }
     /// Rect of the delete handle for row `r` (centred in the left gutter).
     fn delete_row_rect(&self, ys: &[f64], r: usize) -> Rect {
         let cx = self.rect.x0 + LEFT_GUTTER / 2.0;
-        let cy = (ys[r] + ys[r + 1]) / 2.0;
+        let cy = f64::midpoint(ys[r], ys[r + 1]);
         Rect::from_center_size((cx, cy), (DELETE_SIDE, DELETE_SIDE))
     }
 
@@ -533,8 +535,8 @@ impl Table {
         }
         // Grid body → interior column boundaries resize the column to the left.
         if p.x >= self.rect.x0 + LEFT_GUTTER && p.y >= self.rect.y0 + TOP_GUTTER {
-            for i in 1..xs.len() {
-                if (p.x - xs[i]).abs() <= RESIZE_HIT {
+            for (i, &x) in xs.iter().enumerate().skip(1) {
+                if (p.x - x).abs() <= RESIZE_HIT {
                     return Hover::ResizeCol(i);
                 }
             }
@@ -570,14 +572,38 @@ impl Table {
 
 fn plus(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
     let s = Stroke::new(w);
-    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y), (c.x + r, c.y)));
-    scene.stroke(&s, transform, color, None, &Line::new((c.x, c.y - r), (c.x, c.y + r)));
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x - r, c.y), (c.x + r, c.y)),
+    );
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x, c.y - r), (c.x, c.y + r)),
+    );
 }
 
 fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w: f64) {
     let s = Stroke::new(w);
-    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y - r), (c.x + r, c.y + r)));
-    scene.stroke(&s, transform, color, None, &Line::new((c.x - r, c.y + r), (c.x + r, c.y - r)));
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x - r, c.y - r), (c.x + r, c.y + r)),
+    );
+    scene.stroke(
+        &s,
+        transform,
+        color,
+        None,
+        &Line::new((c.x - r, c.y + r), (c.x + r, c.y - r)),
+    );
 }
 
 impl Widget for Table {
@@ -602,7 +628,10 @@ impl Widget for Table {
         let new_rows = row_ids(state, path);
         let new_cols = col_ids(state, path);
         self.header = header(state, path);
-        self.col_widths = new_cols.iter().map(|cid| col_width(state, path, cid)).collect();
+        self.col_widths = new_cols
+            .iter()
+            .map(|cid| col_width(state, path, cid))
+            .collect();
         self.cells_obj = cells_map(state, path);
 
         // Rebuild the cell editors only when the id set actually changed.
@@ -637,15 +666,13 @@ impl Widget for Table {
         let (total_w, total_h) = self.total_size();
 
         let node = if self.is_empty() {
-            taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: length(total_w as f32),
-                        height: length(total_h as f32),
-                    },
-                    ..Default::default()
-                })
-                .unwrap()
+            taffy.leaf_node(Style {
+                size: Size {
+                    width: length(total_w as f32),
+                    height: length(total_h as f32),
+                },
+                ..Default::default()
+            })
         } else {
             let child_nodes: Vec<NodeId> = self
                 .cells
@@ -653,39 +680,37 @@ impl Widget for Table {
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
             let cols: Vec<_> = self.col_widths.iter().map(|w| length(*w as f32)).collect();
-            taffy
-                .new_with_children(
-                    Style {
-                        display: Display::Grid,
-                        size: Size {
-                            width: length(total_w as f32),
-                            height: length(total_h as f32),
-                        },
-                        padding: TaffyRect {
-                            left: length(LEFT_GUTTER as f32),
-                            right: length(RIGHT_PAD as f32),
-                            top: length(TOP_GUTTER as f32),
-                            bottom: length(BOTTOM_PAD as f32),
-                        },
-                        grid_template_columns: cols,
-                        grid_auto_rows: vec![length(ROW_H as f32)],
-                        ..Default::default()
+            taffy.parent_node(
+                Style {
+                    display: Display::Grid,
+                    size: Size {
+                        width: length(total_w as f32),
+                        height: length(total_h as f32),
                     },
-                    &child_nodes,
-                )
-                .unwrap()
+                    padding: TaffyRect {
+                        left: length(LEFT_GUTTER as f32),
+                        right: length(RIGHT_PAD as f32),
+                        top: length(TOP_GUTTER as f32),
+                        bottom: length(BOTTOM_PAD as f32),
+                    },
+                    grid_template_columns: cols,
+                    grid_auto_rows: vec![length(ROW_H as f32)],
+                    ..Default::default()
+                },
+                &child_nodes,
+            )
         };
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let cell_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
@@ -704,27 +729,48 @@ impl Widget for Table {
         presence: &PresenceCtx,
     ) {
         let tk = &theme.tokens;
-        let radius = tk.radii.md as f64;
+        let radius = f64::from(tk.radii.md);
 
         // Outer frame (spans the gutters too).
         let frame = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(Fill::NonZero, transform, tk.colors.surfaces.base, None, &frame);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tk.colors.surfaces.base,
+            None,
+            &frame,
+        );
 
         if self.is_empty() {
             let r = self.empty_add_rect();
             let hovered = self.hover == Hover::EmptyAdd;
-            let box_color = if hovered { theme.bg_active } else { tk.colors.surfaces.raised };
+            let box_color = if hovered {
+                theme.bg_active
+            } else {
+                tk.colors.surfaces.raised
+            };
             let rr = RoundedRect::from_rect(r, radius);
             scene.fill(Fill::NonZero, transform, box_color, None, &rr);
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
-                if hovered { theme.accent_primary } else { theme.border_standard },
+                if hovered {
+                    theme.accent_primary
+                } else {
+                    theme.border_standard
+                },
                 None,
                 &rr,
             );
             let c = r.center();
-            plus(scene, transform, Point::new(c.x - 34.0, c.y), 6.0, theme.accent_primary, 2.0);
+            plus(
+                scene,
+                transform,
+                Point::new(c.x - 34.0, c.y),
+                6.0,
+                theme.accent_primary,
+                2.0,
+            );
             text_renderer.draw_text(
                 scene,
                 "Add cell",
@@ -744,7 +790,13 @@ impl Widget for Table {
         let body = Rect::new(gl, gt, gr, gb);
 
         // Grid body surface + header band + zebra rows.
-        scene.fill(Fill::NonZero, transform, tk.colors.surfaces.raised, None, &body);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tk.colors.surfaces.raised,
+            None,
+            &body,
+        );
         for r in 0..self.n_rows() {
             let row_rect = Rect::new(gl, ys[r], gr, ys[r + 1]);
             let is_header = self.header && r == 0;
@@ -767,10 +819,22 @@ impl Widget for Table {
         let line = Stroke::new(1.0);
         let line_color = tk.colors.border_white_10;
         for &x in &xs {
-            scene.stroke(&line, transform, line_color, None, &Line::new((x, gt), (x, gb)));
+            scene.stroke(
+                &line,
+                transform,
+                line_color,
+                None,
+                &Line::new((x, gt), (x, gb)),
+            );
         }
         for &y in &ys {
-            scene.stroke(&line, transform, line_color, None, &Line::new((gl, y), (gr, y)));
+            scene.stroke(
+                &line,
+                transform,
+                line_color,
+                None,
+                &Line::new((gl, y), (gr, y)),
+            );
         }
         // Heavier separator under the header.
         if self.header && self.n_rows() >= 1 {
@@ -786,7 +850,19 @@ impl Widget for Table {
         // --- Affordances ------------------------------------------------
         let faint = theme.text_dim.with_alpha_factor(0.35);
         let accent = theme.accent_primary;
+        // The glyph inside a gutter affordance is a mark on a themed chip, so
+        // it is derived against that chip rather than assumed to be white: on
+        // the high-contrast accent white lands a hair under the non-text floor,
+        // which is the palette that can least afford it.
+        let on_accent_mark = tk
+            .colors
+            .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST);
         let danger = tk.colors.semantic.danger;
+        let on_danger_mark = tk.colors.ink_on_any(
+            &[danger],
+            Color::WHITE,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
 
         // Always-on, discoverable insert ticks at every boundary.
         for &x in &xs {
@@ -817,7 +893,7 @@ impl Widget for Table {
                     None,
                     &vello::kurbo::Circle::new(c, PILL_R),
                 );
-                plus(scene, transform, c, 4.0, Color::WHITE, 1.75);
+                plus(scene, transform, c, 4.0, on_accent_mark, 1.75);
             }
             Hover::InsertRow(i) => {
                 let y = ys[i];
@@ -836,23 +912,35 @@ impl Widget for Table {
                     None,
                     &vello::kurbo::Circle::new(c, PILL_R),
                 );
-                plus(scene, transform, c, 4.0, Color::WHITE, 1.75);
+                plus(scene, transform, c, 4.0, on_accent_mark, 1.75);
             }
             Hover::DeleteCol(c) => {
                 let col = Rect::new(xs[c], gt, xs[c + 1], gb);
-                scene.fill(Fill::NonZero, transform, danger.with_alpha_factor(0.16), None, &col);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    danger.with_alpha_factor(0.16),
+                    None,
+                    &col,
+                );
                 let hr = self.delete_col_rect(&xs, c);
                 let rr = RoundedRect::from_rect(hr, 4.0);
                 scene.fill(Fill::NonZero, transform, danger, None, &rr);
-                cross(scene, transform, hr.center(), 3.5, Color::WHITE, 1.75);
+                cross(scene, transform, hr.center(), 3.5, on_danger_mark, 1.75);
             }
             Hover::DeleteRow(r) => {
                 let row = Rect::new(gl, ys[r], gr, ys[r + 1]);
-                scene.fill(Fill::NonZero, transform, danger.with_alpha_factor(0.16), None, &row);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    danger.with_alpha_factor(0.16),
+                    None,
+                    &row,
+                );
                 let hr = self.delete_row_rect(&ys, r);
                 let rr = RoundedRect::from_rect(hr, 4.0);
                 scene.fill(Fill::NonZero, transform, danger, None, &rr);
-                cross(scene, transform, hr.center(), 3.5, Color::WHITE, 1.75);
+                cross(scene, transform, hr.center(), 3.5, on_danger_mark, 1.75);
             }
             Hover::ResizeCol(i) => {
                 let x = xs[i];
@@ -896,7 +984,10 @@ impl Widget for Table {
                     *handled = true;
                     return;
                 }
-                WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    ..
+                } => {
                     self.resize = None;
                     self.pending_commit = true;
                     *handled = true;
@@ -985,27 +1076,27 @@ impl Widget for Table {
                     }
                 }
             }
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
                 // Enter moves the caret down one row (Shift+Enter → up).
-                if matches!(key_event.logical_key, Key::Named(NamedKey::Enter)) {
-                    if let Some(focused) = self.cells.iter().position(|c| c.is_focused()) {
-                        let cols = self.n_cols().max(1);
-                        let up = modifiers.state().shift_key();
-                        let target = if up {
-                            focused.checked_sub(cols)
-                        } else {
-                            let t = focused + cols;
-                            (t < self.cells.len()).then_some(t)
-                        };
-                        if let Some(t) = target {
-                            if let Some(&tn) = child_nodes.get(t) {
-                                *focus_target = Some(tn);
-                                *handled = true;
-                                return;
-                            }
-                        }
+                if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
+                    && let Some(focused) = self.cells.iter().position(super::Widget::is_focused)
+                {
+                    let cols = self.n_cols().max(1);
+                    let up = modifiers.state().shift_key();
+                    let target = if up {
+                        focused.checked_sub(cols)
+                    } else {
+                        let t = focused + cols;
+                        (t < self.cells.len()).then_some(t)
+                    };
+                    if let Some(t) = target
+                        && let Some(&tn) = child_nodes.get(t)
+                    {
+                        *focus_target = Some(tn);
+                        *handled = true;
+                        return;
                     }
                 }
             }
@@ -1015,19 +1106,36 @@ impl Widget for Table {
         // ---- forward to cell editors ----
         if let Some(cells_obj) = self.cells_obj.clone() {
             // Pointer-capture short-circuit (a cell dragging a selection).
-            if let Some(idx) = self.cells.iter().position(|c| c.wants_pointer_capture()) {
-                if let Some(&cn) = child_nodes.get(idx) {
-                    self.cells[idx].handle_event(
-                        event, scale_factor, modifiers, state, &cells_obj, handled,
-                        focus_target, cn, taffy,
-                    );
-                    return;
-                }
+            if let Some(idx) = self
+                .cells
+                .iter()
+                .position(super::Widget::wants_pointer_capture)
+                && let Some(&cn) = child_nodes.get(idx)
+            {
+                self.cells[idx].handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    &cells_obj,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
+                );
+                return;
             }
             for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
                 cell.handle_event(
-                    event, scale_factor, modifiers, state, &cells_obj, handled, focus_target,
-                    cn, taffy,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    &cells_obj,
+                    handled,
+                    focus_target,
+                    cn,
+                    taffy,
                 );
                 if *handled {
                     break;
@@ -1037,13 +1145,16 @@ impl Widget for Table {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.cells.iter().map(|c| c.as_ref() as &dyn Widget).collect()
+        self.cells.iter().map(|c| c as &dyn Widget).collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.cells.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+        self.cells
+            .iter_mut()
+            .map(|c| c as &mut (dyn Widget + '_))
+            .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Table"
     }
     fn test_id(&self) -> Option<&str> {
@@ -1066,35 +1177,38 @@ impl Widget for Table {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.resize.is_some() || self.cells.iter().any(|c| c.wants_pointer_capture())
+        self.resize.is_some() || self.cells.iter().any(super::Widget::wants_pointer_capture)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = self.structure_dirty;
         self.structure_dirty = false;
-        d |= self.cells.iter_mut().any(|c| c.take_structure_dirty());
+        d |= self
+            .cells
+            .iter_mut()
+            .any(super::Widget::take_structure_dirty);
         d
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.cells.iter().any(|c| c.needs_redraw())
+        self.dirty || self.cells.iter().any(super::Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        for c in self.cells.iter_mut() {
+        for c in &mut self.cells {
             c.mark_drawn();
         }
     }
     fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.cells.iter().any(|c| c.is_layout_dirty())
+        self.structure_dirty || self.cells.iter().any(super::Widget::is_layout_dirty)
     }
 
     fn needs_commit(&self) -> bool {
-        self.pending_commit || self.cells.iter().any(|c| c.needs_commit())
+        self.pending_commit || self.cells.iter().any(super::Widget::needs_commit)
     }
     fn on_commit(&mut self) {
         self.pending_commit = false;
-        for c in self.cells.iter_mut() {
+        for c in &mut self.cells {
             c.on_commit();
         }
     }
@@ -1168,7 +1282,11 @@ mod tests {
 
         assert_eq!(dims(&doc, &t), (1, 4));
         let texts: Vec<String> = (0..4).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(texts, vec!["A", "", "B", "C"], "new empty column lands in the middle");
+        assert_eq!(
+            texts,
+            vec!["A", "", "B", "C"],
+            "new empty column lands in the middle"
+        );
     }
 
     #[test]
@@ -1239,7 +1357,14 @@ mod tests {
         let ids_before = col_ids(&doc, &t);
         remove_column(&mut doc, &t, 2);
         let ids_after = col_ids(&doc, &t);
-        assert_eq!(ids_after, vec![ids_before[0].clone(), ids_before[1].clone(), ids_before[3].clone()]);
+        assert_eq!(
+            ids_after,
+            vec![
+                ids_before[0].clone(),
+                ids_before[1].clone(),
+                ids_before[3].clone()
+            ]
+        );
         let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
         assert_eq!(texts, vec!["c0", "c1", "c3"]);
     }
@@ -1290,8 +1415,9 @@ mod tests {
     fn char_key(s: &str) -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1305,8 +1431,9 @@ mod tests {
     fn enter() -> WindowEvent {
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key =
-            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
         ev.location = winit::keyboard::KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -1329,7 +1456,15 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         table.handle_event(
-            ev, 1.0, mods, doc, root, &mut handled, &mut focus_target, node, taffy,
+            ev,
+            1.0,
+            mods,
+            doc,
+            root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            taffy,
         );
         (handled, focus_target)
     }
@@ -1350,14 +1485,30 @@ mod tests {
         // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
         let bx = LEFT_GUTTER + DEFAULT_COL_W;
         let mods = Modifiers::default();
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, TOP_GUTTER / 2.0), &mods);
-        assert_eq!(table.hover, Hover::InsertCol(1), "hover resolves to the middle insert pill");
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(bx, TOP_GUTTER / 2.0),
+            &mods,
+        );
+        assert_eq!(
+            table.hover,
+            Hover::InsertCol(1),
+            "hover resolves to the middle insert pill"
+        );
         let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
         assert!(handled, "the insert click is consumed");
         assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
         let texts: Vec<String> = (0..3).map(|c| cell_text(&doc, &t, 0, c)).collect();
-        assert_eq!(texts, vec!["A", "", "B"], "the new column landed between A and B");
+        assert_eq!(
+            texts,
+            vec!["A", "", "B"],
+            "the new column landed between A and B"
+        );
     }
 
     #[test]
@@ -1374,7 +1525,15 @@ mod tests {
         // Delete handle for row 1 sits in the left gutter at that row's centre.
         let cy = TOP_GUTTER + 1.5 * ROW_H;
         let mods = Modifiers::default();
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(LEFT_GUTTER / 2.0, cy), &mods);
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(LEFT_GUTTER / 2.0, cy),
+            &mods,
+        );
         assert_eq!(table.hover, Hover::DeleteRow(1));
         let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
@@ -1401,7 +1560,11 @@ mod tests {
         for ch in ["h", "i"] {
             dispatch(&mut table, &taffy, node, &mut doc, &t, &char_key(ch), &mods);
         }
-        assert_eq!(cell_text(&doc, &t, 0, 0), "hi", "keystrokes splice into the cell's Text");
+        assert_eq!(
+            cell_text(&doc, &t, 0, 0),
+            "hi",
+            "keystrokes splice into the cell's Text"
+        );
     }
 
     #[test]
@@ -1419,7 +1582,11 @@ mod tests {
 
         assert!(handled, "Enter is consumed for cell navigation");
         let want = taffy.children(node).unwrap()[2]; // row 1, col 0
-        assert_eq!(focus_target, Some(want), "focus moves straight down one row");
+        assert_eq!(
+            focus_target,
+            Some(want),
+            "focus moves straight down one row"
+        );
     }
 
     #[test]
@@ -1438,11 +1605,34 @@ mod tests {
         let by = TOP_GUTTER + ROW_H / 2.0;
         let mods = Modifiers::default();
 
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by), &mods);
-        assert_eq!(table.hover, Hover::ResizeCol(1), "interior boundary hover is a resize");
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(bx, by),
+            &mods,
+        );
+        assert_eq!(
+            table.hover,
+            Hover::ResizeCol(1),
+            "interior boundary hover is a resize"
+        );
         dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
-        assert!(table.resize.is_some(), "press on the boundary starts a resize drag");
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx + 40.0, by), &mods);
+        assert!(
+            table.resize.is_some(),
+            "press on the boundary starts a resize drag"
+        );
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(bx + 40.0, by),
+            &mods,
+        );
 
         let after = col_width(&doc, &t, &cid0);
         assert!(
@@ -1461,7 +1651,15 @@ mod tests {
         let mods = Modifiers::default();
         let r = table.empty_add_rect();
         let c = r.center();
-        dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(c.x, c.y), &mods);
+        dispatch(
+            &mut table,
+            &taffy,
+            node,
+            &mut doc,
+            &t,
+            &cursor(c.x, c.y),
+            &mods,
+        );
         assert_eq!(table.hover, Hover::EmptyAdd);
         dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
@@ -1486,7 +1684,11 @@ mod tests {
         }
         let grown = doc.save().len() - baseline;
 
-        assert_eq!(cell_text(&doc, &t, 0, 0), typed, "cell must hold what was typed");
+        assert_eq!(
+            cell_text(&doc, &t, 0, 0),
+            typed,
+            "cell must hold what was typed"
+        );
         assert!(
             grown < 12 * typed.len(),
             "typing {} chars grew the document by {grown} bytes — set_cell_text \

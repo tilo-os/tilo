@@ -3,18 +3,12 @@
 //! seeded with caller-provided page titles instead of a hard-coded
 //! block-kind list.
 //!
-//! Spec: Phase 4 of the notes app — see
-//! `docs/superpowers/plans/2026-06-02-notes-app-mvp-roadmap.md`.
-//!
-//! ## Why a thin sibling, not a generic `Popover<Item>`?
-//!
-//! The slash menu's API is shaped around block-kind conversions;
-//! folding the page-title flow into the same trait object would mean
-//! either generic-ifying every field (and paying for the boxing) or
-//! collapsing `BlockKind` and `PageEntry` behind an associated type.
-//! Phase 4's scope is "ship the marks demo with a working palette",
-//! not "design a generic popover primitive" — the duplication is
-//! ~150 LOC and a separate widget keeps the test surface small.
+//! A thin sibling rather than a generic `Popover<Item>`: the slash menu's
+//! API is shaped around block-kind conversions, so folding the page-title
+//! flow into the same trait object would mean either generic-ifying every
+//! field (and paying for the boxing) or collapsing `BlockKind` and
+//! `PageEntry` behind an associated type. The duplication is ~150 LOC and
+//! a separate widget keeps the test surface small.
 
 use std::collections::HashMap;
 
@@ -26,40 +20,43 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_selection::Selection;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// One row in the popover. Carries a stable id and the page title to
-/// display + filter on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
     pub id: Uuid,
     pub title: String,
 }
 
-/// Width of the popover in CSS-like pixels.
 const MENU_WIDTH: f64 = 220.0;
 const ROW_HEIGHT: f64 = 26.0;
 const PADDING_Y: f64 = 6.0;
 const PADDING_X: f64 = 10.0;
-/// Cap on rows rendered at once — keeps the popover small for big
-/// workspaces; the user can keep typing to narrow the result.
+const FILTER_HEIGHT: f64 = 32.0;
+const FILTER_GAP: f64 = 4.0;
+/// Keeps the popover small for big workspaces; the user can keep typing
+/// to narrow the result.
 const MAX_VISIBLE_ROWS: usize = 8;
 
 pub struct LinkPopover {
-    /// All known pages (set via `set_items`).
     items: Vec<PageEntry>,
     /// Indices into `items` that survive the current filter.
     visible: Vec<usize>,
     /// Cursor into `visible`. Always clamped.
     cursor: usize,
     filter: String,
+    filter_selection: Selection,
+    filter_composition: QueryComposition,
     visible_flag: bool,
     anchor: Point,
-    /// One-shot slot: when the user picks an entry, the chosen
-    /// `(PageEntry)` lands here.
+    /// One-shot: when the user picks an entry, it lands here.
     pending: Option<PageEntry>,
 }
 
@@ -76,6 +73,8 @@ impl LinkPopover {
             visible: Vec::new(),
             cursor: 0,
             filter: String::new(),
+            filter_selection: Selection::collapsed(0),
+            filter_composition: QueryComposition::new(),
             visible_flag: false,
             anchor: Point::ZERO,
             pending: None,
@@ -95,6 +94,8 @@ impl LinkPopover {
         self.visible_flag = visible;
         if !visible {
             self.filter.clear();
+            self.filter_selection = Selection::collapsed(0);
+            self.filter_composition.clear();
             self.cursor = 0;
             self.rebuild_visible();
         }
@@ -110,6 +111,8 @@ impl LinkPopover {
 
     pub fn set_filter(&mut self, filter: &str) {
         self.filter = filter.to_string();
+        self.filter_selection = Selection::collapsed(self.filter.len());
+        self.filter_composition.clear();
         self.cursor = 0;
         self.rebuild_visible();
     }
@@ -118,13 +121,14 @@ impl LinkPopover {
         &self.filter
     }
 
-    /// Drain the pending selection from the most-recent Enter press.
     pub fn take_selection(&mut self) -> Option<PageEntry> {
         self.pending.take()
     }
 
     pub fn highlighted(&self) -> Option<&PageEntry> {
-        self.visible.get(self.cursor).and_then(|&i| self.items.get(i))
+        self.visible
+            .get(self.cursor)
+            .and_then(|&i| self.items.get(i))
     }
 
     pub fn visible_len(&self) -> usize {
@@ -137,7 +141,9 @@ impl LinkPopover {
 
     pub fn height(&self) -> f64 {
         PADDING_Y * 2.0
-            + ROW_HEIGHT * self.visible.len().min(MAX_VISIBLE_ROWS).max(1) as f64
+            + FILTER_HEIGHT
+            + FILTER_GAP
+            + ROW_HEIGHT * self.visible.len().clamp(1, MAX_VISIBLE_ROWS) as f64
     }
 
     pub fn rect(&self) -> Rect {
@@ -149,12 +155,35 @@ impl LinkPopover {
         )
     }
 
+    fn rows_top(&self) -> f64 {
+        self.rect().y0 + PADDING_Y + FILTER_HEIGHT + FILTER_GAP
+    }
+
+    fn window_start(&self) -> usize {
+        self.cursor
+            .saturating_add(1)
+            .saturating_sub(MAX_VISIBLE_ROWS)
+    }
+
+    /// Painted rectangle for a result currently inside the eight-row window.
+    pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
+        let start = self.window_start();
+        if visible_index < start
+            || visible_index >= self.visible.len().min(start + MAX_VISIBLE_ROWS)
+        {
+            return None;
+        }
+        let slot = visible_index - start;
+        let y0 = self.rows_top() + slot as f64 * ROW_HEIGHT;
+        let rect = self.rect();
+        Some(Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT))
+    }
+
     fn rebuild_visible(&mut self) {
         let needle = self.filter.to_lowercase();
         self.visible.clear();
         for (i, e) in self.items.iter().enumerate() {
-            let matches = needle.is_empty()
-                || e.title.to_lowercase().contains(&needle);
+            let matches = needle.is_empty() || e.title.to_lowercase().contains(&needle);
             if matches {
                 self.visible.push(i);
             }
@@ -164,13 +193,32 @@ impl LinkPopover {
         }
     }
 
-    /// Handle a key event. Returns true if consumed.
     pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
         if !self.visible_flag {
             return false;
         }
+        if matches!(event, WindowEvent::Ime(_)) {
+            let change = self.filter_composition.handle_event(
+                event,
+                &mut self.filter,
+                &mut self.filter_selection,
+                false,
+                false,
+            );
+            if change == QueryEventChange::Edited {
+                self.cursor = 0;
+                self.rebuild_visible();
+            }
+            return true;
+        }
         let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text: _,
+                    ..
+                },
             ..
         } = event
         else {
@@ -200,43 +248,33 @@ impl LinkPopover {
                 self.set_visible(false);
                 true
             }
-            Key::Named(NamedKey::Backspace) => {
-                if self.filter.pop().is_some() {
-                    self.rebuild_visible();
-                    true
-                } else {
-                    self.set_visible(false);
-                    // Return false so the parent can handle the
-                    // delete-of-the-`[[` glyphs.
-                    false
-                }
+            Key::Named(NamedKey::Backspace)
+                if self.filter_selection.is_collapsed() && self.filter_selection.cursor == 0 =>
+            {
+                self.set_visible(false);
+                // Return false so the parent can handle the
+                // delete-of-the-`[[` glyphs.
+                false
             }
-            Key::Named(NamedKey::Space) => {
-                self.filter.push(' ');
-                self.rebuild_visible();
-                true
-            }
-            Key::Character(_) => {
-                let mut pushed = false;
-                if let Some(t) = text {
-                    for c in t.chars() {
-                        if !c.is_control() {
-                            self.filter.push(c);
-                            pushed = true;
-                        }
-                    }
-                }
-                if pushed {
+            _ => {
+                let change = self.filter_composition.handle_event(
+                    event,
+                    &mut self.filter,
+                    &mut self.filter_selection,
+                    false,
+                    false,
+                );
+                if change == QueryEventChange::Edited {
+                    self.cursor = 0;
                     self.rebuild_visible();
                 }
-                pushed
+                change != QueryEventChange::Ignored
             }
-            _ => false,
         }
     }
 
     pub fn draw_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -263,10 +301,44 @@ impl LinkPopover {
             &shape,
         );
 
+        let filter_rect = Rect::new(
+            rect.x0 + 6.0,
+            rect.y0 + PADDING_Y,
+            rect.x1 - 6.0,
+            rect.y0 + PADDING_Y + FILTER_HEIGHT,
+        );
+        let filter_shape = RoundedRect::from_rect(filter_rect, 4.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.base,
+            None,
+            &filter_shape,
+        );
+        self.filter_composition.draw(
+            scene,
+            transform,
+            text_renderer,
+            &self.filter,
+            &self.filter_selection,
+            "Find a page…",
+            Rect::new(
+                filter_rect.x0 + 6.0,
+                filter_rect.y0,
+                filter_rect.x1 - 6.0,
+                filter_rect.y1,
+            ),
+            &TextStyle::new(tokens.typography.scale.sm),
+            tokens.colors.text_primary,
+            tokens.colors.text_dim,
+            tokens.colors.accent[5].with_alpha_factor(0.3),
+            tokens.colors.accent[5],
+            true,
+        );
+
         let font_size = tokens.typography.scale.sm;
-        // Empty-state hint.
         if self.visible.is_empty() {
-            let y = rect.y0 + PADDING_Y + (ROW_HEIGHT - font_size as f64) / 2.0;
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -277,16 +349,19 @@ impl LinkPopover {
             );
             return;
         }
-        for (i, &idx) in self.visible.iter().take(MAX_VISIBLE_ROWS).enumerate() {
+        let window_start = self.window_start();
+        for (i, (visible_index, &idx)) in self
+            .visible
+            .iter()
+            .enumerate()
+            .skip(window_start)
+            .take(MAX_VISIBLE_ROWS)
+            .enumerate()
+        {
             let row = &self.items[idx];
-            let y0 = rect.y0 + PADDING_Y + i as f64 * ROW_HEIGHT;
-            let row_rect = Rect::new(
-                rect.x0 + 4.0,
-                y0,
-                rect.x1 - 4.0,
-                y0 + ROW_HEIGHT,
-            );
-            if i == self.cursor {
+            let y0 = self.rows_top() + i as f64 * ROW_HEIGHT;
+            let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
+            if visible_index == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, 4.0);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -296,8 +371,7 @@ impl LinkPopover {
                     &hl,
                 );
             }
-            let text_y = row_rect.y0
-                + (row_rect.height() - font_size as f64) / 2.0;
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -310,7 +384,6 @@ impl LinkPopover {
     }
 }
 
-// `Widget` impl for compatibility with the `Widget`-trait surface;
 // LinkPopover lives in overlay space so most methods no-op.
 impl Widget for LinkPopover {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -320,8 +393,8 @@ impl Widget for LinkPopover {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -347,7 +420,7 @@ impl Widget for LinkPopover {
         _taffy: &TaffyTree<()>,
     ) {
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LinkPopover"
     }
     fn test_id(&self) -> Option<&str> {
@@ -355,6 +428,54 @@ impl Widget for LinkPopover {
     }
     fn get_rect(&self) -> Rect {
         self.rect()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.visible_flag
+            .then(|| self.filter_composition.ime_cursor_rect())
+            .flatten()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if !self.visible_flag {
+            return Some(
+                AccessNode::new(Role::Menu)
+                    .with_name("Link pages")
+                    .with_state(AccessState {
+                        expanded: Some(false),
+                        hidden: true,
+                        ..Default::default()
+                    }),
+            );
+        }
+        let count = self.visible.len();
+        let items = self
+            .visible
+            .iter()
+            .enumerate()
+            .filter_map(|(position, &item_index)| {
+                self.items.get(item_index).map(|item| {
+                    AccessNode::new(Role::MenuItem)
+                        .with_name(item.title.clone())
+                        .with_state(AccessState {
+                            selected: position == self.cursor,
+                            ..Default::default()
+                        })
+                        .with_position(position + 1, count)
+                })
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Menu)
+                .with_name("Link pages")
+                .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
+                .with_state(AccessState {
+                    expanded: Some(true),
+                    ..Default::default()
+                })
+                .with_children(items),
+        )
     }
 }
 
@@ -367,9 +488,7 @@ mod tests {
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -388,9 +507,18 @@ mod tests {
     fn seed_three() -> LinkPopover {
         let mut p = LinkPopover::new();
         p.set_items(vec![
-            PageEntry { id: Uuid::from_u128(1), title: "Welcome".into() },
-            PageEntry { id: Uuid::from_u128(2), title: "Roadmap".into() },
-            PageEntry { id: Uuid::from_u128(3), title: "Inbox".into() },
+            PageEntry {
+                id: Uuid::from_u128(1),
+                title: "Welcome".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(2),
+                title: "Roadmap".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(3),
+                title: "Inbox".into(),
+            },
         ]);
         p
     }
@@ -428,6 +556,26 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_highlight_keeps_scrolling_through_large_page_sets() {
+        let mut p = LinkPopover::new();
+        p.set_items(
+            (0..12)
+                .map(|index| PageEntry {
+                    id: Uuid::from_u128(index + 1),
+                    title: format!("Page {index}"),
+                })
+                .collect(),
+        );
+        p.set_visible(true);
+        for _ in 0..9 {
+            p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+        }
+        assert_eq!(p.cursor, 9);
+        assert_eq!(p.window_start(), 2);
+        assert_eq!(p.highlighted().unwrap().title, "Page 9");
+    }
+
+    #[test]
     fn enter_commits_selection_and_hides() {
         let mut p = seed_three();
         p.set_visible(true);
@@ -457,6 +605,57 @@ mod tests {
     }
 
     #[test]
+    fn ime_preedit_is_visible_but_filters_only_after_commit() {
+        let mut p = LinkPopover::new();
+        p.set_items(vec![
+            PageEntry {
+                id: Uuid::from_u128(1),
+                title: "東京".into(),
+            },
+            PageEntry {
+                id: Uuid::from_u128(2),
+                title: "London".into(),
+            },
+        ]);
+        p.set_visible(true);
+        assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "東京".into(),
+            Some(("東".len(), "東".len())),
+        ))));
+        assert_eq!(p.filter(), "");
+        assert_eq!(p.visible_len(), 2);
+        assert_eq!(
+            Widget::accessibility(&p).unwrap().value,
+            None,
+            "preedit is not exposed as committed menu state"
+        );
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        p.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+        assert!(Widget::ime_cursor_rect(&p).is_some());
+
+        assert!(p.handle_key(&WindowEvent::Ime(winit::event::Ime::Commit("東京".into()))));
+        assert_eq!(p.filter(), "東京");
+        assert_eq!(p.visible_len(), 1);
+        assert_eq!(p.highlighted().unwrap().title, "東京");
+        let access = Widget::accessibility(&p).unwrap();
+        assert_eq!(access.name.as_deref(), Some("Link pages"));
+        assert_eq!(access.value.as_deref(), Some("東京"));
+        assert_eq!(access.children.len(), 1);
+    }
+
+    #[test]
+    fn backspace_removes_one_extended_grapheme() {
+        let mut p = seed_three();
+        p.set_visible(true);
+        p.set_filter("👩🏽‍💻");
+        assert!(p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None)));
+        assert_eq!(p.filter(), "");
+        assert!(p.is_visible());
+    }
+
+    #[test]
     fn backspace_pops_filter_then_closes() {
         let mut p = seed_three();
         p.set_visible(true);
@@ -464,7 +663,6 @@ mod tests {
         let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
         assert!(consumed);
         assert_eq!(p.filter(), "");
-        // Another backspace with empty filter closes.
         let consumed = p.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
         assert!(!consumed);
         assert!(!p.is_visible());
@@ -472,9 +670,6 @@ mod tests {
 
     #[test]
     fn empty_results_renders_no_matches_hint() {
-        // We don't have a real renderer here, but we can at least
-        // sanity-check the state: filter that matches nothing leaves
-        // visible_len 0 and is_visible true.
         let mut p = seed_three();
         p.set_visible(true);
         p.set_filter("zzz");

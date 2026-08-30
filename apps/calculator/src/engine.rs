@@ -21,6 +21,8 @@
 //! Implicit multiplication binds at `*` precedence: `2pi`, `3(x+1)`, `2x`.
 
 use std::f64::consts::{E, PI, TAU};
+use std::iter::Peekable;
+use std::str::Chars;
 
 /// Parsed expression node.
 #[derive(Clone, Debug)]
@@ -60,120 +62,104 @@ enum Tok {
 
 fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
     let mut out = Vec::new();
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
         if c.is_whitespace() {
-            i += 1;
             continue;
         }
         match c {
-            '0'..='9' | '.' => {
-                let start = i;
-                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                    i += 1;
-                }
-                // Scientific exponent: `e`/`E` followed by optional sign + digit.
-                if i < chars.len() && (chars[i] == 'e' || chars[i] == 'E') {
-                    let mut j = i + 1;
-                    if j < chars.len() && (chars[j] == '+' || chars[j] == '-') {
-                        j += 1;
-                    }
-                    if j < chars.len() && chars[j].is_ascii_digit() {
-                        i = j;
-                        while i < chars.len() && chars[i].is_ascii_digit() {
-                            i += 1;
-                        }
-                    }
-                }
-                let s: String = chars[start..i].iter().collect();
-                let v: f64 = s
-                    .parse()
-                    .map_err(|_| format!("bad number `{s}`"))?;
-                out.push(Tok::Num(v));
-            }
-            'a'..='z' | 'A'..='Z' | '_' => {
-                let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
-                {
-                    i += 1;
-                }
-                let s: String = chars[start..i].iter().collect();
-                out.push(Tok::Ident(s.to_ascii_lowercase()));
-            }
+            '0'..='9' | '.' => out.push(Tok::Num(scan_number(c, &mut chars)?)),
+            'a'..='z' | 'A'..='Z' | '_' => out.push(Tok::Ident(scan_ident(c, &mut chars))),
             // Unicode niceties accepted in case they leak in from a paste.
-            'π' => {
-                out.push(Tok::Ident("pi".into()));
-                i += 1;
-            }
-            '×' => {
-                out.push(Tok::Op('*'));
-                i += 1;
-            }
-            '÷' => {
-                out.push(Tok::Op('/'));
-                i += 1;
-            }
-            '−' => {
-                out.push(Tok::Op('-'));
-                i += 1;
-            }
-            '√' => {
-                out.push(Tok::Ident("sqrt".into()));
-                i += 1;
-            }
-            '+' | '-' | '*' | '/' | '^' | '!' | '%' => {
-                out.push(Tok::Op(c));
-                i += 1;
-            }
-            '(' => {
-                out.push(Tok::LParen);
-                i += 1;
-            }
-            ')' => {
-                out.push(Tok::RParen);
-                i += 1;
-            }
-            ',' => {
-                out.push(Tok::Comma);
-                i += 1;
-            }
+            'π' => out.push(Tok::Ident("pi".into())),
+            '×' => out.push(Tok::Op('*')),
+            '÷' => out.push(Tok::Op('/')),
+            '−' => out.push(Tok::Op('-')),
+            '√' => out.push(Tok::Ident("sqrt".into())),
+            '+' | '-' | '*' | '/' | '^' | '!' | '%' => out.push(Tok::Op(c)),
+            '(' => out.push(Tok::LParen),
+            ')' => out.push(Tok::RParen),
+            ',' => out.push(Tok::Comma),
             _ => return Err(format!("unexpected `{c}`")),
         }
     }
     Ok(out)
 }
 
+/// Scan the rest of a number whose first character `first` is already
+/// consumed: digits and dots, then an optional scientific exponent.
+///
+/// The exponent needs two characters of lookahead (`e`, an optional sign, then
+/// at least one digit), so it is scanned on a cloned iterator and only
+/// committed once a digit confirms it — otherwise the `e` starts the next
+/// token, which is what makes `2e` parse as `2 * e`.
+fn scan_number(first: char, chars: &mut Peekable<Chars<'_>>) -> Result<f64, String> {
+    let mut s = String::from(first);
+    take_while_into(&mut s, chars, |c| c.is_ascii_digit() || c == '.');
+    if matches!(chars.peek(), Some('e' | 'E')) {
+        let mut probe = chars.clone();
+        probe.next();
+        let sign = match probe.peek() {
+            Some(&c @ ('+' | '-')) => {
+                probe.next();
+                Some(c)
+            }
+            _ => None,
+        };
+        if probe.peek().is_some_and(char::is_ascii_digit) {
+            s.push('e');
+            if let Some(c) = sign {
+                s.push(c);
+            }
+            *chars = probe;
+            take_while_into(&mut s, chars, |c| c.is_ascii_digit());
+        }
+    }
+    s.parse().map_err(|_| format!("bad number `{s}`"))
+}
+
+/// Scan the rest of an identifier whose first character is already consumed.
+fn scan_ident(first: char, chars: &mut Peekable<Chars<'_>>) -> String {
+    let mut s = String::from(first);
+    take_while_into(&mut s, chars, |c| c.is_ascii_alphanumeric() || c == '_');
+    s.to_ascii_lowercase()
+}
+
+/// Append every leading character matching `keep` to `out`, consuming them.
+fn take_while_into(out: &mut String, chars: &mut Peekable<Chars<'_>>, keep: impl Fn(char) -> bool) {
+    while let Some(&c) = chars.peek() {
+        if !keep(c) {
+            break;
+        }
+        out.push(c);
+        chars.next();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Parser (precedence climbing)
 // ---------------------------------------------------------------------------
 
-struct Parser {
-    toks: Vec<Tok>,
-    pos: usize,
+/// The token stream still to be parsed. Consuming from the front of a slice
+/// (rather than advancing an index into a `Vec`) keeps "how much is left" and
+/// "what comes next" the same question, so neither can run past the end.
+struct Parser<'t> {
+    toks: &'t [Tok],
 }
 
-impl Parser {
+impl Parser<'_> {
     fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.pos)
+        self.toks.first()
     }
     fn next(&mut self) -> Option<Tok> {
-        let t = self.toks.get(self.pos).cloned();
-        if t.is_some() {
-            self.pos += 1;
-        }
-        t
+        let (first, rest) = self.toks.split_first()?;
+        self.toks = rest;
+        Some(first.clone())
     }
 
     fn parse_bp(&mut self, min_bp: u8) -> Result<Expr, String> {
         let mut lhs = self.parse_prefix()?;
-        loop {
-            let tok = match self.peek() {
-                Some(t) => t.clone(),
-                None => break,
-            };
+        while let Some(tok) = self.peek().cloned() {
             match tok {
                 Tok::Op('!') if 50 >= min_bp => {
                     self.next();
@@ -251,16 +237,21 @@ impl Parser {
     }
 }
 
-/// Parse `input` into an AST. Returns a human-readable error on malformed
-/// input (the UI shows it in the result line).
+/// Parse `input` into an AST.
+///
+/// # Errors
+/// A human-readable message (which the UI shows in the result line) when the
+/// input is empty, holds a character the tokenizer does not accept, or is not
+/// a complete expression — an unbalanced `(`, a dangling operator, or trailing
+/// tokens after one.
 pub fn parse(input: &str) -> Result<Expr, String> {
     let toks = tokenize(input)?;
     if toks.is_empty() {
         return Err("empty".to_string());
     }
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks: &toks };
     let e = p.parse_bp(0)?;
-    if p.pos != p.toks.len() {
+    if !p.toks.is_empty() {
         return Err("trailing input".to_string());
     }
     Ok(e)
@@ -270,8 +261,8 @@ pub fn parse(input: &str) -> Result<Expr, String> {
 // Evaluation
 // ---------------------------------------------------------------------------
 
-fn eval_node(e: &Expr, ctx: &Ctx) -> Result<f64, String> {
-    Ok(match e {
+fn eval_node(expr: &Expr, ctx: &Ctx) -> Result<f64, String> {
+    Ok(match expr {
         Expr::Num(n) => *n,
         Expr::Var(name) => match name.as_str() {
             "pi" => PI,
@@ -285,18 +276,18 @@ fn eval_node(e: &Expr, ctx: &Ctx) -> Result<f64, String> {
             "nan" => f64::NAN,
             _ => return Err(format!("unknown name `{name}`")),
         },
-        Expr::Neg(a) => -eval_node(a, ctx)?,
-        Expr::Fact(a) => factorial(eval_node(a, ctx)?),
-        Expr::Percent(a) => eval_node(a, ctx)? / 100.0,
-        Expr::Bin(op, a, b) => {
-            let x = eval_node(a, ctx)?;
-            let y = eval_node(b, ctx)?;
+        Expr::Neg(inner) => -eval_node(inner, ctx)?,
+        Expr::Fact(inner) => factorial(eval_node(inner, ctx)?),
+        Expr::Percent(inner) => eval_node(inner, ctx)? / 100.0,
+        Expr::Bin(op, left, right) => {
+            let lhs = eval_node(left, ctx)?;
+            let rhs = eval_node(right, ctx)?;
             match op {
-                '+' => x + y,
-                '-' => x - y,
-                '*' => x * y,
-                '/' => x / y,
-                '^' => x.powf(y),
+                '+' => lhs + rhs,
+                '-' => lhs - rhs,
+                '*' => lhs * rhs,
+                '/' => lhs / rhs,
+                '^' => lhs.powf(rhs),
                 _ => return Err(format!("bad operator `{op}`")),
             }
         }
@@ -306,27 +297,34 @@ fn eval_node(e: &Expr, ctx: &Ctx) -> Result<f64, String> {
 
 fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
     let mut vals = Vec::with_capacity(args.len());
-    for a in args {
-        vals.push(eval_node(a, ctx)?);
+    for arg in args {
+        vals.push(eval_node(arg, ctx)?);
     }
-    let n = vals.len();
-    let one = |f: fn(f64) -> f64| -> Result<f64, String> {
-        if n != 1 {
-            Err(format!("{name}() takes 1 argument"))
-        } else {
-            Ok(f(vals[0]))
+    // Arity is checked by matching the argument slice, so every argument that
+    // reaches a function is one the slice pattern proved is there.
+    let only = || -> Result<f64, String> {
+        match vals.as_slice() {
+            [v] => Ok(*v),
+            _ => Err(format!("{name}() takes 1 argument")),
+        }
+    };
+    let one = |func: fn(f64) -> f64| only().map(func);
+    let pair = |sig: &str| -> Result<(f64, f64), String> {
+        match vals.as_slice() {
+            [a, b] => Ok((*a, *b)),
+            _ => Err(format!("{sig} takes 2 arguments")),
         }
     };
     // Degree-aware trig: argument is degrees when `ctx.deg`.
     let to_rad = if ctx.deg { PI / 180.0 } else { 1.0 };
     let from_rad = if ctx.deg { 180.0 / PI } else { 1.0 };
     Ok(match name {
-        "sin" => return one(|x| x).map(|x| (x * to_rad).sin()),
-        "cos" => return one(|x| x).map(|x| (x * to_rad).cos()),
-        "tan" => return one(|x| x).map(|x| (x * to_rad).tan()),
-        "asin" => return one(|x| x).map(|x| x.asin() * from_rad),
-        "acos" => return one(|x| x).map(|x| x.acos() * from_rad),
-        "atan" => return one(|x| x).map(|x| x.atan() * from_rad),
+        "sin" => return only().map(|v| (v * to_rad).sin()),
+        "cos" => return only().map(|v| (v * to_rad).cos()),
+        "tan" => return only().map(|v| (v * to_rad).tan()),
+        "asin" => return only().map(|v| v.asin() * from_rad),
+        "acos" => return only().map(|v| v.acos() * from_rad),
+        "atan" => return only().map(|v| v.atan() * from_rad),
         "sinh" => return one(f64::sinh),
         "cosh" => return one(f64::cosh),
         "tanh" => return one(f64::tanh),
@@ -346,62 +344,57 @@ fn eval_call(name: &str, args: &[Expr], ctx: &Ctx) -> Result<f64, String> {
         "round" => return one(f64::round),
         "trunc" => return one(f64::trunc),
         "fract" => return one(f64::fract),
-        "rad" => return one(|x| x.to_radians()),
-        "deg" => return one(|x| x.to_degrees()),
+        "rad" => return one(f64::to_radians),
+        "deg" => return one(f64::to_degrees),
         "gamma" => return one(gamma),
         "fact" => return one(factorial),
-        "log" => match n {
-            1 => vals[0].log10(),
-            2 => vals[1].log(vals[0]), // log(base, value)
+        "log" => match vals.as_slice() {
+            [v] => v.log10(),
+            [base, v] => v.log(*base), // log(base, value)
             _ => return Err("log() takes 1 or 2 arguments".into()),
         },
         "root" => {
-            if n != 2 {
-                return Err("root(n, x) takes 2 arguments".into());
-            }
-            vals[1].powf(1.0 / vals[0])
+            let (degree, radicand) = pair("root(n, x)")?;
+            radicand.powf(1.0 / degree)
         }
         "pow" => {
-            if n != 2 {
-                return Err("pow(a, b) takes 2 arguments".into());
-            }
-            vals[0].powf(vals[1])
+            let (base, exp) = pair("pow(a, b)")?;
+            base.powf(exp)
         }
         "mod" => {
-            if n != 2 {
-                return Err("mod(a, b) takes 2 arguments".into());
-            }
-            vals[0].rem_euclid(vals[1])
+            let (lhs, rhs) = pair("mod(a, b)")?;
+            lhs.rem_euclid(rhs)
         }
         "atan2" => {
-            if n != 2 {
-                return Err("atan2(y, x) takes 2 arguments".into());
-            }
-            vals[0].atan2(vals[1]) * from_rad
+            let (y, x) = pair("atan2(y, x)")?;
+            y.atan2(x) * from_rad
         }
         "hypot" => {
-            if n != 2 {
-                return Err("hypot(a, b) takes 2 arguments".into());
-            }
-            vals[0].hypot(vals[1])
+            let (a, b) = pair("hypot(a, b)")?;
+            a.hypot(b)
         }
         "max" => {
-            if n == 0 {
+            if vals.is_empty() {
                 return Err("max() needs arguments".into());
             }
-            vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
         }
         "min" => {
-            if n == 0 {
+            if vals.is_empty() {
                 return Err("min() needs arguments".into());
             }
-            vals.iter().cloned().fold(f64::INFINITY, f64::min)
+            vals.iter().copied().fold(f64::INFINITY, f64::min)
         }
         _ => return Err(format!("unknown function `{name}`")),
     })
 }
 
 /// Parse and evaluate `input` in one shot. Used by the `=` key.
+///
+/// # Errors
+/// The parse error for malformed input, or an evaluation error: an unknown
+/// name or function, or a call with the wrong number of arguments. A domain
+/// problem is a value, not an error — `1/0` evaluates to infinity.
 pub fn evaluate(input: &str, ctx: &Ctx) -> Result<f64, String> {
     let e = parse(input)?;
     eval_node(&e, ctx)
@@ -417,12 +410,21 @@ pub struct Compiled {
 impl Compiled {
     /// Sample with a single free variable `x`.
     pub fn eval1(&self, x: f64) -> f64 {
-        let ctx = Ctx { deg: self.deg, x, ..Default::default() };
+        let ctx = Ctx {
+            deg: self.deg,
+            x,
+            ..Default::default()
+        };
         eval_node(&self.ast, &ctx).unwrap_or(f64::NAN)
     }
     /// Sample with two free variables `x`, `y`.
     pub fn eval2(&self, x: f64, y: f64) -> f64 {
-        let ctx = Ctx { deg: self.deg, x, y, ..Default::default() };
+        let ctx = Ctx {
+            deg: self.deg,
+            x,
+            y,
+            ..Default::default()
+        };
         eval_node(&self.ast, &ctx).unwrap_or(f64::NAN)
     }
 }
@@ -431,9 +433,18 @@ impl Compiled {
 /// eval at a representative point surfaces unknown-name / arity errors as
 /// `Err`; domain issues (NaN/inf) are values, not errors, so a valid
 /// `1/x` compiles fine.
+///
+/// # Errors
+/// The parse error for malformed input, a variable the plot cannot supply
+/// (`y` in a 2D plot, or any typo), or an unknown function / wrong arity.
 pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String> {
     let ast = parse(input)?;
-    let probe = Ctx { deg, x: 0.7, y: 0.3, ..Default::default() };
+    let probe = Ctx {
+        deg,
+        x: 0.7,
+        y: 0.3,
+        ..Default::default()
+    };
     // Walk once to catch unknown names regardless of NaN domain points.
     validate(&ast, two_var)?;
     let _ = eval_node(&ast, &probe)?;
@@ -472,11 +483,11 @@ fn validate(e: &Expr, two_var: bool) -> Result<(), String> {
 pub fn gamma(x: f64) -> f64 {
     const G: f64 = 7.0;
     const C: [f64; 9] = [
-        0.999_999_999_999_809_93,
+        0.999_999_999_999_809_9,
         676.520_368_121_885_1,
-        -1259.139_216_722_402_8,
-        771.323_428_777_653_13,
-        -176.615_029_162_140_59,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
         12.507_343_278_686_905,
         -0.138_571_095_265_720_12,
         9.984_369_578_019_572e-6,
@@ -487,10 +498,14 @@ pub fn gamma(x: f64) -> f64 {
         PI / ((PI * x).sin() * gamma(1.0 - x))
     } else {
         let x = x - 1.0;
-        let mut a = C[0];
         let t = x + G + 0.5;
-        for (i, &coef) in C.iter().enumerate().skip(1) {
-            a += coef / (x + i as f64);
+        // The series is `C[0] + sum(C[i] / (x + i))` for i = 1.., so split the
+        // head off the table (an irrefutable destructure — no index) and pair
+        // the tail with its term number.
+        let [head, tail @ ..] = C;
+        let mut a = head;
+        for (i, coef) in (1u32..).zip(tail) {
+            a += coef / (x + f64::from(i));
         }
         (TAU).sqrt() * t.powf(x + 0.5) * (-t).exp() * a
     }
@@ -502,11 +517,15 @@ pub fn factorial(n: f64) -> f64 {
         return f64::NAN; // poles at non-positive integers
     }
     if n.fract() == 0.0 && (0.0..=170.0).contains(&n) {
+        // Count in integers: a float counter accumulates error, and 170! is the
+        // last factorial that fits an f64 (171! overflows to infinity).
         let mut r = 1.0f64;
-        let mut i = 2.0f64;
-        while i <= n {
-            r *= i;
-            i += 1.0;
+        for i in 2..=170u32 {
+            let factor = f64::from(i);
+            if factor > n {
+                break;
+            }
+            r *= factor;
         }
         return r;
     }
@@ -525,12 +544,12 @@ pub fn format_number(v: f64) -> String {
         return "0".to_string();
     }
     let a = v.abs();
-    if a < 1e-6 || a >= 1e12 {
+    if !(1e-6..1e12).contains(&a) {
         // Scientific, ~10 significant digits, tidy mantissa.
-        let s = format!("{:.6e}", v);
+        let s = format!("{v:.6e}");
         return tidy_sci(&s);
     }
-    let s = format!("{:.10}", v);
+    let s = format!("{v:.10}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     if trimmed.is_empty() || trimmed == "-" {
         "0".to_string()
@@ -569,10 +588,21 @@ mod tests {
         evaluate(s, &Ctx::default()).unwrap()
     }
     fn evd(s: &str) -> f64 {
-        evaluate(s, &Ctx { deg: true, ..Default::default() }).unwrap()
+        evaluate(
+            s,
+            &Ctx {
+                deg: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving the operator precedence"
+    )]
     fn arithmetic_precedence() {
         assert_eq!(ev("1+2*3"), 7.0);
         assert_eq!(ev("(1+2)*3"), 9.0);
@@ -582,6 +612,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving implicit multiplication"
+    )]
     fn implicit_multiplication() {
         assert!((ev("2pi") - 2.0 * PI).abs() < 1e-9);
         assert_eq!(ev("3(1+1)"), 6.0);
@@ -604,6 +638,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving that 5! is exactly 120"
+    )]
     fn factorial_and_percent() {
         assert_eq!(ev("5!"), 120.0);
         assert!((ev("50%") - 0.5).abs() < 1e-12);
@@ -611,6 +649,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these results are small integers, exact in f64 — an approximate\n                  compare here would stop proving that x^2 samples exactly"
+    )]
     fn compiled_sampling() {
         let c = compile("x^2", false, false).unwrap();
         assert_eq!(c.eval1(3.0), 9.0);

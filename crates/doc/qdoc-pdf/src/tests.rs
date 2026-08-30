@@ -11,7 +11,11 @@ use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::BTreeMap;
 
 fn empty_snapshot() -> DocSnapshot {
-    DocSnapshot { schema: "qos.richtext".into(), schema_version: 1, ..Default::default() }
+    DocSnapshot {
+        schema: "qos.richtext".into(),
+        schema_version: 1,
+        ..Default::default()
+    }
 }
 
 fn block(kind: &str, text: &str) -> BlockView {
@@ -38,7 +42,10 @@ fn count(haystack: &[u8], needle: &[u8]) -> usize {
     if needle.is_empty() {
         return 0;
     }
-    haystack.windows(needle.len()).filter(|w| *w == needle).count()
+    haystack
+        .windows(needle.len())
+        .filter(|w| *w == needle)
+        .count()
 }
 
 #[test]
@@ -46,11 +53,17 @@ fn multi_block_snapshot_yields_valid_pdf_bytes() {
     let snap = DocSnapshot {
         blocks: vec![
             block_attr("heading", "Quarterly Report", &[("level", AttrVal::Int(1))]),
-            block("paragraph", "This is the opening paragraph of the document. It contains \
+            block(
+                "paragraph",
+                "This is the opening paragraph of the document. It contains \
                 enough words that it must wrap across multiple lines when laid out within the \
-                US-Letter text column, which exercises the word-wrapping path."),
+                US-Letter text column, which exercises the word-wrapping path.",
+            ),
             block_attr("heading", "Details", &[("level", AttrVal::Int(2))]),
-            block("paragraph", "A short second paragraph follows the subheading."),
+            block(
+                "paragraph",
+                "A short second paragraph follows the subheading.",
+            ),
         ],
         ..empty_snapshot()
     };
@@ -58,10 +71,20 @@ fn multi_block_snapshot_yields_valid_pdf_bytes() {
     let bytes = render_pdf(&snap).expect("render");
     assert!(bytes.starts_with(b"%PDF"), "must start with %PDF magic");
     assert!(bytes.len() > 500, "non-trivial length, got {}", bytes.len());
-    assert!(bytes.ends_with(b"%%EOF\n"), "must end with the PDF EOF marker");
+    assert!(
+        bytes.ends_with(b"%%EOF\n"),
+        "must end with the PDF EOF marker"
+    );
     // Exactly one page for this much content.
-    assert_eq!(count(&bytes, b"/Type /Page\n"), 0, "page dict is inline, not newline-terminated");
-    assert!(count(&bytes, b"/Type /Page ") >= 1, "at least one page object");
+    assert_eq!(
+        count(&bytes, b"/Type /Page\n"),
+        0,
+        "page dict is inline, not newline-terminated"
+    );
+    assert!(
+        count(&bytes, b"/Type /Page ") >= 1,
+        "at least one page object"
+    );
     assert!(count(&bytes, b"/Type /Catalog") == 1, "exactly one catalog");
 }
 
@@ -76,9 +99,30 @@ fn heading_paragraph_list_produces_multiple_content_objects() {
         blocks: vec![
             block_attr("heading", "Shopping List", &[("level", AttrVal::Int(1))]),
             block("paragraph", "Things to buy this week:"),
-            block_attr("list_item", "Apples", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
-            block_attr("list_item", "Bread", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
-            block_attr("list_item", "Cheese", &[("ordered", AttrVal::Bool(false)), ("level", AttrVal::Int(0))]),
+            block_attr(
+                "list_item",
+                "Apples",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
+            block_attr(
+                "list_item",
+                "Bread",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
+            block_attr(
+                "list_item",
+                "Cheese",
+                &[
+                    ("ordered", AttrVal::Bool(false)),
+                    ("level", AttrVal::Int(0)),
+                ],
+            ),
         ],
         ..empty_snapshot()
     };
@@ -93,7 +137,10 @@ fn heading_paragraph_list_produces_multiple_content_objects() {
     assert!(n_objs > 1, "expected >1 indirect objects, got {n_objs}");
 
     // And there is at least one content stream (FlateDecode'd).
-    assert!(count(&bytes, b"/Filter /FlateDecode") >= 1, "at least one stream");
+    assert!(
+        count(&bytes, b"/Filter /FlateDecode") >= 1,
+        "at least one stream"
+    );
 }
 
 #[test]
@@ -106,7 +153,7 @@ fn empty_doc_yields_valid_single_page_pdf() {
     assert_eq!(count(&bytes, b"/Type /Pages"), 1, "one pages tree");
     // The pages tree declares Count 1.
     assert!(count(&bytes, b"/Count 1 ") == 1, "single-page document");
-    assert!(count(&bytes, b"/Type /Catalog") == 1);
+    assert_eq!(count(&bytes, b"/Type /Catalog"), 1);
 }
 
 #[test]
@@ -114,15 +161,30 @@ fn long_document_paginates_to_multiple_pages() {
     // Many paragraphs must overflow one page and start a second.
     let mut blocks = Vec::new();
     for i in 0..120 {
-        blocks.push(block("paragraph", &format!("Paragraph number {i} with some filler text to take up vertical space on the page.")));
+        blocks.push(block(
+            "paragraph",
+            &format!(
+                "Paragraph number {i} with some filler text to take up vertical space on the page."
+            ),
+        ));
     }
-    let snap = DocSnapshot { blocks, ..empty_snapshot() };
+    let snap = DocSnapshot {
+        blocks,
+        ..empty_snapshot()
+    };
     let bytes = render_pdf(&snap).expect("render");
     let pages = count(&bytes, b"/Type /Page ");
-    assert!(pages >= 2, "120 paragraphs should span >=2 pages, got {pages}");
+    assert!(
+        pages >= 2,
+        "120 paragraphs should span >=2 pages, got {pages}"
+    );
     // The pages tree Count must match the number of page objects.
     let count_marker = format!("/Count {pages} ");
-    assert_eq!(count(&bytes, count_marker.as_bytes()), 1, "pages-tree Count matches page objects");
+    assert_eq!(
+        count(&bytes, count_marker.as_bytes()),
+        1,
+        "pages-tree Count matches page objects"
+    );
 }
 
 #[test]
@@ -142,11 +204,20 @@ fn image_block_with_decodable_png_embeds_xobject() {
     // The XObject dict is uncompressed in the object stream, so we can assert
     // on it directly. (The page content stream that paints it via `Do` is
     // FlateDecode-compressed, so its operators aren't visible in the raw bytes.)
-    assert!(count(&bytes, b"/Subtype /Image") >= 1, "image XObject embedded");
+    assert!(
+        count(&bytes, b"/Subtype /Image") >= 1,
+        "image XObject embedded"
+    );
     assert!(count(&bytes, b"/ColorSpace /DeviceRGB") >= 1);
-    assert!(count(&bytes, b"/Width 2 ") >= 1, "image dimensions recorded");
+    assert!(
+        count(&bytes, b"/Width 2 ") >= 1,
+        "image dimensions recorded"
+    );
     // The page's resources must reference the XObject so it can be painted.
-    assert!(count(&bytes, b"/XObject << /Im0") >= 1, "page references the image XObject");
+    assert!(
+        count(&bytes, b"/XObject << /Im0") >= 1,
+        "page references the image XObject"
+    );
 }
 
 #[test]
@@ -154,7 +225,11 @@ fn image_block_with_bad_blob_draws_placeholder_not_error() {
     let mut blobs = BTreeMap::new();
     blobs.insert("h".to_string(), vec![0u8, 1, 2, 3]); // not a valid image
     let snap = DocSnapshot {
-        blocks: vec![block_attr("image", "", &[("blob", AttrVal::Str("h".into()))])],
+        blocks: vec![block_attr(
+            "image",
+            "",
+            &[("blob", AttrVal::Str("h".into()))],
+        )],
         blobs,
         ..empty_snapshot()
     };
@@ -175,7 +250,10 @@ fn table_block_renders_grid() {
     let mut table = block("table", "");
     table.children = vec![row1, row2];
 
-    let snap = DocSnapshot { blocks: vec![table], ..empty_snapshot() };
+    let snap = DocSnapshot {
+        blocks: vec![table],
+        ..empty_snapshot()
+    };
     let bytes = render_pdf(&snap).expect("render");
     assert!(bytes.starts_with(b"%PDF"));
     assert!(bytes.len() > 400);
@@ -185,9 +263,14 @@ fn table_block_renders_grid() {
 fn make_test_png() -> Vec<u8> {
     use image::{ImageFormat, RgbImage};
     let img = RgbImage::from_fn(2, 2, |x, _| {
-        if x == 0 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) }
+        if x == 0 {
+            image::Rgb([255, 0, 0])
+        } else {
+            image::Rgb([0, 0, 255])
+        }
     });
     let mut buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, ImageFormat::Png).expect("encode png");
+    img.write_to(&mut buf, ImageFormat::Png)
+        .expect("encode png");
     buf.into_inner()
 }

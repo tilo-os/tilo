@@ -7,14 +7,20 @@
 
 /// The current locale's key candidates, most specific first.
 ///
-/// Read from `LC_MESSAGES`, then `LC_ALL`, then `LANG` — the order
-/// `setlocale` itself uses for the messages category. `C` and `POSIX`
-/// mean "no translation", and yield an empty list so the unlocalised
-/// value is taken.
+/// `LC_ALL` first because POSIX lets it override every category; reading
+/// `LC_MESSAGES` ahead of it inverts that, so a session pinning `LC_ALL`
+/// still resolves `Name[xx]=` in whatever `LC_MESSAGES` the machine carries.
+/// `C` and `POSIX` mean no translation and yield an empty list.
 pub fn locale_candidates() -> Vec<String> {
-    for var in ["LC_MESSAGES", "LC_ALL", "LANG"] {
-        if let Some(raw) = std::env::var_os(var) {
-            let raw = raw.to_string_lossy().to_string();
+    candidates_from(|var| std::env::var_os(var).map(|v| v.to_string_lossy().into_owned()))
+}
+
+/// Split from [`locale_candidates`] so the precedence is assertable without
+/// mutating the environment of a parallel test binary — which is how the order
+/// stayed inverted unnoticed.
+fn candidates_from(lookup: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Some(raw) = lookup(var) {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 continue;
@@ -37,7 +43,7 @@ pub fn candidates_for(locale: &str) -> Vec<String> {
         Some((head, modifier)) => (head, Some(modifier)),
         None => (locale, None),
     };
-    let head = head.split_once('.').map(|(h, _)| h).unwrap_or(head);
+    let head = head.split_once('.').map_or(head, |(h, _)| h);
     let (lang, country) = match head.split_once('_') {
         Some((lang, country)) => (lang, Some(country)),
         None => (head, None),
@@ -83,5 +89,48 @@ mod tests {
         assert!(candidates_for("C").is_empty());
         assert!(candidates_for("POSIX").is_empty());
         assert!(candidates_for("").is_empty());
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |var| owned.iter().find(|(k, _)| k == var).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn lc_all_overrides_the_messages_category() {
+        assert_eq!(
+            candidates_from(env(&[
+                ("LC_ALL", "de_DE.UTF-8"),
+                ("LC_MESSAGES", "en_US.UTF-8")
+            ])),
+            vec!["de_DE", "de"]
+        );
+    }
+
+    #[test]
+    fn lc_messages_is_taken_when_lc_all_is_unset_or_empty() {
+        assert_eq!(
+            candidates_from(env(&[
+                ("LC_MESSAGES", "fr_FR.UTF-8"),
+                ("LANG", "en_US.UTF-8")
+            ])),
+            vec!["fr_FR", "fr"]
+        );
+        assert_eq!(
+            candidates_from(env(&[("LC_ALL", "   "), ("LC_MESSAGES", "fr_FR")])),
+            vec!["fr_FR", "fr"]
+        );
+    }
+
+    #[test]
+    fn lang_is_the_last_resort_and_nothing_set_means_unlocalised() {
+        assert_eq!(
+            candidates_from(env(&[("LANG", "es_ES")])),
+            vec!["es_ES", "es"]
+        );
+        assert!(candidates_from(env(&[])).is_empty());
     }
 }

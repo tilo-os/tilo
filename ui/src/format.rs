@@ -1,32 +1,14 @@
 //! Shared value formatters for system apps — byte sizes, transfer rates, media
 //! timecodes, "time ago" labels, compact counts, and month/weekday names.
 //!
-//! Every app that renders a file size, a play-count, or a "3 min ago" stamp
-//! used to hand-roll it, and the copies **disagreed**: `mail` and `backups`
-//! divided by 1024 but labelled the result `KB`/`MB`/`GB`, while `containers`
-//! did the identical `/1024` math and labelled it `KiB`/`MiB`/`GiB`. The fleet
-//! rendered the same number two different ways. This module is the single
-//! correct home, so every adopter formats a value the same way.
+//! A hand-rolled formatter divides by 1024 and labels it `KB`/`MB`/`GB` as
+//! often as it labels the identical math `KiB`/`MiB`/`GiB` — the same number,
+//! two different labels. This module is the single correct home, so every
+//! adopter formats a value the same way; see [`bytes`] for the 1024/1000 rule.
 //!
-//! ## Byte sizes: base-1024 with IEC binary units
-//!
-//! [`bytes`] uses **base 1024** and the honest **IEC** binary units
-//! (`KiB`/`MiB`/`GiB`/`TiB`/…) — because dividing by 1024 is what every caller
-//! actually does, so the label must say so. Only [`bytes_si`] divides by 1000,
-//! and only it wears the decimal-SI `kB`/`MB`/`GB` labels. Pick [`bytes`]
-//! unless a caller genuinely reports a decimal (base-1000) quantity.
-//!
-//! ## Localization
-//!
-//! [`month_abbrev`]/[`month_name`]/[`weekday_abbrev`]/[`weekday_name`] take a
-//! numeric index and return an English label. They are deliberately
-//! index-based (not string-keyed) so a caller wiring `fluent` in can map the
-//! same index to a translated string without this module hard-coding a locale
-//! into its call sites.
-
-// ---------------------------------------------------------------------------
-// Byte sizes and transfer rates
-// ---------------------------------------------------------------------------
+//! Month/weekday lookups are index-based (not string-keyed) so a caller
+//! wiring `fluent` in can map the index to a translated string without this
+//! module hard-coding a locale.
 
 /// Format a byte count with **base-1024 IEC binary units** (`B`, `KiB`, `MiB`,
 /// `GiB`, `TiB`, …). Whole bytes print with no decimal; larger units print one
@@ -60,9 +42,8 @@ pub fn bytes_si(n: u64) -> String {
     scale(n, 1000.0, &UNITS)
 }
 
-/// Shared scaler for [`bytes`]/[`bytes_si`]: divide by `base` until the value is
-/// below one step, printing whole bytes without a decimal and every larger unit
-/// with one.
+/// Shared scaler for [`bytes`]/[`bytes_si`]: divide by `base` until below
+/// one step; whole units print with no decimal, larger ones with one.
 fn scale(n: u64, base: f64, units: &[&str]) -> String {
     let mut value = n as f64;
     let mut unit = 0;
@@ -101,10 +82,6 @@ pub fn rate(bytes_per_sec: f64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Media timecode
-// ---------------------------------------------------------------------------
-
 /// Format a whole-second duration as a media timecode: `m:ss` under an hour,
 /// `h:mm:ss` at or above one hour.
 ///
@@ -131,10 +108,6 @@ pub fn duration(total_secs: u64) -> String {
     timecode(total_secs)
 }
 
-// ---------------------------------------------------------------------------
-// Relative "time ago"
-// ---------------------------------------------------------------------------
-
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -144,9 +117,8 @@ const YEAR: i64 = 365 * DAY;
 
 /// Format a past interval (in seconds) as a coarse relative label: `just now`,
 /// `3 min ago`, `2 hr ago`, `yesterday`, `4 days ago`, `2 weeks ago`,
-/// `3 months ago`, `1 year ago`. Singular buckets (`1 min ago`, `yesterday`,
-/// `1 week ago`) are handled explicitly. Zero and negative deltas (a timestamp
-/// that is "now" or slightly in the future from clock skew) read `just now`.
+/// `3 months ago`, `1 year ago`. Zero and negative deltas (clock skew) read
+/// `just now`.
 ///
 /// ```
 /// use ui::format::relative;
@@ -186,10 +158,6 @@ pub fn relative(secs_ago: i64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Compact counts
-// ---------------------------------------------------------------------------
-
 /// Abbreviate a large count to one significant fractional digit: `1.2K`,
 /// `3.4M`, `1.1B`. Values below 1000 print in full.
 ///
@@ -213,20 +181,32 @@ pub fn compact_count(n: u64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Month / weekday name tables
-// ---------------------------------------------------------------------------
-
 const MONTHS_ABBREV: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 const MONTHS_FULL: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August", "September",
-    "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 const WEEKDAYS_ABBREV: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const WEEKDAYS_FULL: [&str; 7] = [
-    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
 ];
 
 /// Three-letter English month abbreviation for a **0-based** month index
@@ -258,25 +238,18 @@ pub fn weekday_name(index0: usize) -> &'static str {
 mod tests {
     use super::*;
 
-    // ---- byte sizes: the fleet-wide correctness bug this module fixes ----
-
-    /// The historical bug: `mail`/`backups` did base-1024 math but labelled it
-    /// `KB`/`MB`/`GB`, while `containers` labelled the identical math
-    /// `KiB`/`MiB`/`GiB`. A byte formatter's unit MUST match its base. 1024
-    /// bytes is exactly one *kibibyte*, so `bytes(1024)` must read `KiB`, never
-    /// `KB`; and the SI/base-1000 variant must read `kB`, never `KiB`.
+    /// A byte formatter's unit MUST match its base: 1024 bytes is exactly
+    /// one *kibibyte*, so `bytes(1024)` must read `KiB`, never `KB`; the
+    /// SI/base-1000 variant must read `kB`, never `KiB`.
     #[test]
     fn byte_unit_label_matches_its_base() {
-        // base-1024 → IEC binary labels
         assert_eq!(bytes(1024), "1.0 KiB");
         assert_eq!(bytes(1024 * 1024), "1.0 MiB");
         assert_eq!(bytes(1024 * 1024 * 1024), "1.0 GiB");
         assert!(bytes(1024).ends_with("KiB"));
-        // and NOT the decimal-SI label for that binary math (the old bug)
         assert!(!bytes(1024).contains("KB"));
         assert!(!bytes(1024).ends_with(" KB"));
 
-        // base-1000 → SI decimal labels, and never an IEC label
         assert_eq!(bytes_si(1000), "1.0 kB");
         assert_eq!(bytes_si(1_000_000), "1.0 MB");
         assert!(!bytes_si(1000).contains("KiB"));
@@ -314,8 +287,6 @@ mod tests {
         assert_eq!(rate(6_710_886.0), "6.4 MiB/s");
     }
 
-    // ---- timecode ----
-
     #[test]
     fn timecode_formats() {
         assert_eq!(timecode(0), "0:00");
@@ -327,11 +298,8 @@ mod tests {
         assert_eq!(timecode(3599), "59:59");
         assert_eq!(timecode(3600), "1:00:00");
         assert_eq!(timecode(3661), "1:01:01");
-        // duration is an alias
         assert_eq!(duration(3661), timecode(3661));
     }
-
-    // ---- relative ----
 
     #[test]
     fn relative_buckets_and_plurals() {
@@ -354,8 +322,6 @@ mod tests {
         assert_eq!(relative(800 * 86_400), "2 years ago");
     }
 
-    // ---- compact counts ----
-
     #[test]
     fn compact_count_boundaries() {
         assert_eq!(compact_count(0), "0");
@@ -369,8 +335,6 @@ mod tests {
         assert_eq!(compact_count(1_000_000_000), "1.0B");
         assert_eq!(compact_count(1_100_000_000), "1.1B");
     }
-
-    // ---- month / weekday tables ----
 
     #[test]
     fn month_and_weekday_tables() {

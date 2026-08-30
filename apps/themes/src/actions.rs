@@ -37,7 +37,7 @@ use qos_actions::{
 };
 
 use crate::doc;
-use crate::model::{presets, ThemeSpec, TokenId};
+use crate::model::{ThemeSpec, TokenId, presets};
 
 /// Registry `type_id` for every Themes action.
 pub const THEMES_ACTION_TYPE: &str = "themes.action";
@@ -73,9 +73,8 @@ impl Action for ThemesAction {
             ThemesAction::SetActiveTheme { id } => {
                 // Only name a theme that actually exists in the catalog, so a
                 // stale / malformed id can't point the desktop at nothing.
-                let exists = doc::load_catalog(doc, &ROOT)
-                    .map(|c| c.iter().any(|s| &s.id == id))
-                    .unwrap_or(false);
+                let exists =
+                    doc::load_catalog(doc, &ROOT).is_some_and(|c| c.iter().any(|s| &s.id == id));
                 if exists {
                     doc::put_str(doc, &ROOT, doc::KEY_ACTIVE, id);
                 }
@@ -266,7 +265,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         child = child.with_action(immediate_spec(
             "duplicate",
             "Duplicate",
-            &upsert_custom_theme_action(&duplicate_spec(spec, &Uuid::new_v4().to_string(), dup_order)),
+            &upsert_custom_theme_action(&duplicate_spec(
+                spec,
+                &Uuid::new_v4().to_string(),
+                dup_order,
+            )),
         ));
 
         if !spec.builtin {
@@ -291,7 +294,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 ExecutionLocus::ClientLocal,
                 move |hex: &str| {
                     let rgb = crate::model::parse_hex(hex).unwrap_or(base.accent);
-                    encode(&upsert_custom_theme_action(&recolor_spec(&base, TokenId::Accent, rgb)))
+                    encode(&upsert_custom_theme_action(&recolor_spec(
+                        &base,
+                        TokenId::Accent,
+                        rgb,
+                    )))
                 },
             ));
             // Delete the custom theme.
@@ -379,8 +386,14 @@ mod tests {
         let b_actions: Vec<&str> = builtin.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(b_actions.contains(&"apply"), "{b_actions:?}");
         assert!(b_actions.contains(&"duplicate"), "{b_actions:?}");
-        assert!(!b_actions.contains(&"delete"), "a preset is not deletable: {b_actions:?}");
-        assert!(!b_actions.contains(&"edit"), "a preset is not editable: {b_actions:?}");
+        assert!(
+            !b_actions.contains(&"delete"),
+            "a preset is not deletable: {b_actions:?}"
+        );
+        assert!(
+            !b_actions.contains(&"edit"),
+            "a preset is not editable: {b_actions:?}"
+        );
 
         // The custom theme adds rename, recolour and delete.
         let custom = lib
@@ -400,7 +413,10 @@ mod tests {
         palette.open();
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New theme")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Apply as system theme")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Apply as system theme")),
+            "{labels:?}"
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -412,33 +428,42 @@ mod tests {
         state.doc = seeded_doc();
         let before_heads = state.doc.get_heads();
         let before_len = catalog(&state.doc).len();
-        assert!(catalog(&state.doc).iter().any(|s| s.id == "sunset"), "custom present");
+        assert!(
+            catalog(&state.doc).iter().any(|s| s.id == "sunset"),
+            "custom present"
+        );
 
         let action = delete_custom_theme_action("sunset");
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
+        state.record_committed_action(before_heads, None, None);
+
+        assert_eq!(
+            catalog(&state.doc).len(),
+            before_len - 1,
+            "the action deleted a theme"
+        );
+        assert!(
+            !catalog(&state.doc).iter().any(|s| s.id == "sunset"),
+            "the right theme is gone"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
         );
 
-        assert_eq!(catalog(&state.doc).len(), before_len - 1, "the action deleted a theme");
-        assert!(!catalog(&state.doc).iter().any(|s| s.id == "sunset"), "the right theme is gone");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        assert_eq!(catalog(&state.doc).len(), before_len, "undo reverted the deletion");
-        assert!(catalog(&state.doc).iter().any(|s| s.id == "sunset"), "the theme is back after undo");
+        state.undo(None, None).expect("an undo entry to pop");
+        assert_eq!(
+            catalog(&state.doc).len(),
+            before_len,
+            "undo reverted the deletion"
+        );
+        assert!(
+            catalog(&state.doc).iter().any(|s| s.id == "sunset"),
+            "the theme is back after undo"
+        );
     }
 
     /// The collaboration guarantee: replaying the same encoded action on a second
@@ -450,7 +475,11 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
         // Create a new custom theme (id minted at authoring time, carried in the
         // payload — apply never touches the RNG).
@@ -461,9 +490,21 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert!(catalog(&a).iter().any(|s| s.id == spec.id && s.name == "Ocean"));
-        assert!(catalog(&b).iter().any(|s| s.id == spec.id && s.name == "Ocean"));
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert!(
+            catalog(&a)
+                .iter()
+                .any(|s| s.id == spec.id && s.name == "Ocean")
+        );
+        assert!(
+            catalog(&b)
+                .iter()
+                .any(|s| s.id == spec.id && s.name == "Ocean")
+        );
     }
 
     /// Recolouring a custom theme also replays byte-identically — the colour-edit
@@ -482,8 +523,19 @@ mod tests {
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "recolour replayed identically");
-        assert_eq!(catalog(&b).iter().find(|s| s.id == "sunset").unwrap().accent, [1, 2, 3]);
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "recolour replayed identically"
+        );
+        assert_eq!(
+            catalog(&b)
+                .iter()
+                .find(|s| s.id == "sunset")
+                .unwrap()
+                .accent,
+            [1, 2, 3]
+        );
     }
 
     /// Deleting a built-in preset through the action is a safe no-op: the catalog
@@ -501,7 +553,11 @@ mod tests {
         qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
 
         assert_eq!(catalog(&doc), before, "a built-in preset is protected");
-        assert_eq!(doc.get_heads(), before_heads, "a no-op delete writes no change");
+        assert_eq!(
+            doc.get_heads(),
+            before_heads,
+            "a no-op delete writes no change"
+        );
     }
 
     /// An upsert that names a built-in preset id is likewise a no-op — a preset
@@ -519,7 +575,11 @@ mod tests {
         let encoded = encode(&action);
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
-        assert_eq!(catalog(&doc), before, "a preset id can't be hijacked by an upsert");
+        assert_eq!(
+            catalog(&doc),
+            before,
+            "a preset id can't be hijacked by an upsert"
+        );
     }
 
     /// Applying a theme writes its id as the active theme in the shared document.
@@ -530,7 +590,10 @@ mod tests {
         let encoded = encode(&action);
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
-        assert_eq!(doc::get_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(), Some("dracula"));
+        assert_eq!(
+            doc::get_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+            Some("dracula")
+        );
     }
 
     /// Single source of truth: the palette's per-theme specs and the builders the
@@ -551,7 +614,10 @@ mod tests {
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_custom_theme_action("sunset"));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "one source of truth for delete");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "one source of truth for delete"
+        );
 
         // A preset's apply spec == the apply builder.
         let builtin = lib
@@ -562,14 +628,25 @@ mod tests {
         let apply_spec = builtin.actions.iter().find(|a| a.id == "apply").unwrap();
         let from_spec = immediate_encode(apply_spec);
         let from_builder = encode(&set_active_theme_action("qos-blue"));
-        assert_eq!(from_spec.payload, from_builder.payload, "apply is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "apply is one source of truth"
+        );
 
         // The rename spec == the rename builder for the same name.
-        let sunset = catalog(&doc).into_iter().find(|s| s.id == "sunset").unwrap();
+        let sunset = catalog(&doc)
+            .into_iter()
+            .find(|s| s.id == "sunset")
+            .unwrap();
         let edit_spec = custom.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "Twilight");
-        let from_builder = encode(&upsert_custom_theme_action(&rename_spec(&sunset, "Twilight")));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename is one source of truth");
+        let from_builder = encode(&upsert_custom_theme_action(&rename_spec(
+            &sunset, "Twilight",
+        )));
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename is one source of truth"
+        );
     }
 
     /// Dispatching the "New theme" prompted action creates an editable theme in
@@ -578,7 +655,11 @@ mod tests {
     fn new_theme_action_creates_a_theme() {
         let mut doc = seeded_doc();
         let resources = provide_resources(&doc);
-        let spec = resources[0].actions.iter().find(|a| a.id == "new-theme").unwrap();
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-theme")
+            .unwrap();
         let before = catalog(&doc).len();
 
         let encoded = prompted_encode(spec, "Aurora");
@@ -588,7 +669,10 @@ mod tests {
 
         let cat = catalog(&doc);
         assert_eq!(cat.len(), before + 1, "the action added a theme");
-        let created = cat.iter().find(|s| s.name == "Aurora").expect("named theme exists");
+        let created = cat
+            .iter()
+            .find(|s| s.name == "Aurora")
+            .expect("named theme exists");
         assert!(!created.builtin, "the created theme is editable");
     }
 }

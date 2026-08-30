@@ -1,0 +1,914 @@
+//! The one modal chrome: scrim, card, title row, close control, action row.
+//! Factored out (not a second modal widget) so retained `Widget`s
+//! ([`ModalDialog`](super::modal_dialog::ModalDialog)) and immediate-mode
+//! painters (the compositor's overlay host) share one implementation,
+//! rather than each hand-rolling a control with no focus ring or a11y name.
+//!
+//! The action row goes through [`Button::paint`], so a modal button *is* a
+//! `Button`.
+//!
+//! The body sits between the two paint calls, because the card must be
+//! under it while the action row is laid out bottom-up:
+//!
+//! ```ignore
+//! let layout = ModalFrame::layout(viewport, &spec, text_renderer, theme);
+//! ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+//! // ... caller draws its own content inside `layout.body` ...
+//! ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+//! ```
+
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+
+use crate::icons::Icon;
+use crate::text_render::{TextRenderer, TextWeight};
+use crate::theme::Theme;
+use crate::widget::button::{Button, ButtonFace, ButtonStyle};
+
+/// Strength of the scrim painted over everything behind the modal. 0.45
+/// rather than the 0.30 a design tool would specify: vello has no backdrop
+/// blur, so an un-blurred 0.30 lets through enough structure to read as
+/// floating over noise; 0.45 reads like a blurred 0.30.
+pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
+
+/// Widest a modal card is drawn. Past this a single column of text stops being
+/// one column and starts being a paragraph nobody tracks across.
+pub const MODAL_MAX_WIDTH: f64 = 520.0;
+/// Narrowest a modal card is drawn before it starts eliding instead.
+pub const MODAL_MIN_WIDTH: f64 = 320.0;
+/// Gap kept between the card and every viewport edge, so the card never
+/// reaches an edge even on a small output.
+pub const MODAL_VIEWPORT_MARGIN: f64 = 24.0;
+/// Height of the title row — title plus the close control's hit target.
+pub const MODAL_TITLE_ROW_H: f64 = 52.0;
+/// Height of the action row, including the padding above and below it.
+pub const MODAL_ACTION_ROW_H: f64 = 56.0;
+/// Padding from the card edge to its content, on every side.
+pub const MODAL_PAD: f64 = 20.0;
+/// Side of the square close-control hit target: 14 px is the size an `X`
+/// wants to be, 32 is the size a thing you must hit wants to be.
+pub const MODAL_CLOSE_SIZE: f64 = 32.0;
+
+/// Height of one action button, matching the compact chrome button height the
+/// rest of the overlay surfaces use.
+const ACTION_H: f64 = 34.0;
+/// Gap between two action buttons.
+const ACTION_GAP: f64 = 8.0;
+/// Narrowest an action button is laid out, so `OK` and `Copy` are still
+/// buttons rather than badges.
+const ACTION_MIN_W: f64 = 88.0;
+/// Horizontal padding added around an action's measured label.
+const ACTION_PAD_X: f64 = 28.0;
+/// Contrast a modal's own ink must clear against the card before it is used
+/// as-is. WCAG 2.1 AA for body text.
+const MODAL_MIN_INK_CONTRAST: f64 = 4.5;
+
+/// How an action is weighted in the row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModalEmphasis {
+    /// The default action. One per modal, accent-filled, and the one Enter
+    /// fires.
+    Primary,
+    /// Everything else — Cancel, and any additional verb.
+    Secondary,
+    /// A primary action that destroys something. Danger-filled, and still what
+    /// Enter would fire.
+    Danger,
+}
+
+/// One button in the action row.
+#[derive(Clone, Copy, Debug)]
+pub struct ModalAction<'a> {
+    pub label: &'a str,
+    pub emphasis: ModalEmphasis,
+    /// A disabled action is painted dimmed and is not hit-testable.
+    pub enabled: bool,
+    pub hovered: bool,
+    pub pressed: bool,
+    /// Keyboard focus is on this action, so it draws a focus ring and is what
+    /// Enter/Space activates.
+    pub focused: bool,
+}
+
+impl<'a> ModalAction<'a> {
+    pub fn primary(label: &'a str) -> Self {
+        Self::of(label, ModalEmphasis::Primary)
+    }
+    pub fn secondary(label: &'a str) -> Self {
+        Self::of(label, ModalEmphasis::Secondary)
+    }
+    pub fn danger(label: &'a str) -> Self {
+        Self::of(label, ModalEmphasis::Danger)
+    }
+    fn of(label: &'a str, emphasis: ModalEmphasis) -> Self {
+        Self {
+            label,
+            emphasis,
+            enabled: true,
+            hovered: false,
+            pressed: false,
+            focused: false,
+        }
+    }
+    pub fn enabled(mut self, v: bool) -> Self {
+        self.enabled = v;
+        self
+    }
+    pub fn hovered(mut self, v: bool) -> Self {
+        self.hovered = v;
+        self
+    }
+    pub fn pressed(mut self, v: bool) -> Self {
+        self.pressed = v;
+        self
+    }
+    /// Set it and the action draws the focus ring every other control draws. A
+    /// modal whose buttons never take this is one a keyboard user cannot see
+    /// their way around.
+    pub fn focused(mut self, v: bool) -> Self {
+        self.focused = v;
+        self
+    }
+}
+
+/// What a modal is being asked to frame.
+#[derive(Clone, Debug)]
+pub struct ModalSpec<'a> {
+    /// Shown in the title row. A modal without one is a modal whose purpose
+    /// the person has to infer from its body.
+    pub title: &'a str,
+    /// Draw a close control. Escape always dismisses; this is the visible half
+    /// of that, on by default because a surface whose only way out is a key
+    /// nobody can see is the defect this widget exists to stop repeating.
+    pub closable: bool,
+    /// Actions in **visual left-to-right order**. The group is right aligned,
+    /// so the last entry lands at the right edge — put the primary action
+    /// last, which is where every platform puts it.
+    pub actions: &'a [ModalAction<'a>],
+    /// Height the caller's body content wants, in logical pixels.
+    pub body_height: f64,
+    /// Widest the card may be drawn. Defaults to [`MODAL_MAX_WIDTH`].
+    pub max_width: f64,
+    pub close_hovered: bool,
+    pub close_focused: bool,
+    /// Whether a scrim click dismisses. The scrim **always** swallows the
+    /// click either way — a surface that lets clicks through is not modal.
+    /// Turn this off for a modal that would lose work if a stray click closed
+    /// it.
+    pub dismiss_on_scrim: bool,
+}
+
+impl Default for ModalSpec<'_> {
+    fn default() -> Self {
+        Self {
+            title: "",
+            closable: true,
+            actions: &[],
+            body_height: 0.0,
+            max_width: MODAL_MAX_WIDTH,
+            close_hovered: false,
+            close_focused: false,
+            dismiss_on_scrim: true,
+        }
+    }
+}
+
+impl<'a> ModalSpec<'a> {
+    pub fn new(title: &'a str) -> Self {
+        Self {
+            title,
+            ..Self::default()
+        }
+    }
+    pub fn actions(mut self, actions: &'a [ModalAction<'a>]) -> Self {
+        self.actions = actions;
+        self
+    }
+    pub fn body_height(mut self, h: f64) -> Self {
+        self.body_height = h;
+        self
+    }
+    pub fn max_width(mut self, w: f64) -> Self {
+        self.max_width = w;
+        self
+    }
+    pub fn closable(mut self, v: bool) -> Self {
+        self.closable = v;
+        self
+    }
+    pub fn dismiss_on_scrim(mut self, v: bool) -> Self {
+        self.dismiss_on_scrim = v;
+        self
+    }
+    pub fn close_hovered(mut self, v: bool) -> Self {
+        self.close_hovered = v;
+        self
+    }
+    pub fn close_focused(mut self, v: bool) -> Self {
+        self.close_focused = v;
+        self
+    }
+}
+
+/// Where every part of the modal landed. Pure geometry, computed without a
+/// GPU, so the layout rules can be tested directly rather than inferred from a
+/// rendered frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModalLayout {
+    /// The whole viewport. The scrim covers this.
+    pub scrim: Rect,
+    pub card: Rect,
+    /// The band the title is drawn in — from the card's left padding to
+    /// wherever the close control starts.
+    pub title: Rect,
+    /// The close control's hit target, when the spec asked for one.
+    pub close: Option<Rect>,
+    /// The region the caller owns. Content taller than this must scroll or
+    /// elide inside it — see [`Self::body_overflows`].
+    pub body: Rect,
+    /// One rect per entry in `spec.actions`, in the same order.
+    pub actions: Vec<Rect>,
+    /// The caller asked for more height than a centred card can be given. The
+    /// card does not grow past the viewport; the caller scrolls.
+    pub body_overflows: bool,
+    /// Index of the action Enter should fire, if any.
+    pub primary: Option<usize>,
+    /// Mirrors [`ModalSpec::dismiss_on_scrim`], so a caller holding only the
+    /// layout can still answer a scrim click correctly.
+    pub dismiss_on_scrim: bool,
+}
+
+/// What a point landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModalHit {
+    Close,
+    /// An action, by index into `spec.actions`.
+    Action(usize),
+    /// Inside the card but not on a control. Swallow it.
+    Card,
+    /// The scrim. Dismiss when [`ModalLayout::dismiss_on_scrim`], otherwise
+    /// swallow.
+    Scrim,
+}
+
+impl ModalLayout {
+    /// Resolve a point to whatever it hit, controls first so an action that
+    /// overlaps the card (all of them do) resolves to the action. `None` only
+    /// for a point outside the viewport entirely.
+    pub fn hit(&self, p: Point) -> Option<ModalHit> {
+        if let Some(c) = self.close
+            && c.contains(p)
+        {
+            return Some(ModalHit::Close);
+        }
+        for (i, r) in self.actions.iter().enumerate() {
+            if r.area() > 0.0 && r.contains(p) {
+                return Some(ModalHit::Action(i));
+            }
+        }
+        if self.card.contains(p) {
+            return Some(ModalHit::Card);
+        }
+        if self.scrim.contains(p) {
+            return Some(ModalHit::Scrim);
+        }
+        None
+    }
+
+    /// True for the close control, and for the scrim when the spec allows it.
+    /// Everything else is swallowed.
+    pub fn dismisses(&self, p: Point) -> bool {
+        match self.hit(p) {
+            Some(ModalHit::Close) => true,
+            Some(ModalHit::Scrim) => self.dismiss_on_scrim,
+            _ => false,
+        }
+    }
+}
+
+/// The modal chrome. A namespace, not a state machine: every entry point is a
+/// free function over `(viewport, spec)`, so an immediate-mode caller keeps
+/// owning its own state.
+pub struct ModalFrame;
+
+impl ModalFrame {
+    /// The card's own fill.
+    pub fn card_fill(theme: &Theme) -> Color {
+        theme.tokens.colors.surfaces.raised
+    }
+
+    /// Ink that is legible on the modal card, as `(primary, dim)`.
+    ///
+    /// The chrome's own `text_primary` when it clears AA against the card,
+    /// else the contrast-guaranteed on-card ramp — a fixed ramp slot can read
+    /// on one palette and vanish on another.
+    pub fn ink(theme: &Theme) -> (Color, Color) {
+        let card = Self::card_fill(theme);
+        if crate::a11y::contrast_ratio(theme.text_primary, card) >= MODAL_MIN_INK_CONTRAST {
+            (theme.text_primary, theme.text_dim)
+        } else {
+            let on = theme.on_card();
+            (on.ink, on.ink_dim)
+        }
+    }
+
+    /// Compute the geometry for `spec` inside `viewport`.
+    pub fn layout(
+        viewport: Rect,
+        spec: &ModalSpec<'_>,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> ModalLayout {
+        let tokens = &theme.tokens;
+        let body_size = tokens.typography.scale.sm.max(12.0);
+
+        let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * 2.0).max(0.0);
+        let w = spec
+            .max_width
+            .min(avail_w)
+            .max(MODAL_MIN_WIDTH.min(avail_w));
+
+        let action_h = if spec.actions.is_empty() {
+            0.0
+        } else {
+            MODAL_ACTION_ROW_H
+        };
+        let chrome_h = MODAL_TITLE_ROW_H + action_h + MODAL_PAD;
+        let wanted_h = chrome_h + spec.body_height.max(0.0);
+        let avail_h = (viewport.height() - MODAL_VIEWPORT_MARGIN * 2.0).max(0.0);
+        let h = wanted_h.min(avail_h);
+        // The card never grows past the viewport: an action row nobody can
+        // reach is worse than a body that scrolls.
+        let body_overflows = wanted_h > avail_h + 0.5;
+
+        let cx = f64::midpoint(viewport.x0, viewport.x1);
+        let cy = f64::midpoint(viewport.y0, viewport.y1);
+        let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+
+        let close = if spec.closable {
+            let x1 = card.x1 - MODAL_PAD + 6.0;
+            let mid = card.y0 + MODAL_TITLE_ROW_H / 2.0;
+            Some(Rect::new(
+                x1 - MODAL_CLOSE_SIZE,
+                mid - MODAL_CLOSE_SIZE / 2.0,
+                x1,
+                mid + MODAL_CLOSE_SIZE / 2.0,
+            ))
+        } else {
+            None
+        };
+        // The title stops where the close control starts, so a long title
+        // elides instead of running under the X.
+        let title_x1 = close.map_or(card.x1 - MODAL_PAD, |c| c.x0 - 10.0);
+        let title = Rect::new(
+            card.x0 + MODAL_PAD,
+            card.y0,
+            title_x1.max(card.x0 + MODAL_PAD),
+            card.y0 + MODAL_TITLE_ROW_H,
+        );
+
+        let body = Rect::new(
+            card.x0 + MODAL_PAD,
+            card.y0 + MODAL_TITLE_ROW_H,
+            card.x1 - MODAL_PAD,
+            (card.y1 - action_h - MODAL_PAD).max(card.y0 + MODAL_TITLE_ROW_H),
+        );
+
+        // Laid out right-to-left so the group hugs the right edge, then
+        // reversed, so `actions[i]` matches `spec.actions[i]`.
+        let mut actions: Vec<Rect> = Vec::with_capacity(spec.actions.len());
+        if !spec.actions.is_empty() {
+            let by = card.y1 - MODAL_PAD - ACTION_H;
+            let mut bx = card.x1 - MODAL_PAD;
+            for a in spec.actions.iter().rev() {
+                let (tw, _) = text_renderer.measure(a.label, body_size, None);
+                let bw = (f64::from(tw) + ACTION_PAD_X).max(ACTION_MIN_W);
+                let r = Rect::new(bx - bw, by, bx, by + ACTION_H);
+                actions.push(r);
+                bx = r.x0 - ACTION_GAP;
+            }
+            actions.reverse();
+        }
+
+        let primary = spec.actions.iter().position(|a| {
+            matches!(a.emphasis, ModalEmphasis::Primary | ModalEmphasis::Danger) && a.enabled
+        });
+
+        ModalLayout {
+            scrim: viewport,
+            card,
+            title,
+            close,
+            body,
+            actions,
+            body_overflows,
+            primary,
+            dismiss_on_scrim: spec.dismiss_on_scrim,
+        }
+    }
+
+    /// Paint the scrim, the card, the title and the close control. Call before
+    /// drawing the body.
+    pub fn paint_backdrop(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &ModalLayout,
+        spec: &ModalSpec<'_>,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let (ink, _dim) = Self::ink(theme);
+
+        crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
+
+        let radius = f64::from(tokens.radii.lg);
+        // Top of the elevation ramp: a modal is the one surface that is
+        // unambiguously above everything, and reading as *lifted* is what
+        // separates it from a panel that happens to be centred.
+        crate::surface::shadow(scene, transform, layout.card, radius, &tokens.elevation.e4);
+        let card = RoundedRect::from_rect(layout.card, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Self::card_fill(theme),
+            None,
+            &card,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &card,
+        );
+
+        if !spec.title.is_empty() {
+            let size = tokens.typography.scale.base.max(14.0);
+            let shown = text_renderer.elide_to_width(spec.title, size, layout.title.width() as f32);
+            let (_, th) = text_renderer.measure(&shown, size, None);
+            let ty = f64::midpoint(layout.title.y0, layout.title.y1) - f64::from(th) / 2.0;
+            text_renderer.draw_text_weighted(
+                scene,
+                &shown,
+                size,
+                ink,
+                transform * Affine::translate((layout.title.x0, ty)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+
+        // A real button face rather than a hand-drawn glyph, so the close
+        // control gets the ghost fill, the hover/press states and the focus
+        // ring every other control has.
+        if let Some(c) = layout.close {
+            let face = ButtonFace::new(c, "")
+                .style(ButtonStyle::Ghost)
+                .icon(Icon::X)
+                .radius(f64::from(tokens.radii.sm))
+                .hovered(spec.close_hovered)
+                .focused(spec.close_focused)
+                .accessible_name("Close");
+            Button::paint(scene, transform, text_renderer, theme, &face);
+        }
+    }
+
+    /// Paint the action row. Call after drawing the body.
+    pub fn paint_actions(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &ModalLayout,
+        spec: &ModalSpec<'_>,
+    ) {
+        let body_size = theme.tokens.typography.scale.sm.max(12.0);
+        for (i, a) in spec.actions.iter().enumerate() {
+            let Some(rect) = layout.actions.get(i).copied() else {
+                continue;
+            };
+            let style = match a.emphasis {
+                ModalEmphasis::Primary => ButtonStyle::Primary,
+                ModalEmphasis::Secondary => ButtonStyle::Neutral,
+                ModalEmphasis::Danger => ButtonStyle::Danger,
+            };
+            let face = ButtonFace::new(rect, a.label)
+                .style(style)
+                .radius(ACTION_H / 2.0)
+                .text_size(body_size)
+                .weight(TextWeight::Medium)
+                .hovered(a.hovered && a.enabled)
+                .pressed(a.pressed && a.enabled)
+                .focused(a.focused && a.enabled)
+                .disabled(!a.enabled);
+            Button::paint(scene, transform, text_renderer, theme, &face);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The geometry, and the two guarantees that made this widget exist: there
+    //! is always a visible way out, and the primary action's label is readable
+    //! on every palette the OS ships.
+
+    use super::*;
+    use crate::a11y::contrast_ratio;
+
+    const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+
+    fn themes() -> Vec<(&'static str, Theme)> {
+        vec![("dark", Theme::dark()), ("light", Theme::light())]
+    }
+
+    fn lay(spec: &ModalSpec<'_>, theme: &Theme) -> ModalLayout {
+        let mut tr = TextRenderer::new();
+        ModalFrame::layout(VIEWPORT, spec, &mut tr, theme)
+    }
+
+    #[test]
+    fn card_centres_on_the_viewport() {
+        let spec = ModalSpec::new("Workspace invite").body_height(120.0);
+        let l = lay(&spec, &Theme::dark());
+        let cx = (l.card.x0 + l.card.x1) / 2.0;
+        let cy = (l.card.y0 + l.card.y1) / 2.0;
+        assert!(
+            (cx - 800.0).abs() < 0.5,
+            "card centre x = {cx}, viewport centre is 800"
+        );
+        assert!(
+            (cy - 500.0).abs() < 0.5,
+            "card centre y = {cy}, viewport centre is 500"
+        );
+    }
+
+    /// A closable modal always has a close control, and it is a real hit
+    /// target rather than a decorative glyph.
+    #[test]
+    fn a_closable_modal_has_a_close_control_you_can_hit() {
+        let spec = ModalSpec::new("Workspace invite").body_height(120.0);
+        for (name, theme) in themes() {
+            let l = lay(&spec, &theme);
+            let close = l
+                .close
+                .unwrap_or_else(|| panic!("{name}: no close control"));
+            assert!(
+                close.width() >= 28.0 && close.height() >= 28.0,
+                "{name}: close target is {}x{} — too small to hit",
+                close.width(),
+                close.height(),
+            );
+            assert!(
+                l.card.contains(close.center()),
+                "{name}: close control is outside the card",
+            );
+            assert_eq!(
+                l.hit(close.center()),
+                Some(ModalHit::Close),
+                "{name}: the close control does not hit-test as Close",
+            );
+            assert!(
+                l.dismisses(close.center()),
+                "{name}: clicking close does not dismiss"
+            );
+        }
+    }
+
+    /// A modal action reacts. A focused one in particular has to draw the
+    /// ring, because a modal takes the keyboard and a keyboard user needs to
+    /// see where they are in it.
+    #[test]
+    fn an_action_shows_hover_press_and_focus() {
+        let theme = Theme::dark();
+
+        let paint = |a: ModalAction<'_>| {
+            let actions = [a];
+            let spec = ModalSpec::new("Invite someone")
+                .actions(&actions)
+                .body_height(80.0);
+            let mut tr = TextRenderer::new();
+            let layout = ModalFrame::layout(VIEWPORT, &spec, &mut tr, &theme);
+            let mut scene = Scene::new();
+            ModalFrame::paint_actions(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &layout,
+                &spec,
+            );
+            scene.encoding().draw_data.clone()
+        };
+
+        let rest = paint(ModalAction::secondary("Cancel"));
+        for (what, face) in [
+            ("hover", ModalAction::secondary("Cancel").hovered(true)),
+            ("press", ModalAction::secondary("Cancel").pressed(true)),
+            ("focus", ModalAction::secondary("Cancel").focused(true)),
+        ] {
+            assert_ne!(
+                paint(face),
+                rest,
+                "a {what}ed action paints the same as one at rest — the \
+                 state never reached the face",
+            );
+        }
+
+        // Hover on something that cannot be clicked is a lie about what will
+        // happen.
+        assert_eq!(
+            paint(
+                ModalAction::secondary("Cancel")
+                    .enabled(false)
+                    .hovered(true)
+            ),
+            paint(ModalAction::secondary("Cancel").enabled(false)),
+            "a disabled action must not react to the pointer",
+        );
+    }
+
+    /// The close control reacts too. It is the visible way out of a modal, and
+    /// one that does not respond to the pointer reads as decoration.
+    #[test]
+    fn the_close_control_shows_hover_and_focus() {
+        let theme = Theme::light();
+        let paint = |spec: &ModalSpec<'_>| {
+            let mut tr = TextRenderer::new();
+            let layout = ModalFrame::layout(VIEWPORT, spec, &mut tr, &theme);
+            let mut scene = Scene::new();
+            ModalFrame::paint_backdrop(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &layout,
+                spec,
+            );
+            scene.encoding().draw_data.clone()
+        };
+        let base = ModalSpec::new("Invite someone").body_height(80.0);
+        let rest = paint(&base);
+        assert_ne!(paint(&base.clone().close_hovered(true)), rest, "hover");
+        assert_ne!(paint(&base.clone().close_focused(true)), rest, "focus");
+    }
+
+    #[test]
+    fn the_title_band_stops_before_the_close_control() {
+        let spec = ModalSpec::new("A title long enough to want the whole row and then some");
+        let l = lay(&spec, &Theme::dark());
+        let close = l.close.expect("closable by default");
+        assert!(
+            l.title.x1 <= close.x0,
+            "title band ends at {} but the close control starts at {}",
+            l.title.x1,
+            close.x0,
+        );
+    }
+
+    /// Actions are given left-to-right and the last one lands at the right
+    /// edge, which is where the primary action belongs.
+    #[test]
+    fn actions_are_left_to_right_with_the_last_at_the_right_edge() {
+        let actions = [
+            ModalAction::secondary("Cancel"),
+            ModalAction::primary("Create invite"),
+        ];
+        let spec = ModalSpec::new("Workspace invite")
+            .actions(&actions)
+            .body_height(100.0);
+        let l = lay(&spec, &Theme::dark());
+        assert_eq!(l.actions.len(), 2);
+        assert!(
+            l.actions[0].x1 <= l.actions[1].x0,
+            "Cancel ({:?}) should sit left of Create invite ({:?})",
+            l.actions[0],
+            l.actions[1],
+        );
+        assert!(
+            (l.actions[1].x1 - (l.card.x1 - MODAL_PAD)).abs() < 0.5,
+            "the last action should hug the card's right padding; got {} vs {}",
+            l.actions[1].x1,
+            l.card.x1 - MODAL_PAD,
+        );
+        assert_eq!(l.primary, Some(1), "Enter should fire the primary action");
+    }
+
+    #[test]
+    fn every_action_is_inside_the_card_and_hit_tests_to_itself() {
+        let actions = [
+            ModalAction::secondary("Paste"),
+            ModalAction::secondary("Cancel"),
+            ModalAction::primary("Join"),
+        ];
+        let spec = ModalSpec::new("Join a workspace")
+            .actions(&actions)
+            .body_height(120.0);
+        let l = lay(&spec, &Theme::dark());
+        for (i, r) in l.actions.iter().enumerate() {
+            assert!(r.area() > 0.0, "action {i} has no area");
+            assert!(
+                l.card.contains(r.center()),
+                "action {i} at {r:?} is outside the card {:?}",
+                l.card,
+            );
+            assert_eq!(l.hit(r.center()), Some(ModalHit::Action(i)));
+            assert!(
+                !l.dismisses(r.center()),
+                "an action click must not dismiss on its own"
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_action_is_not_the_default_action() {
+        let actions = [ModalAction::primary("Join").enabled(false)];
+        let spec = ModalSpec::new("Join a workspace")
+            .actions(&actions)
+            .body_height(80.0);
+        let l = lay(&spec, &Theme::dark());
+        assert_eq!(
+            l.primary, None,
+            "a disabled action must not be what Enter fires"
+        );
+    }
+
+    /// The scrim covers the viewport, and a click on it dismisses only when
+    /// the spec allows — but is never passed through either way.
+    #[test]
+    fn the_scrim_covers_everything_and_only_dismisses_when_asked() {
+        let corner = Point::new(4.0, 4.0);
+
+        let spec = ModalSpec::new("Workspace invite").body_height(100.0);
+        let l = lay(&spec, &Theme::dark());
+        assert_eq!(l.scrim, VIEWPORT, "the scrim must cover the whole viewport");
+        assert_eq!(l.hit(corner), Some(ModalHit::Scrim));
+        assert!(
+            l.dismisses(corner),
+            "the default modal dismisses on a scrim click"
+        );
+
+        let sticky = ModalSpec::new("Workspace invite")
+            .body_height(100.0)
+            .dismiss_on_scrim(false);
+        let l = lay(&sticky, &Theme::dark());
+        assert_eq!(
+            l.hit(corner),
+            Some(ModalHit::Scrim),
+            "a sticky modal still swallows the click — it just does not close",
+        );
+        assert!(!l.dismisses(corner));
+    }
+
+    #[test]
+    fn the_card_swallows_clicks_that_hit_no_control() {
+        let spec = ModalSpec::new("Workspace invite").body_height(160.0);
+        let l = lay(&spec, &Theme::dark());
+        let p = l.body.center();
+        assert_eq!(l.hit(p), Some(ModalHit::Card));
+        assert!(!l.dismisses(p), "clicking the body must never dismiss");
+    }
+
+    /// A body taller than the screen clamps the card to the viewport and says
+    /// so, rather than drawing an action row off the bottom edge.
+    #[test]
+    fn an_oversized_body_clamps_the_card_and_reports_the_overflow() {
+        let actions = [ModalAction::primary("OK")];
+        let spec = ModalSpec::new("Tall").actions(&actions).body_height(9000.0);
+        let l = lay(&spec, &Theme::dark());
+        assert!(
+            l.body_overflows,
+            "a 9000px body in a 1000px viewport must report overflow"
+        );
+        assert!(
+            l.card.y0 >= VIEWPORT.y0 && l.card.y1 <= VIEWPORT.y1,
+            "the card {:?} escaped the viewport {:?}",
+            l.card,
+            VIEWPORT,
+        );
+        let action = l.actions[0];
+        assert!(
+            VIEWPORT.contains(action.center()),
+            "the action row at {action:?} is off screen — nobody can reach it",
+        );
+    }
+
+    #[test]
+    fn a_body_that_fits_does_not_report_overflow() {
+        let spec = ModalSpec::new("Short").body_height(100.0);
+        assert!(!lay(&spec, &Theme::dark()).body_overflows);
+    }
+
+    /// The card never touches an edge, even on an output smaller than the
+    /// card's own maximum.
+    #[test]
+    fn the_card_keeps_its_margin_on_a_small_output() {
+        let small = Rect::new(0.0, 0.0, 420.0, 360.0);
+        let spec = ModalSpec::new("Workspace invite").body_height(600.0);
+        let mut tr = TextRenderer::new();
+        let l = ModalFrame::layout(small, &spec, &mut tr, &Theme::dark());
+        assert!(l.card.x0 >= small.x0, "card runs off the left edge");
+        assert!(l.card.x1 <= small.x1, "card runs off the right edge");
+        assert!(l.card.y0 >= small.y0, "card runs off the top edge");
+        assert!(l.card.y1 <= small.y1, "card runs off the bottom edge");
+        assert!(
+            l.card.width() <= small.width() - MODAL_VIEWPORT_MARGIN * 2.0 + 0.5,
+            "card width {} leaves no margin in a {}-wide output",
+            l.card.width(),
+            small.width(),
+        );
+    }
+
+    #[test]
+    fn the_card_stops_growing_at_its_maximum() {
+        let wide = Rect::new(0.0, 0.0, 3840.0, 2160.0);
+        let spec = ModalSpec::new("Workspace invite").body_height(200.0);
+        let mut tr = TextRenderer::new();
+        let l = ModalFrame::layout(wide, &spec, &mut tr, &Theme::dark());
+        assert!(
+            l.card.width() <= MODAL_MAX_WIDTH + 0.5,
+            "card is {} wide on a 4K output; the cap is {MODAL_MAX_WIDTH}",
+            l.card.width(),
+        );
+    }
+
+    /// The modal's own ink clears AA against the card it is painted on, on
+    /// every theme the OS ships.
+    #[test]
+    fn modal_ink_is_legible_on_every_theme() {
+        for (name, theme) in themes() {
+            let card = ModalFrame::card_fill(&theme);
+            let (ink, dim) = ModalFrame::ink(&theme);
+            let r = contrast_ratio(ink, card);
+            assert!(
+                r >= MODAL_MIN_INK_CONTRAST,
+                "{name}: modal ink contrast is {r:.2}:1 against the card — AA needs {MODAL_MIN_INK_CONTRAST}",
+            );
+            // The dim tier is secondary, so it is held to the large-text bar
+            // rather than the body bar.
+            let rd = contrast_ratio(dim, card);
+            assert!(
+                rd >= 3.0,
+                "{name}: dim ink contrast is {rd:.2}:1 — unreadable as a sub-label"
+            );
+        }
+    }
+
+    /// Every action label is legible on the fill it is painted on, on every
+    /// theme and in every emphasis — asserted on the colour the shared face
+    /// actually resolves, so it keeps holding when the accent ramp is re-themed.
+    #[test]
+    fn every_action_label_is_legible_on_its_own_fill() {
+        let styles = [
+            (ModalEmphasis::Primary, ButtonStyle::Primary),
+            (ModalEmphasis::Secondary, ButtonStyle::Neutral),
+            (ModalEmphasis::Danger, ButtonStyle::Danger),
+        ];
+        for (name, theme) in themes() {
+            for (emphasis, style) in styles {
+                let face =
+                    ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 34.0), "Create invite").style(style);
+                let (bg, _border, painted) = face.colors(&theme);
+                let r = contrast_ratio(painted, bg);
+                assert!(
+                    r >= 4.5,
+                    "{name}/{emphasis:?}: label contrast is {r:.2}:1 on its fill — AA needs 4.5",
+                );
+                // Never worse than plain chrome ink would have been.
+                let naive = contrast_ratio(theme.text_primary, bg);
+                assert!(
+                    r >= naive,
+                    "{name}/{emphasis:?}: measured label ({r:.2}:1) is worse than chrome ink ({naive:.2}:1)",
+                );
+            }
+        }
+    }
+
+    /// A modal with no actions has no action row, and its body takes the space
+    /// back.
+    #[test]
+    fn a_modal_without_actions_gives_the_room_to_its_body() {
+        let actions = [ModalAction::primary("OK")];
+        let with = ModalSpec::new("T").actions(&actions).body_height(100.0);
+        let without = ModalSpec::new("T").body_height(100.0);
+        let theme = Theme::dark();
+        let a = lay(&with, &theme);
+        let b = lay(&without, &theme);
+        assert!(b.actions.is_empty());
+        assert!(
+            b.card.height() < a.card.height(),
+            "an action-less modal ({}) should be shorter than one with a row ({})",
+            b.card.height(),
+            a.card.height(),
+        );
+    }
+
+    #[test]
+    fn a_point_off_the_viewport_hits_nothing() {
+        let spec = ModalSpec::new("T").body_height(100.0);
+        let l = lay(&spec, &Theme::dark());
+        assert_eq!(l.hit(Point::new(-10.0, -10.0)), None);
+    }
+}

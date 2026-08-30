@@ -2,25 +2,16 @@
 //! picking a preferred mode out of a list of advertised modes.
 //!
 //! Hardware-touching code stays in `super::runtime`; this module exists so
-//! the device-selection policy is testable on a dev machine that has no
-//! seat / TTY / GPU it can claim. The functions here take in already-
-//! enumerated data (paths from `smithay::backend::udev::all_gpus`, modes
-//! from `drm::control::Mode`) and return the chosen subset / preferred
-//! mode purely by inspecting that data.
+//! the device-selection policy is testable on a dev machine with no seat /
+//! TTY / GPU it can claim. Policy: pick the highest-resolution mode at the
+//! highest refresh rate, breaking ties by preferring the connector's
+//! preferred-flagged mode; `None` when no modes are available, so the
+//! caller can log + skip the connector rather than panic.
 //!
-//! Phase 5 design intent (`docs/superpowers/plans/2026-05-02-real-wayland-
-//! compositor.md`): the policy is "pick the highest-resolution mode at
-//! the highest refresh rate, breaking ties by preferring modes marked
-//! preferred by the connector". When no modes are available, return
-//! `None` and let the caller log + skip the connector rather than panic.
+//! Render-only nodes (`/dev/dri/renderD*`) are excluded — they cannot do
+//! KMS / page-flips, and the backend needs `cardN` nodes specifically.
 //!
-//! These helpers also intentionally exclude render-only nodes
-//! (`/dev/dri/renderD*`) because those cannot do KMS / page-flips — the
-//! DRM backend needs `cardN` nodes specifically.
-//!
-//! Tests live below in `mod tests` and are pure-CPU; they do not touch
-//! /dev/dri and run on a host that doesn't even have DRM compiled into
-//! the kernel.
+//! Tests below are pure-CPU; they don't touch /dev/dri.
 
 use std::path::{Path, PathBuf};
 
@@ -40,13 +31,11 @@ pub struct ModeInfo {
     pub preferred: bool,
 }
 
-/// Filter a list of `/dev/dri/*` candidate paths down to KMS-capable
-/// `cardN` nodes. `renderD*` nodes are render-only (no KMS) and are
-/// dropped — using one as the primary GPU would deadlock at the first
-/// `set_crtc`. The filter is by file-name prefix to avoid syscall'ing
-/// into udev a second time; callers will already have invoked
-/// `smithay::backend::udev::all_gpus` which only returns `card*` nodes
-/// in practice, but defence-in-depth costs nothing here.
+/// Filter `/dev/dri/*` candidate paths down to KMS-capable `cardN` nodes.
+/// `renderD*` nodes are render-only — using one as the primary GPU would
+/// deadlock at the first `set_crtc`. Filtered by file-name prefix rather
+/// than a second udev syscall; callers already get `card*`-only paths from
+/// `all_gpus`, but this costs nothing as defence-in-depth.
 pub fn filter_kms_nodes<I, P>(paths: I) -> Vec<PathBuf>
 where
     I: IntoIterator<Item = P>,
@@ -72,31 +61,24 @@ pub fn is_kms_node(path: &Path) -> bool {
     name[4..].chars().all(|c| c.is_ascii_digit()) && name.len() > 4
 }
 
-/// Pick the "best" mode from a connector's mode list.
-///
-/// Selection policy, in order:
-///   1. Prefer modes flagged as the connector's preferred mode.
-///   2. Among those, the highest resolution (width * height).
-///   3. Among those, the highest refresh rate.
-///
-/// Returns `None` only when `modes` is empty. Stable on ties: the first
-/// candidate in iteration order wins, mirroring `Iterator::max_by_key`'s
-/// "later wins" by inverting the key (`Reverse`) where needed.
+/// Pick the "best" mode from a connector's mode list: prefer modes flagged
+/// as the connector's preferred, then highest resolution, then highest
+/// refresh rate. `None` only when `modes` is empty; ties are stable (first
+/// candidate in iteration order wins).
 pub fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
     if modes.is_empty() {
         return None;
     }
-    // If any mode is flagged preferred, restrict to that set first.
     let preferred_set: Vec<ModeInfo> = modes.iter().copied().filter(|m| m.preferred).collect();
-    let working: &[ModeInfo] = if !preferred_set.is_empty() {
-        &preferred_set
-    } else {
+    let working: &[ModeInfo] = if preferred_set.is_empty() {
         modes
+    } else {
+        &preferred_set
     };
     working
         .iter()
         .copied()
-        .max_by_key(|m| ((m.width as u64) * (m.height as u64), m.refresh_mhz))
+        .max_by_key(|m| (u64::from(m.width) * u64::from(m.height), m.refresh_mhz))
 }
 
 #[cfg(test)]
@@ -192,8 +174,7 @@ mod tests {
 
     #[test]
     fn preferred_flag_wins_over_higher_resolution() {
-        // The connector marks 1080p as its preferred mode even though a
-        // 4K mode exists; we honor the connector's hint.
+        // 1080p is preferred even though 4K exists — honor the connector's hint.
         let four_k = ModeInfo {
             width: 3840,
             height: 2160,
@@ -214,8 +195,7 @@ mod tests {
 
     #[test]
     fn preferred_mode_among_preferred_picks_highest_resolution() {
-        // Two preferred modes: pick the higher-resolution one. (Rare in
-        // practice but allowed by spec.)
+        // Two preferred modes: pick the higher-resolution one (rare, but allowed by spec).
         let a = ModeInfo {
             width: 1280,
             height: 720,

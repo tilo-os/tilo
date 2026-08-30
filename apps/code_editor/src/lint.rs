@@ -101,7 +101,10 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
         }
 
         // Mixed leading tabs + spaces.
-        let leading: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let leading: String = line
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
         if leading.contains('\t') && leading.contains(' ') {
             out.push(Diagnostic {
                 severity: Severity::Warning,
@@ -117,19 +120,23 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
                 severity: Severity::Info,
                 line: line_no,
                 col: max_len + 1,
-                message: format!("Line exceeds {} characters ({})", max_len, char_len),
+                message: format!("Line exceeds {max_len} characters ({char_len})"),
             });
         }
 
         // TODO / FIXME markers.
         if let Some(byte) = line.find("TODO").or_else(|| line.find("FIXME")) {
             let col = line[..byte].chars().count() + 1;
-            let marker = if line[byte..].starts_with("TODO") { "TODO" } else { "FIXME" };
+            let marker = if line[byte..].starts_with("TODO") {
+                "TODO"
+            } else {
+                "FIXME"
+            };
             out.push(Diagnostic {
                 severity: Severity::Info,
                 line: line_no,
                 col,
-                message: format!("Unresolved {} marker", marker),
+                message: format!("Unresolved {marker} marker"),
             });
         }
 
@@ -144,11 +151,11 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
         let mut string_delim = '"';
         while let Some((bi, ch)) = chars.next() {
             if in_block_comment {
-                if ch == '*' {
-                    if let Some(&(_, '/')) = chars.peek() {
-                        in_block_comment = false;
-                        chars.next();
-                    }
+                if ch == '*'
+                    && let Some(&(_, '/')) = chars.peek()
+                {
+                    in_block_comment = false;
+                    chars.next();
                 }
                 continue;
             }
@@ -209,7 +216,7 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
                                 severity: Severity::Warning,
                                 line: line_no,
                                 col,
-                                message: format!("Unmatched closing '{}'", ch),
+                                message: format!("Unmatched closing '{ch}'"),
                             });
                         }
                     }
@@ -225,11 +232,11 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
             severity: Severity::Warning,
             line,
             col,
-            message: format!("Unclosed '{}'", open),
+            message: format!("Unclosed '{open}'"),
         });
     }
 
-    out.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
+    out.sort_by_key(|a| (a.line, a.col));
     out
 }
 
@@ -270,7 +277,11 @@ mod tests {
 
     #[test]
     fn ignores_brackets_after_line_comment() {
-        let d = lint("let x = 1; // a comment with ( unbalanced\n", Language::Rust, Scope::Full);
+        let d = lint(
+            "let x = 1; // a comment with ( unbalanced\n",
+            Language::Rust,
+            Scope::Full,
+        );
         assert!(!d.iter().any(|x| x.message.contains("Unclosed")));
     }
 
@@ -292,7 +303,10 @@ mod tests {
                 .filter(|x| x.message.contains("Unclosed") || x.message.contains("Unmatched"))
                 .map(|x| &x.message)
                 .collect();
-            assert!(noise.is_empty(), "{src:?} produced bracket noise: {noise:?}");
+            assert!(
+                noise.is_empty(),
+                "{src:?} produced bracket noise: {noise:?}"
+            );
         }
     }
 
@@ -300,14 +314,22 @@ mod tests {
     /// blind to a genuine `'x'`, or brackets inside one would be counted.
     #[test]
     fn rust_char_literals_still_hide_their_contents() {
-        let d = lint("fn main() { let c = '('; drop(c); }\n", Language::Rust, Scope::Full);
+        let d = lint(
+            "fn main() { let c = '('; drop(c); }\n",
+            Language::Rust,
+            Scope::Full,
+        );
         assert!(
             !d.iter()
                 .any(|x| x.message.contains("Unclosed") || x.message.contains("Unmatched")),
             "a '(' inside a char literal is not an unbalanced bracket: {:?}",
             d.iter().map(|x| &x.message).collect::<Vec<_>>()
         );
-        let esc = lint("fn main() { let c = '\\''; drop(c); }\n", Language::Rust, Scope::Full);
+        let esc = lint(
+            "fn main() { let c = '\\''; drop(c); }\n",
+            Language::Rust,
+            Scope::Full,
+        );
         assert!(!esc.iter().any(|x| x.message.contains("Unclosed")));
     }
 
@@ -378,7 +400,9 @@ pub fn resolve<'a>(root: &'a Path, rel: &str) -> Option<&'a Path> {
             textual.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert!(
-            textual.iter().any(|d| d.message.contains("Trailing whitespace")),
+            textual
+                .iter()
+                .any(|d| d.message.contains("Trailing whitespace")),
             "trailing whitespace is a fact about the text, not a guess"
         );
         assert!(

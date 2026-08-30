@@ -5,16 +5,32 @@
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
 
+// An app runs as its own sandboxed process, so an integer that wraps here
+// costs one app rather than the desktop, and proving every layout sum cannot
+// overflow is a tax a third-party app author would pay too. The lints that
+// produce a *crash* stay denied — indexing_slicing, string_slice,
+// unwrap_used, expect_used, panic — because a panicking app is a bad app
+// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
+// full set: a fault there takes the session, or every app with it.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic; see the note above"
+)]
+
 use std::collections::HashMap;
 use std::time::Instant;
 
+use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -46,13 +62,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             //   QOS_CALC_HISTORY=open|closed  — force the history sidebar state
             let mut app = calculator::CalculatorApp::seeded();
             match std::env::var("QOS_CALC_MODE").ok().as_deref() {
-                Some("2d") | Some("graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
-                Some("3d") | Some("graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
+                Some("2d" | "graph2d") => {
+                    app.shots_set_mode(calculator::model::Mode::Graph2d);
+                }
+                Some("3d" | "graph3d") => {
+                    app.shots_set_mode(calculator::model::Mode::Graph3d);
+                }
                 _ => {}
             }
             match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
                 Some("open") => app.shots_set_history_open(true),
-                Some("closed") | Some("collapsed") => app.shots_set_history_open(false),
+                Some("closed" | "collapsed") => app.shots_set_history_open(false),
                 _ => {}
             }
             Box::new(app)
@@ -65,7 +85,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, calculator::app_root(), "dev.qos.calculator"));
+        std::process::exit(ui::headless::run(
+            spec,
+            calculator::app_root(),
+            "dev.qos.calculator",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.calculator");
@@ -206,28 +230,82 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
         let mut focus = None;
         let t = Instant::now();
         app.handle_event(
-            ev, 1.0, &modifiers, &mut state.doc, &state.root, &mut handled, &mut focus, child, taffy,
+            ev,
+            1.0,
+            &modifiers,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            child,
+            taffy,
         );
         t.elapsed().as_secs_f64() * 1e6
     };
 
     // Warm caches.
     for _ in 0..3 {
-        let _ = bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+        let _ = bench_frame(
+            &mut app,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
+        );
     }
 
     // Switch to Calc mode by clicking its header segment (production path).
-    let (mut taffy, mut child, _) =
-        bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+    let (mut taffy, mut child, _) = bench_frame(
+        &mut app,
+        &mut state,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+        w,
+        h,
+    );
     let seg = app.bench_seg_center(0);
-    dispatch(&mut app, &mut state, &taffy, child, &synth_cursor(seg.x, seg.y));
-    dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Pressed));
-    dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Released));
-    let (t2, c2, _) =
-        bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &synth_cursor(seg.x, seg.y),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &synth_click(ElementState::Pressed),
+    );
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        &synth_click(ElementState::Released),
+    );
+    let (t2, c2, _) = bench_frame(
+        &mut app,
+        &mut state,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+        w,
+        h,
+    );
     taffy = t2;
     child = c2;
-    assert!(app.bench_mode_is_calc(), "bench should have switched to Calc mode");
+    assert!(
+        app.bench_mode_is_calc(),
+        "bench should have switched to Calc mode"
+    );
 
     // A never-ending expression: digits + operators, no `=`, so it grows
     // exactly like the user "1 2 3 + 4 5 6 * 7 ..." mashing report.
@@ -247,11 +325,35 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
             eprintln!("click {idx}: key {label:?} not found in layout");
             continue;
         };
-        let handle_us = dispatch(&mut app, &mut state, &taffy, child, &synth_cursor(pt.x, pt.y))
-            + dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Pressed))
-            + dispatch(&mut app, &mut state, &taffy, child, &synth_click(ElementState::Released));
-        let (t2, c2, frame_us) =
-            bench_frame(&mut app, &mut state, &mut text_renderer, &theme, &presence, &permission, w, h);
+        let handle_us = dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &synth_cursor(pt.x, pt.y),
+        ) + dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &synth_click(ElementState::Pressed),
+        ) + dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &synth_click(ElementState::Released),
+        );
+        let (t2, c2, frame_us) = bench_frame(
+            &mut app,
+            &mut state,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+            w,
+            h,
+        );
         taffy = t2;
         child = c2;
         max_handle = max_handle.max(handle_us);
@@ -282,10 +384,10 @@ fn run_clicks_bench(viewport: (u32, u32), n: usize) -> Result<(), Box<dyn std::e
 fn shots_viewport() -> (u32, u32) {
     if let Some(s) = std::env::var_os("QOS_CALC_SHOTS_SIZE") {
         let s = s.to_string_lossy();
-        if let Some((w, h)) = s.split_once(['x', 'X', '*']) {
-            if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
-                return (w, h);
-            }
+        if let Some((w, h)) = s.split_once(['x', 'X', '*'])
+            && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
+        {
+            return (w, h);
         }
     }
     DEFAULT_SHOTS_VIEWPORT
@@ -305,7 +407,7 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -324,10 +426,10 @@ fn render_shot_to_png(
     // frame shows a peer caret mapped into the active math field's 2D layout.
     if let Some(spec) = std::env::var_os("QOS_CALC_REMOTE_CURSOR") {
         let spec = spec.to_string_lossy();
-        if let Some((sx, sy)) = spec.split_once(',') {
-            if let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>()) {
-                presence.upsert_remote_cursor("alice".into(), [x, y], Some("Alice"));
-            }
+        if let Some((sx, sy)) = spec.split_once(',')
+            && let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>())
+        {
+            presence.upsert_remote_cursor("alice".into(), [x, y], Some("Alice"));
         }
     }
     let permission = PermissionContext::permissive();

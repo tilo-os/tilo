@@ -85,8 +85,8 @@ impl PixelFormat {
         let mut b = [0u8; 16];
         b[0] = self.bits_per_pixel;
         b[1] = self.depth;
-        b[2] = self.big_endian as u8;
-        b[3] = self.true_colour as u8;
+        b[2] = u8::from(self.big_endian);
+        b[3] = u8::from(self.true_colour);
         b[4..6].copy_from_slice(&self.red_max.to_be_bytes());
         b[6..8].copy_from_slice(&self.green_max.to_be_bytes());
         b[8..10].copy_from_slice(&self.blue_max.to_be_bytes());
@@ -106,11 +106,11 @@ impl PixelFormat {
         let mut v: u32 = 0;
         if self.big_endian {
             for &byte in px {
-                v = (v << 8) | byte as u32;
+                v = (v << 8) | u32::from(byte);
             }
         } else {
             for (i, &byte) in px.iter().enumerate() {
-                v |= (byte as u32) << (8 * i);
+                v |= u32::from(byte) << (8 * i);
             }
         }
         v
@@ -123,9 +123,9 @@ impl PixelFormat {
             if max == 0 {
                 return 0;
             }
-            let raw = (v >> shift) & max as u32;
+            let raw = (v >> shift) & u32::from(max);
             // Scale the channel's [0, max] range up to [0, 255].
-            ((raw * 255 + max as u32 / 2) / max as u32) as u8
+            ((raw * 255 + u32::from(max) / 2) / u32::from(max)) as u8
         };
         [
             chan(self.red_shift, self.red_max),
@@ -450,7 +450,7 @@ pub fn encode_framebuffer_update_request(
 ) -> [u8; 10] {
     let mut b = [0u8; 10];
     b[0] = 3;
-    b[1] = incremental as u8;
+    b[1] = u8::from(incremental);
     b[2..4].copy_from_slice(&x.to_be_bytes());
     b[4..6].copy_from_slice(&y.to_be_bytes());
     b[6..8].copy_from_slice(&w.to_be_bytes());
@@ -472,7 +472,7 @@ pub fn encode_pointer_event(button_mask: u8, x: u16, y: u16) -> [u8; 6] {
 pub fn encode_key_event(down: bool, key: u32) -> [u8; 8] {
     let mut b = [0u8; 8];
     b[0] = 4;
-    b[1] = down as u8;
+    b[1] = u8::from(down);
     b[4..8].copy_from_slice(&key.to_be_bytes());
     b
 }
@@ -492,7 +492,10 @@ mod tests {
     fn decode_pixel_32bpp_bgrx() {
         // rgb888(): little-endian value R<<16|G<<8|B -> bytes [B,G,R,x].
         let f = PixelFormat::rgb888();
-        assert_eq!(f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]), [0x30, 0x20, 0x10, 255]);
+        assert_eq!(
+            f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]),
+            [0x30, 0x20, 0x10, 255]
+        );
     }
 
     #[test]
@@ -607,7 +610,10 @@ mod tests {
     fn security_negotiation() {
         let types = parse_security_types(2, &[security::NONE, security::VNC_AUTH]).unwrap();
         assert_eq!(choose_security(&types), Some(security::NONE));
-        assert_eq!(choose_security(&[security::VNC_AUTH]), Some(security::VNC_AUTH));
+        assert_eq!(
+            choose_security(&[security::VNC_AUTH]),
+            Some(security::VNC_AUTH)
+        );
         assert_eq!(choose_security(&[99]), None);
         assert!(parse_security_types(0, &[]).is_err());
     }

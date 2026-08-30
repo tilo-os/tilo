@@ -1,37 +1,26 @@
 //! Attenuable capability invite tokens.
 //!
-//! An invite is a **signed, delegable capability**: it grants
-//! `{subject identity, workspace, role, cap-bundle, optionally one
-//! sub-resource, optionally time-boxed}` and can be handed to a person
-//! to join a workspace with exactly those caps — the "ad-hoc / limited
-//! invite" tier from `docs/coherence-architecture.md` §2.
+//! An invite is a **signed, delegable capability**: it grants `{subject
+//! identity, workspace, role, cap-bundle, optionally one sub-resource,
+//! optionally time-boxed}`, handed to a person to join a workspace with
+//! exactly those caps — the "ad-hoc / limited invite" tier.
 //!
-//! The defining property is **monotone attenuation**: a token holder may
-//! mint a *child* token that drops caps, lowers the role, shortens the
-//! validity window, or pins to a sub-resource — but **never** one that
-//! adds authority the parent did not hold. Any attempt to widen is
-//! rejected at mint time ([`InviteError::Widens`]) and, redundantly, at
-//! verification time (a forged wider child fails the chain check). This
-//! is the object-capability discipline: you can only pass on a subset of
-//! what you were given.
+//! The defining property is **monotone attenuation**: a holder may mint a
+//! *child* token that drops caps, lowers the role, shortens validity, or
+//! pins to a sub-resource — but **never** one that adds authority the
+//! parent lacked. Widening is rejected at mint time
+//! ([`InviteError::Widens`]) and, redundantly, at verification (a forged
+//! wider child fails the chain check) — object-capability discipline.
 //!
 //! ## Chain shape
 //!
-//! - The **root** token is signed by a workspace *root authority* (an
-//!   identity the verifier trusts to grant into the workspace) and has
-//!   `parent: None`.
-//! - Each **derived** token is signed by the previous token's `subject`
-//!   (the holder delegating onward) and carries `parent: Some(previous
-//!   signature)` so the link cannot be spliced onto a different parent.
+//! The **root** token is signed by a workspace root authority and has
+//! `parent: None`. Each **derived** token is signed by the previous
+//! token's `subject` and carries `parent: Some(previous signature)`, so
+//! the link cannot be spliced onto a different parent.
 //!
-//! [`verify_chain`] walks the chain root-first, checking each link's
-//! signature, that every step narrows, and that no token in the chain
-//! has expired.
-//!
-//! Pure types + pure functions, like the rest of `collab-types`. Signing
-//! reuses [`crate::crypto::sign_event`] / [`crate::crypto::verify_event`]
-//! over a domain-tagged canonical view, so an invite signature can never
-//! be replayed as some other signed structure.
+//! [`verify_chain`] walks root-first, checking each link's signature,
+//! that every step narrows, and that no token has expired.
 
 use std::collections::BTreeSet;
 use std::time::SystemTime;
@@ -45,56 +34,51 @@ use crate::channel::ArtifactId;
 use crate::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
 use crate::role::Role;
 
-/// Signing-domain tag mixed into every invite's signed bytes so an
-/// invite signature is unforgeable across structure types. Frozen once
-/// invites ship on the wire.
+/// Signing-domain tag mixed into every invite's signed bytes so a
+/// signature is unforgeable across structure types. Frozen once invites
+/// ship on the wire.
 pub const INVITE_DOMAIN_TAG: &str = "qos-invite-v1";
 
 /// A signed capability grant into a workspace.
 ///
 /// `caps` is the concrete cap-bundle the token confers; `role` is the
-/// headline role label it was minted from. Attenuation narrows both
-/// independently (you can keep the `Editor` label but drop to a
-/// comment-only cap set, or drop the label too). The verifier enforces
-/// caps, not the label — the label is for UI + the role→caps sanity
-/// bound.
+/// headline label it was minted from — attenuation narrows both
+/// independently. The verifier enforces `caps`, not the label; the label
+/// is for UI + the role→caps sanity bound.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InviteToken {
     /// The identity this invite grants authority to.
     pub subject: Ed25519PublicKey,
-    /// The workspace the grant is scoped to. Every token in a chain
-    /// must name the same workspace.
+    /// The workspace the grant is scoped to. Every token in a chain must name
+    /// the same workspace.
     pub workspace: u64,
-    /// The headline role label. Narrowed monotonically down the chain
+    /// The headline role label, narrowed monotonically down the chain
     /// (`Owner ≥ Editor ≥ Commenter ≥ Viewer ≥ Denied`, by cap ceiling).
     pub role: Role,
-    /// The concrete granted cap-bundle. A child's caps must be a subset
-    /// of its parent's.
+    /// The concrete granted cap-bundle — a child's caps must be a subset of
+    /// its parent's.
     pub caps: BTreeSet<Verb>,
-    /// Optional single sub-resource the grant is pinned to. `None` means
-    /// the whole workspace; `Some(a)` means only artifact `a`. A child
-    /// may pin an unpinned parent, or keep the same pin, but may not
+    /// Optional single sub-resource pin. `None` means the whole workspace. A
+    /// child may pin an unpinned parent or keep the same pin, but may not
     /// unpin or repoint to a different artifact.
     pub sub_resource: Option<ArtifactId>,
-    /// Optional expiry. `None` means "until revoked"; `Some(t)` means
-    /// invalid at or after `t`. A child's expiry may not be later than
-    /// its parent's.
+    /// Optional expiry; `None` means "until revoked". A child's expiry may
+    /// not be later than its parent's.
     pub not_after: Option<SystemTime>,
-    /// The identity that signed this token — a root authority for the
-    /// root token, or the parent token's `subject` for a derived token.
+    /// The identity that signed this token — a root authority for the root
+    /// token, the parent's `subject` for a derived one.
     pub issuer: Ed25519PublicKey,
-    /// Link to the parent token's signature. `None` for a root token;
-    /// `Some(parent.signature)` for a derived token. Covered by this
-    /// token's own signature so a link cannot be re-parented.
+    /// Link to the parent token's signature (`None` for a root token),
+    /// covered by this token's own signature so a link cannot be re-parented.
     pub parent: Option<Signature>,
-    /// Detached signature by `issuer` over the domain-tagged canonical
-    /// view of every other field.
+    /// Detached signature by `issuer` over the domain-tagged canonical view
+    /// of every other field.
     pub signature: Signature,
 }
 
 /// The desired grant for a fresh or derived token — everything except
-/// the issuer/parent/signature, which are supplied by the mint call.
+/// issuer/parent/signature, supplied by the mint call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InviteSpec {
     /// See [`InviteToken::subject`].
@@ -114,21 +98,19 @@ pub struct InviteSpec {
 /// Failure modes for minting / attenuating / verifying invites.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum InviteError {
-    /// A derived token tried to grant authority the parent lacked — an
-    /// added cap, a higher role, a widened sub-resource, or a later
-    /// expiry. Attenuation must only narrow.
+    /// A derived token tried to grant authority the parent lacked (added
+    /// cap, higher role, widened resource, later expiry) — attenuation must only narrow.
     #[error("derived invite widens the parent grant: {0}")]
     Widens(&'static str),
-    /// The delegator's key does not match the parent token's subject —
-    /// only the holder of a token may attenuate it.
+    /// The delegator's key doesn't match the parent token's subject — only
+    /// the holder of a token may attenuate it.
     #[error("delegator is not the parent token's subject")]
     NotHolder,
-    /// A token in the chain is scoped to a different workspace than the
-    /// root.
+    /// A token in the chain is scoped to a different workspace than the root.
     #[error("workspace mismatch within the invite chain")]
     WorkspaceMismatch,
-    /// The chain was empty, mis-linked, or a link's issuer did not match
-    /// the previous subject.
+    /// The chain was empty, mis-linked, or a link's issuer didn't match the
+    /// previous subject.
     #[error("broken invite chain: {0}")]
     BrokenChain(&'static str),
     /// The root token was signed by an identity not in the verifier's
@@ -146,8 +128,8 @@ pub enum InviteError {
     Canonical(#[from] CanonicalError),
 }
 
-/// The domain-tagged canonical view an invite signs over (everything
-/// but the signature).
+/// The domain-tagged canonical view an invite signs over (everything but
+/// the signature).
 #[derive(Serialize)]
 struct InviteView<'a> {
     tag: &'a str,
@@ -176,25 +158,21 @@ impl InviteToken {
         }
     }
 
-    /// Verify this token's own signature against its declared `issuer`.
-    /// Does not check the chain, narrowing, or expiry — see
-    /// [`verify_chain`].
+    /// Verify this token's own signature against its declared `issuer`. Does
+    /// not check the chain, narrowing, or expiry — see [`verify_chain`].
     pub fn verify_signature(&self) -> Result<(), InviteError> {
         verify_event(&self.view(), &self.signature, &self.issuer).map_err(InviteError::BadSignature)
     }
 
-    /// (Re)sign this token in place with `sk`, stamping `signature` over
-    /// the current field values. Used by [`mint_root`] / [`attenuate`];
-    /// exposed so a caller that mutates a token can re-establish a valid
-    /// signature (and so tests can prove [`verify_chain`] rejects a
-    /// *validly-signed* widening, not merely a broken signature).
+    /// (Re)sign this token in place with `sk`. Used by [`mint_root`] /
+    /// [`attenuate`]; exposed so tests can prove [`verify_chain`] rejects a
+    /// *validly-signed* widening, not merely a broken signature.
     pub fn sign_with(&mut self, sk: &ed25519_dalek::SigningKey) -> Result<(), CanonicalError> {
         self.signature = sign_event(&self.view(), sk)?;
         Ok(())
     }
 
-    /// Is this token expired at `now`? A token with `not_after: None`
-    /// never expires.
+    /// Is this token expired at `now`? `not_after: None` never expires.
     pub fn is_expired_at(&self, now: SystemTime) -> bool {
         matches!(self.not_after, Some(t) if now >= t)
     }
@@ -205,40 +183,39 @@ fn role_ceiling(role: Role) -> Option<Verb> {
     role_caps(role)
 }
 
-/// Is `child`'s role privilege ≤ `parent`'s? Compared by cap ceiling:
-/// `Owner(Admin) ≥ Editor(Write) ≥ Commenter(Comment) ≥ Viewer(Read) ≥
-/// Denied(∅)`.
+/// Is `child`'s role privilege ≤ `parent`'s, by cap ceiling:
+/// `Owner(Admin) ≥ Editor(Write) ≥ Commenter(Comment) ≥ Viewer(Read) ≥ Denied(∅)`?
 fn role_le(child: Role, parent: Role) -> bool {
     match (role_ceiling(child), role_ceiling(parent)) {
-        (None, _) => true,               // Denied grants nothing — always ≤.
-        (Some(_), None) => false,        // parent grants nothing; child grants more.
+        (None, _) => true,        // Denied grants nothing — always ≤.
+        (Some(_), None) => false, // parent grants nothing; child grants more.
         (Some(c), Some(p)) => p.implies(c),
     }
 }
 
-/// Does `child_expiry` end no later than `parent_expiry`?
-/// (`None` = "never", so a child may only tighten, never loosen.)
+/// Does `child_expiry` end no later than `parent_expiry`? (`None` =
+/// "never", so a child may only tighten.)
 fn expiry_le(child: Option<SystemTime>, parent: Option<SystemTime>) -> bool {
     match (child, parent) {
-        (_, None) => true,               // parent never expires — any child ok.
-        (None, Some(_)) => false,        // parent expires; child claims never.
+        (_, None) => true,        // parent never expires — any child ok.
+        (None, Some(_)) => false, // parent expires; child claims never.
         (Some(c), Some(p)) => c <= p,
     }
 }
 
-/// Does `child`'s sub-resource pin narrow (or equal) `parent`'s?
-/// An unpinned parent (`None`) may be pinned by a child; a pinned parent
-/// may only keep the same pin.
+/// Does `child`'s sub-resource pin narrow (or equal) `parent`'s? An
+/// unpinned parent may be pinned by a child; a pinned parent may only
+/// keep the same pin.
 fn subresource_narrows(child: Option<ArtifactId>, parent: Option<ArtifactId>) -> bool {
     match (parent, child) {
-        (None, _) => true,               // parent whole-workspace — child may pin.
-        (Some(p), Some(c)) => p == c,    // parent pinned — child must match.
-        (Some(_), None) => false,        // parent pinned — child may not unpin.
+        (None, _) => true,            // parent whole-workspace — child may pin.
+        (Some(p), Some(c)) => p == c, // parent pinned — child must match.
+        (Some(_), None) => false,     // parent pinned — child may not unpin.
     }
 }
 
-/// Check that `spec` is an attenuation (narrowing) of `parent`.
-/// Returns the specific widening on failure.
+/// Check that `spec` is an attenuation (narrowing) of `parent`. Returns
+/// the specific widening on failure.
 fn check_narrows(spec: &InviteSpec, parent: &InviteToken) -> Result<(), InviteError> {
     if spec.workspace != parent.workspace {
         return Err(InviteError::WorkspaceMismatch);
@@ -258,10 +235,9 @@ fn check_narrows(spec: &InviteSpec, parent: &InviteToken) -> Result<(), InviteEr
     Ok(())
 }
 
-/// Mint a **root** invite, signed by a workspace root authority.
-///
-/// The signer must be a key the eventual verifier lists in its accepted
-/// root authorities (see [`verify_chain`]). `parent` is `None`.
+/// Mint a **root** invite, signed by a workspace root authority. The
+/// signer must be a key the eventual verifier lists in its accepted root
+/// authorities. `parent` is `None`.
 pub fn mint_root(
     spec: InviteSpec,
     authority_sk: &ed25519_dalek::SigningKey,
@@ -283,12 +259,10 @@ pub fn mint_root(
 }
 
 /// Attenuate a `parent` token into a narrower child, signed by the
-/// parent's holder (`delegator_sk` must derive `parent.subject`).
-///
-/// Rejects any `spec` that widens the parent grant
-/// ([`InviteError::Widens`]) or that is signed by a non-holder
-/// ([`InviteError::NotHolder`]). The child links to the parent via the
-/// parent's signature so the chain is tamper-evident.
+/// parent's holder (`delegator_sk` must derive `parent.subject`). Rejects
+/// widening ([`InviteError::Widens`]) or a non-holder signer
+/// ([`InviteError::NotHolder`]). The child links via the parent's
+/// signature so the chain is tamper-evident.
 pub fn attenuate(
     parent: &InviteToken,
     spec: InviteSpec,
@@ -314,16 +288,13 @@ pub fn attenuate(
     Ok(token)
 }
 
-/// Verify a full invite chain at time `now`.
-///
-/// `chain[0]` is the root; `chain[i]` is a child of `chain[i-1]`.
-/// Checks, for every token: signature validity, that no token has
-/// expired at `now`, and that each derived token genuinely narrows its
-/// parent and links to it. The root must be signed by an identity in
-/// `root_authorities`.
+/// Verify a full invite chain at time `now`. `chain[0]` is the root;
+/// `chain[i]` is a child of `chain[i-1]`. Checks every token's signature,
+/// non-expiry, and that each derived token genuinely narrows and links to
+/// its parent. The root must be signed by an identity in `root_authorities`.
 ///
 /// Returns the effective granted [`InviteToken`] (the last, tightest
-/// link) on success — the caps the holder actually wields.
+/// link) on success.
 pub fn verify_chain<'a>(
     chain: &'a [InviteToken],
     now: SystemTime,
@@ -360,7 +331,7 @@ pub fn verify_chain<'a>(
             return Err(InviteError::BrokenChain("parent link mismatch"));
         }
         // Signature first, so the narrowing check below is proven to
-        // reject *validly-signed* widenings — not merely tampered bytes.
+        // reject *validly-signed* widenings, not merely tampered bytes.
         token.verify_signature()?;
         // Each step must genuinely narrow: a child that was correctly
         // signed but grants more than its parent is caught here.

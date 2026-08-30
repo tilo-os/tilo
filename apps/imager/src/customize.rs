@@ -32,9 +32,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{TextInput, Toggle, ToggleFace, Widget};
 
-use crate::actions::{toggled_install_mode, ImagerAction, IMAGER_ACTION_TYPE};
+use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction, toggled_install_mode};
 use crate::model::{InstallMode, InstallProfile};
 
 /// One editable text field of the profile.
@@ -254,28 +254,106 @@ impl CustomizePanel {
 
     // ---- drawing ----------------------------------------------------------
 
-    fn txt(tr: &mut TextRenderer, scene: &mut Scene, s: &str, size: f32, color: Color, x: f64, top: f64, max_w: Option<f32>, weight: TextWeight) {
-        tr.draw_text_weighted(scene, s, size, color, Affine::translate((x, top)), max_w, weight);
+    fn txt(
+        tr: &mut TextRenderer,
+        scene: &mut Scene,
+        s: &str,
+        size: f32,
+        color: Color,
+        x: f64,
+        top: f64,
+        max_w: Option<f32>,
+        weight: TextWeight,
+    ) {
+        tr.draw_text_weighted(
+            scene,
+            s,
+            size,
+            color,
+            Affine::translate((x, top)),
+            max_w,
+            weight,
+        );
     }
 
     fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
-        scene.fill(Fill::NonZero, t, c, None, &RoundedRect::from_rect(r, radius));
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c,
+            None,
+            &RoundedRect::from_rect(r, radius),
+        );
     }
     fn stroke_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
-        scene.stroke(&Stroke::new(w), t, c, None, &RoundedRect::from_rect(r, radius));
+        scene.stroke(
+            &Stroke::new(w),
+            t,
+            c,
+            None,
+            &RoundedRect::from_rect(r, radius),
+        );
     }
 
-    fn section_label(tr: &mut TextRenderer, scene: &mut Scene, theme: &Theme, s: &str, x: f64, y: f64) {
-        Self::txt(tr, scene, s, 11.0, theme.tokens.colors.text_dim, x, y, None, TextWeight::Semibold);
+    fn section_label(
+        tr: &mut TextRenderer,
+        scene: &mut Scene,
+        theme: &Theme,
+        s: &str,
+        x: f64,
+        y: f64,
+    ) {
+        Self::txt(
+            tr,
+            scene,
+            s,
+            11.0,
+            theme.tokens.colors.text_dim,
+            x,
+            y,
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
-    fn draw_field(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, presence: &PresenceCtx, f: CzField, r: Rect, label: &str) {
+    fn draw_field(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        presence: &PresenceCtx,
+        f: CzField,
+        r: Rect,
+        label: &str,
+    ) {
         let c = &theme.tokens.colors;
-        Self::txt(tr, scene, label, 11.0, c.text_dim, r.x0 + 2.0, r.y0 - 17.0, None, TextWeight::Semibold);
+        Self::txt(
+            tr,
+            scene,
+            label,
+            11.0,
+            c.text_dim,
+            r.x0 + 2.0,
+            r.y0 - 17.0,
+            None,
+            TextWeight::Semibold,
+        );
         let focused = self.focused == Some(f);
         Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, r, 9.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
+        Self::stroke_rr(
+            scene,
+            t,
+            r,
+            9.0,
+            if focused {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            if focused { 1.6 } else { 1.0 },
+        );
         // The plain-chrome input paints its own glyphs + caret inside the box.
         let inner = Rect::new(r.x0 + 12.0, r.y0, r.x1 - 12.0, r.y1);
         let input = self.input(f);
@@ -283,51 +361,226 @@ impl CustomizePanel {
         Widget::draw(input, scene, t, tr, theme, presence);
     }
 
-    fn draw_toggle(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, label: &str, sub: &str, on: bool) {
+    fn draw_toggle(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        r: Rect,
+        label: &str,
+        sub: &str,
+        on: bool,
+    ) {
         let c = &theme.tokens.colors;
         let hov = r.contains(self.last_mouse);
-        Self::fill_rr(scene, t, r, 12.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, r, 12.0, if on { alpha(c.semantic.success, 150) } else { c.border_standard }, 1.0);
-        let sw = Rect::new(r.x0 + 14.0, r.y0 + (r.height() - 22.0) / 2.0, r.x0 + 14.0 + 40.0, r.y0 + (r.height() - 22.0) / 2.0 + 22.0);
-        Self::fill_rr(scene, t, sw, 11.0, if on { c.semantic.success } else { c.neutral[4] });
-        let knob_x = if on { sw.x1 - 20.0 } else { sw.x0 + 2.0 };
-        let knob = Rect::new(knob_x, sw.y0 + 2.0, knob_x + 18.0, sw.y1 - 2.0);
-        Self::fill_rr(scene, t, knob, 9.0, Color::WHITE);
+        Self::fill_rr(
+            scene,
+            t,
+            r,
+            12.0,
+            if hov { c.neutral[3] } else { c.neutral[2] },
+        );
+        Self::stroke_rr(
+            scene,
+            t,
+            r,
+            12.0,
+            if on {
+                alpha(c.semantic.success, 150)
+            } else {
+                c.border_standard
+            },
+            1.0,
+        );
+        let sw = Rect::new(
+            r.x0 + 14.0,
+            r.y0 + (r.height() - 22.0) / 2.0,
+            r.x0 + 14.0 + 40.0,
+            r.y0 + (r.height() - 22.0) / 2.0 + 22.0,
+        );
+        Toggle::paint(
+            scene,
+            t,
+            theme,
+            &ToggleFace::new(sw, on)
+                .hovered(hov)
+                .on_color(c.semantic.success),
+        );
         let tx = sw.x1 + 12.0;
-        Self::txt(tr, scene, label, 13.5, c.text_primary, tx, r.y0 + 12.0, Some((r.x1 - tx - 12.0) as f32), TextWeight::Semibold);
+        Self::txt(
+            tr,
+            scene,
+            label,
+            13.5,
+            c.text_primary,
+            tx,
+            r.y0 + 12.0,
+            Some((r.x1 - tx - 12.0) as f32),
+            TextWeight::Semibold,
+        );
         if !sub.is_empty() {
-            Self::txt(tr, scene, sub, 11.5, c.text_dim, tx, r.y0 + 30.0, Some((r.x1 - tx - 12.0) as f32), TextWeight::Regular);
+            Self::txt(
+                tr,
+                scene,
+                sub,
+                11.5,
+                c.text_dim,
+                tx,
+                r.y0 + 30.0,
+                Some((r.x1 - tx - 12.0) as f32),
+                TextWeight::Regular,
+            );
         }
     }
 
     /// Render the whole panel into `content` for the given profile snapshot.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx, content: Rect, profile: &InstallProfile, target_removable: bool) {
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        content: Rect,
+        profile: &InstallProfile,
+        target_removable: bool,
+    ) {
         let c = &theme.tokens.colors;
         let g = Self::geom(content);
 
         Self::section_label(tr, scene, theme, "IDENTITY", content.x0, g.identity_label_y);
-        self.draw_field(scene, tr, theme, t, presence, CzField::Hostname, g.hostname, "Hostname");
-        self.draw_field(scene, tr, theme, t, presence, CzField::FullName, g.full_name, "Full name");
-        self.draw_field(scene, tr, theme, t, presence, CzField::Username, g.username, "Username");
-        self.draw_field(scene, tr, theme, t, presence, CzField::Password, g.password, "Password");
-        self.draw_field(scene, tr, theme, t, presence, CzField::Timezone, g.timezone, "Time zone");
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Hostname,
+            g.hostname,
+            "Hostname",
+        );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::FullName,
+            g.full_name,
+            "Full name",
+        );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Username,
+            g.username,
+            "Username",
+        );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Password,
+            g.password,
+            "Password",
+        );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Timezone,
+            g.timezone,
+            "Time zone",
+        );
 
-        Self::section_label(tr, scene, theme, "REGION & OPTIONS", content.x0, g.region_label_y);
-        self.draw_field(scene, tr, theme, t, presence, CzField::Keyboard, g.keyboard, "Keyboard");
-        self.draw_toggle(scene, tr, theme, t, g.autologin, "Auto-login", "Sign in without a password prompt", profile.user.autologin);
-        self.draw_toggle(scene, tr, theme, t, g.encrypt, "Encrypt storage", "Protect user data with LUKS", profile.encrypt);
+        Self::section_label(
+            tr,
+            scene,
+            theme,
+            "REGION & OPTIONS",
+            content.x0,
+            g.region_label_y,
+        );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Keyboard,
+            g.keyboard,
+            "Keyboard",
+        );
+        self.draw_toggle(
+            scene,
+            tr,
+            theme,
+            t,
+            g.autologin,
+            "Auto-login",
+            "Sign in without a password prompt",
+            profile.user.autologin,
+        );
+        self.draw_toggle(
+            scene,
+            tr,
+            theme,
+            t,
+            g.encrypt,
+            "Encrypt storage",
+            "Protect user data with LUKS",
+            profile.encrypt,
+        );
         if Self::persist_visible(target_removable) {
             let persist = profile.mode == InstallMode::Persistent;
-            self.draw_toggle(scene, tr, theme, t, g.persist, "Persistent storage", "Keep changes across reboots on the stick", persist);
+            self.draw_toggle(
+                scene,
+                tr,
+                theme,
+                t,
+                g.persist,
+                "Persistent storage",
+                "Keep changes across reboots on the stick",
+                persist,
+            );
         }
 
         // Export config (secondary affordance).
         let hov = g.export.contains(self.last_mouse);
-        Self::fill_rr(scene, t, g.export, 9.0, if hov { c.neutral[3] } else { c.neutral[2] });
+        Self::fill_rr(
+            scene,
+            t,
+            g.export,
+            9.0,
+            if hov { c.neutral[3] } else { c.neutral[2] },
+        );
         Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
-        let (ew, _) = tr.measure_weighted("⤓ Export unattended config", 12.0, None, TextWeight::Semibold);
-        Self::txt(tr, scene, "⤓ Export unattended config", 12.0, c.accent[7], (g.export.x0 + g.export.x1) / 2.0 - ew as f64 / 2.0, g.export.y0 + 8.0, None, TextWeight::Semibold);
+        let (ew, _) = tr.measure_weighted(
+            "⤓ Export unattended config",
+            12.0,
+            None,
+            TextWeight::Semibold,
+        );
+        Self::txt(
+            tr,
+            scene,
+            "⤓ Export unattended config",
+            12.0,
+            c.accent[7],
+            f64::midpoint(g.export.x0, g.export.x1) - f64::from(ew) / 2.0,
+            g.export.y0 + 8.0,
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     // ---- interaction ------------------------------------------------------
@@ -356,83 +609,179 @@ impl CustomizePanel {
                 self.last_mouse = Point::new(position.x / scale, position.y / scale);
                 // Forward to a focused field so drag-selection tracks the pointer.
                 if let Some(f) = self.focused {
-                    let inner = Rect::new(g.field(f).x0 + 12.0, g.field(f).y0, g.field(f).x1 - 12.0, g.field(f).y1);
+                    let inner = Rect::new(
+                        g.field(f).x0 + 12.0,
+                        g.field(f).y0,
+                        g.field(f).x1 - 12.0,
+                        g.field(f).y1,
+                    );
                     let input = self.input(f);
                     input.apply_layout_external(inner);
                     let (mut h, mut ft) = (false, None);
-                    input.handle_event(event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy);
+                    input.handle_event(
+                        event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    );
                 }
-                CzResponse { handled: false, export_requested: false }
+                CzResponse {
+                    handled: false,
+                    export_requested: false,
+                }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
                 let p = self.last_mouse;
                 // A field: focus it and forward the press for caret placement.
                 for f in CzField::ALL {
                     if g.field(f).contains(p) {
-                        self.focus_field(f, g.field(f), event, scale, modifiers, doc, path, node_id, taffy);
-                        return CzResponse { handled: true, export_requested: false };
+                        self.focus_field(
+                            f,
+                            g.field(f),
+                            event,
+                            scale,
+                            modifiers,
+                            doc,
+                            path,
+                            node_id,
+                            taffy,
+                        );
+                        return CzResponse {
+                            handled: true,
+                            export_requested: false,
+                        };
                     }
                 }
                 // A toggle.
                 if g.autologin.contains(p) {
-                    self.dispatch(doc, host, ImagerAction::SetAutologin { on: !profile.user.autologin });
-                    return CzResponse { handled: true, export_requested: false };
+                    self.dispatch(
+                        doc,
+                        host,
+                        ImagerAction::SetAutologin {
+                            on: !profile.user.autologin,
+                        },
+                    );
+                    return CzResponse {
+                        handled: true,
+                        export_requested: false,
+                    };
                 }
                 if g.encrypt.contains(p) {
-                    self.dispatch(doc, host, ImagerAction::SetEncrypt { on: !profile.encrypt });
-                    return CzResponse { handled: true, export_requested: false };
+                    self.dispatch(
+                        doc,
+                        host,
+                        ImagerAction::SetEncrypt {
+                            on: !profile.encrypt,
+                        },
+                    );
+                    return CzResponse {
+                        handled: true,
+                        export_requested: false,
+                    };
                 }
                 if Self::persist_visible(target_removable) && g.persist.contains(p) {
                     let next = toggled_install_mode(profile.mode);
-                    self.dispatch(doc, host, ImagerAction::SetInstallMode { mode: next.key().to_string() });
-                    return CzResponse { handled: true, export_requested: false };
+                    self.dispatch(
+                        doc,
+                        host,
+                        ImagerAction::SetInstallMode {
+                            mode: next.key().to_string(),
+                        },
+                    );
+                    return CzResponse {
+                        handled: true,
+                        export_requested: false,
+                    };
                 }
                 if g.export.contains(p) {
-                    return CzResponse { handled: true, export_requested: true };
+                    return CzResponse {
+                        handled: true,
+                        export_requested: true,
+                    };
                 }
                 // A click elsewhere drops field focus.
                 self.blur();
-                CzResponse { handled: false, export_requested: false }
+                CzResponse {
+                    handled: false,
+                    export_requested: false,
+                }
             }
-            WindowEvent::KeyboardInput { event: key_ev, .. } if key_ev.state == ElementState::Pressed => {
+            WindowEvent::KeyboardInput { event: key_ev, .. }
+                if key_ev.state == ElementState::Pressed =>
+            {
                 let Some(f) = self.focused else {
-                    return CzResponse { handled: false, export_requested: false };
+                    return CzResponse {
+                        handled: false,
+                        export_requested: false,
+                    };
                 };
-                match &key_ev.logical_key {
-                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
-                        self.blur();
-                        CzResponse { handled: true, export_requested: false }
+                if let Key::Named(NamedKey::Enter | NamedKey::Escape) = &key_ev.logical_key {
+                    self.blur();
+                    CzResponse {
+                        handled: true,
+                        export_requested: false,
                     }
-                    _ => {
-                        // Route the keystroke to the focused input, then dispatch
-                        // the field's absolute-set action with its fresh value.
-                        let field_rect = g.field(f);
-                        let inner = Rect::new(field_rect.x0 + 12.0, field_rect.y0, field_rect.x1 - 12.0, field_rect.y1);
-                        let input = self.input(f);
-                        input.set_focus(true);
-                        input.apply_layout_external(inner);
-                        let (mut h, mut ft) = (false, None);
-                        input.handle_event(event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy);
-                        let value = self.input(f).value().to_string();
-                        self.dispatch(doc, host, Self::field_action(f, value));
-                        CzResponse { handled: true, export_requested: false }
+                } else {
+                    // Route the keystroke to the focused input, then dispatch
+                    // the field's absolute-set action with its fresh value.
+                    let field_rect = g.field(f);
+                    let inner = Rect::new(
+                        field_rect.x0 + 12.0,
+                        field_rect.y0,
+                        field_rect.x1 - 12.0,
+                        field_rect.y1,
+                    );
+                    let input = self.input(f);
+                    input.set_focus(true);
+                    input.apply_layout_external(inner);
+                    let (mut h, mut ft) = (false, None);
+                    input.handle_event(
+                        event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    );
+                    let value = self.input(f).value().to_string();
+                    self.dispatch(doc, host, Self::field_action(f, value));
+                    CzResponse {
+                        handled: true,
+                        export_requested: false,
                     }
                 }
             }
-            _ => CzResponse { handled: false, export_requested: false },
+            _ => CzResponse {
+                handled: false,
+                export_requested: false,
+            },
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn focus_field(&mut self, f: CzField, field_rect: Rect, event: &WindowEvent, scale: f64, modifiers: &Modifiers, doc: &mut AutoCommit, path: &automerge::ObjId, node_id: taffy::NodeId, taffy: &taffy::TaffyTree<()>) {
+    fn focus_field(
+        &mut self,
+        f: CzField,
+        field_rect: Rect,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) {
         self.blur();
         self.focused = Some(f);
-        let inner = Rect::new(field_rect.x0 + 12.0, field_rect.y0, field_rect.x1 - 12.0, field_rect.y1);
+        let inner = Rect::new(
+            field_rect.x0 + 12.0,
+            field_rect.y0,
+            field_rect.x1 - 12.0,
+            field_rect.y1,
+        );
         let input = self.input(f);
         input.set_focus(true);
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
-        input.handle_event(event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy);
+        input.handle_event(
+            event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+        );
     }
 
     fn blur(&mut self) {
@@ -465,7 +814,7 @@ impl CustomizePanel {
     }
 
     /// The encrypt-toggle rect for `content`, so a test can click the real
-    /// on-screen affordance (the affordance == ActionSpec covenant).
+    /// on-screen affordance (the affordance == `ActionSpec` covenant).
     #[cfg(test)]
     pub fn encrypt_rect(content: Rect) -> Rect {
         Self::geom(content).encrypt

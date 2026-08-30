@@ -2,25 +2,15 @@
 //! texture (via [`ui::offscreen::OffscreenRenderer`]) instead of a
 //! window. The compositor's chrome doesn't care which backend it paints
 //! into, so this is the third path alongside [`super::WinitBackend`]
-//! (host-window) and [`super::DrmBackend`] (TTY).
+//! (host-window) and [`super::DrmBackend`] (TTY) — needed because
+//! neither of those works in CI, in a distrobox without a display, or
+//! under SSH without X-forwarding, and `QOS_TEST_CONTROL` needs a
+//! backend to boot in order to drive the live binary headlessly.
 //!
-//! # Why this exists
-//! `--mode native` previously required a Wayland/X11 host session
-//! (winit) or a free TTY + DRM/KMS (drm). Neither works in CI, in a
-//! distrobox without a display, or under a remote SSH session without
-//! X-forwarding. The `QOS_TEST_CONTROL` socket protocol already
-//! supports "click things via a unix socket and read back state", but
-//! only if a backend boots. This backend lets the live binary stay up
-//! with `unset WAYLAND_DISPLAY DISPLAY` so e2e harnesses can drive it
-//! without a display.
-//!
-//! # What it does NOT do
-//! - No `winit::*` imports — the entire point is to be display-free.
-//! - No real input devices. `poll_events` returns a single `Redraw`
-//!   per call to keep the compositor's frame-pacing loop alive.
-//! - No wayland-server surface bind change — `native::run` still binds
-//!   `wayland-N` and forwards client traffic. The headless flag only
-//!   affects the paint target.
+//! No `winit::*` imports (the entire point is to be display-free), no
+//! real input devices, and no wayland-server surface bind change —
+//! `native::run` still binds `wayland-N` and forwards client traffic;
+//! the headless flag only affects the paint target.
 
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
@@ -52,9 +42,11 @@ pub struct HeadlessBackend {
     renderer: OffscreenRenderer,
     outputs: Vec<Output>,
     events: Vec<BackendEvent>,
-    /// Latest painted RGBA frame, kept so test_control's `snapshot`
+    /// Latest painted RGBA frame, kept so `test_control`'s `snapshot`
     /// command can write a PNG without re-rendering.
     last_frame: Vec<u8>,
+    /// Whether the one startup `Redraw` has been handed over yet.
+    emitted_first_redraw: bool,
 }
 
 impl HeadlessBackend {
@@ -84,6 +76,7 @@ impl HeadlessBackend {
             outputs,
             events: Vec::new(),
             last_frame: Vec::new(),
+            emitted_first_redraw: false,
         })
     }
 
@@ -119,7 +112,7 @@ pub fn parse_headless_size(value: Option<&str>) -> Option<(u32, u32)> {
     // Accept either `x` or `X` as separator — case-insensitive matches
     // the `1600x900` convention used everywhere else in the repo while
     // still tolerating shell weirdness.
-    let (w, h) = raw.split_once(|c: char| c == 'x' || c == 'X')?;
+    let (w, h) = raw.split_once(['x', 'X'])?;
     let w: u32 = w.trim().parse().ok()?;
     let h: u32 = h.trim().parse().ok()?;
     if w == 0 || h == 0 {
@@ -138,30 +131,31 @@ pub fn resolve_initial_size() -> (u32, u32) {
 
 impl Backend for HeadlessBackend {
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
-        // `OffscreenRenderer::render` is a wgpu round-trip per call;
-        // unlike `WinitBackend` it doesn't need a `present()` step
-        // because there is no swapchain. The RGBA bytes are the
-        // frame — we cache them so the test-control `snapshot`
-        // command (next feature) can write a PNG without re-paint.
+        // `OffscreenRenderer::render` is a wgpu round-trip per call; unlike
+        // `WinitBackend` it doesn't need a `present()` step since there is
+        // no swapchain. We cache the RGBA bytes so test-control's
+        // `snapshot` command can write a PNG without re-painting.
         //
-        // The clear colour matches the WinitBackend's
-        // `FALLBACK_BG` and `Theme::dark().bg_app`. Picking the same
-        // constant means a `headless` PNG and a `winit` host window
-        // clear to identical pixels for a blank scene — useful when
-        // diffing PNGs against winit-recorded references.
+        // The clear colour matches `WinitBackend`'s `FALLBACK_BG` and
+        // `Theme::dark().bg_app`, so a headless PNG and a winit host window
+        // clear to identical pixels for a blank scene.
         let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
         self.last_frame = self.renderer.render(scene, bg);
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
-        // The headless backend has no input devices and no display
-        // events. To keep the compositor's frame-pacing loop alive
-        // (it's driven by backend events), emit a single
-        // `BackendEvent::Redraw` per tick. The compositor's main loop
-        // already calls `frame_builder.paint()` unconditionally each
-        // iteration, so the `Redraw` is here for ledger parity with
-        // the winit path rather than a paint trigger.
-        self.events.push(BackendEvent::Redraw);
+        // The headless backend has no input devices and no display events,
+        // so it emits one `BackendEvent::Redraw` at startup to get the
+        // first frame on screen, and nothing after that: the main loop
+        // only paints when something changed, so a synthetic event every
+        // tick would mean something always has, running headless at a
+        // permanent 60 fps against an idle desktop. Emitting nothing
+        // after startup lets the loop's own pacing and keepalive drive it,
+        // exactly as under winit.
+        if !self.emitted_first_redraw {
+            self.emitted_first_redraw = true;
+            self.events.push(BackendEvent::Redraw);
+        }
         for ev in self.events.drain(..) {
             callback(ev);
         }
@@ -247,10 +241,9 @@ mod tests {
             .expect("HeadlessBackend::new at 640x480 for poll_events test");
         let mut seen = Vec::new();
         backend.poll_events(&mut |ev| seen.push(ev));
-        // Exactly one Redraw per tick — the compositor's outer loop
-        // drives paint unconditionally; the Redraw exists purely so
-        // anything downstream that watches for "did the backend wake"
-        // sees a heartbeat.
+        // Exactly one Redraw on this first call — a heartbeat so anything
+        // downstream sees the backend wake up. Subsequent calls emit
+        // nothing; see the source comment on `poll_events` for why.
         assert_eq!(
             seen.len(),
             1,

@@ -1,20 +1,12 @@
-//! `Divider` — a standalone themed 1px rule, horizontal or vertical.
+//! A standalone themed 1px rule, horizontal or vertical, usable as a
+//! free-standing element inside a `Column` / `Row` (unlike
+//! `Toolbar::push_separator`, which is toolbar-scoped). Sizes itself along
+//! its cross-axis and stretches to fill the main axis.
 //!
-//! Until now the only separator in the toolkit was `Toolbar::push_separator`,
-//! which is toolbar-scoped and not usable as a free-standing element inside a
-//! `Column` / `Row`. Settings (and any list/section layout) needs a real
-//! widget it can `.push()` between sections. `Divider` is that widget: a
-//! single themed line that sizes itself along its cross-axis and stretches to
-//! fill the main axis.
-//!
-//! * [`Divider::horizontal`] — a full-width 1px rule (fills its parent's
-//!   width, 1px tall). The common case between stacked sections in a `Column`.
-//! * [`Divider::vertical`] — a full-height 1px rule (1px wide, fills its
-//!   parent's height). For separating side-by-side panes in a `Row`.
-//!
-//! The colour comes from `theme.border_standard` (overridable via
-//! [`Divider::with_color`] for callers that want a fainter inset rule). The
-//! thickness defaults to 1px but can be bumped for emphasis.
+//! [`Divider::horizontal`] fills the parent's width, 1px tall, for stacked
+//! sections in a `Column`; [`Divider::vertical`] fills the parent's height,
+//! 1px wide, for side-by-side panes in a `Row`. Colour comes from
+//! `theme.border_standard`, overridable via [`Divider::with_color`].
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -27,18 +19,15 @@ use winit::event::WindowEvent;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Orientation of the rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DividerAxis {
-    /// A horizontal rule: fills the parent's width, `thickness` px tall.
     Horizontal,
-    /// A vertical rule: `thickness` px wide, fills the parent's height.
     Vertical,
 }
 
-/// A themed 1px separator line.
 pub struct Divider {
     axis: DividerAxis,
     thickness: f32,
@@ -48,23 +37,30 @@ pub struct Divider {
 }
 
 impl Divider {
-    /// A full-width horizontal rule (the section-separator default).
     pub fn horizontal() -> Self {
-        Self { axis: DividerAxis::Horizontal, thickness: 1.0, color: None, rect: Rect::ZERO }
+        Self {
+            axis: DividerAxis::Horizontal,
+            thickness: 1.0,
+            color: None,
+            rect: Rect::ZERO,
+        }
     }
 
-    /// A full-height vertical rule (pane separator).
     pub fn vertical() -> Self {
-        Self { axis: DividerAxis::Vertical, thickness: 1.0, color: None, rect: Rect::ZERO }
+        Self {
+            axis: DividerAxis::Vertical,
+            thickness: 1.0,
+            color: None,
+            rect: Rect::ZERO,
+        }
     }
 
-    /// Override the 1px default thickness (logical pixels).
+    /// Logical pixels.
     pub fn with_thickness(mut self, px: f32) -> Self {
         self.thickness = px.max(0.0);
         self
     }
 
-    /// Paint the rule in an explicit colour instead of `border_standard`.
     /// Pass a theme token (e.g. a fainter `theme.tokens.colors.neutral[..]`)
     /// so the choice still tracks the active theme.
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
@@ -72,7 +68,6 @@ impl Divider {
         self
     }
 
-    /// The axis this divider was constructed for.
     pub fn axis(&self) -> DividerAxis {
         self.axis
     }
@@ -88,28 +83,29 @@ impl Widget for Divider {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let (w, h) = match self.axis {
-            DividerAxis::Horizontal => (percent(1.0), length(self.thickness)),
-            DividerAxis::Vertical => (length(self.thickness), percent(1.0)),
+            DividerAxis::Horizontal => (percent(1.0_f32), length(self.thickness)),
+            DividerAxis::Vertical => (length(self.thickness), percent(1.0_f32)),
         };
-        let node = taffy
-            .new_leaf(Style {
-                // Never shrink the 1px cross-axis away under tight budgets.
-                flex_shrink: 0.0,
-                size: taffy::Size { width: w, height: h },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            // Never shrink the 1px cross-axis away under tight budgets.
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: w,
+                height: h,
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -125,7 +121,13 @@ impl Widget for Divider {
             return;
         }
         let color = self.color.unwrap_or(theme.border_standard);
-        scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &self.rect);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            color,
+            None,
+            &self.rect,
+        );
     }
 
     fn handle_event(
@@ -142,15 +144,18 @@ impl Widget for Divider {
     ) {
     }
 
-    fn name(&self) -> &str { "Divider" }
+    fn name(&self) -> &'static str {
+        "Divider"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
 
     fn lay_out(mut d: Divider) -> (Divider, Rect) {
@@ -159,19 +164,19 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         // Wrap in a fixed-size flex parent so percent() resolves.
         let child = d.build_layout(&mut taffy, &theme, &mut node_map);
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    size: taffy::Size {
-                        width: length(400.0),
-                        height: length(200.0),
-                    },
-                    ..Default::default()
+        let parent = taffy.parent_node(
+            Style {
+                size: taffy::Size {
+                    width: length(400.0_f32),
+                    height: length(200.0_f32),
                 },
-                &[child],
-            )
+                ..Default::default()
+            },
+            &[child],
+        );
+        taffy
+            .compute_layout(parent, taffy::Size::max_content())
             .unwrap();
-        taffy.compute_layout(parent, taffy::Size::max_content()).unwrap();
         d.apply_layout(&taffy, child, Point::ZERO);
         let r = d.get_rect();
         (d, r)
@@ -180,7 +185,11 @@ mod tests {
     #[test]
     fn horizontal_is_one_px_tall_and_fills_width() {
         let (_d, r) = lay_out(Divider::horizontal());
-        assert!((r.height() - 1.0).abs() < 0.5, "1px tall, got {}", r.height());
+        assert!(
+            (r.height() - 1.0).abs() < 0.5,
+            "1px tall, got {}",
+            r.height()
+        );
         assert!(r.width() > 100.0, "fills parent width, got {}", r.width());
     }
 
@@ -188,13 +197,21 @@ mod tests {
     fn vertical_is_one_px_wide_and_fills_height() {
         let (_d, r) = lay_out(Divider::vertical());
         assert!((r.width() - 1.0).abs() < 0.5, "1px wide, got {}", r.width());
-        assert!(r.height() > 100.0, "fills parent height, got {}", r.height());
+        assert!(
+            r.height() > 100.0,
+            "fills parent height, got {}",
+            r.height()
+        );
     }
 
     #[test]
     fn with_thickness_overrides_cross_axis() {
         let (_d, r) = lay_out(Divider::horizontal().with_thickness(3.0));
-        assert!((r.height() - 3.0).abs() < 0.5, "3px tall, got {}", r.height());
+        assert!(
+            (r.height() - 3.0).abs() < 0.5,
+            "3px tall, got {}",
+            r.height()
+        );
     }
 
     #[test]

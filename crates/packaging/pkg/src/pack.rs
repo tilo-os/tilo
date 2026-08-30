@@ -1,9 +1,7 @@
 //! `pack` — walk a payload directory, write each file as a
 //! BLAKE3-keyed blob, build the [`Collection`] root, write the
-//! manifest blob, build + sign the signed-root.
-//!
-//! See module docs in [`crate::signed`] for the on-wire layout
-//! of the signed-root and what the publisher signs over.
+//! manifest blob, build + sign the signed-root. See [`crate::signed`]
+//! for the on-wire layout of the signed-root and what the publisher signs over.
 
 use std::path::{Path, PathBuf};
 
@@ -20,29 +18,24 @@ use crate::manifest::Manifest;
 use crate::signed::SignedRoot;
 use crate::validate::{ManifestError, validate_manifest_with_payload};
 
-/// A signing identity that can sign the package's signed-root
-/// bytes. Wraps either a plain `ed25519_dalek::SigningKey` or a
-/// fully-initialised [`ThresholdIdentity`].
+/// A signing identity that can sign the package's signed-root bytes.
+/// Wraps either a plain `ed25519_dalek::SigningKey` or a fully
+/// initialised [`ThresholdIdentity`].
 ///
-/// The threshold path is implemented for the 1-of-1 bootstrap
-/// mode (where signing is byte-equivalent to plain Ed25519);
-/// signing in a true `t-of-n` mode at pack-time is not supported
-/// — that requires the multi-device round-1/round-2 ceremony,
-/// which is the publisher pipeline's job, not the foundation
-/// crate's. Use `from_threshold_aggregated` when you have an
+/// The threshold path only supports 1-of-1 bootstrap mode (byte-
+/// equivalent to plain Ed25519); true `t-of-n` signing at pack-time
+/// needs the multi-device ceremony, which belongs to the publisher
+/// pipeline, not this crate — use `from_threshold_aggregated` for an
 /// already-aggregated signature from such a ceremony.
 pub enum SigningIdentity {
-    /// Plain Ed25519 — the simplest case. Most useful for tests,
-    /// CI signing, and the `qos-pkg sign --identity` CLI path.
+    /// Plain Ed25519 — simplest case; used by tests, CI signing, and `qos-pkg sign --identity`.
     Ed25519(ed25519_dalek::SigningKey),
-    /// A 1-of-1 threshold identity. Goes through the same
-    /// `sign_raw` path and produces a regular Ed25519 sig.
+    /// A 1-of-1 threshold identity; goes through the same `sign_raw` path and produces a regular Ed25519 sig.
     ThresholdSingleDevice(ThresholdIdentity),
 }
 
 impl SigningIdentity {
-    /// Generate a fresh random Ed25519 identity. Convenient for
-    /// tests + `qos-pkg sign --identity <none>` ad-hoc signing.
+    /// Generate a fresh random Ed25519 identity, for tests + ad-hoc `qos-pkg sign` signing.
     pub fn generate() -> Self {
         let mut rng = OsRng;
         Self::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng))
@@ -53,9 +46,8 @@ impl SigningIdentity {
         Self::Ed25519(sk)
     }
 
-    /// Public-key bytes — used for the manifest's
-    /// `publisher.identity` field and for the signed-root's
-    /// `publisher_identity` slot.
+    /// Public-key bytes — used for the manifest's `publisher.identity`
+    /// field and the signed-root's `publisher_identity` slot.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         match self {
             Self::Ed25519(sk) => sk.verifying_key().to_bytes(),
@@ -68,9 +60,8 @@ impl SigningIdentity {
         Ed25519PublicKey::from_bytes(self.public_key_bytes())
     }
 
-    /// Sign the signing-bytes prefix of a [`SignedRoot`]. Errors
-    /// only in the (currently unsupported) true-threshold mode;
-    /// the Ed25519 / 1-of-1 paths are infallible.
+    /// Sign the signing-bytes prefix of a [`SignedRoot`]; errors only in
+    /// the (unsupported) true-threshold mode — Ed25519/1-of-1 paths are infallible.
     pub fn sign_signed_root(&self, root: &SignedRoot) -> Result<[u8; 64], PackError> {
         let preimage = root.signing_bytes();
         self.sign_message(&preimage)
@@ -78,15 +69,14 @@ impl SigningIdentity {
 
     /// Sign an arbitrary message with the identity's Ed25519 key.
     ///
-    /// Used for out-of-band attestations that bind to the same
-    /// publisher identity as the package — e.g. a registry index
-    /// entry that vouches "this publisher's build of app X at version
-    /// V has qpkg content-hash H". The verifier is a plain Ed25519
-    /// verify against [`Self::public_key_bytes`], so consumers need
-    /// only the verifying key, not the threshold machinery.
+    /// Used for out-of-band attestations binding to the same publisher
+    /// identity as the package — e.g. a registry index entry vouching
+    /// "this publisher's build of app X at version V has qpkg
+    /// content-hash H". Verification is a plain Ed25519 check against
+    /// [`Self::public_key_bytes`], so consumers need only the verifying
+    /// key, not threshold machinery.
     ///
-    /// Errors only in the (currently unsupported) true-threshold
-    /// mode; the Ed25519 / 1-of-1 paths are infallible.
+    /// Errors only in the (unsupported) true-threshold mode; Ed25519/1-of-1 paths are infallible.
     pub fn sign_message(&self, msg: &[u8]) -> Result<[u8; 64], PackError> {
         match self {
             Self::Ed25519(sk) => Ok(sk.sign(msg).to_bytes()),
@@ -119,7 +109,9 @@ pub enum PackError {
     ManifestEncode(#[from] crate::manifest::ManifestParseError),
     #[error("publisher identity in manifest does not match signing identity")]
     IdentityMismatch,
-    #[error("true-threshold signing is not implemented at pack time; use the multi-device ceremony to produce an aggregated signature and pass it to `pack_with_signature`")]
+    #[error(
+        "true-threshold signing is not implemented at pack time; use the multi-device ceremony to produce an aggregated signature and pass it to `pack_with_signature`"
+    )]
     ThresholdSigningUnsupported,
     #[error("threshold-internal error: {0}")]
     ThresholdInternal(String),
@@ -159,29 +151,24 @@ pub(crate) fn walk_payload<S: BlobStore>(
     Ok((collection, paths))
 }
 
-/// Pack a payload directory + manifest into the given store.
-/// Returns the [`PackageId`] of the resulting (signed) bundle.
+/// Pack a payload directory + manifest into the given store. Returns
+/// the [`PackageId`] of the resulting (signed) bundle.
 ///
-/// The flow is:
-/// 1. Validate the manifest in isolation, then with the payload
-///    paths once they've been gathered.
+/// 1. Validate the manifest in isolation, then with the payload paths.
 /// 2. Walk `payload_dir`; ingest each file as a blob; build the
 ///    [`Collection`] root and store its encoding too.
 /// 3. Re-encode the manifest with the publisher's identity hex
-///    written in but the signature still empty; ingest the
-///    manifest blob.
+///    written in but the signature still empty; ingest the manifest blob.
 /// 4. Build the unsigned [`SignedRoot`], call
-///    [`SigningIdentity::sign_signed_root`], reattach the
-///    signature, ingest the signed-root blob, return its
-///    `PackageId`.
+///    [`SigningIdentity::sign_signed_root`], reattach the signature,
+///    ingest the signed-root blob, return its `PackageId`.
 pub fn pack<S: BlobStore>(
     payload_dir: &Path,
     manifest: &Manifest,
     identity: &SigningIdentity,
     store: &mut S,
 ) -> Result<PackageId, PackError> {
-    // Lightweight check: manifest's declared publisher identity
-    // must match the key we'll sign with.
+    // Lightweight check: manifest's declared publisher identity must match the key we'll sign with.
     let declared = manifest
         .publisher
         .identity_bytes()
@@ -204,10 +191,9 @@ pub fn pack<S: BlobStore>(
     let manifest_toml = to_sign_manifest.to_toml_string()?;
     let manifest_hash = store.put(manifest_toml.as_bytes())?;
 
-    // Build the about-to-be-signed root: has_signature byte
-    // already set to 1 so the signing-bytes view matches what
-    // `verify` will reconstruct after decode. A placeholder
-    // zero-signature is overwritten with the real one below.
+    // Build the about-to-be-signed root: has_signature byte already set
+    // to 1 so the signing-bytes view matches what `verify` reconstructs
+    // after decode; the placeholder zero-signature is overwritten with the real one below.
     let pre_signed = SignedRoot {
         manifest_hash,
         payload_root_hash,
@@ -224,10 +210,9 @@ pub fn pack<S: BlobStore>(
     Ok(signed.package_id())
 }
 
-/// Pack with a pre-computed aggregated threshold signature.
-/// Used by the multi-device publisher pipeline where the
-/// round-2 partials are collected and aggregated *outside*
-/// this crate.
+/// Pack with a pre-computed aggregated threshold signature — used by
+/// the multi-device publisher pipeline where round-2 partials are
+/// collected and aggregated *outside* this crate.
 pub fn pack_with_signature<S: BlobStore>(
     payload_dir: &Path,
     manifest: &Manifest,

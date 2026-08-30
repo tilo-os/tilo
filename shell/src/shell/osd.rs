@@ -1,18 +1,13 @@
 //! The transient on-screen display for volume, brightness and transport.
 //!
-//! A hardware key that changes something invisible needs an answer on
-//! screen. Volume has no visible surface at all; brightness has one you
-//! cannot read *because* it is what changed. Every desktop solves this
-//! the same way — a slab that appears near the bottom of the screen,
-//! shows the new level, and gets out of the way — and its two properties
-//! are both about not being in the way: it never takes focus, and it
-//! never survives the moment it was about.
+//! A hardware key that changes something invisible (volume) or unreadable
+//! (brightness, *because* it's what changed) needs an answer on screen: a
+//! slab that appears, shows the new level, and gets out of the way — never
+//! takes focus, never survives the moment it was about.
 //!
-//! Deliberately not a notification. A notification is a message that
-//! persists until acknowledged and stacks with its peers; an OSD is a
-//! readout of a value that is only interesting while it is being changed.
-//! Pressing volume-up eight times must show one slab counting up, not
-//! eight banners.
+//! Deliberately not a notification, which persists until acknowledged and
+//! stacks with its peers. Pressing volume-up eight times must show one
+//! slab counting up, not eight banners.
 
 use std::time::{Duration, Instant};
 
@@ -27,9 +22,8 @@ pub const OSD_FADE: Duration = Duration::from_millis(280);
 /// What the slab is reporting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OsdKind {
-    /// Audio output level. `muted` swaps the glyph and empties the bar,
-    /// because a muted sink at 60% is silent and a bar at 60% would say
-    /// otherwise.
+    /// Audio output level. `muted` swaps the glyph and empties the bar —
+    /// a muted sink at 60% is silent, and the bar should say so.
     Volume { muted: bool },
     /// Display backlight level.
     Brightness,
@@ -65,8 +59,8 @@ pub struct Osd {
     pub kind: OsdKind,
     /// `0.0..=1.0`. Ignored by the kinds that have no level.
     pub level: f32,
-    /// When the value last changed. Re-raising an OSD of the same kind
-    /// refreshes this rather than stacking a second slab.
+    /// When the value last changed; re-raising refreshes this rather than
+    /// stacking a second slab.
     pub raised_at: Instant,
 }
 
@@ -103,8 +97,7 @@ impl Osd {
         }
     }
 
-    /// Whether this kind draws a level bar. Toggles and transport
-    /// actions do not have a level, and a bar pinned at zero next to
+    /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
         matches!(self.kind, OsdKind::Volume { .. } | OsdKind::Brightness)
@@ -124,14 +117,13 @@ impl Osd {
         }
     }
 
-    /// Opacity at `now`: fully opaque while held, easing to nothing over
-    /// the trailing [`OSD_FADE`], and `0.0` once expired.
+    /// Opacity at `now`: opaque, then easing over [`OSD_FADE`], then `0.0`.
     pub fn alpha_at(&self, now: Instant) -> f32 {
         let elapsed = now.saturating_duration_since(self.raised_at);
         if elapsed >= OSD_HOLD {
             return 0.0;
         }
-        let remaining = OSD_HOLD - elapsed;
+        let remaining = OSD_HOLD.checked_sub(elapsed).unwrap();
         if remaining >= OSD_FADE {
             return 1.0;
         }
@@ -147,12 +139,8 @@ impl Osd {
     }
 }
 
-/// Merge a newly-raised OSD into whatever is already on screen.
-///
-/// A second press of the same key restarts the timer on the existing
-/// slab; a press of a *different* key replaces it outright. Both are the
-/// same operation — the new reading wins — but stating it here keeps the
-/// "never stack" property in one place rather than in each caller.
+/// Same key restarts the timer, different key replaces outright — either
+/// way "never stack" lives in one place, not each caller.
 pub fn raise(current: &mut Option<Osd>, next: Osd) {
     *current = Some(next);
 }
@@ -218,10 +206,10 @@ mod tests {
         let o = Osd::brightness(0.5);
         let t0 = o.raised_at;
         // Just before the fade begins: still fully opaque.
-        let before_fade = t0 + OSD_HOLD - OSD_FADE - Duration::from_millis(1);
+        let before_fade = (t0 + OSD_HOLD).checked_sub(OSD_FADE).unwrap() - Duration::from_millis(1);
         assert_eq!(o.alpha_at(before_fade), 1.0);
         // Halfway through the fade: partly transparent, not yet gone.
-        let mid = t0 + OSD_HOLD - OSD_FADE / 2;
+        let mid = (t0 + OSD_HOLD).checked_sub(OSD_FADE / 2).unwrap();
         let a = o.alpha_at(mid);
         assert!(a > 0.0 && a < 1.0, "expected a partial alpha, got {a}");
     }

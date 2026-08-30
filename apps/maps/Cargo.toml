@@ -17,13 +17,11 @@ qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 # Explicit rustls ring provider so we can install_default() at startup — the tree
 # has both ring + aws-lc-rs, which rustls 0.23 won't auto-disambiguate.
@@ -38,3 +36,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] 
 futures-util.workspace = true
 # RFC-3339 timestamps for the transit depart/arrive time picker.
 chrono = { workspace = true, default-features = true }
+
+[lints]
+workspace = true

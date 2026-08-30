@@ -1,57 +1,49 @@
 //! `qdoc-rtf` — render a [`qdoc::DocSnapshot`] to RTF (Rich Text Format).
 //!
-//! This is the RTF export engine, rounding out qdoc's export formats alongside
-//! `qdoc-pdf` (PDF) and `qdoc-html` (HTML). It takes the materialized, read-only
-//! view of a qdoc document (headings, paragraphs, quotes, lists, tables) and
-//! emits a well-formed RTF document: a `{\rtf1\ansi …}` group with a font
-//! table, a color table, and a body of paragraphs.
-//!
-//! RTF is a plain-text control-word format. The output is designed to open
-//! cleanly in WordPad / LibreOffice / Word / TextEdit — every group is
-//! balanced.
+//! Rounds out qdoc's export formats alongside `qdoc-pdf` and
+//! `qdoc-html`. Takes the materialized, read-only document view and
+//! emits a well-formed RTF document: a `{\rtf1\ansi …}` group with a
+//! font table, a color table, and a body of paragraphs. Every group is
+//! balanced so the output opens cleanly in WordPad/LibreOffice/Word/TextEdit.
 //!
 //! ## Block mapping
 //!
-//! - **heading** → a bold paragraph at a larger font size keyed to the level.
-//! - **paragraph** → a `\par`-terminated run.
-//! - **quote / blockquote** → an indented paragraph (`\li` left-indent).
-//! - **list_item** → a bulleted (`\bullet`) or numbered run with hanging indent.
-//! - **table** → `\trowd \cellx… <cell>\cell …\row` rows.
-//! - **code / code_block** → a monospace paragraph, marks not applied.
+//! heading → bold paragraph at a larger font size keyed to level;
+//! paragraph → `\par`-terminated run; quote/blockquote → indented
+//! paragraph (`\li`); `list_item` → bulleted (`\bullet`) or numbered run
+//! with hanging indent; table → `\trowd \cellx… <cell>\cell …\row` rows;
+//! `code/code_block` → monospace paragraph, marks not applied.
 //!
 //! ## Inline marks
 //!
-//! Marks split the text into runs over which the active set is constant (the
-//! same boundary-splitting approach `qdoc-html` uses). Each run emits its toggles:
-//! `\b` (strong), `\i` (em), `\ul` (underline), `\strike`, `\cfN` (color),
-//! `\fN` (font), `\fsN` (size — RTF half-points, so `2 × pt`). A `href`/`link`
-//! mark wraps its run in an RTF `HYPERLINK` field.
+//! Marks split text into runs over which the active set is constant
+//! (same boundary-splitting approach as `qdoc-html`). Each run emits:
+//! `\b`, `\i`, `\ul`, `\strike`, `\cfN` (color), `\fN` (font), `\fsN`
+//! (size, half-points). A `href`/`link` mark wraps its run in an RTF
+//! `HYPERLINK` field.
 //!
 //! ## Escaping
 //!
-//! The RTF specials `\`, `{`, `}` are backslash-escaped. Non-ASCII characters
-//! are emitted as `\uN?` unicode escapes (signed 16-bit code unit + a `?`
-//! ASCII fallback), which is the portable RTF way to carry Unicode.
+//! `\`, `{`, `}` are backslash-escaped; non-ASCII is emitted as `\uN?`
+//! unicode escapes (signed 16-bit code unit + `?` ASCII fallback), the
+//! portable RTF way to carry Unicode.
 //!
 //! ## Known limitations
 //!
-//! - **Tables**: emitted as a flat grid of equal-width cells; no cell merging,
-//!   `colspan`/`rowspan`, or header rows.
-//! - **Nested lists**: a `list_item`'s `level` adds left-indent but RTF list
-//!   tables (`\listtable`) are not generated — numbering markers are literal.
-//! - **Images**: `image` blocks are skipped (RTF's `\pict` hex-blob embedding is
-//!   out of scope for this exporter); their `alt` text, if any, renders as a
-//!   paragraph so the block is not silently lost.
-//! - **Named styles**: the `styles` map is not emitted as an RTF stylesheet;
-//!   block formatting is resolved inline.
+//! Tables: a flat grid of equal-width cells, no merging/colspan/rowspan/
+//! header rows. Nested lists: `level` adds left-indent but no
+//! `\listtable` — numbering markers are literal. Images: skipped
+//! (`\pict` hex-blob embedding is out of scope); `alt` text, if any,
+//! renders as a paragraph. Named styles: not emitted as an RTF
+//! stylesheet; formatting resolves inline.
 
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot, MarkSpan};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-/// Font-table indices. RTF references fonts by `\fN`; these are the slots we
-/// register in the font table (`\fonttbl`) in this fixed order.
+/// Font-table indices. RTF references fonts by `\fN`; these are the
+/// slots registered in `\fonttbl` in this fixed order.
 const FONT_SANS: usize = 0;
 const FONT_SERIF: usize = 1;
 const FONT_MONO: usize = 2;
@@ -62,17 +54,16 @@ const BODY_PT: i64 = 11;
 /// Twips per indent step (RTF measures indents in twips; 720 ≈ 0.5 inch).
 const INDENT_TWIPS: i64 = 720;
 
-/// Render a materialized qdoc snapshot to an RTF string.
-///
-/// Always succeeds: unknown block kinds degrade to a paragraph and image blocks
-/// degrade to their alt text (or are skipped if they have none).
+/// Render a materialized qdoc snapshot to an RTF string. Always
+/// succeeds: unknown block kinds degrade to a paragraph, image blocks
+/// degrade to their alt text (or are skipped).
 pub fn render_rtf(snap: &DocSnapshot) -> String {
     // Pass 1: collect the color table from every `color` mark in the document.
     let mut colors = ColorTable::new();
     collect_colors(&snap.blocks, &mut colors);
 
-    // Pass 2: render the body into a buffer (this never references colors not
-    // already collected, because collection walked the same blocks).
+    // Pass 2: render the body into a buffer (never references colors not
+    // already collected, since collection walked the same blocks).
     let mut body = String::new();
     render_blocks(&mut body, &snap.blocks, &colors, 0);
 
@@ -82,15 +73,15 @@ pub fn render_rtf(snap: &DocSnapshot) -> String {
     out.push_str(FONT_TABLE);
     out.push_str(&colors.render());
     // A leading newline keeps the control words off the header line for
-    // readability; RTF ignores the newline.
+    // readability; RTF ignores it.
     out.push('\n');
     out.push_str(&body);
     out.push('}');
     out
 }
 
-/// The fixed font table. Three logical families map to concrete faces:
-/// sans → Helvetica (swiss), serif → Times (roman), mono → Courier (modern).
+/// The fixed font table: sans → Helvetica (swiss), serif → Times
+/// (roman), mono → Courier (modern).
 const FONT_TABLE: &str = "{\\fonttbl\
 {\\f0\\fswiss Helvetica;}\
 {\\f1\\froman Times;}\
@@ -98,10 +89,9 @@ const FONT_TABLE: &str = "{\\fonttbl\
 
 // ---- color table ------------------------------------------------------------
 
-/// Collects distinct RGB colors and renders the RTF `\colortbl`.
-///
-/// RTF reserves color index 0 as "auto" (default foreground), so registered
-/// colors start at index 1. `index_of` returns the 1-based `\cfN` index.
+/// Collects distinct RGB colors and renders the RTF `\colortbl`. RTF
+/// reserves color index 0 as "auto", so registered colors start at 1;
+/// `index_of` returns the 1-based `\cfN` index.
 struct ColorTable {
     /// Insertion-ordered distinct colors as `(r, g, b)`.
     colors: Vec<(u8, u8, u8)>,
@@ -111,7 +101,10 @@ struct ColorTable {
 
 impl ColorTable {
     fn new() -> Self {
-        Self { colors: Vec::new(), seen: BTreeMap::new() }
+        Self {
+            colors: Vec::new(),
+            seen: BTreeMap::new(),
+        }
     }
 
     /// Register a color and return its 1-based RTF color index (`\cfN`).
@@ -130,8 +123,8 @@ impl ColorTable {
         self.seen.get(&rgb).map(|&p| p + 1)
     }
 
-    /// Render the `{\colortbl …}` group. The leading empty entry (`;`) is the
-    /// reserved "auto" color at index 0.
+    /// Render the `{\colortbl …}` group; the leading empty entry (`;`) is
+    /// the reserved "auto" color at index 0.
     fn render(&self) -> String {
         let mut s = String::from("{\\colortbl;");
         for &(r, g, b) in &self.colors {
@@ -142,15 +135,15 @@ impl ColorTable {
     }
 }
 
-/// Walk blocks (and their children) interning every `color` mark so the color
-/// table is complete before the body is rendered.
+/// Walk blocks (and children) interning every `color` mark so the color
+/// table is complete before the body renders.
 fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
     for b in blocks {
         for m in &b.marks {
-            if m.name == "color" {
-                if let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color) {
-                    colors.intern(hex);
-                }
+            if m.name == "color"
+                && let Some(hex) = mark_str(m).as_deref().and_then(parse_hex_color)
+            {
+                colors.intern(hex);
             }
         }
         collect_colors(&b.children, colors);
@@ -159,8 +152,8 @@ fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
 
 // ---- block rendering --------------------------------------------------------
 
-/// Render a slice of sibling blocks. List items render individually (each is a
-/// self-contained `\par`), matching how qdoc materializes a flat run.
+/// Render a slice of sibling blocks. List items render individually
+/// (each a self-contained `\par`), matching qdoc's flat run.
 fn render_blocks(out: &mut String, blocks: &[BlockView], colors: &ColorTable, indent_level: i64) {
     for block in blocks {
         render_block(out, block, colors, indent_level);
@@ -263,8 +256,12 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
     out.push(' ');
     if ordered {
         // Numbered: the marker is literal text (RTF list tables are out of
-        // scope). `index`/`start` choose the displayed number; default 1.
-        let n = match block.attrs.get("index").or_else(|| block.attrs.get("start")) {
+        // scope); `index`/`start` choose the displayed number, default 1.
+        let n = match block
+            .attrs
+            .get("index")
+            .or_else(|| block.attrs.get("start"))
+        {
             Some(AttrVal::Int(n)) => *n,
             _ => 1,
         };
@@ -277,15 +274,15 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
 }
 
 fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
-    // Pixel embedding is out of scope; fall back to alt text so the block is not
-    // lost. If there is no alt text, skip entirely.
-    let alt = if !block.text.is_empty() {
-        block.text.clone()
-    } else {
+    // Pixel embedding is out of scope; fall back to alt text so the
+    // block isn't lost, or skip if there's no alt text.
+    let alt = if block.text.is_empty() {
         match block.attrs.get("alt") {
             Some(AttrVal::Str(s)) => s.clone(),
             _ => String::new(),
         }
+    } else {
+        block.text.clone()
     };
     if alt.is_empty() {
         return;
@@ -300,17 +297,25 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
 // ---- tables -----------------------------------------------------------------
 
 fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
-    // Rows are child blocks; each row's children are its cells. Tolerate the
-    // flat shape (cells directly under the table with a `cols` attr), matching
-    // qdoc-html's table-shape handling.
+    // Rows are child blocks, each row's children its cells. Tolerates
+    // the flat shape (cells directly under the table with a `cols`
+    // attr), matching qdoc-html's handling.
     let rows: Vec<Vec<&BlockView>> = if block.children.iter().any(|c| !c.children.is_empty()) {
-        block.children.iter().map(|row| row.children.iter().collect()).collect()
+        block
+            .children
+            .iter()
+            .map(|row| row.children.iter().collect())
+            .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
-        block.children.chunks(cols).map(|c| c.iter().collect()).collect()
+        block
+            .children
+            .chunks(cols)
+            .map(|c| c.iter().collect())
+            .collect()
     } else {
         Vec::new()
     };
@@ -320,7 +325,12 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     }
 
     // Equal-width columns across the page width (≈ 9000 twips of usable width).
-    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+    let max_cols = rows
+        .iter()
+        .map(std::vec::Vec::len)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let total_twips: i64 = 9000;
     let col_w = total_twips / max_cols as i64;
 
@@ -337,8 +347,7 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
                 render_inline(out, &cell.text, &cell.marks, colors);
             } else {
                 // Block content inside a cell: flatten the first text-bearing
-                // child's inline run (full nested block content in a cell is out
-                // of scope for RTF here).
+                // child's inline run (full nested block content is out of scope here).
                 let mut tmp = String::new();
                 render_blocks(&mut tmp, &cell.children, colors, 0);
                 out.push_str(strip_pars(&tmp).trim());
@@ -353,10 +362,12 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
     }
 }
 
-/// Remove `\pard …\par` wrappers from a rendered block buffer, leaving the
-/// inline run — used to inline a cell's block content into a table cell.
+/// Remove `\pard …\par` wrappers from a rendered block buffer, leaving
+/// the inline run — used to inline a cell's content into a table cell.
 fn strip_pars(s: &str) -> String {
-    s.replace("\\pard", "").replace("\\par}", "").replace('}', "").replace('{', "")
+    s.replace("\\pard", "")
+        .replace("\\par}", "")
+        .replace(['}', '{'], "")
 }
 
 // ---- block-level formatting helpers -----------------------------------------
@@ -383,10 +394,10 @@ fn push_indent(out: &mut String, indent_level: i64) {
 
 // ---- inline marks -----------------------------------------------------------
 
-/// Render `text` with `marks` applied as RTF control words over the correct
-/// byte ranges. Mark `start`/`end` are byte offsets into the UTF-8 text; we cut
-/// the text at every mark boundary, then for each segment toggle the active
-/// mark set inside its own group `{ … }` so toggles never leak.
+/// Render `text` with `marks` applied as RTF control words over the
+/// correct byte ranges. Marks cut the text at byte-offset boundaries,
+/// then each segment toggles the active mark set inside its own group
+/// `{ … }` so toggles never leak.
 fn render_inline(out: &mut String, text: &str, marks: &[MarkSpan], colors: &ColorTable) {
     if text.is_empty() {
         return;
@@ -421,9 +432,9 @@ fn render_inline(out: &mut String, text: &str, marks: &[MarkSpan], colors: &Colo
     }
 }
 
-/// Render one constant-mark-set segment. A hyperlink (`href`/`link`) wraps the
-/// run in an RTF `HYPERLINK` field; all other toggles live in a single group so
-/// they reset at its close.
+/// Render one constant-mark-set segment. A hyperlink (`href`/`link`)
+/// wraps the run in an RTF `HYPERLINK` field; other toggles share a
+/// single group that resets at its close.
 fn render_run(out: &mut String, segment: &str, active: &[&MarkSpan], colors: &ColorTable) {
     let href = active
         .iter()
@@ -506,8 +517,8 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
     out.push('}');
 }
 
-/// Font-table index for a logical family name. Unknown families fall back to
-/// sans.
+/// Font-table index for a logical family name; unknown families fall
+/// back to sans.
 fn font_index(f: &str) -> usize {
     match f {
         "serif" => FONT_SERIF,
@@ -521,7 +532,7 @@ fn font_index(f: &str) -> usize {
 
 /// The string payload of a valued mark (link href, color hex, font family).
 fn mark_str(m: &MarkSpan) -> Option<String> {
-    m.value.as_str().map(|s| s.to_string())
+    m.value.as_str().map(std::string::ToString::to_string)
 }
 
 /// Parse a `#rrggbb` / `rrggbb` (or `#rgb`) hex color into `(r, g, b)`.
@@ -533,7 +544,7 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
         3 => {
             // #abc → #aabbcc
             let d = |i: usize| {
-                let c = u8::from_str_radix(&h[i..i + 1], 16).ok()?;
+                let c = u8::from_str_radix(&h[i..=i], 16).ok()?;
                 Some(c * 16 + c)
             };
             Some((d(0)?, d(1)?, d(2)?))
@@ -544,13 +555,10 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
 
 // ---- RTF escaping -----------------------------------------------------------
 
-/// Push `text` into `out`, escaping RTF specials and emitting non-ASCII as
-/// `\uN?` unicode escapes.
-///
-/// - `\`, `{`, `}` → backslash-escaped (`\\`, `\{`, `\}`).
-/// - ASCII printable / common whitespace → verbatim (newlines become `\line `).
-/// - everything else (any non-ASCII char) → `\uN?` where `N` is the signed
-///   16-bit code unit; chars beyond the BMP emit one `\uN?` per UTF-16 unit.
+/// Push `text` into `out`, escaping RTF specials and emitting non-ASCII
+/// as `\uN?` unicode escapes: `\`, `{`, `}` backslash-escaped; ASCII
+/// printable/whitespace verbatim (newlines become `\line `); everything
+/// else as `\uN?` (signed 16-bit code unit, one per UTF-16 unit beyond the BMP).
 fn push_escaped(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {

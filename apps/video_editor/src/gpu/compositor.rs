@@ -39,7 +39,12 @@ pub struct Viewport {
 impl Viewport {
     /// The whole of a `width × height` target.
     pub fn full(width: u32, height: u32) -> Self {
-        Self { x: 0, y: 0, width, height }
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
     }
 }
 
@@ -117,7 +122,11 @@ impl VideoCompositor {
         let make = |label: &str| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -132,12 +141,20 @@ impl VideoCompositor {
         let b = make("video-composite-accum-b");
         let va = a.create_view(&wgpu::TextureViewDescriptor::default());
         let vb = b.create_view(&wgpu::TextureViewDescriptor::default());
-        self.accum = Some(Accum { width, height, textures: [a, b], views: [va, vb] });
+        self.accum = Some(Accum {
+            width,
+            height,
+            textures: [a, b],
+            views: [va, vb],
+        });
     }
 
     fn ensure_uniform(&mut self, device: &wgpu::Device, stride: u32, count: usize) {
         let needed = stride as u64 * count.max(1) as u64;
-        let big_enough = self.uniform.as_ref().is_some_and(|(b, _)| b.size() >= needed);
+        let big_enough = self
+            .uniform
+            .as_ref()
+            .is_some_and(|(b, _)| b.size() >= needed);
         if big_enough {
             return;
         }
@@ -157,12 +174,7 @@ impl VideoCompositor {
     /// row index is simply the layer index and there is no mapping to keep
     /// in step. Its uniform says `lut.x = 0` regardless, so that row is
     /// never read.
-    fn ensure_lut(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        layers: &[Layer],
-    ) -> bool {
+    fn ensure_lut(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, layers: &[Layer]) -> bool {
         use crate::curve::LUT_SIZE;
         if layers.iter().all(|l| l.curve.is_identity()) {
             return false;
@@ -192,7 +204,12 @@ impl VideoCompositor {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.lut = Some(Lut { rows, texture, view, uploaded: Vec::new() });
+            self.lut = Some(Lut {
+                rows,
+                texture,
+                view,
+                uploaded: Vec::new(),
+            });
         }
         let lut = self.lut.as_mut().expect("built above");
         // Re-upload only when the baked bytes actually differ, so holding a
@@ -361,7 +378,11 @@ impl VideoCompositor {
                     rows_per_image: Some(h),
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit([enc.finish()]);
 
@@ -806,7 +827,11 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
 
     let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("video-composite-dummy"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -819,7 +844,14 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
     let align = device.limits().min_uniform_buffer_offset_alignment.max(1);
     let uniform_stride = (PARAMS_BYTES as u32).div_ceil(align) * align;
 
-    Gpu { layer_pipeline, present_pipeline, bgl, sampler, dummy, uniform_stride }
+    Gpu {
+        layer_pipeline,
+        present_pipeline,
+        bgl,
+        sampler,
+        dummy,
+        uniform_stride,
+    }
 }
 
 /// Upload a tightly-packed RGBA8 picture into a fresh texture.
@@ -836,7 +868,11 @@ pub fn upload_rgba(
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("video-composite-source"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -857,8 +893,17 @@ pub fn upload_rgba(
             bytes_per_row: Some(w * 4),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-    Some(SourceTexture { texture: Arc::new(texture), view, width: w, height: h })
+    Some(SourceTexture {
+        texture: Arc::new(texture),
+        view,
+        width: w,
+        height: h,
+    })
 }

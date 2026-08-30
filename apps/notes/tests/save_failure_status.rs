@@ -10,8 +10,8 @@
 use std::time::Duration;
 
 use notes::sidebar::OutEvent;
-use notes::{storage, NotesApp};
 use notes::storage::SaveStatus;
+use notes::{NotesApp, storage};
 use tempfile::TempDir;
 use ui::widget::Widget;
 

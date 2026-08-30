@@ -25,6 +25,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 const PAD_X: f64 = 14.0;
@@ -55,14 +56,24 @@ fn paint_banner(
         return Rect::ZERO;
     }
     let accent = kind.color(theme);
-    let radius = theme.tokens.radii.md as f64;
+    let radius = f64::from(theme.tokens.radii.md);
 
-    // Tinted surface + hairline border in the severity colour.
     let surf = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, transform, accent.with_alpha_factor(0.13), None, &surf);
-    scene.stroke(&Stroke::new(1.0), transform, accent.with_alpha_factor(0.4), None, &surf);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        accent.with_alpha_factor(0.13),
+        None,
+        &surf,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        accent.with_alpha_factor(0.4),
+        None,
+        &surf,
+    );
 
-    // Left accent bar.
     let bar = RoundedRect::new(
         rect.x0,
         rect.y0,
@@ -72,20 +83,19 @@ fn paint_banner(
     );
     scene.fill(Fill::NonZero, transform, accent, None, &bar);
 
-    // Leading icon, vertically centered.
     let icon_x = rect.x0 + PAD_X;
     let icon_cy = rect.center().y;
-    let icon_rect = Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
+    let icon_rect =
+        Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
     icon.draw_with_stroke(scene, transform, icon_rect, accent, 1.6);
 
-    // Text block.
     let text_x = icon_rect.x1 + GAP;
     let title_size = theme.tokens.typography.scale.base;
     let msg_size = theme.tokens.typography.scale.sm;
     let total_text_h = if message.is_some() {
-        title_size as f64 + 4.0 + msg_size as f64
+        f64::from(title_size) + 4.0 + f64::from(msg_size)
     } else {
-        title_size as f64
+        f64::from(title_size)
     };
     let mut ty = rect.center().y - total_text_h / 2.0;
     text_renderer.draw_text(
@@ -96,7 +106,7 @@ fn paint_banner(
         transform * Affine::translate((text_x, ty)),
         None,
     );
-    ty += title_size as f64 + 4.0;
+    ty += f64::from(title_size) + 4.0;
     if let Some(msg) = message {
         text_renderer.draw_text(
             scene,
@@ -108,7 +118,6 @@ fn paint_banner(
         );
     }
 
-    // Trailing dismiss "×".
     if dismissible {
         let dx = rect.x1 - PAD_X - DISMISS_D;
         let dr = Rect::from_center_size(
@@ -116,7 +125,11 @@ fn paint_banner(
             (DISMISS_D, DISMISS_D),
         );
         let hovered = dr.contains(hover);
-        let col = if hovered { theme.text_primary } else { theme.text_dim };
+        let col = if hovered {
+            theme.text_primary
+        } else {
+            theme.text_dim
+        };
         Icon::X.draw_with_stroke(scene, transform, dr, col, 1.6);
         dr
     } else {
@@ -135,7 +148,6 @@ pub enum BannerKind {
 }
 
 impl BannerKind {
-    /// The semantic accent colour for this severity, from the theme ramp.
     pub fn color(self, theme: &Theme) -> Color {
         let s = &theme.tokens.colors.semantic;
         match self {
@@ -180,7 +192,6 @@ pub struct Banner {
 }
 
 impl Banner {
-    /// Construct a banner of the given severity with a title line.
     pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
         Self {
             kind,
@@ -196,22 +207,24 @@ impl Banner {
         }
     }
 
-    /// Shorthand for `Banner::new(BannerKind::Info, title)`.
-    pub fn info(title: impl Into<String>) -> Self { Self::new(BannerKind::Info, title) }
-    /// Shorthand for `Banner::new(BannerKind::Success, title)`.
-    pub fn success(title: impl Into<String>) -> Self { Self::new(BannerKind::Success, title) }
-    /// Shorthand for `Banner::new(BannerKind::Warning, title)`.
-    pub fn warning(title: impl Into<String>) -> Self { Self::new(BannerKind::Warning, title) }
-    /// Shorthand for `Banner::new(BannerKind::Error, title)`.
-    pub fn error(title: impl Into<String>) -> Self { Self::new(BannerKind::Error, title) }
+    pub fn info(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Info, title)
+    }
+    pub fn success(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Success, title)
+    }
+    pub fn warning(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Warning, title)
+    }
+    pub fn error(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Error, title)
+    }
 
-    /// Add the dim secondary line beneath the title.
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
     }
 
-    /// Override the default leading icon for the severity.
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
@@ -260,17 +273,26 @@ impl Banner {
         hover: Point,
     ) -> Rect {
         paint_banner(
-            scene, transform, text_renderer, theme, rect, kind, icon, title, message, dismissible,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            kind,
+            icon,
+            title,
+            message,
+            dismissible,
             hover,
         )
     }
 
     /// Intrinsic content height for the current title/message, in logical px.
     fn content_height(&self, theme: &Theme) -> f64 {
-        let title_h = theme.tokens.typography.scale.base as f64;
+        let title_h = f64::from(theme.tokens.typography.scale.base);
         let mut h = title_h;
         if self.message.is_some() {
-            h += 4.0 + theme.tokens.typography.scale.sm as f64;
+            h += 4.0 + f64::from(theme.tokens.typography.scale.sm);
         }
         (h + PAD_Y * 2.0).max(44.0)
     }
@@ -285,15 +307,20 @@ impl Widget for Banner {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let h = if self.dismissed { 0.0 } else { self.content_height(theme) as f32 };
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: taffy::Size { width: percent(1.0), height: length(h) },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let h = if self.dismissed {
+            0.0
+        } else {
+            self.content_height(theme) as f32
+        };
+        let node = taffy.leaf_node(Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(h),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
@@ -304,17 +331,24 @@ impl Widget for Banner {
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let theme = Theme::dark();
-        let h = if self.dismissed { 0.0 } else { self.content_height(&theme) as f32 };
-        taffy::Size { width: 320.0, height: h }
+        let h = if self.dismissed {
+            0.0
+        } else {
+            self.content_height(&theme) as f32
+        };
+        taffy::Size {
+            width: 320.0,
+            height: h,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
     }
 
@@ -365,12 +399,13 @@ impl Widget for Banner {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.dismissible && !self.dismissed && self.dismiss_rect.contains(self.last_cursor) {
-                    self.dismissed = true;
-                    self.dismiss_fired = true;
-                    *handled = true;
-                }
+            } if self.dismissible
+                && !self.dismissed
+                && self.dismiss_rect.contains(self.last_cursor) =>
+            {
+                self.dismissed = true;
+                self.dismiss_fired = true;
+                *handled = true;
             }
             _ => {}
         }
@@ -384,9 +419,13 @@ impl Widget for Banner {
         }
     }
 
-    fn name(&self) -> &str { "Banner" }
+    fn name(&self) -> &'static str {
+        "Banner"
+    }
 
-    fn get_rect(&self) -> Rect { self.rect }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
@@ -447,31 +486,62 @@ mod tests {
         scene
     }
 
-    fn synth() -> winit::event::DeviceId { unsafe { std::mem::zeroed() } }
+    fn synth() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved { device_id: synth(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) }
+        WindowEvent::CursorMoved {
+            device_id: synth(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
     }
     fn press() -> WindowEvent {
-        WindowEvent::MouseInput { device_id: synth(), state: ElementState::Pressed, button: MouseButton::Left }
+        WindowEvent::MouseInput {
+            device_id: synth(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        w.handle_event(
+            e,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
         handled
     }
 
     #[test]
     fn kind_maps_to_semantic_color_and_icon() {
         let theme = Theme::dark();
-        assert_eq!(BannerKind::Error.color(&theme), theme.tokens.colors.semantic.danger);
-        assert_eq!(BannerKind::Success.color(&theme), theme.tokens.colors.semantic.success);
-        assert_eq!(BannerKind::Warning.color(&theme), theme.tokens.colors.semantic.warning);
-        assert_eq!(BannerKind::Info.color(&theme), theme.tokens.colors.semantic.info);
+        assert_eq!(
+            BannerKind::Error.color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
+        assert_eq!(
+            BannerKind::Success.color(&theme),
+            theme.tokens.colors.semantic.success
+        );
+        assert_eq!(
+            BannerKind::Warning.color(&theme),
+            theme.tokens.colors.semantic.warning
+        );
+        assert_eq!(
+            BannerKind::Info.color(&theme),
+            theme.tokens.colors.semantic.info
+        );
         assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
     }
 
@@ -485,7 +555,9 @@ mod tests {
 
     #[test]
     fn dismiss_click_fires_once_and_collapses() {
-        let mut b = Banner::warning("Offline").with_message("Changes will sync later").dismissible();
+        let mut b = Banner::warning("Offline")
+            .with_message("Changes will sync later")
+            .dismissible();
         lay_out(&mut b, 500.0, 200.0);
         let _ = draw(&mut b);
         let target = b.dismiss_rect.center();
@@ -495,9 +567,13 @@ mod tests {
         assert!(b.take_dismissed(), "dismiss signal fires");
         assert!(!b.take_dismissed(), "dismiss signal drains after one read");
         assert!(b.is_dismissed());
-        // Once dismissed it paints nothing.
         let scene = draw(&mut b);
-        let fills = scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
         assert_eq!(fills, 0, "a dismissed banner paints nothing");
     }
 
@@ -517,17 +593,29 @@ mod tests {
     fn message_makes_the_banner_taller() {
         let theme = Theme::dark();
         let short = Banner::info("One line").content_height(&theme);
-        let tall = Banner::info("One line").with_message("Plus a detail line").content_height(&theme);
+        let tall = Banner::info("One line")
+            .with_message("Plus a detail line")
+            .content_height(&theme);
         assert!(tall > short, "a message adds a second line of height");
     }
 
     #[test]
     fn draws_accent_bar_and_text() {
-        let mut b = Banner::error("Upload failed").with_message("Check your connection").dismissible();
+        let mut b = Banner::error("Upload failed")
+            .with_message("Check your connection")
+            .dismissible();
         lay_out(&mut b, 500.0, 200.0);
         let scene = draw(&mut b);
-        let fills = scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
-        assert!(fills > 4, "surface + border + bar + icon + text ⇒ many fills, got {fills}");
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            fills > 4,
+            "surface + border + bar + icon + text ⇒ many fills, got {fills}"
+        );
     }
 
     #[test]
@@ -537,8 +625,15 @@ mod tests {
         let node = Widget::accessibility(&err).expect("banner exposes a11y");
         assert_eq!(node.role, Role::Group);
         assert_eq!(node.name.as_deref(), Some("Boom"));
-        assert_eq!(node.live, Some(Politeness::Assertive), "errors announce assertively");
+        assert_eq!(
+            node.live,
+            Some(Politeness::Assertive),
+            "errors announce assertively"
+        );
         let info = Banner::info("FYI");
-        assert_eq!(Widget::accessibility(&info).unwrap().live, Some(Politeness::Polite));
+        assert_eq!(
+            Widget::accessibility(&info).unwrap().live,
+            Some(Politeness::Polite)
+        );
     }
 }

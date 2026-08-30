@@ -1,5 +1,5 @@
-//! Live data sources: Invidious (search + metadata), SponsorBlock
-//! (segments) and DeArrow (de-clickbait titles/thumbnails).
+//! Live data sources: Invidious (search + metadata), `SponsorBlock`
+//! (segments) and `DeArrow` (de-clickbait titles/thumbnails).
 //!
 //! Everything here runs on a background [`Worker`] thread driven by a
 //! blocking `reqwest` client — the `--shots` path never spawns it, so the
@@ -8,11 +8,11 @@
 //! through [`crate::app::TubeApp::pump`].
 //!
 //! Endpoints (researched, current as of 2026):
-//!   * Invidious   `GET {instance}/api/v1/search?q=&type=video`
-//!                 `GET {instance}/api/v1/videos/{id}`
-//!   * SponsorBlock `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
-//!   * DeArrow     `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
-//!   * Dislikes    `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
+//! - Invidious: `GET {instance}/api/v1/search?q=&type=video`,
+//!   `GET {instance}/api/v1/videos/{id}`
+//! - `SponsorBlock`: `GET https://sponsor.ajay.app/api/skipSegments?videoID=<id>&categories=[…]`
+//! - `DeArrow`: `GET https://sponsor.ajay.app/api/branding?videoID=<id>`
+//! - Dislikes: `GET https://returnyoutubedislikeapi.com/votes?videoId=<id>`
 //!
 //! Real video playback resolves to a **fully-rangeable** proxied stream URL that
 //! the shared media engine plays. [`crate::backend::proxy::resolve_rangeable`]
@@ -22,7 +22,7 @@
 //! backend's direct [`crate::backend::YtBackend::resolve_playback_source`] when
 //! no instance answers. The resolved URL comes back as [`Update::StreamResolved`]
 //! and is opened into the watch page's `ui::widget::VideoPlayer` engine — which
-//! does the actual GStreamer decode + audio out, so no decoder lives here.
+//! does the actual `GStreamer` decode + audio out, so no decoder lives here.
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -33,7 +33,7 @@ use crate::model::{Category, Channel, Comment, Playlist, Segment, Video};
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum Request {
-    /// Fetch SponsorBlock + DeArrow data for a video being opened.
+    /// Fetch `SponsorBlock` + `DeArrow` data for a video being opened.
     Branding(String),
     /// Run a search through the data-source backend.
     Search { query: String },
@@ -68,7 +68,7 @@ pub enum Update {
         /// when one exists.
         thumbnail_url: Option<String>,
     },
-    /// Crowdsourced dislike count for a video (Return YouTube Dislike).
+    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike).
     Dislikes {
         video: String,
         count: u64,
@@ -127,14 +127,19 @@ fn client() -> reqwest::blocking::Client {
         .user_agent("tube/0.1 (+qos)")
         .timeout(Duration::from_secs(8))
         .build()
-        .expect("reqwest client")
+        // Only a static user-agent + timeout are set (no proxy/TLS config that
+        // could fail to parse), so `build()` cannot return `Err` here.
+        .expect("reqwest client builder cannot fail with these fixed options")
 }
 
-/// Fetch SponsorBlock segments for a video via the direct
+/// Fetch `SponsorBlock` segments for a video via the direct
 /// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
 /// API's "no segments for this video" response) is treated as an empty list
 /// rather than an error.
-pub fn fetch_sponsor(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<Vec<Segment>> {
+pub fn fetch_sponsor(
+    client: &reqwest::blocking::Client,
+    video_id: &str,
+) -> anyhow::Result<Vec<Segment>> {
     let cats = category_json();
     let resp = client
         .get("https://sponsor.ajay.app/api/skipSegments")
@@ -147,7 +152,7 @@ pub fn fetch_sponsor(client: &reqwest::blocking::Client, video_id: &str) -> anyh
     Ok(parse_skip_segments(&val))
 }
 
-/// Parse a SponsorBlock `/api/skipSegments?videoID=<id>` response (a flat JSON
+/// Parse a `SponsorBlock` `/api/skipSegments?videoID=<id>` response (a flat JSON
 /// array of segment objects) into sorted [`Segment`]s. Pure (no I/O) so it is
 /// unit-tested directly. Unknown categories and malformed rows are skipped.
 pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
@@ -157,14 +162,32 @@ pub fn parse_skip_segments(resp: &serde_json::Value) -> Vec<Segment> {
             let cat = s.get("category").and_then(|c| c.as_str()).unwrap_or("");
             let times = s.get("segment").and_then(|t| t.as_array());
             if let (Some(cat), Some(times)) = (Category::from_api_key(cat), times) {
-                let start = times.first().and_then(|x| x.as_f64()).unwrap_or(0.0);
-                let end = times.get(1).and_then(|x| x.as_f64()).unwrap_or(start);
-                let votes = s.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
-                out.push(Segment { category: cat, start, end, votes });
+                let start = times
+                    .first()
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
+                let end = times
+                    .get(1)
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(start);
+                let votes = s
+                    .get("votes")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
+                out.push(Segment {
+                    category: cat,
+                    start,
+                    end,
+                    votes,
+                });
             }
         }
     }
-    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -173,7 +196,7 @@ fn category_json() -> String {
     serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Fetch DeArrow branding for a video: the top-voted crowdsourced title (when it
+/// Fetch `DeArrow` branding for a video: the top-voted crowdsourced title (when it
 /// outranks the original) and a community thumbnail URL (a frame rendered at the
 /// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
 pub fn fetch_dearrow(
@@ -189,23 +212,29 @@ pub fn fetch_dearrow(
     Ok(parse_dearrow(&resp, video_id))
 }
 
-/// Parse a DeArrow `/api/branding?videoID=<id>` response into `(title,
+/// Parse a `DeArrow` `/api/branding?videoID=<id>` response into `(title,
 /// thumbnail_url)`. Picks the highest-scored non-original entry (a locked entry
-/// wins over vote count, matching DeArrow's own precedence), and skips entries
+/// wins over vote count, matching `DeArrow`'s own precedence), and skips entries
 /// the community has voted down. Pure (no I/O) so it is unit-tested directly.
-pub fn parse_dearrow(
-    resp: &serde_json::Value,
-    video_id: &str,
-) -> (Option<String>, Option<String>) {
+pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String>, Option<String>) {
     // Score an entry: locked entries win outright; otherwise by vote count.
     // Downvoted-into-removal entries (votes < 0 and not locked) are dropped.
     let score = |e: &serde_json::Value| -> Option<i64> {
-        let original = e.get("original").and_then(|o| o.as_bool()).unwrap_or(false);
+        let original = e
+            .get("original")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         if original {
             return None;
         }
-        let votes = e.get("votes").and_then(|v| v.as_i64()).unwrap_or(0);
-        let locked = e.get("locked").and_then(|l| l.as_bool()).unwrap_or(false);
+        let votes = e
+            .get("votes")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let locked = e
+            .get("locked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         if votes < 0 && !locked {
             return None;
         }
@@ -220,7 +249,7 @@ pub fn parse_dearrow(
                 .filter_map(|e| Some((score(e)?, e)))
                 .max_by_key(|(s, _)| *s)
                 .and_then(|(_, e)| e.get("title").and_then(|s| s.as_str()))
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
         });
 
     let thumbnail_url = resp
@@ -230,7 +259,7 @@ pub fn parse_dearrow(
             arr.iter()
                 .filter_map(|e| {
                     let s = score(e)?;
-                    let ts = e.get("timestamp").and_then(|v| v.as_f64())?;
+                    let ts = e.get("timestamp").and_then(serde_json::Value::as_f64)?;
                     Some((s, ts))
                 })
                 .max_by_key(|(s, _)| *s)
@@ -244,12 +273,9 @@ pub fn parse_dearrow(
     (title, thumbnail_url)
 }
 
-/// Fetch the crowdsourced dislike count for a video via Return YouTube Dislike
+/// Fetch the crowdsourced dislike count for a video via Return `YouTube` Dislike
 /// (`GET /votes?videoId=<id>`).
-pub fn fetch_dislikes(
-    client: &reqwest::blocking::Client,
-    video_id: &str,
-) -> anyhow::Result<u64> {
+pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<u64> {
     let resp: serde_json::Value = client
         .get("https://returnyoutubedislikeapi.com/votes")
         .query(&[("videoId", video_id)])
@@ -259,10 +285,10 @@ pub fn fetch_dislikes(
     parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
 }
 
-/// Parse a Return YouTube Dislike `/votes` response's dislike count. Pure (no
+/// Parse a Return `YouTube` Dislike `/votes` response's dislike count. Pure (no
 /// I/O) so it is unit-tested directly.
 pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
-    resp.get("dislikes").and_then(|v| v.as_u64())
+    resp.get("dislikes").and_then(serde_json::Value::as_u64)
 }
 
 /// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
@@ -286,15 +312,33 @@ pub fn search(
             if item.get("type").and_then(|t| t.as_str()) != Some("video") {
                 continue;
             }
-            let id = item.get("videoId").and_then(|v| v.as_str()).unwrap_or_default();
+            let id = item
+                .get("videoId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             if id.is_empty() {
                 continue;
             }
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
-            let author = item.get("author").and_then(|v| v.as_str()).unwrap_or("Unknown");
-            let author_id = item.get("authorId").and_then(|v| v.as_str()).unwrap_or(author);
-            let views = item.get("viewCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let duration = item.get("lengthSeconds").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Untitled");
+            let author = item
+                .get("author")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+            let author_id = item
+                .get("authorId")
+                .and_then(|v| v.as_str())
+                .unwrap_or(author);
+            let views = item
+                .get("viewCount")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let duration = item
+                .get("lengthSeconds")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32;
             let published = item
                 .get("publishedText")
                 .and_then(|v| v.as_str())
@@ -313,7 +357,7 @@ pub fn search(
                     .and_then(|a| a.last())
                     .and_then(|t| t.get("url"))
                     .and_then(|u| u.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .unwrap_or_default(),
                 views,
                 published,
@@ -331,13 +375,16 @@ pub fn search(
                     .and_then(|a| a.first())
                     .and_then(|t| t.get("url"))
                     .and_then(|u| u.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .unwrap_or_default(),
                 category: "Search".to_string(),
                 dearrow_thumb: false,
                 sponsor: vec![],
                 comments: vec![],
-                live: item.get("liveNow").and_then(|v| v.as_bool()).unwrap_or(false),
+                live: item
+                    .get("liveNow")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
             });
         }
     }
@@ -355,7 +402,11 @@ impl Worker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<Update>();
-        std::thread::Builder::new()
+        // If the OS can't give us a thread (resource exhaustion), degrade to a
+        // worker that never produces updates rather than crashing the app:
+        // `request` sends go unread and `poll` stays empty, same as "no live
+        // data yet".
+        if let Err(e) = std::thread::Builder::new()
             .name("tube-fetch".into())
             .spawn(move || {
                 let client = client();
@@ -535,14 +586,23 @@ impl Worker {
                             // Real "up next" comes off the detail response; fetch
                             // it alongside the metadata (live only — the sample
                             // already carries full detail for its own ids).
-                            let related =
-                                match fetch(&live, offline.as_ref(), Query::Related(id.clone()), false, &up_tx) {
-                                    Some((BackendResult::Videos(r), _)) => r,
-                                    _ => Vec::new(),
-                                };
-                            if let Some((BackendResult::Video(v), used_live)) =
-                                fetch(&live, offline.as_ref(), Query::Video(id.clone()), false, &up_tx)
-                            {
+                            let related = match fetch(
+                                &live,
+                                offline.as_ref(),
+                                Query::Related(id.clone()),
+                                false,
+                                &up_tx,
+                            ) {
+                                Some((BackendResult::Videos(r), _)) => r,
+                                _ => Vec::new(),
+                            };
+                            if let Some((BackendResult::Video(v), used_live)) = fetch(
+                                &live,
+                                offline.as_ref(),
+                                Query::Video(id.clone()),
+                                false,
+                                &up_tx,
+                            ) {
                                 send_status(&up_tx, used_live);
                                 let _ = up_tx.send(Update::VideoMeta { video: v, related });
                             }
@@ -561,7 +621,8 @@ impl Worker {
                                         }
                                         Ok(_) => {}
                                         Err(e) => {
-                                            let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                                            let _ =
+                                                up_tx.send(Update::Note(format!("comments: {e}")));
                                         }
                                     }
                                 }
@@ -584,7 +645,11 @@ impl Worker {
                                 Some((url, has_audio, quality)) => {
                                     let _ = up_tx.send(Update::Note(format!(
                                         "stream: {quality} {} [{}]",
-                                        if has_audio { "video+audio" } else { "video only" },
+                                        if has_audio {
+                                            "video+audio"
+                                        } else {
+                                            "video only"
+                                        },
                                         short_host(&url)
                                     )));
                                     let _ = up_tx.send(Update::StreamResolved {
@@ -606,8 +671,13 @@ impl Worker {
                     }
                 }
             })
-            .expect("spawn tube-fetch");
-        Self { tx: req_tx, rx: up_rx }
+        {
+            tracing::error!("failed to spawn the tube-fetch worker thread: {e}");
+        }
+        Self {
+            tx: req_tx,
+            rx: up_rx,
+        }
     }
 
     pub fn request(&self, req: Request) {
@@ -645,12 +715,11 @@ fn resolve_stream_url(
     // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
     // play the full length and seek. (Proven with `--probe-engine`: full
     // duration, buffered to 100%.)
-    if let Some(b) = live.as_ref() {
-        if let Ok(src) = b.resolve_playback_source(id) {
-            if !src.url.is_empty() {
-                return Some((src.url, src.has_audio, src.quality));
-            }
-        }
+    if let Some(b) = live.as_ref()
+        && let Ok(src) = b.resolve_playback_source(id)
+        && !src.url.is_empty()
+    {
+        return Some((src.url, src.has_audio, src.quality));
     }
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
@@ -682,7 +751,10 @@ fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     // Fallback: the in-process rustypipe InnerTube client.
     match crate::backend::live::RustyPipeBackend::new() {
         Ok(b) => {
-            let _ = up_tx.send(Update::Note(format!("live backend ready (fallback): {}", b.name())));
+            let _ = up_tx.send(Update::Note(format!(
+                "live backend ready (fallback): {}",
+                b.name()
+            )));
             Some(Box::new(b))
         }
         Err(e) => {
@@ -699,7 +771,7 @@ fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     None
 }
 
-/// Construct the shared **rustypipe** enrichment backend. rustypipe's InnerTube
+/// Construct the shared **rustypipe** enrichment backend. rustypipe's `InnerTube`
 /// search returns creator avatars, playlists and creator rows the primary yt-dlp
 /// path lacks, its `next`/comments continuation yields real top comments, and
 /// `playlist()` resolves playlist pages — so one backend serves comments, search
@@ -709,7 +781,9 @@ fn try_enricher(up_tx: &Sender<Update>) -> Option<crate::backend::live::RustyPip
     match crate::backend::live::RustyPipeBackend::new() {
         Ok(b) => Some(b),
         Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("rustypipe enrichment unavailable ({e})")));
+            let _ = up_tx.send(Update::Note(format!(
+                "rustypipe enrichment unavailable ({e})"
+            )));
             None
         }
     }
@@ -729,7 +803,9 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
     for v in &items.videos {
         if !v.channel_avatar_url.is_empty() {
             if !v.channel_id.is_empty() {
-                by_id.entry(v.channel_id.as_str()).or_insert(v.channel_avatar_url.as_str());
+                by_id
+                    .entry(v.channel_id.as_str())
+                    .or_insert(v.channel_avatar_url.as_str());
             }
             by_name
                 .entry(norm_channel_name(&v.channel_name))
@@ -741,7 +817,9 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
             if !c.id.is_empty() {
                 by_id.entry(c.id.as_str()).or_insert(c.avatar_url.as_str());
             }
-            by_name.entry(norm_channel_name(&c.name)).or_insert(c.avatar_url.as_str());
+            by_name
+                .entry(norm_channel_name(&c.name))
+                .or_insert(c.avatar_url.as_str());
         }
     }
     for v in videos.iter_mut() {
@@ -774,16 +852,14 @@ fn fetch(
             }
         }
     }
-    if fallback {
-        if let Ok(r) = offline.run(query) {
-            return Some((r, false));
-        }
+    if fallback && let Ok(r) = offline.run(query) {
+        return Some((r, false));
     }
     None
 }
 
 /// Resolve the Home/Trending catalogue from real data, returning the videos and
-/// the honest status-pill label. Tries YouTube's dedicated trending browse
+/// the honest status-pill label. Tries `YouTube`'s dedicated trending browse
 /// first; on failure (the endpoint has been retired) composes a real "popular
 /// right now" feed. Returns `None` only when there is no live data at all
 /// (offline / default build) so the caller keeps the bundled sample.
@@ -798,22 +874,21 @@ fn feed_trending(
     // retired endpoint is visible rather than silently swallowed.
     if let Some((BackendResult::Videos(vs), true)) =
         fetch(live, offline, Query::Trending, false, up_tx)
+        && !vs.is_empty()
     {
-        if !vs.is_empty() {
-            return Some((vs, "live · trending".into()));
-        }
+        return Some((vs, "live · trending".into()));
     }
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
     let search_backend: Option<&dyn YtBackend> =
-        enrich.or_else(|| live.as_ref().map(|b| b.as_ref()));
+        enrich.or_else(|| live.as_ref().map(std::convert::AsRef::as_ref));
     live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
 }
 
 /// Compose a real "popular right now" home feed: for each broad topic, ask the
 /// backend for the most-viewed videos uploaded in the last week, then
 /// round-robin interleave for variety and de-duplicate. Every video is genuine
-/// YouTube data (view-count-sorted search), not the offline sample. Returns
+/// `YouTube` data (view-count-sorted search), not the offline sample. Returns
 /// `None` when there is no live backend so the caller keeps the sample.
 fn live_popular_feed(
     backend: Option<&dyn YtBackend>,
@@ -851,7 +926,10 @@ fn live_popular_feed(
 /// popular seeds overlap, so the union needs a dedup pass.
 fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
     let mut seen = std::collections::HashSet::new();
-    videos.into_iter().filter(|v| seen.insert(v.id.clone())).collect()
+    videos
+        .into_iter()
+        .filter(|v| seen.insert(v.id.clone()))
+        .collect()
 }
 
 /// Broadcast which data source just answered so the UI pill reflects reality.
@@ -861,7 +939,10 @@ fn send_status(up_tx: &Sender<Update>, live: bool) {
     } else {
         "offline — sample data"
     };
-    let _ = up_tx.send(Update::Status { live, label: label.into() });
+    let _ = up_tx.send(Update::Status {
+        live,
+        label: label.into(),
+    });
 }
 
 #[cfg(test)]
@@ -900,7 +981,7 @@ mod tests {
         assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
     }
 
-    /// Real-path check: actually call SponsorBlock, DeArrow and Return YouTube
+    /// Real-path check: actually call `SponsorBlock`, `DeArrow` and Return `YouTube`
     /// Dislike and assert the parsed shapes. Honestly gated — it only touches
     /// the network when `TUBE_NET_TESTS=1`, so offline/CI runs pass trivially
     /// rather than being silently `#[ignore]`d. Run with:
@@ -923,6 +1004,9 @@ mod tests {
             "DeArrow returns community branding for Despacito"
         );
         let dislikes = fetch_dislikes(&c, vid).expect("real RYD call");
-        assert!(dislikes > 0, "Despacito has crowdsourced dislikes ({dislikes})");
+        assert!(
+            dislikes > 0,
+            "Despacito has crowdsourced dislikes ({dislikes})"
+        );
     }
 }

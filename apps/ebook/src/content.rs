@@ -1,17 +1,14 @@
 //! The library: the reader's own collection of books.
 //!
-//! The shelf is **app-managed and persisted**, not re-derived from a magic
+//! The shelf is app-managed and persisted, not re-derived from a magic
 //! folder every launch. A book enters the library when the reader opens it
-//! (from anywhere, through the host file picker) or when it turns up in a folder
-//! they explicitly asked to watch; from then on it lives in the CRDT
-//! ([`crate::doc`]) keyed by its content hash, so the shelf survives a restart
-//! and follows the reader across devices. [`load_library`] hydrates those
-//! recorded books from disk each launch and auto-imports anything new in a
-//! watched folder.
+//! or when it turns up in a watched folder; from then on it lives in the
+//! CRDT ([`crate::doc`]) keyed by its content hash, so the shelf survives a
+//! restart and follows the reader across devices. [`load_library`] hydrates
+//! recorded books from disk each launch and auto-imports anything new.
 //!
-//! The bundled EPUB + the multi-book **sample** library are reserved for the
-//! hermetic `--shots`/test path, so screenshots exercise a populated shelf
-//! without fabricating content into a real reader's library.
+//! The bundled EPUB + the multi-book sample library are reserved for the
+//! hermetic `--shots`/test path.
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +16,7 @@ use automerge::AutoCommit;
 
 use crate::doc::BooksDoc;
 use crate::epub::parse_epub;
-use crate::model::{now_ms, Book, Chapter, LibraryEntry};
+use crate::model::{Book, Chapter, LibraryEntry, now_ms};
 use crate::xhtml::parse_xhtml;
 
 /// The bundled EPUB, parsed by the real container reader. Used only by the
@@ -52,8 +49,7 @@ pub struct LoadedBook {
 /// workspace's peers; a book anywhere else is local to this device.
 pub fn workspace_root() -> PathBuf {
     std::env::var(WORKSPACE_DIR_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE))
+        .map_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE), PathBuf::from)
 }
 
 /// Where a book copied into the workspace lands.
@@ -140,7 +136,10 @@ pub fn load_library(doc: &mut AutoCommit) -> Vec<LoadedBook> {
             continue;
         };
         book.cover_tint = tint_for(&book.id);
-        out.push(LoadedBook { book, path: entry.path });
+        out.push(LoadedBook {
+            book,
+            path: entry.path,
+        });
         if out.len() >= MAX_LIBRARY {
             break;
         }
@@ -194,7 +193,9 @@ fn collect_epubs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if out.len() >= MAX_LIBRARY {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(ft) = entry.file_type() else { continue };
@@ -228,9 +229,7 @@ pub fn bundled_sample() -> Option<Book> {
     }
 }
 
-// ===========================================================================
-// Sample library — hermetic `--shots` / test content only.
-// ===========================================================================
+// --- Sample library: hermetic `--shots` / test content only -----------------
 
 /// The multi-book sample library used by the headless renderer and tests. Never
 /// shown to a real user; it exists so screenshots have a populated shelf.
@@ -274,7 +273,7 @@ fn authored(
         .iter()
         .map(|(t, body)| Chapter {
             title: t.to_string(),
-            href: format!("{}.xhtml", t),
+            href: format!("{t}.xhtml"),
             blocks: parse_xhtml(body),
         })
         .collect();
@@ -283,6 +282,7 @@ fn authored(
         title: title.to_string(),
         author: author.to_string(),
         publisher: publisher.to_string(),
+        language: "en-US".to_string(),
         description: String::new(),
         chapters,
         cover_tint: tint,
@@ -292,14 +292,19 @@ fn authored(
 }
 
 const FIELD_NOTES: &[(&str, &str)] = &[
-    ("On Switches", r#"<body>
+    (
+        "On Switches",
+        r"<body>
 <h1>On Switches</h1>
 <p>The most honest object in any house is the light switch. It makes a single promise and keeps it, and it asks for nothing in return but the smallest motion of a finger. There is a whole philosophy folded into that click, if you care to unfold it.</p>
 <p>Consider what a switch does <em>not</em> do. It does not explain itself. It does not update. It does not, in the small hours, decide that what you really wanted was a different room entirely. It simply is <strong>on</strong>, or it is <strong>off</strong>, and the distance between those two states is the width of a thought.</p>
 <blockquote><p>We have spent a century teaching machines to guess. Perhaps the next century's luxury will be a machine that simply does as it is told.</p></blockquote>
 <p>I keep a drawer of old switches. Bakelite, brass, porcelain. Each one outlived the wiring it was sold with, and most outlived the houses. They are small monuments to the idea that a thing can be finished — that design can arrive somewhere and decide to stay.</p>
-</body>"#),
-    ("On Waiting", r#"<body>
+</body>",
+    ),
+    (
+        "On Waiting",
+        r"<body>
 <h1>On Waiting</h1>
 <p>A kettle is a teacher of patience that never raises its voice until the very end. You set it going and you are, for ninety seconds, returned to a slower century — there is nothing to do but wait, and waiting, it turns out, is a skill we have been quietly letting rust.</p>
 <ul>
@@ -308,32 +313,42 @@ const FIELD_NOTES: &[(&str, &str)] = &[
 <li>It boils. It clicks off. It waits for you to come back.</li>
 </ul>
 <p>I have come to believe that the measure of a good machine is the quality of the waiting it asks of you. The bad ones fill the wait with noise and lights and small anxious demands. The good ones hand the time back to you, intact, and let you decide what it is for.</p>
-</body>"#),
-    ("On Repair", r#"<body>
+</body>",
+    ),
+    (
+        "On Repair",
+        r"<body>
 <h1>On Repair</h1>
 <p>To repair a thing is to argue, gently, with its ending. You take the broken machine to the bench, and you open it, and inside you find a small museum of decisions made by people you will never meet — and you add one of your own.</p>
 <p>There is a particular silence in a workshop at dusk, when the soldering iron has cooled and the thing on the bench is, against all odds, working again. It is the silence of a sentence that has found its full stop. <em>There.</em> Done, for now, and done well.</p>
 <blockquote><p>Nothing is finished while someone is still willing to mend it.</p></blockquote>
-</body>"#),
+</body>",
+    ),
 ];
 
 const TIDEGLASS: &[(&str, &str)] = &[
-    ("First Letter", r#"<body>
+    (
+        "First Letter",
+        r"<body>
 <h1>First Letter</h1>
 <p>Dear M—,</p>
 <p>The glassworks took me on this morning, which is to say a man with three fingers and a voice like a closing door looked at my hands for a long moment and then handed me an apron. I am, apparently, to learn the tide-glass: the trick of pouring colour into a pane so that it shifts as the day turns, blue at the flood and amber at the ebb.</p>
 <p>He says it takes ten years to learn and a lifetime to forgive. I told him I had the lifetime to spare. He did not laugh, but the door of his voice opened, very slightly, and I think that is the local equivalent.</p>
 <p>Write soon. Tell me the river is still where I left it.</p>
 <p>— O.</p>
-</body>"#),
-    ("Second Letter", r#"<body>
+</body>",
+    ),
+    (
+        "Second Letter",
+        r"<body>
 <h1>Second Letter</h1>
 <p>Dear M—,</p>
 <p>I have ruined eleven panes. The master counts them each evening with the patience of a man counting waves, and each evening he says the same thing: <em>the glass remembers how you held it.</em> I did not understand this until today, when the twelfth pane came out of the annealer whole and humming, and I realised I had stopped fighting it somewhere around the ninth.</p>
 <blockquote><p>You cannot force colour to stay. You can only make a place calm enough that it chooses to.</p></blockquote>
 <p>The tide was at the half when I held it to the window, and the blue and the amber met in the middle of the pane like two people deciding, at last, to be kind to one another.</p>
 <p>— O.</p>
-</body>"#),
+</body>",
+    ),
 ];
 
 #[cfg(test)]
@@ -375,7 +390,10 @@ mod tests {
         let mut doc = AutoCommit::new();
 
         let book = import_path(&mut doc, &path).expect("a real epub imports");
-        assert!(book.id.starts_with("book:"), "the import produced a content id");
+        assert!(
+            book.id.starts_with("book:"),
+            "the import produced a content id"
+        );
         // Recorded once, and hydrating the library yields exactly that book.
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
         let lib = load_library(&mut doc);
@@ -385,7 +403,11 @@ mod tests {
 
         // Importing the very same file again does not duplicate the shelf entry.
         import_path(&mut doc, &path).unwrap();
-        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1, "same file → one entry");
+        assert_eq!(
+            BooksDoc::read_library_entries(&doc).len(),
+            1,
+            "same file → one entry"
+        );
     }
 
     #[test]
@@ -403,7 +425,11 @@ mod tests {
         let lib = load_library(&mut doc);
         // Both epubs are the *same bytes*, so they share a content id and collapse
         // to a single library entry — the non-epub is ignored.
-        assert_eq!(lib.len(), 1, "watched epubs imported (deduped by content), .txt ignored");
+        assert_eq!(
+            lib.len(),
+            1,
+            "watched epubs imported (deduped by content), .txt ignored"
+        );
     }
 
     #[test]
@@ -440,11 +466,17 @@ mod tests {
         let (after, dest) = share_to_workspace(&mut doc, &src).expect("share succeeds");
         assert!(is_shared(&dest), "the copy lands on the workspace");
         assert!(dest.exists(), "the file was actually copied");
-        assert_eq!(after.id, before.id, "identity (and thus annotations/progress) is preserved");
+        assert_eq!(
+            after.id, before.id,
+            "identity (and thus annotations/progress) is preserved"
+        );
         // The library now points at the shared copy — one entry, shared home.
         let entries = BooksDoc::read_library_entries(&doc);
         assert_eq!(entries.len(), 1);
-        assert!(is_shared(&entries[0].path), "the recorded home is now the workspace");
+        assert!(
+            is_shared(&entries[0].path),
+            "the recorded home is now the workspace"
+        );
         unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
@@ -457,9 +489,15 @@ mod tests {
 
         let bad = tmp.path().join("bad.epub");
         std::fs::write(&bad, b"definitely not a zip").unwrap();
-        assert!(open_epub_path(&bad).is_none(), "a corrupt file is rejected, not panicked on");
+        assert!(
+            open_epub_path(&bad).is_none(),
+            "a corrupt file is rejected, not panicked on"
+        );
 
         let missing = tmp.path().join("gone.epub");
-        assert!(open_epub_path(&missing).is_none(), "a missing file is rejected");
+        assert!(
+            open_epub_path(&missing).is_none(),
+            "a missing file is rejected"
+        );
     }
 }

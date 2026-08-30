@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::Widget;
+use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -29,9 +29,18 @@ fn cols() -> Vec<ColumnDef<Row>> {
 fn data_table_sorts_ascending_and_descending() {
     let mut t = DataTable::new(cols());
     t.set_rows(vec![
-        Row { name: "c".into(), size: 30 },
-        Row { name: "a".into(), size: 10 },
-        Row { name: "b".into(), size: 20 },
+        Row {
+            name: "c".into(),
+            size: 30,
+        },
+        Row {
+            name: "a".into(),
+            size: 10,
+        },
+        Row {
+            name: "b".into(),
+            size: 20,
+        },
     ]);
     t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
     let v = t.view_rows();
@@ -46,37 +55,46 @@ fn data_table_column_resize_updates_width() {
     let mut t = DataTable::new(cols());
     assert_eq!(t.column_width_px("size"), Some(80.0));
     t.begin_resize("size", 80.0);
-    t.drag_resize(95.0); // delta = +15
+    t.drag_resize(95.0);
     t.end_resize();
     assert_eq!(t.column_width_px("size"), Some(95.0));
     // clamped to >= min
     t.begin_resize("size", 95.0);
     t.drag_resize(10.0);
     t.end_resize();
-    assert_eq!(t.column_width_px("size"), Some(DataTable::<Row>::MIN_COL_WIDTH));
+    assert_eq!(
+        t.column_width_px("size"),
+        Some(DataTable::<Row>::MIN_COL_WIDTH)
+    );
 }
 
 #[test]
 fn data_table_sort_by_flips_direction_when_comparator_registered() {
-    // `sort_by(column_key, ascending)` is the prompt-locked public entry; it
-    // reapplies the existing comparator with the requested direction. It
-    // returns `true` when the column has a comparator installed (via a prior
-    // `sort_by_with`), `false` otherwise.
+    // `sort_by` reapplies the existing comparator with a new direction;
+    // `true` only if the column already has one installed.
     let mut t = DataTable::new(cols());
     t.set_rows(vec![
-        Row { name: "c".into(), size: 30 },
-        Row { name: "a".into(), size: 10 },
-        Row { name: "b".into(), size: 20 },
+        Row {
+            name: "c".into(),
+            size: 30,
+        },
+        Row {
+            name: "a".into(),
+            size: 10,
+        },
+        Row {
+            name: "b".into(),
+            size: 20,
+        },
     ]);
-    // No comparator yet → sort_by is a no-op, reports `false`.
+    // No comparator yet.
     assert!(!t.sort_by("name", true));
-    // Install via the typed helper, then use sort_by to flip direction.
     t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
     assert!(t.sort_by("name", false));
     assert_eq!(t.view_rows()[0].name, "c");
     assert!(t.sort_by("name", true));
     assert_eq!(t.view_rows()[0].name, "a");
-    // Unknown column key → false, state unchanged.
+    // Unknown column key.
     assert!(!t.sort_by("size", true));
     assert_eq!(t.view_rows()[0].name, "a");
 }
@@ -100,8 +118,6 @@ fn cell_render_receives_text_renderer_and_rect() {
                 if rect.width() > 0.0 && rect.height() > 0.0 {
                     rect_c.fetch_add(1, Ordering::SeqCst);
                 }
-                // Draw the row's name anchored to the cell — exercises the
-                // TextRenderer the old signature lacked.
                 tr.draw_text(
                     scene,
                     &r.name,
@@ -116,12 +132,17 @@ fn cell_render_receives_text_renderer_and_rect() {
 
     let mut t = DataTable::new(columns);
     t.set_rows(vec![
-        Row { name: "alpha".into(), size: 1 },
-        Row { name: "beta".into(), size: 2 },
+        Row {
+            name: "alpha".into(),
+            size: 1,
+        },
+        Row {
+            name: "beta".into(),
+            size: 2,
+        },
     ]);
 
-    // Build + apply layout so `col_rects` and `rect` are populated, then
-    // draw through the real widget path.
+    // Populate `col_rects` and `rect` before drawing through the real path.
     let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
     let mut node_map = std::collections::HashMap::new();
     let theme = Theme::dark();
@@ -153,9 +174,20 @@ fn cell_render_receives_text_renderer_and_rect() {
     let mut tr = TextRenderer::new();
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = Scene::new();
-    Widget::draw(&mut t, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    Widget::draw(
+        &mut t,
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+    );
 
-    assert_eq!(calls.load(Ordering::SeqCst), 2, "cell render runs once per visible row");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "cell render runs once per visible row"
+    );
     assert_eq!(
         saw_nonzero_rect.load(Ordering::SeqCst),
         2,
@@ -170,12 +202,21 @@ fn cell_render_receives_text_renderer_and_rect() {
 #[test]
 fn data_table_virtualization_windows_rows() {
     let mut t = DataTable::new(cols());
-    let rows: Vec<Row> = (0..10_000).map(|i| Row { name: format!("r{i}"), size: i as u64 }).collect();
+    let rows: Vec<Row> = (0..10_000)
+        .map(|i| Row {
+            name: format!("r{i}"),
+            size: i as u64,
+        })
+        .collect();
     t.set_rows(rows);
-    t.set_viewport(500.0, 24.0);        // 500px tall, 24px row height
-    t.set_scroll_y(4800.0);             // scrolled down 200 rows
+    t.set_viewport(500.0, 24.0); // 500px tall, 24px row height
+    t.set_scroll_y(4800.0); // scrolled down 200 rows
     let (start, end) = t.visible_row_range();
-    assert!(start >= 195 && start <= 205, "start={start}");
+    assert!((195..=205).contains(&start), "start={start}");
     // (viewport / row_height) + small overscan
-    assert!(end - start >= 20 && end - start <= 32, "range size = {}", end - start);
+    assert!(
+        end - start >= 20 && end - start <= 32,
+        "range size = {}",
+        end - start
+    );
 }

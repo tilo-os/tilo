@@ -4,9 +4,9 @@
 //! always sources it from the OS [`Theme`](ui::theme::Theme) or a reader
 //! palette — nothing here hard-codes a colour.
 
+use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use vello::Scene;
 
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
@@ -98,7 +98,7 @@ pub fn dots(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     let cy = y + s / 2.0;
     let r = (s * 0.09).max(1.2);
     for i in 0..3 {
-        let cx = x + s * (0.12 + 0.38 * i as f64);
+        let cx = x + s * (0.12 + 0.38 * f64::from(i));
         circle(scene, t, Point::new(cx, cy), r, color);
     }
 }
@@ -122,26 +122,61 @@ pub fn chevron_down(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f
 
 pub fn plus(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.3);
-    line(scene, t, Point::new(x, y + s / 2.0), Point::new(x + s, y + s / 2.0), color, w);
-    line(scene, t, Point::new(x + s / 2.0, y), Point::new(x + s / 2.0, y + s), color, w);
+    line(
+        scene,
+        t,
+        Point::new(x, y + s / 2.0),
+        Point::new(x + s, y + s / 2.0),
+        color,
+        w,
+    );
+    line(
+        scene,
+        t,
+        Point::new(x + s / 2.0, y),
+        Point::new(x + s / 2.0, y + s),
+        color,
+        w,
+    );
 }
 
 pub fn minus(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.3);
-    line(scene, t, Point::new(x, y + s / 2.0), Point::new(x + s, y + s / 2.0), color, w);
+    line(
+        scene,
+        t,
+        Point::new(x, y + s / 2.0),
+        Point::new(x + s, y + s / 2.0),
+        color,
+        w,
+    );
 }
 
 pub fn close(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.32);
-    line(scene, t, Point::new(x, y), Point::new(x + s, y + s), color, w);
-    line(scene, t, Point::new(x + s, y), Point::new(x, y + s), color, w);
+    line(
+        scene,
+        t,
+        Point::new(x, y),
+        Point::new(x + s, y + s),
+        color,
+        w,
+    );
+    line(
+        scene,
+        t,
+        Point::new(x + s, y),
+        Point::new(x, y + s),
+        color,
+        w,
+    );
 }
 
 /// A hamburger "table of contents" glyph.
 pub fn list(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.26);
     for i in 0..3 {
-        let yy = y + s * (0.15 + 0.35 * i as f64);
+        let yy = y + s * (0.15 + 0.35 * f64::from(i));
         line(scene, t, Point::new(x, yy), Point::new(x + s, yy), color, w);
     }
 }
@@ -177,7 +212,7 @@ pub fn bookmark(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64, 
     p.move_to(Point::new(left, top));
     p.line_to(Point::new(right, top));
     p.line_to(Point::new(right, bottom));
-    p.line_to(Point::new((left + right) / 2.0, notch));
+    p.line_to(Point::new(f64::midpoint(left, right), notch));
     p.line_to(Point::new(left, bottom));
     p.close_path();
     if filled {
@@ -195,7 +230,14 @@ pub fn book(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let top = y + s * 0.16;
     let bot = y + s * 0.9;
     // Spine.
-    line(scene, t, Point::new(cx, top + s * 0.04), Point::new(cx, bot), color, w);
+    line(
+        scene,
+        t,
+        Point::new(cx, top + s * 0.04),
+        Point::new(cx, bot),
+        color,
+        w,
+    );
     // Left and right pages, each a shallow open leaf meeting the spine.
     poly(
         scene,
@@ -228,7 +270,13 @@ pub fn book(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
 pub fn people(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.12);
     // Back figure (smaller, offset).
-    circle(scene, t, Point::new(x + s * 0.66, y + s * 0.34), s * 0.15, color);
+    circle(
+        scene,
+        t,
+        Point::new(x + s * 0.66, y + s * 0.34),
+        s * 0.15,
+        color,
+    );
     poly(
         scene,
         t,
@@ -242,7 +290,13 @@ pub fn people(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
         w,
     );
     // Front figure.
-    circle(scene, t, Point::new(x + s * 0.34, y + s * 0.3), s * 0.17, color);
+    circle(
+        scene,
+        t,
+        Point::new(x + s * 0.34, y + s * 0.3),
+        s * 0.17,
+        color,
+    );
     poly(
         scene,
         t,
@@ -263,7 +317,14 @@ pub fn trash(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
     let (x, y, s) = box_of(rect, 0.26);
     // Lid (top rule) with a small handle notch above it.
     let lid_y = y + s * 0.20;
-    line(scene, t, Point::new(x + s * 0.08, lid_y), Point::new(x + s * 0.92, lid_y), color, w);
+    line(
+        scene,
+        t,
+        Point::new(x + s * 0.08, lid_y),
+        Point::new(x + s * 0.92, lid_y),
+        color,
+        w,
+    );
     poly(
         scene,
         t,
@@ -339,25 +400,46 @@ pub fn pencil(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
 
 /// A small star/sparkle used as a decorative cover mark.
 pub fn spark(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, w: f64) {
-    line(scene, t, Point::new(center.x - r, center.y), Point::new(center.x + r, center.y), color, w);
-    line(scene, t, Point::new(center.x, center.y - r), Point::new(center.x, center.y + r), color, w);
+    line(
+        scene,
+        t,
+        Point::new(center.x - r, center.y),
+        Point::new(center.x + r, center.y),
+        color,
+        w,
+    );
+    line(
+        scene,
+        t,
+        Point::new(center.x, center.y - r),
+        Point::new(center.x, center.y + r),
+        color,
+        w,
+    );
     let d = r * 0.62;
-    line(scene, t, Point::new(center.x - d, center.y - d), Point::new(center.x + d, center.y + d), color, w);
-    line(scene, t, Point::new(center.x - d, center.y + d), Point::new(center.x + d, center.y - d), color, w);
+    line(
+        scene,
+        t,
+        Point::new(center.x - d, center.y - d),
+        Point::new(center.x + d, center.y + d),
+        color,
+        w,
+    );
+    line(
+        scene,
+        t,
+        Point::new(center.x - d, center.y + d),
+        Point::new(center.x + d, center.y - d),
+        color,
+        w,
+    );
 }
 
 /// A horizontal progress bar with rounded ends.
-pub fn progress(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    frac: f32,
-    track: Color,
-    fill: Color,
-) {
+pub fn progress(scene: &mut Scene, t: Affine, rect: Rect, frac: f32, track: Color, fill: Color) {
     let r = rect.height() / 2.0;
     fill_round(scene, t, rect, r, track);
-    let f = frac.clamp(0.0, 1.0) as f64;
+    let f = f64::from(frac.clamp(0.0, 1.0));
     if f > 0.001 {
         let w = (rect.width() * f).max(rect.height());
         let fr = Rect::new(rect.x0, rect.y0, rect.x0 + w, rect.y1);

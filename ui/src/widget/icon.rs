@@ -1,18 +1,13 @@
 //! `IconWidget` — a fixed-size leaf that paints one themed vector glyph
 //! from the shared [`crate::icons::Icon`] set.
 //!
-//! The [`crate::icons`] module already exposes the glyph data and the
-//! immediate-mode [`crate::icons::draw_icon`] / [`crate::icons::Icon::draw`]
-//! helpers used by shell chrome that paints icons inline. This widget wraps
-//! that helper in the [`Widget`] contract so an icon can be dropped straight
-//! into a `Row`/`Column`/`Container` like any other widget, sized by the
-//! layout pass, and tinted from the active [`Theme`].
+//! Wraps the immediate-mode [`crate::icons::Icon::draw`] helper in the
+//! [`Widget`] contract so an icon can be dropped straight into a
+//! `Row`/`Column`/`Container` like any other widget, sized by the layout
+//! pass, and tinted from the active [`Theme`].
 //!
-//! Colour resolution: by default the glyph is stroked in
-//! [`Theme::text_primary`]. Call [`IconWidget::with_color`] for an explicit
-//! tint, or [`IconWidget::dim`] to use the theme's dim text colour (for
-//! secondary affordances). The stroke width defaults to the lucide 1.5 px
-//! aesthetic; override via [`IconWidget::with_stroke`].
+//! Defaults to [`Theme::text_primary`] and the lucide 1.5px stroke; see
+//! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -26,16 +21,14 @@ use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Where the glyph colour comes from.
 #[derive(Clone, Copy, Debug)]
 enum Tint {
-    /// Resolve to `theme.text_primary` at draw time (default).
     Primary,
-    /// Resolve to `theme.text_dim` at draw time.
     Dim,
-    /// A fixed colour supplied by the caller.
     Fixed(Color),
 }
 
@@ -51,9 +44,7 @@ pub struct IconWidget {
 }
 
 impl IconWidget {
-    /// Construct an icon widget for `icon` at `size × size` logical pixels.
-    /// Defaults to the theme's primary text colour and the lucide 1.5 px
-    /// stroke.
+    /// `size x size` logical pixels.
     pub fn new(icon: Icon, size: f32) -> Self {
         Self {
             icon,
@@ -64,32 +55,26 @@ impl IconWidget {
         }
     }
 
-    /// Builder: tint the glyph with an explicit colour instead of the
-    /// theme's primary text colour.
     pub fn with_color(mut self, color: Color) -> Self {
         self.tint = Tint::Fixed(color);
         self
     }
 
-    /// Builder: tint with the theme's dim text colour — for secondary
-    /// icons that should recede next to their label.
+    /// For secondary icons that should recede next to their label.
     pub fn dim(mut self) -> Self {
         self.tint = Tint::Dim;
         self
     }
 
-    /// Builder: override the output stroke width in pixels.
     pub fn with_stroke(mut self, stroke_px: f64) -> Self {
         self.stroke_px = stroke_px;
         self
     }
 
-    /// Which glyph this widget paints.
     pub fn icon(&self) -> Icon {
         self.icon
     }
 
-    /// Resolve the draw colour against `theme`.
     fn resolve_color(&self, theme: &Theme) -> Color {
         match self.tint {
             Tint::Primary => theme.text_primary,
@@ -108,27 +93,25 @@ impl Widget for IconWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.size),
-                    height: Dimension::length(self.size),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(self.size),
+                height: Dimension::length(self.size),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -162,7 +145,7 @@ impl Widget for IconWidget {
     ) {
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "IconWidget"
     }
 

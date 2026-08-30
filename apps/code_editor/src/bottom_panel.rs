@@ -145,11 +145,6 @@ impl BottomPanel {
         }
     }
 
-    /// The Search tab's current state.
-    pub fn search(&self) -> &SearchState {
-        &self.search
-    }
-
     /// The search row the user clicked, if any. Cleared on read.
     pub fn take_activated_hit(&mut self) -> Option<usize> {
         self.activated_hit.take()
@@ -335,7 +330,7 @@ impl BottomPanel {
                     transform * Affine::translate((x, y + 5.0)),
                     None,
                 );
-                x += w as f64;
+                x += f64::from(w);
             }
         }
 
@@ -405,7 +400,12 @@ impl BottomPanel {
     /// The content region below the tab strip — where the embedded terminal is
     /// placed and drawn.
     pub fn content_rect(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0 + TAB_H, self.rect.x1, self.rect.y1)
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + TAB_H,
+            self.rect.x1,
+            self.rect.y1,
+        )
     }
 
     pub fn problem_count(&self) -> usize {
@@ -413,12 +413,14 @@ impl BottomPanel {
     }
 
     /// What the panel is saying in place of "no problems", if anything.
+    #[cfg(test)]
     pub fn analysis(&self) -> Option<&str> {
         self.analysis.as_deref()
     }
 
     /// The diagnostics currently listed, so callers can assert on what the user
     /// is shown rather than only on how many rows there are.
+    #[cfg(test)]
     pub fn problems(&self) -> &[Diagnostic] {
         &self.problems
     }
@@ -444,7 +446,7 @@ fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     if max_w <= 0.0 {
         return String::new();
     }
-    if (tr.measure(s, size, None).0 as f64) <= max_w {
+    if f64::from(tr.measure(s, size, None).0) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
@@ -452,16 +454,19 @@ fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Str
     // not cost a measure per character per row.
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
-        let mid = (lo + hi) / 2;
-        let candidate: String =
-            std::iter::once('\u{2026}').chain(chars[mid..].iter().copied()).collect();
-        if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
+        let mid = usize::midpoint(lo, hi);
+        let candidate: String = std::iter::once('\u{2026}')
+            .chain(chars[mid..].iter().copied())
+            .collect();
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
             hi = mid;
         } else {
             lo = mid + 1;
         }
     }
-    std::iter::once('\u{2026}').chain(chars[lo..].iter().copied()).collect()
+    std::iter::once('\u{2026}')
+        .chain(chars[lo..].iter().copied())
+        .collect()
 }
 
 /// Trim `s` from the **back** until it fits `max_w`, appending an ellipsis.
@@ -470,21 +475,29 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
     if max_w <= 0.0 {
         return String::new();
     }
-    if (tr.measure(s, size, None).0 as f64) <= max_w {
+    if f64::from(tr.measure(s, size, None).0) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().copied().chain(std::iter::once('\u{2026}')).collect();
-        if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
+        let candidate: String = chars[..mid]
+            .iter()
+            .copied()
+            .chain(std::iter::once('\u{2026}'))
+            .collect();
+        if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    chars[..lo].iter().copied().chain(std::iter::once('\u{2026}')).collect()
+    chars[..lo]
+        .iter()
+        .copied()
+        .chain(std::iter::once('\u{2026}'))
+        .collect()
 }
 
 impl Widget for BottomPanel {
@@ -506,17 +519,17 @@ impl Widget for BottomPanel {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
     }
 
@@ -529,7 +542,13 @@ impl Widget for BottomPanel {
         _presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &self.rect,
+        );
         // Top divider.
         scene.stroke(
             &Stroke::new(1.0),
@@ -550,14 +569,17 @@ impl Widget for BottomPanel {
             format!("Search ({})", self.search.rows.len())
         };
         let labels = [
-            (PanelTab::Problems, format!("Problems ({})", self.problems.len())),
+            (
+                PanelTab::Problems,
+                format!("Problems ({})", self.problems.len()),
+            ),
             (PanelTab::Search, search_label),
             (PanelTab::Terminal, "Terminal".to_string()),
         ];
         let mut x = self.rect.x0 + 8.0;
-        for (tab, label) in labels.iter() {
+        for (tab, label) in &labels {
             let (w, _) = text_renderer.measure(label, 12.0, None);
-            let x1 = x + w as f64 + 24.0;
+            let x1 = x + f64::from(w) + 24.0;
             self.tab_rects.push((x, x1, *tab));
             let active = self.tab == *tab;
             let color = if active { c.text_primary } else { c.text_dim };
@@ -568,7 +590,11 @@ impl Widget for BottomPanel {
                 color,
                 transform * Affine::translate((x + 6.0, self.rect.y0 + 9.0)),
                 None,
-                if active { TextWeight::Semibold } else { TextWeight::Regular },
+                if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                },
             );
             if active {
                 let underline = Rect::new(x, self.rect.y0 + TAB_H - 2.0, x1, self.rect.y0 + TAB_H);
@@ -708,15 +734,14 @@ impl Widget for BottomPanel {
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.tab != PanelTab::Search || !self.rect.contains(self.last_cursor) {
                     return;
                 }
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                     MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
                 };
                 let step = (-lines).round() as i64;
@@ -734,8 +759,7 @@ impl Widget for BottomPanel {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.last_cursor.y >= self.rect.y0
-                    && self.last_cursor.y <= self.rect.y0 + TAB_H
+                if self.last_cursor.y >= self.rect.y0 && self.last_cursor.y <= self.rect.y0 + TAB_H
                 {
                     for (x0, x1, tab) in &self.tab_rects {
                         if self.last_cursor.x >= *x0 && self.last_cursor.x < *x1 {
@@ -767,7 +791,7 @@ impl Widget for BottomPanel {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "BottomPanel"
     }
 
@@ -808,8 +832,14 @@ mod tests {
     #[test]
     fn a_short_string_is_left_alone() {
         let mut t = tr();
-        assert_eq!(ellipsize_front(&mut t, "src/a.rs:1", 12.0, 500.0), "src/a.rs:1");
-        assert_eq!(ellipsize_back(&mut t, "fn main() {}", 12.0, 500.0), "fn main() {}");
+        assert_eq!(
+            ellipsize_front(&mut t, "src/a.rs:1", 12.0, 500.0),
+            "src/a.rs:1"
+        );
+        assert_eq!(
+            ellipsize_back(&mut t, "fn main() {}", 12.0, 500.0),
+            "fn main() {}"
+        );
     }
 
     #[test]
@@ -823,7 +853,7 @@ mod tests {
         assert!(out.starts_with('\u{2026}'), "trimmed from the front: {out}");
         assert!(out.ends_with(":682"), "the line number survives: {out}");
         assert!(
-            (t.measure(&out, 12.0, None).0 as f64) <= 120.0,
+            f64::from(t.measure(&out, 12.0, None).0) <= 120.0,
             "and it actually fits: {out}"
         );
     }
@@ -835,7 +865,7 @@ mod tests {
         let out = ellipsize_back(&mut t, &long, 12.0, 100.0);
         assert!(out.ends_with('\u{2026}'), "trimmed from the back");
         assert!(out.starts_with('a'));
-        assert!((t.measure(&out, 12.0, None).0 as f64) <= 100.0);
+        assert!(f64::from(t.measure(&out, 12.0, None).0) <= 100.0);
     }
 
     #[test]

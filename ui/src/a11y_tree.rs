@@ -1,49 +1,31 @@
-//! The **retained accessibility tree** — a stable, frame-to-frame semantic model
-//! of the running UI.
+//! The **retained accessibility tree** — a stable, frame-to-frame semantic
+//! model of the running UI.
 //!
-//! ## Why retained
+//! The toolkit is immediate-mode: `draw` and
+//! [`accesskit_bridge::build_tree_update`](crate::accesskit_bridge::build_tree_update)
+//! both re-derive a fresh tree each call, which is fine for pushing a whole
+//! tree at AccessKit but gives no stable identity or diff — nothing survives
+//! between frames. A [`SemanticTree`] is the retained counterpart: it keys
+//! nodes by a stable [`SemanticId`] and, on each [`refresh`](SemanticTree::refresh),
+//! diffs the freshly-walked UI against the previous frame, returning a
+//! [`TreeDelta`] while preserving identity for every node that recurs. This
+//! is the foundation an AT-SPI incremental push, a screen reader's change
+//! narration, or an agent/CLI introspection layer builds on.
 //!
-//! The toolkit is immediate-mode: every frame `draw` rebuilds the scene from
-//! scratch, and [`accesskit_bridge::build_tree_update`](crate::accesskit_bridge::build_tree_update)
-//! likewise re-derives a *fresh* [`accesskit::TreeUpdate`] each call. That is
-//! correct for pushing a whole tree at AccessKit (its platform adapters suppress
-//! unchanged nodes), but it gives no **stable identity** and no **diff**: nothing
-//! survives between frames, so a consumer that wants to say "node 7's *state*
-//! changed" or "these two nodes appeared" has to compare two full trees itself.
+//! Each refresh assembles the tree from two sources, so a node carries both
+//! what it is and what you can do to it: the
+//! [`Widget::accessibility`](crate::widget::Widget::accessibility) walk
+//! (roles/names/values/state, collapsing presentational widgets like the
+//! AccessKit bridge does) contributes generic verbs (focus, activate, …);
+//! the app's [`resources()`](crate::widget::Widget::resources) forest from
+//! the qOS [action model](qos_actions) contributes
+//! [`SemanticActionKind::App`] affordances carrying the exact
+//! [`EncodedAction`](qos_actions::EncodedAction) a real click would send —
+//! so invoking one by name drives the same replayable action through the
+//! one audited dispatch path, letting an assistive client operate the tree,
+//! not just read it.
 //!
-//! A [`SemanticTree`] is the retained counterpart. It holds the previous frame's
-//! nodes keyed by a **stable [`SemanticId`]** and, on each
-//! [`refresh`](SemanticTree::refresh), diffs the freshly-walked UI against them,
-//! returning a [`TreeDelta`] (added / removed / updated) while preserving the
-//! identity of every node that recurs. Unchanged nodes keep their exact identity
-//! and content; only what actually moved shows up in the delta. This is the
-//! foundation an AT-SPI incremental push, a screen reader's change narration, or
-//! an AI-agent / CLI introspection layer builds on.
-//!
-//! ## Two sources, one tree
-//!
-//! Each refresh assembles the tree from the two models the toolkit already
-//! maintains, so a node carries both *what it is* and *what you can do to it*:
-//!
-//! 1. **Widget structure** — the [`Widget::accessibility`](crate::widget::Widget::accessibility)
-//!    walk (roles, names, values, [`AccessState`], bounds), collapsing
-//!    presentational widgets exactly like the AccessKit bridge. Each such node
-//!    also carries the **generic verbs** its state affords (focus, activate,
-//!    increment/decrement, expand/collapse, set-value) as
-//!    [`SemanticActionKind::Verb`] affordances routed through
-//!    [`Widget::perform_action`](crate::widget::Widget::perform_action).
-//!
-//! 2. **Resource affordances** — the app's own
-//!    [`resources()`](crate::widget::Widget::resources) forest from the qOS
-//!    [action model](qos_actions). Every [`ActionSpec`](qos_actions::ActionSpec) an
-//!    open resource exports becomes a [`SemanticActionKind::App`] affordance
-//!    carrying the **exact [`EncodedAction`](qos_actions::EncodedAction)** the
-//!    on-screen control and the Ctrl+K palette dispatch. Invoking it by name
-//!    therefore drives the *same* replayable action a real click does — which is
-//!    what lets an assistive client (or an agent) not just *read* the tree but
-//!    *operate* it through the one audited dispatch path.
-//!
-//! The tree itself imports no AccessKit and no D-Bus — it is pure data plus a
+//! The tree itself imports no AccessKit and no D-Bus — pure data plus a
 //! diff, unit-testable without a bus or a window.
 
 use std::collections::HashMap;
@@ -54,7 +36,7 @@ use vello::kurbo::Rect;
 
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::widget::Widget;
-use qos_actions::{ActionInput, ActionSpec, EncodedAction, Resource};
+use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, Resource};
 
 /// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
 /// as long as the backing widget or resource recurs.
@@ -88,7 +70,6 @@ impl SemanticId {
         SemanticId(format!("r:{id}"))
     }
 
-    /// The raw string key.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -115,6 +96,11 @@ pub enum SemanticActionKind {
         prompt: String,
         /// Placeholder text for the argument field.
         placeholder: String,
+        /// Whether that argument names words somebody says or the address of
+        /// content that already exists. This tree's audience is callers with no
+        /// screen: offered a plain text field for a [`Collects::Content`]
+        /// argument, one can only type something that was never going to resolve.
+        collects: Collects,
     },
 }
 
@@ -163,26 +149,21 @@ pub struct SemanticAction {
 /// unchanged widget re-reports identical bounds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticNode {
-    /// Stable identity across frames.
     pub id: SemanticId,
-    /// Semantic role.
     pub role: Role,
-    /// Accessible name (already i18n-resolved).
+    /// Already i18n-resolved.
     pub name: Option<String>,
-    /// Current value as text (a field's contents, a slider's readout).
+    /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
-    /// Live boolean/tri-state flags.
     pub state: AccessState,
-    /// Logical bounds, when the node is a laid-out widget. `None` for the root,
-    /// synthetic a11y children, and resource nodes (none of which are laid out).
+    /// `None` for the root, synthetic a11y children, and resource nodes
+    /// (none of which are laid out).
     pub bounds: Option<Rect>,
-    /// The affordances this node exposes.
     pub actions: Vec<SemanticAction>,
-    /// Child node ids, in reading order.
+    /// In reading order.
     pub children: Vec<SemanticId>,
-    /// The backing widget's `taffy::NodeId`, when this node is a widget — so the
-    /// host can route a [`Verb`](SemanticActionKind::Verb) back to it. `None` for
-    /// root / synthetic / resource nodes.
+    /// So the host can route a [`Verb`](SemanticActionKind::Verb) back to
+    /// the widget. `None` for root / synthetic / resource nodes.
     pub widget_taffy_id: Option<u64>,
     /// How to reach this node when it is **synthetic** — its owning widget plus
     /// the key path naming it. `None` for widget / root / resource nodes, which
@@ -196,7 +177,6 @@ pub struct SemanticNode {
 }
 
 impl SemanticNode {
-    /// Find one of this node's [`actions`](Self::actions) by its stable name.
     pub fn action(&self, name: &str) -> Option<&SemanticAction> {
         self.actions.iter().find(|a| a.name == name)
     }
@@ -217,11 +197,14 @@ pub struct TreeDelta {
 }
 
 impl TreeDelta {
-    /// Whether nothing changed at all (a stable frame).
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.updated.is_empty()
     }
 }
+
+/// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
+/// actions, keyed by `(node id, action name)`.
+type PromptedMap = HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>;
 
 /// The retained accessibility tree. Persists node identity across frames and
 /// diffs each [`refresh`](Self::refresh) against the previous.
@@ -234,7 +217,7 @@ pub struct SemanticTree {
     /// actions, keyed by `(node id, action name)`. Kept out of [`SemanticNode`]
     /// (a closure is neither `PartialEq` nor `Clone`-comparable) so nodes stay
     /// diffable; refreshed wholesale each frame.
-    prompted: HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>,
+    prompted: PromptedMap,
 }
 
 impl Default for SemanticTree {
@@ -244,7 +227,6 @@ impl Default for SemanticTree {
 }
 
 impl SemanticTree {
-    /// A fresh, empty tree (just the synthetic root, with no children yet).
     pub fn new() -> Self {
         let root = SemanticId::root();
         let mut nodes = HashMap::new();
@@ -273,18 +255,14 @@ impl SemanticTree {
 
     /// Rebuild the tree from the live UI and diff it against the retained frame.
     ///
-    /// * `root` — the App's root widget.
-    /// * `node_map` — the App's `taffy::NodeId -> *mut dyn Widget` map, used
-    ///   *read-only* (never dereferenced) to assign each widget its stable id,
-    ///   exactly as [`accesskit_bridge`](crate::accesskit_bridge) does.
-    /// * `focused` — the focused widget's `taffy::NodeId`, folded into each
-    ///   node's [`AccessState::focused`].
-    /// * `resources` — the focused app's open-resource forest
-    ///   ([`Widget::resources`](crate::widget::Widget::resources)); each exported
-    ///   [`ActionSpec`](qos_actions::ActionSpec) becomes an invokable affordance.
-    ///
-    /// Returns the [`TreeDelta`]. Node identity is preserved for every id that
-    /// recurs; the internal store is replaced but the *identities* are stable.
+    /// `node_map` is used *read-only* (never dereferenced) to assign each
+    /// widget its stable id, exactly as
+    /// [`accesskit_bridge`](crate::accesskit_bridge) does. `focused` folds
+    /// into each node's [`AccessState::focused`]. `resources` is the focused
+    /// app's open-resource forest
+    /// ([`Widget::resources`](crate::widget::Widget::resources)); each
+    /// exported [`ActionSpec`](qos_actions::ActionSpec) becomes an invokable
+    /// affordance.
     pub fn refresh(
         &mut self,
         root: &dyn Widget,
@@ -292,12 +270,13 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        // Reverse map widget *data* pointer -> taffy id. We key on the thin data
-        // address (`*const ()`), not the fat `*const dyn Widget`, so the lookup is
-        // immune to the vtable-pointer differences that can arise between a
-        // widget's `self`-coercion (stored in `node_map` during `build_layout`)
-        // and the `&dyn Widget` its parent hands back from `children()`. The data
-        // address of a live object is identical across every coercion of it.
+        // Reverse map widget *data* pointer -> taffy id, keyed on the thin
+        // data address (`*const ()`) rather than the fat `*const dyn Widget`
+        // — the data address of a live object is identical across every
+        // coercion of it, so the lookup is immune to vtable-pointer
+        // differences between the `self`-coercion `node_map` stored during
+        // `build_layout` and the `&dyn Widget` a parent hands back from
+        // `children()`.
         let mut ptr_to_taffy: HashMap<*const (), TaffyNodeId> = HashMap::new();
         for (&taffy_id, &w_ptr) in node_map {
             ptr_to_taffy.insert(w_ptr as *const (), taffy_id);
@@ -314,11 +293,10 @@ impl SemanticTree {
         let root_id = SemanticId::root();
         builder.order.push(root_id.clone());
 
-        // 1. Widget structure hangs off the root.
         let mut root_children: Vec<SemanticId> = Vec::new();
         builder.visit_widget(root, &mut root_children);
 
-        // 2. Resource affordances hang off the root as their own subtrees.
+        // Resource affordances hang off the root as their own subtrees.
         for res in resources {
             let child = builder.visit_resource(res);
             root_children.push(child);
@@ -340,7 +318,6 @@ impl SemanticTree {
             },
         );
 
-        // Diff the freshly-built frame against the retained one.
         let delta = self.diff(&builder.nodes);
 
         self.nodes = builder.nodes;
@@ -370,17 +347,15 @@ impl SemanticTree {
         delta
     }
 
-    /// The root node's id.
     pub fn root(&self) -> &SemanticId {
         &self.root
     }
 
-    /// Look up a node by id.
     pub fn node(&self, id: &SemanticId) -> Option<&SemanticNode> {
         self.nodes.get(id)
     }
 
-    /// Number of nodes (including the root).
+    /// Includes the root.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -390,7 +365,7 @@ impl SemanticTree {
         self.nodes.len() <= 1
     }
 
-    /// Every node in stable DFS reading order.
+    /// Stable DFS reading order.
     pub fn iter(&self) -> impl Iterator<Item = &SemanticNode> {
         self.order.iter().filter_map(move |id| self.nodes.get(id))
     }
@@ -402,14 +377,11 @@ impl SemanticTree {
         self.iter().find(|n| n.name.as_deref() == Some(name))
     }
 
-    /// Look up a node's action by the node id and the action's stable name.
     pub fn action(&self, id: &SemanticId, name: &str) -> Option<&SemanticAction> {
         self.nodes.get(id).and_then(|n| n.action(name))
     }
 
-    /// Build the concrete [`EncodedAction`] for an
-    /// [`AppPrompted`](SemanticActionKind::AppPrompted) action from its
-    /// collected `arg`. Returns `None` if `(id, name)` is not a prompted action.
+    /// `None` if `(id, name)` is not a prompted action.
     pub fn build_prompted(&self, id: &SemanticId, name: &str, arg: &str) -> Option<EncodedAction> {
         self.prompted
             .get(&(id.clone(), name.to_string()))
@@ -417,9 +389,9 @@ impl SemanticTree {
     }
 }
 
-/// The generic accessibility verbs an [`AccessNode`]'s role + state afford —
-/// mirroring the implicit/role actions [`accesskit_bridge`](crate::accesskit_bridge)
-/// emits, so the retained tree and the AT-SPI export agree on what a widget can do.
+/// Mirrors the implicit/role actions
+/// [`accesskit_bridge`](crate::accesskit_bridge) emits, so the retained
+/// tree and the AT-SPI export agree on what a widget can do.
 fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
     let mut out = Vec::new();
     let s = &access.state;
@@ -479,29 +451,30 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
     out
 }
 
-/// Per-refresh accumulator for the DFS build. Separate from [`SemanticTree`] so
-/// the retained frame is only replaced once the new one is fully built (and
-/// diffed against).
+/// Separate from [`SemanticTree`] so the retained frame is only replaced
+/// once the new one is fully built (and diffed against).
 struct Build<'a> {
     nodes: HashMap<SemanticId, SemanticNode>,
     order: Vec<SemanticId>,
-    prompted: HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>,
+    prompted: PromptedMap,
     ptr_to_taffy: &'a HashMap<*const (), TaffyNodeId>,
     focused: Option<TaffyNodeId>,
 }
 
 impl Build<'_> {
-    /// Visit a widget. If it exposes semantics, emit a node and append its id to
-    /// `parent_children`; if presentational (`accessibility() == None`), collapse
-    /// it out and reparent its children — matching the AccessKit bridge.
+    /// A presentational widget (`accessibility() == None`) is collapsed
+    /// out and its children reparented — matching the AccessKit bridge.
     fn visit_widget(&mut self, w: &dyn Widget, parent_children: &mut Vec<SemanticId>) {
-        let taffy_id = self.ptr_to_taffy.get(&(w as *const dyn Widget as *const ())).copied();
+        let taffy_id = self
+            .ptr_to_taffy
+            .get(&std::ptr::from_ref::<dyn Widget>(w).cast::<()>())
+            .copied();
         match w.accessibility() {
             Some(access) => {
                 let id = match taffy_id {
                     Some(t) => SemanticId::widget(t),
-                    // A semantic widget that was never laid out is rare; key it
-                    // under the parent so it still gets a stable id.
+                    // Rare (never laid out); key under the parent so it
+                    // still gets a stable id.
                     None => SemanticId::synthetic(
                         parent_children.last().unwrap_or(&SemanticId::root()),
                         parent_children.len() as u64,
@@ -524,15 +497,14 @@ impl Build<'_> {
                 }
 
                 let mut state = access.state;
-                if let (Some(t), Some(f)) = (taffy_id, self.focused) {
-                    if t == f {
-                        state.focused = true;
-                    }
+                if let (Some(t), Some(f)) = (taffy_id, self.focused)
+                    && t == f
+                {
+                    state.focused = true;
                 }
 
-                // Affordances are derived from role + state (disabled / read-only
-                // gate the verbs; focus does not), so compute them once against
-                // the focus-updated node.
+                // Disabled/read-only gate the verbs but focus does not, so
+                // compute against the focus-updated state.
                 let actions = verbs_for(&AccessNode {
                     state,
                     ..access.clone()
@@ -542,7 +514,11 @@ impl Build<'_> {
                     id: id.clone(),
                     role: access.role,
                     name: access.name.clone(),
-                    value: if access.state.protected { None } else { access.value.clone() },
+                    value: if access.state.protected {
+                        None
+                    } else {
+                        access.value.clone()
+                    },
                     state,
                     bounds: Some(w.get_rect()),
                     actions,
@@ -563,8 +539,8 @@ impl Build<'_> {
         }
     }
 
-    /// Emit a synthetic a11y child (a table row/cell, a clip on a track) that has
-    /// no backing widget.
+    /// Emit a synthetic a11y child (a table row/cell, a clip on a track) that
+    /// has no backing widget.
     ///
     /// `key` is the node's [`AccessNode::key`] or its ordinal among its
     /// siblings; `owner` is the taffy id of the widget that synthesised it, and
@@ -593,7 +569,11 @@ impl Build<'_> {
             id: id.clone(),
             role: access.role,
             name: access.name.clone(),
-            value: if access.state.protected { None } else { access.value.clone() },
+            value: if access.state.protected {
+                None
+            } else {
+                access.value.clone()
+            },
             state: access.state,
             bounds: None,
             actions: verbs_for(access),
@@ -609,8 +589,6 @@ impl Build<'_> {
         id
     }
 
-    /// Emit a resource node and its exported actions, recursing into child
-    /// resources. Returns the node's id.
     fn visit_resource(&mut self, res: &Resource) -> SemanticId {
         let id = SemanticId::resource(res.id.as_str());
 
@@ -645,12 +623,18 @@ impl Build<'_> {
     fn resource_action(&mut self, node_id: &SemanticId, spec: &ActionSpec) -> SemanticAction {
         let kind = match &spec.input {
             ActionInput::Immediate(enc) => SemanticActionKind::App(enc.clone()),
-            ActionInput::Prompted { prompt, placeholder, build } => {
+            ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects,
+                build,
+            } => {
                 self.prompted
                     .insert((node_id.clone(), spec.id.clone()), build.clone());
                 SemanticActionKind::AppPrompted {
                     prompt: prompt.clone(),
                     placeholder: placeholder.clone(),
+                    collects: *collects,
                 }
             }
         };
@@ -670,15 +654,21 @@ mod tests {
     use std::collections::HashMap;
     use taffy::TaffyTree;
 
-    /// Lay a widget tree out the way the App does, populating the `node_map` the
-    /// tree keys ids off, and return `(node_map, focused-first-focusable)`.
+    /// Lays a widget tree out the way the App does, populating the
+    /// `node_map` the tree keys ids off.
     fn layout(root: &mut dyn Widget) -> HashMap<taffy::NodeId, *mut dyn Widget> {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
         let node = root.build_layout(&mut taffy, &theme, &mut node_map);
         taffy
-            .compute_layout(node, taffy::Size { width: taffy::AvailableSpace::Definite(800.0), height: taffy::AvailableSpace::Definite(600.0) })
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
             .unwrap();
         root.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
         node_map
@@ -693,24 +683,38 @@ mod tests {
 
         let mut tree = SemanticTree::new();
         let first = tree.refresh(&col, &node_map, None, &[]);
-        // First frame: the two buttons are added (the root pre-exists from
-        // `new()`, so it registers as updated, not added, once it gains children).
+        // The root pre-exists from `new()`, so it registers as updated,
+        // not added, once it gains children.
         assert!(first.removed.is_empty());
-        assert!(first.added.len() >= 2, "the two buttons are added, got {:?}", first.added);
-        let ids_first: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-        assert!(ids_first.len() >= 3, "root + two buttons, got {ids_first:?}");
-        // The buttons carry stable widget ids (data-pointer keyed off the taffy
-        // node map), not synthetic fallbacks.
         assert!(
-            ids_first.iter().filter(|id| id.as_str().starts_with('w')).count() >= 2,
+            first.added.len() >= 2,
+            "the two buttons are added, got {:?}",
+            first.added
+        );
+        let ids_first: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        assert!(
+            ids_first.len() >= 3,
+            "root + two buttons, got {ids_first:?}"
+        );
+        assert!(
+            ids_first
+                .iter()
+                .filter(|id| id.as_str().starts_with('w'))
+                .count()
+                >= 2,
             "buttons get taffy-derived widget ids, got {ids_first:?}"
         );
 
-        // Second frame, nothing changed: identical ids, empty delta.
         let second = tree.refresh(&col, &node_map, None, &[]);
-        assert!(second.is_empty(), "a stable frame yields no delta, got {second:?}");
+        assert!(
+            second.is_empty(),
+            "a stable frame yields no delta, got {second:?}"
+        );
         let ids_second: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-        assert_eq!(ids_first, ids_second, "node identity + order survive a refresh");
+        assert_eq!(
+            ids_first, ids_second,
+            "node identity + order survive a refresh"
+        );
     }
 
     #[test]
@@ -719,7 +723,6 @@ mod tests {
             .push(Box::new(Button::new("a", "Alpha", None)))
             .push(Box::new(Button::new("b", "Beta", None)));
         let node_map = layout(&mut col);
-        // The taffy id of a focusable button, so we can mark it focused.
         let first_button_taffy = node_map
             .iter()
             .find_map(|(t, &w)| {
@@ -736,14 +739,24 @@ mod tests {
         let before = tree.node(&focused_id).expect("button node present").clone();
         assert!(!before.state.focused, "not focused initially");
 
-        // Focus that button; the SAME node id must now report focused, and show
-        // up as `updated` (not added/removed — identity preserved).
         let delta = tree.refresh(&col, &node_map, Some(first_button_taffy), &[]);
         let after = tree.node(&focused_id).expect("button node still present");
-        assert!(after.state.focused, "focus state reflected on the retained node");
-        assert_eq!(before.id, after.id, "identity preserved across the state change");
-        assert!(delta.updated.contains(&focused_id), "the focused node is in the delta, got {delta:?}");
-        assert!(delta.added.is_empty() && delta.removed.is_empty(), "only state changed");
+        assert!(
+            after.state.focused,
+            "focus state reflected on the retained node"
+        );
+        assert_eq!(
+            before.id, after.id,
+            "identity preserved across the state change"
+        );
+        assert!(
+            delta.updated.contains(&focused_id),
+            "the focused node is in the delta, got {delta:?}"
+        );
+        assert!(
+            delta.added.is_empty() && delta.removed.is_empty(),
+            "only state changed"
+        );
     }
 
     #[test]
@@ -754,14 +767,18 @@ mod tests {
         let map2 = layout(&mut two);
         let mut tree = SemanticTree::new();
         tree.refresh(&two, &map2, None, &[]);
-        let baseline: std::collections::HashSet<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        let baseline: std::collections::HashSet<SemanticId> =
+            tree.iter().map(|n| n.id.clone()).collect();
 
-        // A smaller tree: one button removed.
         let mut one = Column::new().push(Box::new(Button::new("a", "Alpha", None)));
         let map1 = layout(&mut one);
         let delta = tree.refresh(&one, &map1, None, &[]);
-        assert!(!delta.removed.is_empty(), "dropping a button reports a removal, got {delta:?}");
-        let now: std::collections::HashSet<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        assert!(
+            !delta.removed.is_empty(),
+            "dropping a button reports a removal, got {delta:?}"
+        );
+        let now: std::collections::HashSet<SemanticId> =
+            tree.iter().map(|n| n.id.clone()).collect();
         assert!(now.len() < baseline.len(), "the tree shrank");
     }
 
@@ -771,9 +788,21 @@ mod tests {
         let node_map = layout(&mut btn);
         let mut tree = SemanticTree::new();
         tree.refresh(&btn, &node_map, None, &[]);
-        let node = tree.iter().find(|n| n.name.as_deref() == Some("Go")).expect("button node");
-        assert!(node.action("activate").is_some(), "a button affords activate");
-        assert!(node.action("focus").is_some(), "a focusable button affords focus");
-        assert!(matches!(node.action("activate").unwrap().kind, SemanticActionKind::Verb(Action::Activate)));
+        let node = tree
+            .iter()
+            .find(|n| n.name.as_deref() == Some("Go"))
+            .expect("button node");
+        assert!(
+            node.action("activate").is_some(),
+            "a button affords activate"
+        );
+        assert!(
+            node.action("focus").is_some(),
+            "a focusable button affords focus"
+        );
+        assert!(matches!(
+            node.action("activate").unwrap().kind,
+            SemanticActionKind::Verb(Action::Activate)
+        ));
     }
 }

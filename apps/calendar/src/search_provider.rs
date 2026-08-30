@@ -9,7 +9,7 @@
 //!
 //! The provider is deliberately **library-scoped and synchronous**: it matches
 //! the in-memory `Model::events` the views already render, never touching the
-//! network (CalDAV pulls run on their own worker), so a Ctrl+K query never
+//! network (`CalDAV` pulls run on their own worker), so a Ctrl+K query never
 //! blocks on a sync.
 
 use ui::icons::Icon;
@@ -34,7 +34,9 @@ pub struct EventSearchProvider {
 impl EventSearchProvider {
     /// Snapshot the current events into a provider.
     pub fn new(model: &Model) -> Self {
-        Self { events: model.events.clone() }
+        Self {
+            events: model.events.clone(),
+        }
     }
 
     /// The `action_id` for an event — what a chosen row hands back.
@@ -45,7 +47,9 @@ impl EventSearchProvider {
     /// Resolve an `action_id` produced by this provider back to an event
     /// [`Id`]. Returns `None` for an id this provider did not emit.
     pub fn parse_action_id(action_id: &str) -> Option<Id> {
-        action_id.strip_prefix(ACTION_PREFIX).and_then(|rest| rest.parse::<Id>().ok())
+        action_id
+            .strip_prefix(ACTION_PREFIX)
+            .and_then(|rest| rest.parse::<Id>().ok())
     }
 
     /// The "when" line shown under an event: the long day, plus the start time
@@ -54,7 +58,11 @@ impl EventSearchProvider {
         if ev.all_day {
             date::fmt_day_long(ev.start.date())
         } else {
-            format!("{} · {}", date::fmt_day_long(ev.start.date()), date::fmt_time(&ev.start))
+            format!(
+                "{} · {}",
+                date::fmt_day_long(ev.start.date()),
+                date::fmt_time(&ev.start)
+            )
         }
     }
 }
@@ -105,7 +113,10 @@ mod tests {
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
         assert!(hits.iter().all(|r| r.kind == EVENT_KIND));
-        assert!(hits.iter().all(|r| r.subtitle.is_some()), "every event row carries a when-line");
+        assert!(
+            hits.iter().all(|r| r.subtitle.is_some()),
+            "every event row carries a when-line"
+        );
     }
 
     #[test]
@@ -127,8 +138,14 @@ mod tests {
 
         let id = EventSearchProvider::parse_action_id(&top.action_id)
             .expect("action_id parses back to an event Id");
-        let ev = model.event(id).expect("the id resolves to a real stored event");
-        assert_eq!(ev.display_title(), top.title, "activation lands on the right event");
+        let ev = model
+            .event(id)
+            .expect("the id resolves to a real stored event");
+        assert_eq!(
+            ev.display_title(),
+            top.title,
+            "activation lands on the right event"
+        );
     }
 
     #[test]
@@ -150,16 +167,27 @@ mod tests {
         app.sync(&mut doc, &ROOT);
 
         let providers = app.search_providers();
-        assert!(!providers.is_empty(), "the calendar publishes a search provider");
+        assert!(
+            !providers.is_empty(),
+            "the calendar publishes a search provider"
+        );
         let hits = providers[0].search("dentist");
         let hit = hits
             .iter()
             .find(|r| r.title == "Dentist")
             .expect("the seeded 'Dentist' event is findable through the real hook");
         let id = EventSearchProvider::parse_action_id(&hit.action_id).unwrap();
-        assert_ne!(app.selected_event(), Some(id), "not already selected before activation");
+        assert_ne!(
+            app.selected_event(),
+            Some(id),
+            "not already selected before activation"
+        );
 
         app.activate_search_result(&hit.action_id, &mut doc, &ROOT);
-        assert_eq!(app.selected_event(), Some(id), "activation selected the chosen event");
+        assert_eq!(
+            app.selected_event(),
+            Some(id),
+            "activation selected the chosen event"
+        );
     }
 }

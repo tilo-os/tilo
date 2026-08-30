@@ -17,8 +17,8 @@
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
-use settings::categories::Category;
 use settings::SettingsApp;
+use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -115,7 +115,14 @@ fn renders_something(app: &mut SettingsApp) -> bool {
     let perms = PermissionContext::permissive();
     let presence = PresenceCtx::empty();
     let mut scene = Scene::new();
-    app.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+    app.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+        &perms,
+    );
     !scene.encoding().is_empty()
 }
 
@@ -142,16 +149,23 @@ fn click_navigates_to(target: Category) {
     let mut app = SettingsApp::new();
     let (taffy, node) = lay_out(&mut app);
 
-    assert_eq!(app.selected(), Category::DEFAULT, "starts on the default category");
+    assert_eq!(
+        app.selected(),
+        Category::DEFAULT,
+        "starts on the default category"
+    );
     if target == Category::DEFAULT {
         // The default is already selected; navigating to it is a no-op, so
         // this case is covered by every *other* category proving the switch.
         return;
     }
 
-    let rect = row_rect(&app, target.label())
-        .unwrap_or_else(|| panic!("no sidebar row for {:?}", target));
-    assert!(rect.width() > 0.0 && rect.height() > 0.0, "row {:?} has a real rect", target);
+    let rect =
+        row_rect(&app, target.label()).unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
+    assert!(
+        rect.width() > 0.0 && rect.height() > 0.0,
+        "row {target:?} has a real rect"
+    );
 
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
@@ -177,7 +191,17 @@ fn click_navigates_to(target: Category) {
     for ev in [&cursor, &press, &release] {
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            ev,
+            1.0,
+            &mods,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
     }
 
     // The host then runs `sync` (reads the select key written by the row) and
@@ -186,8 +210,7 @@ fn click_navigates_to(target: Category) {
     assert_eq!(
         app.selected(),
         target,
-        "after click+sync the selection must be {:?} (read back via the production path)",
-        target
+        "after click+sync the selection must be {target:?} (read back via the production path)"
     );
     assert!(
         app.take_structure_dirty(),
@@ -200,8 +223,7 @@ fn click_navigates_to(target: Category) {
     // The rebuilt sidebar highlights the clicked category and ONLY it.
     assert!(
         row_is_active(&app, target.label()),
-        "the {:?} row must be active after navigating to it",
-        target
+        "the {target:?} row must be active after navigating to it"
     );
     assert!(
         !row_is_active(&app, Category::DEFAULT.label()),
@@ -210,15 +232,13 @@ fn click_navigates_to(target: Category) {
     assert_eq!(
         active_row_count(&app),
         1,
-        "exactly one sidebar row may be active after navigating to {:?}",
-        target
+        "exactly one sidebar row may be active after navigating to {target:?}"
     );
 
     // The rebuilt composition (with the new category's content pane) paints.
     assert!(
         renders_something(&mut app),
-        "the {:?} content pane must render after navigating to it",
-        target
+        "the {target:?} content pane must render after navigating to it"
     );
 }
 
@@ -240,11 +260,17 @@ nav_test!(click_navigates_appearance, Category::Appearance);
 nav_test!(click_navigates_accessibility, Category::Accessibility);
 nav_test!(click_navigates_notifications, Category::Notifications);
 nav_test!(click_navigates_power, Category::Power);
-nav_test!(click_navigates_keyboard_shortcuts, Category::KeyboardShortcuts);
+nav_test!(
+    click_navigates_keyboard_shortcuts,
+    Category::KeyboardShortcuts
+);
 nav_test!(click_navigates_time_date, Category::TimeDate);
 nav_test!(click_navigates_users, Category::Users);
 nav_test!(click_navigates_printers, Category::Printers);
-nav_test!(click_navigates_external_accounts, Category::ExternalAccounts);
+nav_test!(
+    click_navigates_external_accounts,
+    Category::ExternalAccounts
+);
 nav_test!(click_navigates_region_formats, Category::RegionFormats);
 nav_test!(click_navigates_permissions, Category::Permissions);
 nav_test!(click_navigates_updates, Category::Updates);
@@ -260,7 +286,11 @@ fn two_consecutive_clicks_navigate() {
     let root = automerge::ROOT;
     let mods = winit::event::Modifiers::default();
 
-    let click = |app: &mut SettingsApp, taffy: &TaffyTree<()>, node, doc: &mut AutoCommit, target: Category| {
+    let click = |app: &mut SettingsApp,
+                 taffy: &TaffyTree<()>,
+                 node,
+                 doc: &mut AutoCommit,
+                 target: Category| {
         let rect = row_rect(app, target.label()).expect("row exists");
         let center = rect.center();
         let cursor = winit::event::WindowEvent::CursorMoved {
@@ -280,7 +310,17 @@ fn two_consecutive_clicks_navigate() {
         for ev in [&cursor, &press, &release] {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, doc, &root, &mut handled, &mut focus, node, taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                taffy,
+            );
         }
         app.sync(doc, &root);
         assert!(app.take_structure_dirty());

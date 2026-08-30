@@ -1,15 +1,10 @@
 //! Shared content body for a text-entry [`ModalDialog`](crate::widget::ModalDialog).
 //!
-//! A prompt dialog is a modal that asks the user for one string: a new name, a
-//! URL, a tag, a confirmation phrase. Before this widget every app that wanted
-//! one hand-rolled the scrim + box **and** the field — a raw `String` pushed on
-//! `Key::Character`, a fake blinking caret, no selection, no clipboard, no a11y.
-//!
-//! [`PromptBody`] is the canonical fix: drop it into `ModalDialog` as the
-//! content `C` and the dialog owns the backdrop/box/title/footer/Esc while the
-//! body renders an optional caption, an optional field label, and a **real**
-//! [`TextInput`] (the shared caret / selection / clipboard / IME / a11y core).
-//! The host reads the result with [`PromptBody::value`] on submit.
+//! [`PromptBody`] drops into `ModalDialog` as the content `C`; the dialog
+//! owns the backdrop/box/title/footer/Esc while the body renders an
+//! optional caption, an optional field label, and a **real** [`TextInput`]
+//! (selection, clipboard, a11y — not a hand-rolled `Key::Character`
+//! pusher). The host reads the result with [`PromptBody::value`] on submit.
 //!
 //! ```ignore
 //! let body = PromptBody::new("Name", "New volume")
@@ -33,6 +28,7 @@ use winit::event::WindowEvent;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
 /// Top inset before the caption / label / field stack.
@@ -47,11 +43,7 @@ const FIELD_H: f64 = 44.0;
 const CAPTION_SIZE: f32 = 13.5;
 const LABEL_SIZE: f32 = 12.0;
 
-/// Text-entry content body for a [`ModalDialog`](crate::widget::ModalDialog).
-///
-/// Renders `caption → label → field`, where caption and label are optional. The
-/// field is a real [`TextInput`], so it owns caret motion, selection, clipboard
-/// (Ctrl+C/X/V), IME, and the a11y node — never a per-app string buffer.
+/// Renders `caption → label → field`, where caption and label are optional.
 pub struct PromptBody {
     caption: String,
     label: String,
@@ -62,10 +54,8 @@ pub struct PromptBody {
 }
 
 impl PromptBody {
-    /// A prompt with a field labelled `label` and the given placeholder. The
-    /// field is focused so the caret is live and the first keystroke lands
-    /// immediately (the host drives the modal outside the App's focus
-    /// machinery, so it must be seeded here).
+    /// The field is focused here since the host drives the modal outside the
+    /// App's focus machinery.
     pub fn new(label: &str, placeholder: &str) -> Self {
         let mut input = TextInput::local().with_placeholder(placeholder);
         input.set_focus(true);
@@ -79,15 +69,13 @@ impl PromptBody {
         }
     }
 
-    /// Add a helper caption above the label (a one/two-line explanation of what
-    /// the field is for).
     pub fn with_caption(mut self, caption: &str) -> Self {
         self.caption = caption.to_string();
         self
     }
 
-    /// Seed the field with an initial value and select it all, so the first
-    /// keystroke replaces it (the rename idiom). Chainable.
+    /// Selects the seeded value so the first keystroke replaces it (the
+    /// rename idiom).
     pub fn with_initial(mut self, initial: &str) -> Self {
         if !initial.is_empty() {
             self.input = self.input.with_initial_value(initial);
@@ -96,40 +84,32 @@ impl PromptBody {
         self
     }
 
-    /// Switch the field to multiline (soft-wrap, `Enter` inserts a newline,
-    /// vertical scroll following the caret). The field then fills the body's
-    /// remaining height rather than a fixed single-line box.
+    /// The field then fills the body's remaining height rather than a fixed
+    /// single-line box.
     pub fn multiline(mut self, on: bool) -> Self {
         self.multiline = on;
         self.input = self.input.multiline(on);
         self
     }
 
-    /// Mask the field as a secret (bullets on screen, real bytes in the model,
-    /// plaintext kept out of the a11y tree). For password prompts.
     pub fn secret(mut self, on: bool) -> Self {
         self.input = self.input.with_secret(on);
         self
     }
 
-    /// The current field value.
     pub fn value(&self) -> &str {
         self.input.value()
     }
 
-    /// Overwrite the field text (e.g. to stage a value for a `--shots`
-    /// capture), placing the caret at the end.
     pub fn set_value(&mut self, s: &str) {
         self.input.set_text(s);
         self.input.set_cursor_pos(s.chars().count());
     }
 
-    /// Borrow the embedded field (to tweak options the builder doesn't cover).
     pub fn input_mut(&mut self) -> &mut TextInput {
         &mut self.input
     }
 
-    /// Recompute the embedded field rect from the current body rect.
     fn place_field(&mut self) {
         let mut y = self.rect.y0 + TOP_PAD;
         if !self.caption.is_empty() {
@@ -160,26 +140,24 @@ impl Widget for PromptBody {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.place_field();
     }
@@ -257,7 +235,11 @@ impl Widget for PromptBody {
         self.input.is_focused()
     }
 
-    fn name(&self) -> &str {
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
+    fn name(&self) -> &'static str {
         "PromptBody"
     }
 
@@ -278,8 +260,6 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
-    /// Lay out a `ModalDialog<PromptBody>` through the real five-pass path so
-    /// the field rect + retained content tree are populated.
     fn laid_out(body: PromptBody, viewport: Rect) -> ModalDialog<PromptBody> {
         let mut d = ModalDialog::new("Prompt", body)
             .open(true)
@@ -334,7 +314,7 @@ mod tests {
 
     fn dispatch(d: &mut ModalDialog<PromptBody>, event: &WindowEvent) {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -352,9 +332,6 @@ mod tests {
         );
     }
 
-    /// Typing a character while the prompt is open splices it into the real
-    /// field value — proving the dialog forwards keystrokes into the shared
-    /// `TextInput` rather than dropping them.
     #[test]
     fn typing_into_prompt_updates_the_real_field() {
         let body = PromptBody::new("Name", "New volume");
@@ -368,8 +345,6 @@ mod tests {
         );
     }
 
-    /// A seeded initial value is selected, so the first keystroke replaces it
-    /// (the rename idiom) instead of appending.
     #[test]
     fn initial_value_is_selected_for_replace() {
         let body = PromptBody::new("Name", "").with_initial("old-name");
@@ -383,14 +358,10 @@ mod tests {
         );
     }
 
-    /// A click inside the field rect is forwarded through the dialog into the
-    /// field (so an unfocused field would focus). Proves in-box press routing.
     #[test]
     fn click_in_field_reaches_the_input() {
         let body = PromptBody::new("Name", "hint");
         let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-        // Type a couple chars, then click into the field to move the caret —
-        // the field must remain the live, focused target.
         dispatch(&mut d, &char_event("a"));
         dispatch(&mut d, &char_event("b"));
         let center = d.dialog_rect().center();
@@ -400,7 +371,6 @@ mod tests {
             d.content().is_focused(),
             "the field stays focused after an in-box click",
         );
-        // Escape must still be the dialog's; a further keystroke keeps landing.
         dispatch(&mut d, &char_event("c"));
         assert!(
             d.content().value().contains('c'),
@@ -408,14 +378,11 @@ mod tests {
         );
     }
 
-    /// Multiline mode reports through to the field, and Enter inserts a newline
-    /// rather than being swallowed.
     #[test]
     fn multiline_prompt_accepts_newlines() {
         let body = PromptBody::new("Notes", "").multiline(true);
         let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
         dispatch(&mut d, &char_event("a"));
-        // Enter -> newline in a multiline field.
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(NamedKey::Enter);
         ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
@@ -423,7 +390,7 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
-        // Note: the dialog itself does not intercept Enter (only Escape), so it
+        // The dialog itself does not intercept Enter (only Escape), so it
         // forwards to the multiline field, which inserts a newline.
         dispatch(
             &mut d,

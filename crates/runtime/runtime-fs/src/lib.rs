@@ -1,7 +1,4 @@
-//! `runtime-fs` — Cap'n Proto client for the qOS workspace
-//! filesystem proxy.
-//!
-//! ## Usage shape
+//! `runtime-fs` — Cap'n Proto client for the qOS workspace filesystem proxy.
 //!
 //! ```ignore
 //! let local = tokio::task::LocalSet::new();
@@ -20,10 +17,10 @@
 //! }).await;
 //! ```
 //!
-//! Missing service (env var unset, fd closed, launcher not present)
-//! surfaces as [`NotAvailable::ServiceFdMissing`] rather than a
-//! panic. Apps are expected to fall back to a stock-Linux path (or
-//! disable the feature) when running as a Flatpak.
+//! A missing service (env var unset, fd closed, launcher not present)
+//! surfaces as [`NotAvailable::ServiceFdMissing`] rather than a panic; apps
+//! are expected to fall back to a stock-Linux path (or disable the
+//! feature) when running as a Flatpak.
 
 use std::rc::Rc;
 
@@ -42,19 +39,14 @@ use capnp_rpc::rpc_twoparty_capnp;
 
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
 
-/// Byte cap the server-side FileHandle applies to a single `read`
-/// call. Clients requesting more receive a truncated reply. Mirrors
-/// the FUSE driver's default 1 MiB readahead so a single RPC-level
-/// read maps to a single hydration round-trip.
+/// Byte cap the server-side `FileHandle` applies to a single `read`; larger
+/// requests are truncated. Mirrors the FUSE driver's 1 MiB readahead.
 pub const MAX_READ_CHUNK: u32 = 1 << 20;
 
-/// Try to dial the qOS workspace-fs proxy via the launcher-supplied
-/// service fd. Returns [`NotAvailable`] when the env var is unset
-/// (most likely: app is running as a Flatpak on stock Linux) or the
-/// fd is no longer open.
-///
-/// Must be called from within a `tokio::task::LocalSet`-driven
-/// context — capnp-rpc futures are `!Send`.
+/// Try to dial the qOS workspace-fs proxy via the launcher-supplied service
+/// fd. Returns [`NotAvailable`] when the env var is unset (e.g. running as
+/// a Flatpak) or the fd isn't open. Call from a `tokio::task::LocalSet` —
+/// capnp-rpc futures are `!Send`.
 pub fn try_connect() -> Result<FsClient, NotAvailable> {
     let fd = service_fd("fs").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -89,8 +81,7 @@ pub enum EntryKind {
     File,
     Directory,
     Symlink,
-    /// Anything else (socket, fifo, block, char, or a future value
-    /// the schema doesn't know about yet).
+    /// Anything else (socket, fifo, block/char device, or a future schema value).
     Other,
 }
 
@@ -110,23 +101,19 @@ impl From<fs_capnp::EntryKind> for EntryKind {
 pub struct Metadata {
     pub kind: EntryKind,
     pub size: u64,
-    /// Last-modified time, seconds since UNIX epoch. `None` when
-    /// the server reported `0` (unknown).
+    /// Last-modified time, seconds since epoch; `None` when the server reported `0` (unknown).
     pub modified_unix_seconds: Option<i64>,
-    /// True when the workspace FUSE driver knows about the file
-    /// but hasn't hydrated its bytes locally. A read triggers
-    /// hydration transparently.
+    /// True when the FUSE driver knows about the file but hasn't hydrated its
+    /// bytes locally; a read triggers hydration transparently.
     pub needs_hydration: bool,
 }
 
 impl Metadata {
     fn from_reader(r: fs_capnp::metadata::Reader<'_>) -> Result<Self, NotAvailable> {
         let secs = r.get_modified_unix_seconds();
-        // `get_kind()` returns `Result<_, NotInSchema>`; funnel it
-        // through capnp::Error so the outer `?` on NotAvailable
-        // works uniformly. An unknown wire enum value collapses to
-        // EntryKind::Other rather than an error — schema evolution
-        // MUST NOT break existing clients.
+        // Funnel `get_kind()`'s NotInSchema through capnp::Error for a uniform `?`;
+        // an unknown wire value collapses to `Other` since schema evolution must
+        // not break clients.
         let kind = match r.get_kind() {
             Ok(k) => k.into(),
             Err(_) => EntryKind::Other,
@@ -140,8 +127,7 @@ impl Metadata {
     }
 }
 
-/// A directory row — `name` is the last path component, metadata is
-/// pre-fetched.
+/// A directory row — `name` is the last path component, metadata pre-fetched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
@@ -155,14 +141,14 @@ pub struct FsClient {
 }
 
 impl FsClient {
-    /// Wrap an existing generated client (mainly useful for tests
-    /// that own their own RPC system).
+    /// Wrap an existing generated client (mainly for tests with their own RPC system).
     pub fn from_raw(client: WorkspaceFsClient) -> Self {
-        Self { inner: Rc::new(client) }
+        Self {
+            inner: Rc::new(client),
+        }
     }
 
-    /// Open a file for reading, writing, or appending. `path` is
-    /// workspace-relative; a leading `/` is tolerated.
+    /// Open a file; `path` is workspace-relative, a leading `/` is tolerated.
     pub async fn open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, NotAvailable> {
         let mut req = self.inner.open_request();
         {
@@ -172,13 +158,13 @@ impl FsClient {
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;
-        Ok(FileHandle { inner: Rc::new(handle) })
+        Ok(FileHandle {
+            inner: Rc::new(handle),
+        })
     }
 
-    /// List a directory. Snapshot semantics — the returned vec is
-    /// the directory's entries at the moment of the call. Callers
-    /// that need change notification should re-list periodically or
-    /// (once available) subscribe via a watch RPC.
+    /// List a directory. Snapshot semantics: the vec is the entries at the
+    /// moment of the call — re-list or (once available) watch for changes.
     pub async fn list(&self, path: &str) -> Result<Vec<DirEntry>, NotAvailable> {
         let mut req = self.inner.list_request();
         req.get().set_path(path);
@@ -186,7 +172,7 @@ impl FsClient {
         let reader = reply.get()?;
         let entries = reader.get_entries()?;
         let mut out = Vec::with_capacity(entries.len() as usize);
-        for entry in entries.iter() {
+        for entry in entries {
             let name = entry
                 .get_name()?
                 .to_str()
@@ -198,8 +184,7 @@ impl FsClient {
         Ok(out)
     }
 
-    /// Stat a single path. Missing paths surface as
-    /// [`NotAvailable::Capnp`] with the underlying capnp error.
+    /// Stat a single path; a missing path surfaces as [`NotAvailable::Capnp`].
     pub async fn stat(&self, path: &str) -> Result<Metadata, NotAvailable> {
         let mut req = self.inner.stat_request();
         req.get().set_path(path);
@@ -207,8 +192,7 @@ impl FsClient {
         Metadata::from_reader(reply.get()?.get_metadata()?)
     }
 
-    /// Create a directory (with intermediate mkdirs). Idempotent
-    /// when the target already exists as a directory.
+    /// Create a directory (with intermediate mkdirs); idempotent if it already exists.
     pub async fn mkdir(&self, path: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.mkdir_request();
         req.get().set_path(path);
@@ -225,17 +209,14 @@ impl FsClient {
     }
 }
 
-/// An open file. Dropping the handle closes the file on the server
-/// (capability lifetime = open-file lifetime).
+/// An open file; dropping the handle closes it on the server.
 #[derive(Clone)]
 pub struct FileHandle {
     inner: Rc<fs_capnp::file_handle::Client>,
 }
 
 impl FileHandle {
-    /// Read up to `max_len` bytes starting at `offset`. The server
-    /// caps `max_len` at [`MAX_READ_CHUNK`]; larger requests receive
-    /// a truncated reply.
+    /// Read up to `max_len` bytes at `offset`; the server caps it at [`MAX_READ_CHUNK`].
     pub async fn read_at(&self, offset: u64, max_len: u32) -> Result<Vec<u8>, NotAvailable> {
         let mut req = self.inner.read_request();
         {
@@ -247,9 +228,8 @@ impl FileHandle {
         Ok(reply.get()?.get_bytes()?.to_vec())
     }
 
-    /// Read the whole file in [`MAX_READ_CHUNK`]-sized reads until
-    /// EOF. Convenience for small files; large files should use
-    /// [`Self::read_at`] and stream to disk.
+    /// Read the whole file in [`MAX_READ_CHUNK`]-sized reads until EOF; for
+    /// large files prefer [`Self::read_at`] streamed to disk.
     pub async fn read_all(&self) -> Result<Vec<u8>, NotAvailable> {
         let mut buf = Vec::new();
         let mut offset: u64 = 0;
@@ -263,8 +243,7 @@ impl FileHandle {
         }
     }
 
-    /// Write `bytes` starting at `offset`. Returns the number of
-    /// bytes written (== `bytes.len()` on success).
+    /// Write `bytes` at `offset`; returns the bytes written.
     pub async fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<u32, NotAvailable> {
         let mut req = self.inner.write_request();
         {
@@ -283,8 +262,7 @@ impl FileHandle {
         Ok(())
     }
 
-    /// Stat this open handle (cheaper than [`FsClient::stat`] when
-    /// you already have the handle).
+    /// Stat this open handle — cheaper than [`FsClient::stat`] when you already have it.
     pub async fn metadata(&self) -> Result<Metadata, NotAvailable> {
         let req = self.inner.metadata_request();
         let reply = req.send().promise.await?;
@@ -292,8 +270,7 @@ impl FileHandle {
     }
 }
 
-/// Re-export the raw generated module for power users that need to
-/// reach below the idiomatic wrappers (server impls, tests).
+/// Re-export the raw generated module for power users (server impls, tests).
 pub mod raw {
     pub use super::fs_capnp::*;
 }

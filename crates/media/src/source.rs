@@ -1,7 +1,7 @@
 //! Where the bytes come from, and how to reach them.
 //!
 //! A [`Source`] is a codec-agnostic reference to playable media. It resolves to
-//! a GStreamer URI for the decode backend, and to a plain byte reader for the
+//! a `GStreamer` URI for the decode backend, and to a plain byte reader for the
 //! prefetch path. Crucially a [`Source::Workspace`] path points **through** the
 //! P2P FUSE mount at `/var/workspace` — reading it pulls the bytes down on
 //! demand (projection-first, hydration-on-read), so a consumer must never
@@ -37,8 +37,7 @@ impl Source {
     /// test / dev host without a real mount can point at a scratch directory.
     pub fn workspace_root() -> PathBuf {
         std::env::var_os("QOS_WORKSPACE_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(WORKSPACE_ROOT))
+            .map_or_else(|| PathBuf::from(WORKSPACE_ROOT), PathBuf::from)
     }
 
     /// The absolute on-disk path these bytes resolve to, for the local and
@@ -64,19 +63,18 @@ impl Source {
     pub fn is_ready(&self) -> bool {
         match self {
             Source::Remote { .. } => true,
-            _ => self.abs_path().map(|p| p.exists()).unwrap_or(false),
+            _ => self.abs_path().is_some_and(|p| p.exists()),
         }
     }
 
-    /// The URI to hand a GStreamer `playbin`. File variants become `file://`
+    /// The URI to hand a `GStreamer` `playbin`. File variants become `file://`
     /// URIs on their resolved absolute path; a remote source passes through.
     pub fn to_uri(&self) -> String {
-        match self {
-            Source::Remote { url } => url.clone(),
-            _ => {
-                let abs = self.abs_path().unwrap_or_default();
-                path_to_file_uri(&abs)
-            }
+        if let Source::Remote { url } = self {
+            url.clone()
+        } else {
+            let abs = self.abs_path().unwrap_or_default();
+            path_to_file_uri(&abs)
         }
     }
 
@@ -85,16 +83,15 @@ impl Source {
     /// is the FUSE mount — the read is what triggers hydration). Remote returns
     /// an error: it is streamed by the decode pipeline, not byte-copied here.
     pub fn open_reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
-        match self {
-            Source::Remote { .. } => Err(std::io::Error::new(
+        if let Source::Remote { .. } = self {
+            Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "remote sources are streamed by the decode pipeline, not read here",
-            )),
-            _ => {
-                let abs = self.abs_path().expect("file variant has an abs path");
-                let f = std::fs::File::open(abs)?;
-                Ok(Box::new(f))
-            }
+            ))
+        } else {
+            let abs = self.abs_path().expect("file variant has an abs path");
+            let f = std::fs::File::open(abs)?;
+            Ok(Box::new(f))
         }
     }
 
@@ -120,7 +117,9 @@ pub fn path_to_file_uri(path: &Path) -> String {
     let path = if path.is_absolute() {
         path
     } else {
-        absolute = std::env::current_dir().map(|d| d.join(path)).unwrap_or_else(|_| path.to_path_buf());
+        absolute = std::env::current_dir()
+            .map(|d| d.join(path))
+            .unwrap_or_else(|_| path.to_path_buf());
         &absolute
     };
     let s = path.to_string_lossy();
@@ -128,8 +127,7 @@ pub fn path_to_file_uri(path: &Path) -> String {
     out.push_str("file://");
     for b in s.as_bytes() {
         let c = *b;
-        let keep = c.is_ascii_alphanumeric()
-            || matches!(c, b'/' | b'-' | b'_' | b'.' | b'~');
+        let keep = c.is_ascii_alphanumeric() || matches!(c, b'/' | b'-' | b'_' | b'.' | b'~');
         if keep {
             out.push(c as char);
         } else {
@@ -157,7 +155,10 @@ mod tests {
         // `file://clips/a.mp4` parses `clips` as a host and is rejected by
         // every GStreamer source element, so the media never plays.
         let uri = Source::LocalFile(PathBuf::from("clips/a.mp4")).to_uri();
-        assert!(uri.starts_with("file:///"), "must be an absolute file URI, got {uri}");
+        assert!(
+            uri.starts_with("file:///"),
+            "must be an absolute file URI, got {uri}"
+        );
         assert!(uri.ends_with("/clips/a.mp4"), "path preserved: {uri}");
     }
 
@@ -170,7 +171,9 @@ mod tests {
 
     #[test]
     fn remote_uri_passes_through_and_has_no_path() {
-        let s = Source::Remote { url: "https://cdn.test/v.webm".into() };
+        let s = Source::Remote {
+            url: "https://cdn.test/v.webm".into(),
+        };
         assert_eq!(s.to_uri(), "https://cdn.test/v.webm");
         assert!(s.abs_path().is_none());
         assert!(s.is_ready(), "remote is always ready to stream");
@@ -205,6 +208,9 @@ mod tests {
     #[test]
     fn workspace_absolute_path_is_left_as_is() {
         let abs = Source::Workspace(PathBuf::from("/var/workspace/media/x.mov"));
-        assert_eq!(abs.abs_path().unwrap(), PathBuf::from("/var/workspace/media/x.mov"));
+        assert_eq!(
+            abs.abs_path().unwrap(),
+            PathBuf::from("/var/workspace/media/x.mov")
+        );
     }
 }

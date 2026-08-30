@@ -14,13 +14,13 @@ use ui::widget::{Column, Text};
 /// Each `Peer` exposes `send(req)` and `poll() -> Vec<CollabEvent>`.
 ///
 /// Usage:
-///     let mut relay = MemoryRelay::new();
+///     let mut relay = `MemoryRelay::new()`;
 ///     let alice = relay.attach("alice");
 ///     let bob   = relay.attach("bob");
-///     alice.send(CollabRequest::SyncIncremental { data: vec![1,2,3] });
-///     relay.drain_peer_outbox(&alice);
+///     `alice.send(CollabRequest::SyncIncremental` { data: vec![1,2,3] });
+///     `relay.drain_peer_outbox(&alice)`;
 ///     pump(&mut relay);
-///     let events = bob.poll();
+///     let events = `bob.poll()`;
 pub struct MemoryRelay {
     pending_out: Vec<(String, CollabRequest)>,
     inboxes: Arc<Mutex<HashMap<String, VecDeque<CollabEvent>>>>,
@@ -103,7 +103,7 @@ impl Peer {
 /// - `SyncIncremental` → `CRDTIncremental`
 /// - `SyncCRDT` → `CRDTUpdate`
 /// - `Presence` → `RemotePresenceUpdate` (attributed to the sender's id,
-///    so the receiving peer knows *who* the cursor/caret belongs to)
+///   so the receiving peer knows *who* the cursor/caret belongs to)
 /// - `Hello` is not fanned out
 pub fn pump(relay: &mut MemoryRelay) {
     let pending = std::mem::take(&mut relay.pending_out);
@@ -167,11 +167,10 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::FetchScrollback { artifact, .. } => {
                 // The test broker holds no op log — answer the requester
-                // with an empty, exhausted batch (Phase 6 state is
-                // broker-side, mirrored from collaboration.rs).
+                // with an empty, exhausted batch.
                 if let Some(inbox) = inboxes.get_mut(&from) {
                     inbox.push_back(CollabEvent::ScrollbackBatch {
-                        artifact: artifact.clone(),
+                        artifact,
                         ops: Vec::new(),
                         exhausted: true,
                     });

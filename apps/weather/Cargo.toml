@@ -19,15 +19,16 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-anyhow.workspace = true
 # Networking — used ONLY by the live event loop (see api.rs). The
 # `--shots` offscreen path never touches the network; it renders bundled
 # sample data so a screenshot is fully populated offline.
 reqwest = { workspace = true, features = ["json", "rustls-tls", "blocking"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros"] }
 chrono = { workspace = true, features = ["std", "clock"] }
+
+[lints]
+workspace = true

@@ -10,53 +10,44 @@
 //!
 //! "Where the bugs live" means a process that parses bytes it did not produce,
 //! in C or C++: a web engine, a media decoder, an image codec, a font shaper.
-//! The list is **owned by the image, not by the package**. An app cannot ask to
-//! be exempted, because the decision is about how much the system trusts the
-//! app's inputs — and an app that could opt out is an app whose author gets to
-//! decide that. It can be extended at image build time via
-//! [`POLICY_PATH`]; the compiled-in list is the fallback so a missing file
-//! degrades to the known-risky set rather than to nothing.
+//! The list is **owned by the image, not by the package** — an app cannot opt
+//! out, since the decision is about how much the system trusts the app's
+//! inputs. Extended at image build time via [`POLICY_PATH`]; the compiled-in
+//! list is the fallback so a missing file degrades to the known-risky set.
 //!
-//! Two protections are attached:
-//!
-//! - **Hardened allocator** (scudo, from compiler-rt): out-of-line metadata,
-//!   guard slabs, header checksums, delayed reuse. Turns a heap overflow or a
-//!   double free from an exploitable primitive into a controlled abort.
-//! - **Hardware shadow stacks**: `GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK`.
-//!   Every qOS binary is already marked compatible at link time (see
-//!   `.cargo/config.toml`), but Fedora's glibc will not switch shadow stacks on
-//!   unless a process also asks through this tunable — verified by reading
-//!   `x86_Thread_features` out of `/proc/self/status`. That opt-in is what lets
-//!   the protection be scoped instead of global, and it is inert on a CPU
-//!   without shadow-stack support rather than an error.
+//! Two protections: **hardened allocator** (scudo, from compiler-rt) —
+//! out-of-line metadata, guard slabs, header checksums, delayed reuse, turning
+//! a heap overflow or double free into a controlled abort — and **hardware
+//! shadow stacks** (`GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK`): every qOS binary
+//! is link-time compatible, but glibc won't switch shadow stacks on without
+//! this opt-in, which scopes the protection instead of making it global and
+//! is inert (not an error) on a CPU without shadow-stack support.
 
 use std::path::{Path, PathBuf};
 
-/// Image-owned list of package ids whose processes parse untrusted bytes.
-///
-/// One entry per line. `#` starts a comment. A trailing `*` makes the entry a
-/// prefix match, so `dev.qos.*` covers a family.
+/// Image-owned list of package ids whose processes parse untrusted
+/// bytes. One entry per line, `#` for a comment, a trailing `*` for a
+/// prefix match (`dev.qos.*` covers a family).
 pub const POLICY_PATH: &str = "/usr/lib/qos/untrusted-parsers.conf";
 
-/// Fallback when [`POLICY_PATH`] is absent — the packages in this tree that
-/// decode attacker-supplied data through a C or C++ library.
-///
-/// browser: a whole web engine, and the only package allowed to generate code.
-/// tube / music: container demux and audio/video decode, i.e. ffmpeg and
-/// friends operating on bytes from the network.
+/// Fallback when [`POLICY_PATH`] is absent — the packages in this tree
+/// that decode attacker-supplied data through a C or C++ library:
+/// browser (a whole web engine, the only package allowed to generate
+/// code), tube/music (container demux and audio/video decode operating
+/// on bytes from the network).
 pub const BUILTIN_HIGH_RISK: &[&str] = &["dev.qos.browser", "dev.qos.tube", "dev.qos.music"];
 
-/// Environment variable that overrides [`POLICY_PATH`]. Exists so a test can
+/// Environment variable that overrides [`POLICY_PATH`] — for tests to
 /// point at a fixture; production reads the image's file.
 pub const POLICY_PATH_ENV: &str = "QOS_UNTRUSTED_PARSERS_FILE";
 
 /// The extra runtime protections to apply to one launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHardening {
-    /// Absolute host path of the hardened allocator to `LD_PRELOAD`, when one
-    /// is both wanted and present on this system. `None` means "use the system
-    /// allocator" — either because this package is not on the list, or because
-    /// the image was built without compiler-rt, which must not be fatal.
+    /// Absolute host path of the hardened allocator to `LD_PRELOAD`, when
+    /// wanted and present. `None` means the system allocator — not on the
+    /// list, or the image was built without compiler-rt, which must not be
+    /// fatal.
     pub allocator: Option<PathBuf>,
     /// Ask glibc to enable hardware shadow stacks for this process.
     pub shadow_stack: bool,
@@ -76,9 +67,9 @@ impl RuntimeHardening {
 
 /// Does `package_id` match one entry of a policy list?
 ///
-/// Split out from the file reading so the matching rules are testable without
-/// a filesystem: comments and blank lines are ignored, a bare id is an exact
-/// match, and a trailing `*` is a prefix match.
+/// Split out from file reading so matching is testable without a
+/// filesystem: comments/blank lines ignored, a bare id is exact, a
+/// trailing `*` is a prefix match.
 pub fn policy_matches(list: &str, package_id: &str) -> bool {
     list.lines().any(|line| {
         let entry = line.split('#').next().unwrap_or("").trim();
@@ -92,12 +83,11 @@ pub fn policy_matches(list: &str, package_id: &str) -> bool {
     })
 }
 
-/// Where the scudo standalone allocator lives, if it is installed.
+/// Where the scudo standalone allocator lives, if installed.
 ///
-/// The path carries clang's major version (`/usr/lib/clang/21/lib/…`), so it
-/// moves with every compiler-rt update and cannot be hard-coded. Searched
-/// rather than assumed, and absence is reported as `None` rather than as an
-/// error: an image built without compiler-rt should still launch apps, just
+/// The path carries clang's major version, so it moves with every
+/// compiler-rt update and can't be hard-coded. Absence is `None`, not
+/// an error — an image without compiler-rt should still launch apps,
 /// with the system allocator.
 pub fn find_hardened_allocator() -> Option<PathBuf> {
     const NAME: &str = "libclang_rt.scudo_standalone.so";
@@ -109,11 +99,10 @@ pub fn find_hardened_allocator() -> Option<PathBuf> {
             return Some(direct);
         }
     }
-    // Fedora's layout is /usr/lib/clang/<major>/lib/<triple>/<name>. Searching
-    // only under the clang trees, not the whole of /usr/lib, keeps this a
-    // handful of readdir calls: this runs on the launch path for every
-    // high-risk package, and walking a distribution's library directory would
-    // be a visible cost every time an app starts.
+    // Fedora's layout is /usr/lib/clang/<major>/lib/<triple>/<name>.
+    // Searching only the clang trees, not all of /usr/lib, keeps this a
+    // handful of readdir calls on the launch path for every high-risk
+    // package.
     for root in ["/usr/lib64/clang", "/usr/lib/clang"] {
         if let Some(found) = search_for(Path::new(root), NAME, 3) {
             return Some(found);
@@ -122,8 +111,8 @@ pub fn find_hardened_allocator() -> Option<PathBuf> {
     None
 }
 
-/// Bounded-depth search, so a deep or symlink-looped tree cannot turn a launch
-/// into a filesystem walk.
+/// Bounded-depth search, so a deep or symlink-looped tree can't turn a
+/// launch into a filesystem walk.
 fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     let direct = dir.join(name);
     if direct.is_file() {
@@ -138,9 +127,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.is_dir() && !p.is_symlink())
         .collect();
-    // Deterministic order so two machines with the same layout resolve to the
-    // same library rather than to whatever readdir happened to return first,
-    // and so a newer clang wins over an older one left behind.
+    // Deterministic order so two machines with the same layout resolve to
+    // the same library, and a newer clang wins over an older one left behind.
     subdirs.sort();
     subdirs.reverse();
     subdirs
@@ -150,9 +138,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
 
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path = std::env::var_os(POLICY_PATH_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(POLICY_PATH));
+    let policy_path =
+        std::env::var_os(POLICY_PATH_ENV).map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
     let high_risk = match std::fs::read_to_string(&policy_path) {
         Ok(list) => policy_matches(&list, package_id),
         // No policy file: fall back to the compiled-in set rather than to
@@ -200,7 +187,10 @@ mod tests {
     #[test]
     fn an_empty_policy_hardens_nothing() {
         assert!(!policy_matches("", "dev.qos.browser"));
-        assert!(!policy_matches("# everything commented\n", "dev.qos.browser"));
+        assert!(!policy_matches(
+            "# everything commented\n",
+            "dev.qos.browser"
+        ));
     }
 
     #[test]

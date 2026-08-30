@@ -6,7 +6,7 @@
 //! `SearchField` + `SearchResultsView` — the same widgets the "find things"
 //! surface uses — so the pixels match the live Ctrl+K.
 //!
-//! Run:  cargo run -p ui --example ctrl_k_palette
+//! Run:  cargo run -p ui --example ui-shots -- ctrl_k_palette
 //! Out:  $CTRLK_PALETTE_OUT (default /tmp/ctrl_k_palette) —
 //!       ctrlk-{dark,light}-browse.png, ctrlk-dark-query.png
 
@@ -15,14 +15,14 @@ use std::path::PathBuf;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use ui::ActionPalette;
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
-use ui::search::{fuzzy_score, SearchProvider, SearchResult};
+use ui::search::{SearchProvider, SearchResult, fuzzy_score};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::ActionPalette;
 
 const WIDTH: u32 = 560;
 const MARGIN: f64 = 20.0;
@@ -45,8 +45,16 @@ fn action(id: &str, label: &str, desc: &str) -> ActionSpec {
 fn open_resource() -> Resource {
     Resource::new("doc:design-notes", "doc", "Design Notes")
         .with_action(action("rename", "Rename", "Give the document a new name"))
-        .with_action(action("share", "Share with a peer", "Invite someone to this workspace"))
-        .with_action(action("export", "Export as PDF", "Write a PDF alongside the source"))
+        .with_action(action(
+            "share",
+            "Share with a peer",
+            "Invite someone to this workspace",
+        ))
+        .with_action(action(
+            "export",
+            "Export as PDF",
+            "Write a PDF alongside the source",
+        ))
 }
 
 /// A folded-in searchable corpus — stands in for the contacts provider.
@@ -103,7 +111,7 @@ fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
     println!("wrote {} ({}x{})", out.display(), WIDTH, height);
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("CTRLK_PALETTE_OUT").unwrap_or_else(|_| "/tmp/ctrl_k_palette".into());
     std::fs::create_dir_all(&dir).unwrap();

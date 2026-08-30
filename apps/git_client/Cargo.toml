@@ -19,9 +19,6 @@ ui = { path = "../../ui" }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-uuid.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -32,3 +29,6 @@ git2 = { version = "0.20", default-features = false, features = ["vendored-libgi
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -16,16 +16,16 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
-use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::widgets::{card, caption, rows, El};
+use crate::widgets::{El, caption, card, rows};
 
 /// A configured printer and its readiness.
 #[derive(Clone, Debug, PartialEq)]
@@ -182,8 +182,7 @@ fn have(bin: &str) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Parse `lpstat -p -d` output into [`Printer`]s.
@@ -241,7 +240,10 @@ pub fn parse_lpstat_jobs(stdout: &str) -> Vec<PrintJob> {
             continue;
         };
         // The id must look like `<dest>-<number>`; skip header/other noise.
-        if !id.rsplit_once('-').is_some_and(|(_, n)| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty()) {
+        if !id
+            .rsplit_once('-')
+            .is_some_and(|(_, n)| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty())
+        {
             continue;
         }
         let size = size.parse::<u64>().unwrap_or(0);
@@ -258,7 +260,13 @@ pub fn parse_lpstat_jobs(stdout: &str) -> Vec<PrintJob> {
 
 fn slug(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -372,7 +380,10 @@ fn printer_row(p: &Printer) -> El {
     let top = Row::new()
         .push(Box::new(Text::new(&name).with_size(13.0)))
         .push(Box::new(Spacer::new()))
-        .push(crate::widgets::status_pill(p.state.label(), p.state.color()));
+        .push(crate::widgets::status_pill(
+            p.state.label(),
+            p.state.color(),
+        ));
     Box::new(
         Column::new()
             .with_no_padding()
@@ -395,7 +406,11 @@ fn job_row(j: &PrintJob) -> El {
     let top = Row::new()
         .push(Box::new(Text::new(&j.id).with_size(13.0)))
         .push(Box::new(Spacer::new()))
-        .push(Box::new(Button::new(&cancel_id, "Cancel", Some(&cancel_key))));
+        .push(Box::new(Button::new(
+            &cancel_id,
+            "Cancel",
+            Some(&cancel_key),
+        )));
     Box::new(
         Column::new()
             .with_no_padding()
@@ -417,7 +432,12 @@ impl Widget for PrintersPane {
         let jobs: Vec<(String, String)> = self
             .jobs
             .iter()
-            .map(|j| (j.id.clone(), format!("settings.printers.cancel.{}", slug(&j.id))))
+            .map(|j| {
+                (
+                    j.id.clone(),
+                    format!("settings.printers.cancel.{}", slug(&j.id)),
+                )
+            })
             .collect();
         let mut cancelled_any = false;
         for (id, key) in jobs {
@@ -467,24 +487,23 @@ impl Widget for PrintersPane {
             ..Default::default()
         };
         let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&cn) = children.first() {
-                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -513,22 +532,21 @@ impl Widget for PrintersPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&cn) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                }
-            }
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                cn,
+                taffy,
+            );
         }
     }
 
@@ -548,7 +566,7 @@ impl Widget for PrintersPane {
             .collect()
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "PrintersPane"
     }
 
@@ -561,8 +579,7 @@ impl Widget for PrintersPane {
         let child = self
             .composed
             .as_mut()
-            .map(|c| c.take_structure_dirty())
-            .unwrap_or(false);
+            .is_some_and(|c| c.take_structure_dirty());
         own || child
     }
 }
@@ -585,8 +602,18 @@ mod tests {
 
     fn sample_jobs() -> Vec<PrintJob> {
         vec![
-            PrintJob { id: "Office_LaserJet-42".into(), owner: "ada".into(), size: 1_048_576, when: "Mon".into() },
-            PrintJob { id: "Front_Desk-7".into(), owner: "ada".into(), size: 2048, when: "Mon".into() },
+            PrintJob {
+                id: "Office_LaserJet-42".into(),
+                owner: "ada".into(),
+                size: 1_048_576,
+                when: "Mon".into(),
+            },
+            PrintJob {
+                id: "Front_Desk-7".into(),
+                owner: "ada".into(),
+                size: 2048,
+                when: "Mon".into(),
+            },
         ]
     }
 
@@ -632,8 +659,7 @@ this is not a job line\n\
     #[test]
     fn cancel_button_cancels_job_and_refreshes_queue() {
         let canceller = Arc::new(RecordingCanceller::default());
-        let mut pane =
-            PrintersPane::with_data(sample_printers(), sample_jobs(), canceller.clone());
+        let mut pane = PrintersPane::with_data(sample_printers(), sample_jobs(), canceller.clone());
         assert_eq!(pane.jobs().len(), 2);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -647,7 +673,10 @@ this is not a job line\n\
             canceller.calls.lock().unwrap().as_slice(),
             ["Office_LaserJet-42"]
         );
-        assert!(pane.take_structure_dirty(), "cancel refreshes the queue view");
+        assert!(
+            pane.take_structure_dirty(),
+            "cancel refreshes the queue view"
+        );
         assert!(
             !pane.jobs().iter().any(|j| j.id == "Office_LaserJet-42"),
             "the cancelled job left the queue: {:?}",
@@ -659,8 +688,7 @@ this is not a job line\n\
     fn builds_layout_with_and_without_jobs() {
         let canceller = Arc::new(RecordingCanceller::default());
         for jobs in [sample_jobs(), vec![]] {
-            let mut pane =
-                PrintersPane::with_data(sample_printers(), jobs, canceller.clone());
+            let mut pane = PrintersPane::with_data(sample_printers(), jobs, canceller.clone());
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -671,7 +699,7 @@ this is not a job line\n\
     /// The production display list is the real CUPS list (or empty) — it must
     /// never fall back to the illustrative sample. On a box without CUPS this
     /// is an empty vec; on a box with CUPS it is the real printers. Either way
-    /// it can never contain the sample's fabricated "Office LaserJet".
+    /// it can never contain the sample's fabricated "Office `LaserJet`".
     #[test]
     fn production_list_never_fabricates_the_sample() {
         let real = printers_for_display();

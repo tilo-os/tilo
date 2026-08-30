@@ -21,11 +21,35 @@
 //! indicators, and live presence. Nothing there replicates as a discrete
 //! mutation.
 //!
-//! **External → never an action:** voice / screen-share transport, media upload,
-//! and the network send itself. When a file is shared, the message **row insert**
-//! is the action (it carries the attachment *by reference* — a FUSE path, name
-//! and dimensions, never the bytes); the media bytes and their transport are
-//! external and hydrate on demand.
+//! **External → never an action:** voice / screen-share *transport*, media
+//! upload, and the network send itself. When a file is shared, the message **row
+//! insert** is the action (it carries the attachment *by reference* — a FUSE
+//! path, name and dimensions, never the bytes); the media bytes and their
+//! transport are external and hydrate on demand.
+//!
+//! ## A call is both halves, and only one of them is external
+//!
+//! That last rule used to swallow the whole of a call, which put chat's call
+//! controls outside the model chat itself declares. They are two different
+//! things:
+//!
+//! * The **transport** — the portal handshake for a screen source, publishing a
+//!   track, dialling a peer by its ticket, the join cue — is external and must
+//!   stay external. [`Action::apply`] has to be a pure function of `(payload,
+//!   base document)` so a peer can replay it byte-identically; a replay that
+//!   reached for a capture source on somebody else's machine would be far worse
+//!   than merely wrong.
+//! * The **voice-membership map** — who is in the call, who is muted or
+//!   deafened, who is presenting, how to dial them — is shared document state
+//!   every peer reads. Nothing distinguishes it from a reaction or a pin. So it
+//!   is an action ([`ChatAction::JoinCall`] and its siblings), which is what
+//!   makes mute and screen-share enumerable, attributable, and undoable through
+//!   the same single route as everything else.
+//!
+//! What is *local* stays local and is neither: the expanded/collapsed call
+//! overlay, the participants drawer, and this peer's own view of its call —
+//! `call.muted` and friends — are the presentation half above. The action is
+//! what gets written down for everyone else.
 //!
 //! ## Determinism contract
 //!
@@ -74,6 +98,23 @@ pub enum ChatAction {
         text: String,
         parent: Option<String>,
         attachment: Option<Attachment>,
+        /// Who the body refers to, resolved to participant ids when the message
+        /// was authored (see [`crate::mention`]). Part of the payload — not
+        /// derived at apply — so a replay on another peer produces byte-identical
+        /// references without needing that peer's roster. `#[serde(default)]` so
+        /// a frame from a release that predates mentions still decodes.
+        #[serde(default)]
+        mentions: Vec<crate::mention::Mention>,
+        /// The address of the thing this message is about, when it was
+        /// written by selecting something rather than typed from scratch.
+        ///
+        /// Part of the payload for the same reason `mentions` is: it is
+        /// resolved once, by the app that owns the selection, and replaying
+        /// it elsewhere must not depend on that app being open there.
+        /// `#[serde(default)]` so a frame from a release that predates
+        /// references still decodes.
+        #[serde(default)]
+        reference: Option<qos_reference::ResourceRef>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -130,6 +171,78 @@ pub enum ChatAction {
         user: String,
         count: i64,
     },
+    /// Record what an agent is doing with the message `msg` replies to, and
+    /// optionally supply the words `msg` did not have when it was posted.
+    ///
+    /// Deliberately not [`ChatAction::EditMessage`]. An agent that took a
+    /// summons posts its reply *before* it has an answer, and the states it
+    /// then passes through are not revisions of a sentence: routing them
+    /// through `EditMessage` would archive each one into the message's edit
+    /// history, flag the reply `edited`, and hang an "(edited) · view
+    /// history" affordance off an outcome nobody had rewritten. The body is
+    /// written once, when there is one; the state is a separate fact with a
+    /// separate field.
+    SetAgentWork {
+        channel: String,
+        msg: String,
+        work: crate::model::AgentWork,
+        /// The agent's words, when it finally has them. Applied only to a
+        /// body that is still empty, so this can never overwrite something
+        /// somebody would want back.
+        #[serde(default)]
+        say: Option<String>,
+    },
+
+    // --- the call, as it appears in the document ---------------------------
+    //
+    // A call has two halves and only one of them is here. The transport —
+    // the portal handshake, publishing a track, dialling a peer, the join
+    // cue — is external and stays external; see the module note. What is
+    // *written down* is the voice-membership map: who is in, who is muted,
+    // who is presenting, how to dial them. That is shared document state
+    // every peer reads, so by the rule this module opens with it is an
+    // action, and it was the one part of chat that was not.
+    /// Enter the call on `channel` as `user`, as far as the document is
+    /// concerned: the membership row appears and everyone sees it.
+    JoinCall { channel: String, user: String },
+    /// Leave it. The membership row goes, along with everything hanging off
+    /// it — which is why this is one action and not a clear of each field.
+    LeaveCall { channel: String, user: String },
+    /// This peer's mic and listening state, as the others read it.
+    ///
+    /// One action rather than four because it is one fact with four fields:
+    /// a peer that unmuted and undeafened in the same gesture must not be
+    /// two entries in the room's history, and must not be two steps to undo.
+    SetCallState {
+        channel: String,
+        user: String,
+        talking: bool,
+        muted: bool,
+        deafened: bool,
+        audio_only: bool,
+    },
+    /// Whether this peer is presenting. Separate from [`Self::SetCallState`]
+    /// because it is a separate decision with a separate gate: acquiring a
+    /// screen goes through the portal, and only a granted source gets here.
+    SetScreenShare {
+        channel: String,
+        user: String,
+        sharing: bool,
+    },
+    /// How peers dial this one's media transport.
+    ///
+    /// An action because it writes to the shared document, and everything
+    /// that writes to the shared document is one — a signalling row that
+    /// replicated outside the action path would be a row a peer could not
+    /// replay and history could not account for. It is deliberately *not*
+    /// published as an addressable operation: the value is an opaque ticket
+    /// only the local transport can mint, so there is nothing a caller
+    /// naming this by hand could correctly pass.
+    SetCallTicket {
+        channel: String,
+        user: String,
+        ticket: String,
+    },
 }
 
 impl Action for ChatAction {
@@ -143,6 +256,8 @@ impl Action for ChatAction {
                 text,
                 parent,
                 attachment,
+                mentions,
+                reference,
             } => {
                 ChatDoc::push_message_with_id(
                     doc,
@@ -154,6 +269,8 @@ impl Action for ChatAction {
                         text: text.clone(),
                         parent: parent.clone(),
                         attachment: attachment.clone(),
+                        mentions: mentions.clone(),
+                        reference: reference.clone(),
                         ..Default::default()
                     },
                 );
@@ -217,6 +334,52 @@ impl Action for ChatAction {
             } => {
                 ChatDoc::set_read_watermark(doc, channel, user, *count);
             }
+            ChatAction::SetAgentWork {
+                channel,
+                msg,
+                work,
+                say,
+            } => {
+                ChatDoc::set_message_work(doc, channel, msg, work, say.as_deref());
+            }
+            ChatAction::JoinCall { channel, user } => {
+                ChatDoc::voice_join(doc, channel, user);
+            }
+            ChatAction::LeaveCall { channel, user } => {
+                ChatDoc::voice_leave(doc, channel, user);
+            }
+            ChatAction::SetCallState {
+                channel,
+                user,
+                talking,
+                muted,
+                deafened,
+                audio_only,
+            } => {
+                ChatDoc::voice_set_state(
+                    doc,
+                    channel,
+                    user,
+                    *talking,
+                    *muted,
+                    *deafened,
+                    *audio_only,
+                );
+            }
+            ChatAction::SetScreenShare {
+                channel,
+                user,
+                sharing,
+            } => {
+                ChatDoc::voice_set_sharing(doc, channel, user, *sharing);
+            }
+            ChatAction::SetCallTicket {
+                channel,
+                user,
+                ticket,
+            } => {
+                ChatDoc::voice_set_ticket(doc, channel, user, ticket);
+            }
         }
         Ok(())
     }
@@ -255,6 +418,7 @@ pub fn send_message_action(
     text: &str,
     parent: Option<String>,
     attachment: Option<Attachment>,
+    mentions: Vec<crate::mention::Mention>,
 ) -> ChatAction {
     ChatAction::SendMessage {
         channel: channel.to_string(),
@@ -264,6 +428,8 @@ pub fn send_message_action(
         text: text.to_string(),
         parent,
         attachment,
+        mentions,
+        reference: None,
     }
 }
 
@@ -351,6 +517,68 @@ pub fn mark_read_action(channel: &str, user: &str, count: i64) -> ChatAction {
     }
 }
 
+/// Record an agent's progress on the message `msg` replies to. `say` is the
+/// agent's words, and is `None` until it has any — the ordinary case for
+/// every state before the last one.
+pub fn set_agent_work_action(
+    channel: &str,
+    msg: &str,
+    work: crate::model::AgentWork,
+    say: Option<&str>,
+) -> ChatAction {
+    ChatAction::SetAgentWork {
+        channel: channel.to_string(),
+        msg: msg.to_string(),
+        work,
+        say: say.map(str::to_string),
+    }
+}
+
+/// This peer's mic and listening state, as the others read it.
+///
+/// `talking` is derived rather than passed: for the local peer it is simply
+/// "not muted", and deriving it in the one place both the control and the
+/// palette build through is what stops the two from disagreeing about what a
+/// muted peer looks like to everyone else.
+pub fn call_state_action(
+    channel: &str,
+    user: &str,
+    muted: bool,
+    deafened: bool,
+    audio_only: bool,
+) -> ChatAction {
+    ChatAction::SetCallState {
+        channel: channel.to_string(),
+        user: user.to_string(),
+        talking: !muted,
+        muted,
+        deafened,
+        audio_only,
+    }
+}
+
+pub fn screen_share_action(channel: &str, user: &str, sharing: bool) -> ChatAction {
+    ChatAction::SetScreenShare {
+        channel: channel.to_string(),
+        user: user.to_string(),
+        sharing,
+    }
+}
+
+pub fn join_call_action(channel: &str, user: &str) -> ChatAction {
+    ChatAction::JoinCall {
+        channel: channel.to_string(),
+        user: user.to_string(),
+    }
+}
+
+pub fn leave_call_action(channel: &str, user: &str) -> ChatAction {
+    ChatAction::LeaveCall {
+        channel: channel.to_string(),
+        user: user.to_string(),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -386,6 +614,9 @@ pub struct ChatResourceCtx {
     pub channels: Vec<ChannelResource>,
     pub active_channel: String,
     pub messages: Vec<MessageResource>,
+    /// The room, for resolving an `@mention` typed through the palette's
+    /// "Post message" prompt the same way the composer does.
+    pub participants: Vec<crate::mention::Participant>,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
@@ -394,7 +625,11 @@ fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
 
 /// A channel's palette label: `#name` for text, a speaker glyph for voice.
 fn channel_label(ch: &ChannelResource) -> String {
-    let name = if ch.name.trim().is_empty() { "channel" } else { ch.name.trim() };
+    let name = if ch.name.trim().is_empty() {
+        "channel"
+    } else {
+        ch.name.trim()
+    };
     format!("{} {}", ch.kind.glyph(), name)
 }
 
@@ -430,7 +665,13 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 let name = name.trim();
                 let name = if name.is_empty() { "new-channel" } else { name };
                 let id = format!("c_{}", uuid::Uuid::new_v4().simple());
-                encode(&create_channel_action(&ws, "", &id, name, ChannelKind::Text))
+                encode(&create_channel_action(
+                    &ws,
+                    "",
+                    &id,
+                    name,
+                    ChannelKind::Text,
+                ))
             }
         },
     ));
@@ -453,9 +694,20 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             {
                 let cid = ch.id.clone();
                 let me = ctx.me.clone();
+                let room = ctx.participants.clone();
                 move |text: &str| {
                     let id = format!("m_{}", uuid::Uuid::new_v4().simple());
-                    encode(&send_message_action(&cid, &id, &me, now_secs(), text, None, None))
+                    let mentions = crate::mention::resolve(text, &room);
+                    encode(&send_message_action(
+                        &cid,
+                        &id,
+                        &me,
+                        now_secs(),
+                        text,
+                        None,
+                        None,
+                        mentions,
+                    ))
                 }
             },
         ));
@@ -498,14 +750,20 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         ));
 
         // Delete the whole channel.
-        channel =
-            channel.with_action(immediate_spec("delete", "Delete channel", &delete_channel_action(&ch.id)));
+        channel = channel.with_action(immediate_spec(
+            "delete",
+            "Delete channel",
+            &delete_channel_action(&ch.id),
+        ));
 
         // Only the open channel exposes its messages as sub-resources.
         if ch.id == ctx.active_channel {
             for m in &ctx.messages {
-                let mut message =
-                    Resource::new(format!("chat.message:{}", m.id), "chat.message", m.label.clone());
+                let mut message = Resource::new(
+                    format!("chat.message:{}", m.id),
+                    "chat.message",
+                    m.label.clone(),
+                );
 
                 // Edit — prompted; the edit timestamp is minted in the closure.
                 message = message.with_action(ActionSpec::prompted(
@@ -577,8 +835,7 @@ fn now_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 impl ResourceProvider for crate::app::ChatApp {
@@ -659,6 +916,14 @@ mod tests {
             channels,
             active_channel: "c_crit".to_string(),
             messages,
+            participants: ChatDoc::list_users(doc)
+                .into_iter()
+                .map(|u| crate::mention::Participant {
+                    id: u.id,
+                    name: u.name,
+                    is_agent: u.is_agent,
+                })
+                .collect(),
         }
     }
 
@@ -685,14 +950,23 @@ mod tests {
         assert_eq!(crit.kind, "chat.channel");
         let c_actions: Vec<&str> = crit.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["post", "rename", "archive", "mark-read", "delete"] {
-            assert!(c_actions.contains(&want), "channel missing {want}: {c_actions:?}");
+            assert!(
+                c_actions.contains(&want),
+                "channel missing {want}: {c_actions:?}"
+            );
         }
-        assert!(!crit.children.is_empty(), "the open channel exposes its messages");
+        assert!(
+            !crit.children.is_empty(),
+            "the open channel exposes its messages"
+        );
         let msg = &crit.children[0];
         assert_eq!(msg.kind, "chat.message");
         let m_actions: Vec<&str> = msg.actions.iter().map(|a| a.id.as_str()).collect();
         for want in ["edit", "react", "pin", "delete"] {
-            assert!(m_actions.contains(&want), "message missing {want}: {m_actions:?}");
+            assert!(
+                m_actions.contains(&want),
+                "message missing {want}: {m_actions:?}"
+            );
         }
 
         // A non-open channel has no message children (only the open one is loaded).
@@ -701,7 +975,10 @@ mod tests {
             .iter()
             .find(|c| c.id.as_str() == "chat.channel:c_general")
             .expect("a second channel is present");
-        assert!(general.children.is_empty(), "only the open channel loads messages");
+        assert!(
+            general.children.is_empty(),
+            "only the open channel loads messages"
+        );
 
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.
@@ -715,7 +992,12 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        assert!(palette.result_labels().iter().any(|l| l.contains("New channel")));
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|l| l.contains("New channel"))
+        );
     }
 
     /// Sending a message through the action appends a row carrying the payload's
@@ -726,7 +1008,16 @@ mod tests {
         let before = ChatDoc::list_messages(&doc, "c_general").len();
         dispatch(
             &mut doc,
-            &send_message_action("c_general", "m_test1", model::ME, TS, "hello", None, None),
+            &send_message_action(
+                "c_general",
+                "m_test1",
+                model::ME,
+                TS,
+                "hello",
+                None,
+                None,
+                Vec::new(),
+            ),
         );
         let msgs = ChatDoc::list_messages(&doc, "c_general");
         assert_eq!(msgs.len(), before + 1);
@@ -735,18 +1026,100 @@ mod tests {
         assert_eq!(m.author, model::ME);
     }
 
+    /// An agent's progress on a summons, through the same action/doc path a
+    /// real dispatch takes: posted as an empty reply, taken, then finished
+    /// with words — and a body that already has words is never overwritten.
+    #[test]
+    fn set_agent_work_action_records_progress_and_only_ever_supplies_empty_words() {
+        use crate::model::{AgentReasoning, AgentRoute, AgentWork, AgentWorkState};
+
+        let mut doc = seeded();
+        dispatch(
+            &mut doc,
+            &send_message_action(
+                "c_crit",
+                "m_reply",
+                "agent_claude",
+                TS,
+                "",
+                Some("m_me1".into()),
+                None,
+                Vec::new(),
+            ),
+        );
+        let taken = AgentWork::new(AgentWorkState::Taken, TS);
+        dispatch(
+            &mut doc,
+            &set_agent_work_action("c_crit", "m_reply", taken.clone(), None),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_reply")
+            .unwrap();
+        assert_eq!(m.work, Some(taken), "the taken record was not stored");
+        assert_eq!(m.text, "", "no words yet — the body must stay empty");
+
+        let done = AgentWork::new(AgentWorkState::Done { did: "Crop".into() }, TS + 5).because(
+            AgentReasoning {
+                route: AgentRoute::Floor,
+                why: "matched the word processor".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
+            &set_agent_work_action("c_crit", "m_reply", done.clone(), Some("Cropped it.")),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_reply")
+            .unwrap();
+        assert_eq!(m.work, Some(done), "the finished record was not stored");
+        assert_eq!(m.text, "Cropped it.", "the agent's words were not supplied");
+
+        // A later state must not restate the body — it is authored once.
+        let refused = AgentWork::new(AgentWorkState::Refused, TS + 9);
+        dispatch(
+            &mut doc,
+            &set_agent_work_action("c_crit", "m_reply", refused.clone(), Some("never mind")),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_reply")
+            .unwrap();
+        assert_eq!(m.work, Some(refused), "the last state must still win");
+        assert_eq!(
+            m.text, "Cropped it.",
+            "an already-written body must never be overwritten"
+        );
+    }
+
     /// Add then remove a reaction through the action path (both mutating), and
     /// the reaction comes and goes.
     #[test]
     fn reaction_add_and_remove_actions_round_trip() {
         let mut doc = seeded();
-        dispatch(&mut doc, &add_reaction_action("c_crit", "m_me1", "🔥", model::ME));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
+        dispatch(
+            &mut doc,
+            &add_reaction_action("c_crit", "m_me1", "🔥", model::ME),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
         let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
         assert_eq!(fire.count(), 1, "the add landed one reaction");
-        dispatch(&mut doc, &remove_reaction_action("c_crit", "m_me1", "🔥", model::ME));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
-        assert!(!m.reactions.iter().any(|r| r.emoji == "🔥"), "remove cleared it");
+        dispatch(
+            &mut doc,
+            &remove_reaction_action("c_crit", "m_me1", "🔥", model::ME),
+        );
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
+        assert!(
+            !m.reactions.iter().any(|r| r.emoji == "🔥"),
+            "remove cleared it"
+        );
     }
 
     /// Idempotency is a doc-level guarantee: a duplicate add does not
@@ -756,7 +1129,10 @@ mod tests {
         let mut doc = seeded();
         ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
         ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
         let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
         assert_eq!(fire.count(), 1, "a repeated add does not double-count");
     }
@@ -766,11 +1142,16 @@ mod tests {
     fn pin_and_delete_message_actions() {
         let mut doc = seeded();
         dispatch(&mut doc, &pin_message_action("c_crit", "m_me1", true));
-        let m = ChatDoc::list_messages(&doc, "c_crit").into_iter().find(|m| m.id == "m_me1").unwrap();
+        let m = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|m| m.id == "m_me1")
+            .unwrap();
         assert!(m.pinned, "the message is pinned");
         dispatch(&mut doc, &delete_message_action("c_crit", "m_me1"));
         assert!(
-            ChatDoc::list_messages(&doc, "c_crit").into_iter().all(|m| m.id != "m_me1"),
+            ChatDoc::list_messages(&doc, "c_crit")
+                .into_iter()
+                .all(|m| m.id != "m_me1"),
             "the message row was deleted"
         );
     }
@@ -781,13 +1162,31 @@ mod tests {
         let mut doc = seeded();
         dispatch(
             &mut doc,
-            &create_channel_action("ws_acme", "cat_acme_main", "c_new", "design-ops", ChannelKind::Text),
+            &create_channel_action(
+                "ws_acme",
+                "cat_acme_main",
+                "c_new",
+                "design-ops",
+                ChannelKind::Text,
+            ),
         );
-        assert!(ChatDoc::list_channels(&doc).iter().any(|c| c.id == "c_new" && c.name == "design-ops"));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|c| c.id == "c_new" && c.name == "design-ops")
+        );
         dispatch(&mut doc, &rename_channel_action("c_new", "ops"));
-        assert!(ChatDoc::list_channels(&doc).iter().any(|c| c.id == "c_new" && c.name == "ops"));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|c| c.id == "c_new" && c.name == "ops")
+        );
         dispatch(&mut doc, &archive_channel_action("c_new", true));
-        assert!(ChatDoc::list_channels(&doc).iter().any(|c| c.id == "c_new" && c.archived));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|c| c.id == "c_new" && c.archived)
+        );
         dispatch(&mut doc, &delete_channel_action("c_new"));
         assert!(ChatDoc::list_channels(&doc).iter().all(|c| c.id != "c_new"));
     }
@@ -810,27 +1209,24 @@ mod tests {
             "undo me",
             None,
             None,
+            Vec::new(),
         ));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        // Record it the way the host does: attributed to the local user.
-        // Undo is author-scoped, so an anonymous entry is one this user's own
-        // Ctrl+Z steps straight past - reverting an older action instead.
-        let local_author = ui::collaboration::local_user_id();
-        state.record_committed_action_authored(
-            before_heads.clone(),
-            None,
-            None,
-            Some(local_author.clone()),
+        state.record_committed_action(before_heads, None, None);
+
+        assert_eq!(
+            ChatDoc::list_messages(&state.doc, "c_general").len(),
+            before + 1,
+            "the action posted a message"
+        );
+        assert!(
+            state.peek_last_undo().is_some(),
+            "exactly one undo boundary recorded"
         );
 
-        assert_eq!(ChatDoc::list_messages(&state.doc, "c_general").len(), before + 1, "the action posted a message");
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
+        state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
             ChatDoc::list_messages(&state.doc, "c_general").len(),
             before,
@@ -847,15 +1243,36 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = send_message_action("c_general", "m_conv", "u_aria", TS, "converge", None, None);
+        let action = send_message_action(
+            "c_general",
+            "m_conv",
+            "u_aria",
+            TS,
+            "converge",
+            None,
+            None,
+            Vec::new(),
+        );
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "replay reproduced the identical change");
-        assert!(ChatDoc::list_messages(&b, "c_general").iter().any(|m| m.id == "m_conv" && m.text == "converge"));
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "replay reproduced the identical change"
+        );
+        assert!(
+            ChatDoc::list_messages(&b, "c_general")
+                .iter()
+                .any(|m| m.id == "m_conv" && m.text == "converge")
+        );
     }
 
     /// A channel create replays byte-identically too — the order is derived from
@@ -866,9 +1283,19 @@ mod tests {
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "precondition: same base state"
+        );
 
-        let action = create_channel_action("ws_acme", "cat_acme_main", "c_sync", "sync", ChannelKind::Text);
+        let action = create_channel_action(
+            "ws_acme",
+            "cat_acme_main",
+            "c_sync",
+            "sync",
+            ChannelKind::Text,
+        );
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -884,27 +1311,44 @@ mod tests {
         let doc = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
         let ws = &resources[0];
-        let crit = ws.children.iter().find(|c| c.id.as_str() == "chat.channel:c_crit").unwrap();
+        let crit = ws
+            .children
+            .iter()
+            .find(|c| c.id.as_str() == "chat.channel:c_crit")
+            .unwrap();
 
         // Delete-channel spec == delete builder.
         let delete_spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = immediate_encode(delete_spec);
         let from_builder = encode(&delete_channel_action("c_crit"));
         assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(from_spec.payload, from_builder.payload, "delete channel is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "delete channel is one source of truth"
+        );
 
         // Rename-channel spec == rename builder for the same name.
         let rename_spec = crit.actions.iter().find(|a| a.id == "rename").unwrap();
         let from_spec = prompted_encode(rename_spec, "planning");
         let from_builder = encode(&rename_channel_action("c_crit", "planning"));
-        assert_eq!(from_spec.payload, from_builder.payload, "rename channel is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "rename channel is one source of truth"
+        );
 
         // Pin-message spec == pin builder.
         let msg = &crit.children[0];
-        let msg_id = msg.id.as_str().trim_start_matches("chat.message:").to_string();
+        let msg_id = msg
+            .id
+            .as_str()
+            .trim_start_matches("chat.message:")
+            .to_string();
         let pin_spec = msg.actions.iter().find(|a| a.id == "pin").unwrap();
         let from_spec = immediate_encode(pin_spec);
         let from_builder = encode(&pin_message_action("c_crit", &msg_id, true));
-        assert_eq!(from_spec.payload, from_builder.payload, "pin message is one source of truth");
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "pin message is one source of truth"
+        );
     }
 }

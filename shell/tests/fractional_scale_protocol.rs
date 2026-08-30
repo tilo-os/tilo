@@ -1,24 +1,15 @@
-//! End-to-end `wp_fractional_scale_v1` protocol walk.
+//! End-to-end `wp_fractional_scale_v1` protocol walk, wiring an in-process
+//! wayland-client through a `UnixStream` pair into a headless smithay
+//! `State` — the real `CompositorHandler::commit` / `FractionalScaleHandler`
+//! paths, not a hand-rolled helper:
 //!
-//! Wires an in-process wayland-client connection through a `UnixStream`
-//! pair into a headless smithay `State`, then proves the full HiDPI
-//! handshake on the real production code path:
-//!
-//! 1. Walks the `wl_registry` for `wl_compositor`,
-//!    `wp_fractional_scale_manager_v1`, and `wp_viewporter` — asserting
-//!    all three globals are actually advertised.
-//! 2. Sets the compositor's display scale to a *fractional* 1.5×.
-//! 3. Creates a `wl_surface`, mints a `wp_fractional_scale_v1` for it,
-//!    and commits.
-//! 4. Asserts the client receives a `preferred_scale` event carrying
-//!    `round(1.5 × 120) = 180` (the protocol's `1/120` fixed-point
-//!    encoding of 1.5) — i.e. the compositor's scale genuinely drives the
-//!    per-surface preferred scale, and it is fractional, not rounded to an
-//!    integer 1× or 2×.
-//!
-//! This exercises `CompositorHandler::commit` and the
-//! `FractionalScaleHandler` on `State` — the same paths a real client
-//! hits — not a hand-rolled helper.
+//! 1. Walks `wl_registry` for `wl_compositor`,
+//!    `wp_fractional_scale_manager_v1`, and `wp_viewporter`.
+//! 2. Sets the compositor's display scale to a *fractional* 1.5x.
+//! 3. Creates a `wl_surface`, mints a `wp_fractional_scale_v1`, commits.
+//! 4. Asserts `preferred_scale = round(1.5 * 120) = 180` (the protocol's
+//!    1/120 fixed-point encoding), so the scale is genuinely fractional
+//!    rather than rounded to 1x or 2x.
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
@@ -30,7 +21,7 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
+    Connection, Dispatch, QueueHandle,
     protocol::{wl_compositor, wl_registry, wl_surface},
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
@@ -39,10 +30,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 };
 use wayland_protocols::wp::viewporter::client::wp_viewporter::{self, WpViewporter};
 
-// -----------------------------------------------------------------------------
-// Client-side state — collects registry advertisements and the
-// per-surface preferred fractional scale.
-// -----------------------------------------------------------------------------
+// Client-side state: registry advertisements + the per-surface preferred scale.
 
 #[derive(Default)]
 struct ClientAppState {
@@ -58,7 +46,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
@@ -101,7 +89,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for ClientAppState {
         _: &mut Self,
         _: &wl_compositor::WlCompositor,
         _: wl_compositor::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -113,7 +101,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for ClientAppState {
         _: &mut Self,
         _: &wl_surface::WlSurface,
         _: wl_surface::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -125,7 +113,7 @@ impl Dispatch<WpFractionalScaleManagerV1, ()> for ClientAppState {
         _: &mut Self,
         _: &WpFractionalScaleManagerV1,
         _: wp_fractional_scale_manager_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -137,7 +125,7 @@ impl Dispatch<WpViewporter, ()> for ClientAppState {
         _: &mut Self,
         _: &WpViewporter,
         _: wp_viewporter::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -149,7 +137,7 @@ impl Dispatch<WpFractionalScaleV1, ()> for ClientAppState {
         state: &mut Self,
         _: &WpFractionalScaleV1,
         event: wp_fractional_scale_v1::Event,
-        _: &(),
+        (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -159,8 +147,8 @@ impl Dispatch<WpFractionalScaleV1, ()> for ClientAppState {
     }
 }
 
-/// Pump the client → server → client round-trip until `predicate` holds
-/// or the deadline elapses.
+/// Pump the client → server → client round-trip until `predicate` holds or
+/// the deadline elapses.
 fn pump(
     conn: &Connection,
     ev: &mut wayland_client::EventQueue<ClientAppState>,
@@ -241,9 +229,8 @@ fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
     let display_handle = display.handle();
     let mut server_state = State::new(event_loop.handle(), display_handle);
 
-    // The compositor's display scale is a *fractional* 1.5×. This is the
-    // value the Settings app's "Display scale" control persists and the
-    // compositor loads at session start; here we set it directly.
+    // A *fractional* 1.5x — the value the Settings app's "Display scale"
+    // persists and the compositor loads at session start.
     server_state.scale = 1.5;
 
     let (client_side, server_side) = UnixStream::pair().expect("socket pair");
@@ -259,7 +246,6 @@ fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
 
     let mut app = ClientAppState::default();
 
-    // 1. Registry walk — need the compositor + fractional-scale manager.
     pump(
         &conn,
         &mut event_queue,
@@ -270,15 +256,14 @@ fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
         "registry walk",
     );
 
-    // 2. Create a surface, mint a fractional-scale object for it, commit.
     let compositor = app.compositor.clone().expect("wl_compositor bound");
     let manager = app.fractional_manager.clone().expect("manager bound");
     let surface = compositor.create_surface(&qh, ());
     let _fractional = manager.get_fractional_scale(&surface, &qh, ());
     surface.commit();
 
-    // 3. The commit runs `CompositorHandler::commit`, which pushes the
-    //    display scale as the preferred fractional scale.
+    // The commit runs `CompositorHandler::commit`, which pushes the display
+    // scale as the preferred fractional scale.
     pump(
         &conn,
         &mut event_queue,
@@ -289,9 +274,8 @@ fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
         "preferred_scale event",
     );
 
-    // 1.5 × 120 = 180. Proves the value is fractional (a 1× compositor
-    // would send 120, a 2× one 240) and that the compositor scale drives
-    // it end-to-end.
+    // 1.5 x 120 = 180: fractional (a 1x compositor sends 120, a 2x one 240)
+    // and driven end-to-end by the compositor scale.
     assert_eq!(
         app.preferred_scale_120,
         Some(180),

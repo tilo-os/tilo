@@ -77,13 +77,11 @@ mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
-    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
     use crossbeam_channel::Receiver;
     use portable_pty::{MasterPty, PtySize};
     use taffy::{NodeId, TaffyTree};
-    use winit::event::{
-        DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent,
-    };
+    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
 
     use ui::widget::Widget;
@@ -94,13 +92,27 @@ mod tests {
     /// EOF. Enough for the emulator to seed its grid and accept input.
     struct MockMaster;
     impl MasterPty for MockMaster {
-        fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
-        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
-        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
-        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
-        fn process_group_leader(&self) -> Option<i32> { None }
-        fn as_raw_fd(&self) -> Option<i32> { None }
-        fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+            Ok(PtySize::default())
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::sink()))
+        }
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::empty()))
+        }
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+        fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+        fn tty_name(&self) -> Option<std::path::PathBuf> {
+            None
+        }
     }
 
     /// Construct a terminal over a mock PTY whose *writer* funnels every byte the
@@ -115,7 +127,9 @@ mod tests {
                 let _ = self.0.send(buf.to_vec());
                 Ok(buf.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
         let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
@@ -155,7 +169,11 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     fn left_press() -> WindowEvent {
@@ -172,7 +190,15 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         widget.handle_event(
-            ev, 1.0, &Modifiers::default(), doc, &ROOT, &mut handled, &mut focus, NodeId::new(0), &taffy,
+            ev,
+            1.0,
+            &Modifiers::default(),
+            doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            NodeId::new(0),
+            &taffy,
         );
     }
 
@@ -236,9 +262,20 @@ mod tests {
         // No durable, user-authored record collection exists to hang an action
         // off — proving this isn't a "saved profiles / sessions are actions" case.
         for forbidden in [
-            "profiles", "profile", "themes", "theme", "sessions", "session",
-            "layouts", "splits", "snippets", "favourites", "favorites",
-            "settings", "prefs", "bookmarks",
+            "profiles",
+            "profile",
+            "themes",
+            "theme",
+            "sessions",
+            "session",
+            "layouts",
+            "splits",
+            "snippets",
+            "favourites",
+            "favorites",
+            "settings",
+            "prefs",
+            "bookmarks",
         ] {
             assert!(
                 doc.get(&ROOT, forbidden).unwrap().is_none(),
@@ -295,7 +332,11 @@ mod tests {
 
         let base = doc.save();
         let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "precondition: replicas share a base");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "precondition: replicas share a base"
+        );
 
         // The shell prints "hello" — an external side effect the emulator projects
         // into the grid. `feed` is the exact path the live PTY-drain `pump` runs.
@@ -308,7 +349,11 @@ mod tests {
 
         // Merge into the peer: byte-identical convergence, for free, no action.
         peer.merge(&mut doc).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads(), "byte-identical convergence after merge");
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "byte-identical convergence after merge"
+        );
         assert!(
             grid_text(&peer, "terminal_grid").contains("hello"),
             "the collaborator sees the same live screen",

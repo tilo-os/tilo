@@ -1,64 +1,29 @@
-//! Consumer-side trust policy — trusted attestors + revoked
-//! publisher keys.
-//!
-//! Both are loaded from user config files by the caller (usually
-//! `qos-install`) and threaded into [`crate::verify::verify`] as
-//! parameters. The foundation crate itself never touches
-//! `$HOME` — it stays deterministic and testable.
-//!
-//! ## File layout
+//! Consumer-side trust policy — trusted attestors + revoked publisher
+//! keys, loaded from user config by the caller (usually `qos-install`)
+//! and threaded into [`crate::verify::verify`]. The foundation crate
+//! itself never touches `$HOME`.
 //!
 //! ```text
-//! ~/.config/qos/trusted-attestors.toml
-//! ~/.config/qos/revoked-keys.toml
+//! ~/.config/qos/trusted-attestors.toml   # [[attestor]] id/pubkey_hex/scope
+//! ~/.config/qos/revoked-keys.toml        # [[revoked]] pubkey_hex/reason
 //! ```
-//!
-//! `trusted-attestors.toml` schema:
-//!
-//! ```toml
-//! [[attestor]]
-//! id = "qos-curated/2026.07"
-//! pubkey_hex = "..."           # ed25519 pubkey (32-byte hex)
-//! scope = "all"                # or "mime:<a>,<b>" / "prefix:<a>,<b>"
-//! ```
-//!
-//! `revoked-keys.toml` schema:
-//!
-//! ```toml
-//! [[revoked]]
-//! pubkey_hex = "..."
-//! reason = "compromised 2026-07-05"
-//! ```
-//!
-//! ## Attestation signature format
 //!
 //! An attestor's signature covers a domain-separated message:
+//! `b"qos-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]`
+//! (82 bytes, Ed25519 → 64-byte signature).
 //!
-//! ```text
-//! b"qos-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]
-//! ```
+//! **Why `payload_root_hash` and not `package_id`?** `package_id`
+//! transitively includes the manifest bytes, which include the
+//! attestation signatures themselves — signing over `package_id`
+//! creates a fixed-point loop. `payload_root_hash` (BLAKE3 of the
+//! payload collection) is stable across attestation updates and binds
+//! the attestation to "this payload, signed by this publisher".
 //!
-//! Total 82 bytes; signed with Ed25519 → 64-byte signature.
-//!
-//! **Why `payload_root_hash` and not `package_id`?** The
-//! `package_id` transitively includes the manifest bytes, which
-//! include the attestation signatures themselves — signing over
-//! `package_id` creates a fixed-point loop. `payload_root_hash`
-//! is the BLAKE3 of the payload collection; it is stable across
-//! attestation-signature updates and identifies the same
-//! payload content. Combined with `publisher_pubkey` it binds
-//! the attestation to "this payload, signed by this publisher"
-//! — exactly the intent of the attestor's claim.
-//!
-//! The `signature_hex` field on `[[trust.attested_by]]` in the
-//! manifest holds the hex encoding of this 64-byte signature.
-//! Threshold-Ed25519 aggregated signatures verify identically —
-//! FROST group signatures ARE Ed25519 signatures at the wire.
-//! For k-of-n attestation (multiple attestors required), add
-//! multiple `[[trust.attested_by]]` rows; `verify_with_trust`
-//! returns after the first trusted-attestor match, so a strict
-//! consumer policy can walk the manifest and check each row
-//! independently.
+//! `signature_hex` on `[[trust.attested_by]]` holds this signature's
+//! hex; threshold-Ed25519 (FROST) signatures verify identically at the
+//! wire. For k-of-n attestation, add multiple `[[trust.attested_by]]`
+//! rows — `verify_with_trust` returns after the first trusted-attestor
+//! match, so a stricter policy can walk and check each row itself.
 
 use std::path::{Path, PathBuf};
 
@@ -70,8 +35,8 @@ use crate::blobs::BlobHash;
 /// Domain-separation prefix for attestation signatures.
 pub const ATTESTATION_DOMAIN: &[u8] = b"qos-pkg-attest-v1\0";
 
-/// Compute the preimage the attestor signs. See module docs for
-/// the exact layout: `DOMAIN || payload_root_hash || publisher_pubkey`.
+/// Compute the preimage the attestor signs: `DOMAIN ||
+/// payload_root_hash || publisher_pubkey` (see module docs).
 pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8; 32]) -> [u8; 82] {
     // 18 (domain) + 32 (payload root) + 32 (pubkey) = 82.
     let mut out = [0u8; 82];
@@ -83,28 +48,17 @@ pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8
     out
 }
 
-/// The scope an attestor is trusted for. Parsed from the
-/// `scope` string:
-///
-/// - `"all"` → [`AttestorScope::All`]
-/// - `"mime:<mime>[,<mime>...]"` → [`AttestorScope::Mime`]
-/// - `"prefix:<pref>[,<pref>...]"` → [`AttestorScope::Prefix`]
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The scope an attestor is trusted for, parsed from the `scope`
+/// string: `"all"`, `"mime:<mime>[,...]"`, or `"prefix:<pref>[,...]"`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum AttestorScope {
     /// Trusts every package the attestor signs.
+    #[default]
     All,
-    /// Only trusts packages whose manifest declares one of these
-    /// MIME types in `[providers].mime`.
+    /// Only trusts packages whose manifest declares one of these MIME types in [providers].mime.
     Mime(Vec<String>),
-    /// Only trusts packages whose `[package].id` starts with one
-    /// of these prefixes.
+    /// Only trusts packages whose [package].id starts with one of these prefixes.
     Prefix(Vec<String>),
-}
-
-impl Default for AttestorScope {
-    fn default() -> Self {
-        AttestorScope::All
-    }
 }
 
 impl AttestorScope {
@@ -116,14 +70,14 @@ impl AttestorScope {
         }
         if let Some(rest) = raw.strip_prefix("mime:") {
             let items: Vec<String> = rest.split(',').map(|s| s.trim().to_string()).collect();
-            if items.is_empty() || items.iter().any(|s| s.is_empty()) {
+            if items.is_empty() || items.iter().any(std::string::String::is_empty) {
                 return Err(TrustLoadError::BadScope(raw.to_string()));
             }
             return Ok(AttestorScope::Mime(items));
         }
         if let Some(rest) = raw.strip_prefix("prefix:") {
             let items: Vec<String> = rest.split(',').map(|s| s.trim().to_string()).collect();
-            if items.is_empty() || items.iter().any(|s| s.is_empty()) {
+            if items.is_empty() || items.iter().any(std::string::String::is_empty) {
                 return Err(TrustLoadError::BadScope(raw.to_string()));
             }
             return Ok(AttestorScope::Prefix(items));
@@ -131,8 +85,7 @@ impl AttestorScope {
         Err(TrustLoadError::BadScope(raw.to_string()))
     }
 
-    /// Render back to the string form, for CLI printing + on-disk
-    /// round-trip.
+    /// Render back to the string form, for CLI printing + on-disk round-trip.
     pub fn render(&self) -> String {
         match self {
             AttestorScope::All => "all".into(),
@@ -141,8 +94,7 @@ impl AttestorScope {
         }
     }
 
-    /// Does this scope match a package with the given id + mime
-    /// list from `[providers].mime`?
+    /// Does this scope match a package with the given id + mime list from [providers].mime?
     pub fn covers(&self, package_id: &str, mime: &[String]) -> bool {
         match self {
             AttestorScope::All => true,
@@ -152,13 +104,11 @@ impl AttestorScope {
     }
 }
 
-/// One row of `trusted-attestors.toml` — an attestor we accept
-/// third-party attestations from.
+/// One row of trusted-attestors.toml — an attestor we accept third-party attestations from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedAttestor {
-    /// Human-readable id, e.g. `qos-curated/2026.07`. Must match
-    /// the `attestor` field in `[[trust.attested_by]]` for a
-    /// signature to count.
+    /// Human-readable id, e.g. `qos-curated/2026.07`; must match the
+    /// `attestor` field in `[[trust.attested_by]]` for a signature to count.
     pub id: String,
     /// The attestor's Ed25519 public key, hex encoded (64 chars).
     pub pubkey_hex: String,
@@ -173,8 +123,7 @@ impl TrustedAttestor {
     }
 }
 
-// Custom TOML shape — `scope` is a bare string on disk but a
-// typed enum in memory.
+// Custom TOML shape — `scope` is a bare string on disk but a typed enum in memory.
 #[derive(Serialize, Deserialize)]
 struct TrustedAttestorToml {
     id: String,
@@ -191,7 +140,11 @@ impl<'de> Deserialize<'de> for TrustedAttestor {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = TrustedAttestorToml::deserialize(d)?;
         let scope = AttestorScope::parse(&raw.scope).map_err(serde::de::Error::custom)?;
-        Ok(TrustedAttestor { id: raw.id, pubkey_hex: raw.pubkey_hex, scope })
+        Ok(TrustedAttestor {
+            id: raw.id,
+            pubkey_hex: raw.pubkey_hex,
+            scope,
+        })
     }
 }
 
@@ -229,8 +182,7 @@ impl TrustedAttestors {
         toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
     }
 
-    /// Load from disk. If the file doesn't exist, returns an
-    /// empty registry (no trusted attestors).
+    /// Load from disk; returns an empty registry if the file doesn't exist.
     pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
         if !path.exists() {
             return Ok(Self::empty());
@@ -255,8 +207,7 @@ impl TrustedAttestors {
         self.attestor.iter().find(|a| a.id == id)
     }
 
-    /// Return the slice of attestors as a plain slice — convenience
-    /// for `verify()`.
+    /// Return the slice of attestors as a plain slice — convenience for `verify()`.
     pub fn as_slice(&self) -> &[TrustedAttestor] {
         &self.attestor
     }
@@ -302,8 +253,7 @@ impl RevocationList {
         toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
     }
 
-    /// Load from disk. If the file doesn't exist, returns an
-    /// empty list.
+    /// Load from disk; returns an empty list if the file doesn't exist.
     pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
         if !path.exists() {
             return Ok(Self::empty());
@@ -323,23 +273,21 @@ impl RevocationList {
         Ok(())
     }
 
-    /// Test a raw pubkey against the revocation list. Returns
-    /// the matching `RevokedKey` if any.
+    /// Test a raw pubkey against the revocation list; returns the matching `RevokedKey` if any.
     pub fn find(&self, pubkey: &[u8; 32]) -> Option<&RevokedKey> {
         for entry in &self.revoked {
-            if let Ok(bytes) = entry.pubkey_bytes() {
-                if &bytes == pubkey {
-                    return Some(entry);
-                }
+            if let Ok(bytes) = entry.pubkey_bytes()
+                && &bytes == pubkey
+            {
+                return Some(entry);
             }
         }
         None
     }
 }
 
-/// Return the standard config-directory paths for the trust
-/// registry + revocation list. Follows XDG (`$XDG_CONFIG_HOME`
-/// falling back to `~/.config`) with a `qos/` subdir.
+/// Standard config-dir paths for the trust registry + revocation
+/// list; follows XDG (`$XDG_CONFIG_HOME`, fallback `~/.config`) under a `qos/` subdir.
 pub fn default_trusted_attestors_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("trusted-attestors.toml"))
 }
@@ -350,15 +298,15 @@ pub fn default_revoked_keys_path() -> Option<PathBuf> {
 }
 
 fn config_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("qos"));
-        }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("qos"));
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join(".config").join("qos"));
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home).join(".config").join("qos"));
     }
     None
 }

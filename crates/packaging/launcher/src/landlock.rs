@@ -1,33 +1,29 @@
 //! Launcher-side Landlock helpers.
 //!
 //! Landlock is layered on top of bwrap + seccomp, the same as the
-//! compositor's per-workspace sandbox. The launcher's job is to:
+//! compositor's per-workspace sandbox. The launcher's job: derive an FS
+//! plan from the manifest (read-only paths get the read access set,
+//! read-write paths get the full access set), then install the ruleset
+//! on the *child* process after bwrap has set up the mount namespace
+//! but before the entrypoint takes over — bwrap itself needs broad FS
+//! access to `mount/bind/pivot_root`, so it can't be Landlocked.
 //!
-//! 1. Derive an FS plan from the manifest (read-only paths get the
-//!    read access set, read-write paths get the full access set).
-//! 2. Install the ruleset on the *child* process, *after* bwrap has
-//!    set up the mount namespace but *before* the entrypoint takes
-//!    over. bwrap itself needs broad FS access to mount/bind/
-//!    pivot_root, so it cannot be Landlocked.
-//!
-//! Today we expose [`apply_plan`] as the in-process restriction point.
-//! Real wiring through bwrap-via-shim is the same pattern the
-//! compositor uses (see `shell/src/sandbox/landlock_shim.rs`):
-//! bwrap exec a small shim, the shim restricts itself, the shim execs
-//! the real binary. The launcher does not yet ship a separate shim
-//! binary — it installs Landlock on the parent (via `pre_exec`) right
-//! before bwrap takes over. Because Landlock is inherited by every
-//! descendant, the bwrap-spawned app inherits the policy.
+//! Today [`apply_plan`] is the in-process restriction point. Real
+//! wiring through bwrap-via-shim is the compositor's pattern (see
+//! `shell/src/sandbox/landlock_shim.rs`): bwrap execs a small shim, the
+//! shim restricts itself, then execs the real binary. The launcher
+//! doesn't yet ship a separate shim — it installs Landlock on the
+//! parent via `pre_exec` right before bwrap takes over, and since
+//! Landlock is inherited by every descendant, the bwrap-spawned app
+//! inherits the policy.
 //!
 //! ### Open design question — bwrap's mount namespace
 //!
-//! Landlock policies are path-based and are evaluated against the
-//! *kernel inode* underneath, so the path passed at `PathFd` time
-//! must exist on the host. Bwrap creates a new mount namespace and
-//! pivots, so the *destination* paths inside the namespace might not
-//! match the policy. The compositor solves this by execing a shim
-//! inside the namespace; we leave a TODO for the same wiring here
-//! and document the implication in the `apply_plan` doc-comment.
+//! Landlock policies are path-based, evaluated against the *kernel
+//! inode*, so the path at `PathFd` time must exist on the host. Bwrap's
+//! new mount namespace means the *destination* paths inside it might
+//! not match the policy. The compositor solves this with an
+//! in-namespace shim exec; TODO to wire the same here.
 
 use std::path::PathBuf;
 
@@ -37,8 +33,7 @@ use landlock::{
 };
 
 /// Cap at V4 (network bind/connect control), same rationale as the
-/// compositor shim. Best-effort drops anything the running kernel
-/// can't honour.
+/// compositor shim — best-effort drops anything the kernel can't honour.
 pub const TARGET_ABI: ABI = ABI::V4;
 
 /// FS plan element. Pure type so `plan_from_manifest` is unit-testable.
@@ -80,10 +75,9 @@ pub(crate) fn outcome_from_status(status: RulesetStatus) -> LandlockOutcome {
 
 /// Produce the FS access plan for a read list and a write list.
 ///
-/// The lists come from the launcher, not from a manifest: the system
-/// read profile ([`crate::profile`]) and the app's own directory
-/// ([`crate::appdir`]). Paths are absolute and literal — there is no
-/// placeholder expansion left in the launcher to have run first.
+/// The lists come from the launcher, not a manifest: the system read
+/// profile ([`crate::profile`]) and the app's own directory
+/// ([`crate::appdir`]). Paths are absolute and literal.
 pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
     let abi = TARGET_ABI;
     let read = AccessFs::from_read(abi);
@@ -106,15 +100,13 @@ pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
 
 /// Build a ruleset and restrict the calling process to it.
 ///
-/// `net_restricted` mirrors the manifest's `sandbox.net.mode == "off"`
-/// (deny TCP bind/connect when set, no-op on ABI < 4).
+/// `net_restricted` mirrors `sandbox.net.mode == "off"` (deny TCP
+/// bind/connect when set, no-op on ABI < 4).
 ///
 /// **Caveat re: bwrap.** This irreversibly restricts the *current*
-/// process and every descendant. If called from the launcher's parent
-/// process before exec, the policy paths must exist on the host root.
-/// If called via a shim inside bwrap's mount namespace, the paths must
-/// exist *in* the namespace. The launcher currently picks the parent-
-/// side install — see `apply_plan_or_log` for the safe wrapper.
+/// process and every descendant. Called from the launcher's parent
+/// before exec, so policy paths must exist on the host root — see
+/// `apply_plan_or_log` for the safe wrapper.
 fn build_and_restrict(
     plan: &[FsRule],
     net_restricted: bool,
@@ -183,16 +175,8 @@ mod tests {
         let rw = vec![PathBuf::from("/b")];
         let plan = plan_from_paths(&ro, &rw);
         let abi = TARGET_ABI;
-        let ro_access = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/a"))
-            .unwrap()
-            .access;
-        let rw_access = plan
-            .iter()
-            .find(|r| r.path == PathBuf::from("/b"))
-            .unwrap()
-            .access;
+        let ro_access = plan.iter().find(|r| r.path == *"/a").unwrap().access;
+        let rw_access = plan.iter().find(|r| r.path == *"/b").unwrap().access;
         assert!(rw_access.contains(ro_access), "rw is superset of ro");
         assert_eq!(rw_access, AccessFs::from_all(abi));
     }

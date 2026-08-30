@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "osk"
 version = "0.1.0"
 edition = "2024"
@@ -41,3 +43,10 @@ tempfile.workspace = true
 # (libxkbcommon), so the unit tests prove the generated keymap actually parses
 # and that each symbol resolves to the intended keysym.
 xkbcommon = "0.8"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -29,8 +29,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use crate::categories::Category;
 use crate::SettingsApp;
+use crate::categories::Category;
 
 /// Default (wide) offscreen viewport. Matches the sibling apps' aspect.
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
@@ -102,9 +102,24 @@ fn category_from_slug(slug: &str) -> Option<Category> {
 fn network_demo_pane() -> Box<dyn Widget> {
     use os_actions::{WifiNetworkInfo, WiredInfo};
     let nets = vec![
-        WifiNetworkInfo { ssid: "Home_Network".into(), signal: 4, secure: true, connected: true },
-        WifiNetworkInfo { ssid: "Cafe_Guest".into(), signal: 3, secure: false, connected: false },
-        WifiNetworkInfo { ssid: "Office_5G".into(), signal: 2, secure: true, connected: false },
+        WifiNetworkInfo {
+            ssid: "Home_Network".into(),
+            signal: 4,
+            secure: true,
+            connected: true,
+        },
+        WifiNetworkInfo {
+            ssid: "Cafe_Guest".into(),
+            signal: 3,
+            secure: false,
+            connected: false,
+        },
+        WifiNetworkInfo {
+            ssid: "Office_5G".into(),
+            signal: 2,
+            secure: true,
+            connected: false,
+        },
     ];
     let pane = crate::panes::network::NetworkPane::new_demo(nets)
         .with_wired(WiredInfo {
@@ -117,7 +132,7 @@ fn network_demo_pane() -> Box<dyn Widget> {
     Box::new(pane)
 }
 
-/// An `AudioPane` seeded with a deterministic PipeWire graph: two output
+/// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output
 /// devices (Speakers + Headphones), and per-application streams — the music app
 /// routed to the Headphones while the browser stays on the Speakers, plus a
 /// meeting app on the microphone — so the still proves the per-application
@@ -148,7 +163,10 @@ fn audio_demo_pane() -> Box<dyn Widget> {
         muted: Some(mute),
     };
     let graph = AudioGraph {
-        sinks: vec![sink(51, 51, "Speakers", true), sink(91, 269, "Headphones", false)],
+        sinks: vec![
+            sink(51, 51, "Speakers", true),
+            sink(91, 269, "Headphones", false),
+        ],
         sources: vec![sink(52, 52, "Built-in Microphone", true)],
         playback_streams: vec![
             // Routed away from the default onto the Headphones.
@@ -156,16 +174,37 @@ fn audio_demo_pane() -> Box<dyn Widget> {
             // Following the default (Speakers).
             stream(90, 320, "Browser", "Conference call", 51, true, 0.60, false),
         ],
-        record_streams: vec![stream(95, 340, "Meeting", "Microphone", 52, false, 0.75, false)],
+        record_streams: vec![stream(
+            95,
+            340,
+            "Meeting",
+            "Microphone",
+            52,
+            false,
+            0.75,
+            false,
+        )],
     };
     // The device pickers read the local device view; give it the same two sinks
     // so the output-device chooser is shown alongside the per-app rows.
     let devices = AudioDevices {
         sinks: vec![
-            AudioDevice { id: 51, name: "Speakers".into(), default: true },
-            AudioDevice { id: 91, name: "Headphones".into(), default: false },
+            AudioDevice {
+                id: 51,
+                name: "Speakers".into(),
+                default: true,
+            },
+            AudioDevice {
+                id: 91,
+                name: "Headphones".into(),
+                default: false,
+            },
         ],
-        sources: vec![AudioDevice { id: 52, name: "Built-in Microphone".into(), default: true }],
+        sources: vec![AudioDevice {
+            id: 52,
+            name: "Built-in Microphone".into(),
+            default: true,
+        }],
     };
     let disp = crate::dispatcher::dispatcher_or_real(None);
     let pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.65, 0.7)
@@ -246,8 +285,8 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     .with_narrow_content_shot();
                 return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
             }
-            let app = SettingsApp::with_selected(cat)
-                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32);
+            let app =
+                SettingsApp::with_selected(cat).with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32);
             return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
         }
     }

@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "collab-types"
 version = "0.1.0"
 edition = "2024"
@@ -22,7 +24,7 @@ serde.workspace = true
 serde_bytes.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 # Phase 6 compaction-checkpoint prefix hashing. We pick SHA-256
-# (already pulled in transitively by some libp2p features but kept
+# (already pulled in transitively by some Iroh features but kept
 # direct here so the dep is explicit) so the digest is 32 bytes
 # without needing a separate blake3 dep.
 sha2.workspace = true
@@ -31,3 +33,10 @@ uuid.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

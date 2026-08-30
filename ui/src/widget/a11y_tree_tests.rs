@@ -33,21 +33,23 @@ fn access_nodes(root: &mut dyn Widget) -> Vec<(AkNodeId, AkNode)> {
 
 /// All emitted nodes of a given role.
 fn of_role(nodes: &[(AkNodeId, AkNode)], role: AkRole) -> Vec<&AkNode> {
-    nodes.iter().filter(|(_, n)| n.role() == role).map(|(_, n)| n).collect()
+    nodes
+        .iter()
+        .filter(|(_, n)| n.role() == role)
+        .map(|(_, n)| n)
+        .collect()
 }
 
 /// The single node of `role` whose label is `label`.
 fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &'a AkNode {
     nodes
         .iter()
-        .find(|(_, n)| n.role() == role && n.label().as_deref() == Some(label))
+        .find(|(_, n)| n.role() == role && n.label() == Some(label))
         .map(|(_, n)| n)
         .unwrap_or_else(|| panic!("no {role:?} node labelled {label:?}"))
 }
 
-// ---------------------------------------------------------------------------
-// segmented::TriStateControl  →  Group + RadioButton children
-// ---------------------------------------------------------------------------
+// segmented::TriStateControl -> Group + RadioButton children
 
 #[test]
 fn tri_state_control_exposes_a_radio_group() {
@@ -59,8 +61,15 @@ fn tri_state_control_exposes_a_radio_group() {
     let groups = of_role(&nodes, AkRole::Group);
     assert_eq!(groups.len(), 1, "one group container");
     let group = groups[0];
-    assert_eq!(group.value().as_deref(), Some("Allow"), "group value is the active label");
-    assert!(group.supports_action(AkAction::Click), "the control is activatable");
+    assert_eq!(
+        group.value(),
+        Some("Allow"),
+        "group value is the active label"
+    );
+    assert!(
+        group.supports_action(AkAction::Click),
+        "the control is activatable"
+    );
 
     // Three radio buttons, one per segment, in order, each positioned N of 3.
     let radios = of_role(&nodes, AkRole::RadioButton);
@@ -69,7 +78,11 @@ fn tri_state_control_exposes_a_radio_group() {
     let inherit = by_label(&nodes, AkRole::RadioButton, "Inherit");
     let deny = by_label(&nodes, AkRole::RadioButton, "Deny");
     // Selection rides on `toggled` (checked) — Allow is on, the others off.
-    assert_eq!(allow.toggled(), Some(Toggled::True), "selected segment is checked");
+    assert_eq!(
+        allow.toggled(),
+        Some(Toggled::True),
+        "selected segment is checked"
+    );
     assert_eq!(inherit.toggled(), Some(Toggled::False));
     assert_eq!(deny.toggled(), Some(Toggled::False));
     // Set membership so an AT can say "1 of 3".
@@ -80,9 +93,7 @@ fn tri_state_control_exposes_a_radio_group() {
     assert!(allow.supports_action(AkAction::Click));
 }
 
-// ---------------------------------------------------------------------------
-// segmented::ColorSwatchPicker  →  List + ListItem children
-// ---------------------------------------------------------------------------
+// segmented::ColorSwatchPicker -> List + ListItem children
 
 #[test]
 fn color_swatch_picker_exposes_a_selectable_list() {
@@ -94,10 +105,18 @@ fn color_swatch_picker_exposes_a_selectable_list() {
     assert_eq!(lists.len(), 1, "one list container");
     let list = lists[0];
     // The chosen swatch's hex is the list value — derived from the real colour.
-    assert_eq!(list.value().as_deref(), Some("#E6C84A"), "value is selected swatch hex");
+    assert_eq!(
+        list.value(),
+        Some("#E6C84A"),
+        "value is selected swatch hex"
+    );
 
     let items = of_role(&nodes, AkRole::ListItem);
-    assert_eq!(items.len(), DEFAULT_PALETTE.len(), "one ListItem per swatch");
+    assert_eq!(
+        items.len(),
+        DEFAULT_PALETTE.len(),
+        "one ListItem per swatch"
+    );
     // Item names are the real palette hex values (not fabricated labels).
     let first = by_label(&nodes, AkRole::ListItem, "#E64A4A");
     assert_eq!(first.position_in_set(), Some(1));
@@ -105,14 +124,20 @@ fn color_swatch_picker_exposes_a_selectable_list() {
     // Selection is explicit tri-state on ListItems: the chosen one true, the
     // rest false (so an AT doesn't announce "selected" for the wrong swatch).
     let chosen = by_label(&nodes, AkRole::ListItem, "#E6C84A");
-    assert_eq!(chosen.is_selected(), Some(true), "selected swatch is marked selected");
-    assert_eq!(first.is_selected(), Some(false), "unselected swatch is explicitly not selected");
+    assert_eq!(
+        chosen.is_selected(),
+        Some(true),
+        "selected swatch is marked selected"
+    );
+    assert_eq!(
+        first.is_selected(),
+        Some(false),
+        "unselected swatch is explicitly not selected"
+    );
     assert!(chosen.supports_action(AkAction::Click));
 }
 
-// ---------------------------------------------------------------------------
-// gauge::RingGauge / gauge::BarGauge  →  ProgressBar with % value
-// ---------------------------------------------------------------------------
+// gauge::RingGauge / gauge::BarGauge -> ProgressBar with % value
 
 #[test]
 fn ring_gauge_exposes_a_named_percentage_meter() {
@@ -121,7 +146,7 @@ fn ring_gauge_exposes_a_named_percentage_meter() {
     let nodes = access_nodes(&mut g);
     let bar = by_label(&nodes, AkRole::ProgressIndicator, "CPU");
     // The dim caption names it; the fraction becomes a spoken percentage.
-    assert_eq!(bar.value().as_deref(), Some("42%"), "fraction renders as a percentage");
+    assert_eq!(bar.value(), Some("42%"), "fraction renders as a percentage");
 }
 
 #[test]
@@ -131,18 +156,16 @@ fn bar_gauge_prefers_the_caller_value_readout() {
     let nodes = access_nodes(&mut g);
     let bar = by_label(&nodes, AkRole::ProgressIndicator, "Memory");
     // A human-facing readout ("3.2 GB") wins over the raw percentage.
-    assert_eq!(bar.value().as_deref(), Some("3.2 GB"));
+    assert_eq!(bar.value(), Some("3.2 GB"));
 
     // With no readout, the fraction falls back to a percentage.
     let mut plain = BarGauge::new(0.25).with_label("Disk", "");
     let plain_nodes = access_nodes(&mut plain);
     let plain_bar = by_label(&plain_nodes, AkRole::ProgressIndicator, "Disk");
-    assert_eq!(plain_bar.value().as_deref(), Some("25%"));
+    assert_eq!(plain_bar.value(), Some("25%"));
 }
 
-// ---------------------------------------------------------------------------
-// slash_menu::SlashMenu  →  Menu + MenuItem children (hidden when closed)
-// ---------------------------------------------------------------------------
+// slash_menu::SlashMenu -> Menu + MenuItem children (hidden when closed)
 
 #[test]
 fn slash_menu_open_exposes_menu_items() {
@@ -159,14 +182,25 @@ fn slash_menu_open_exposes_menu_items() {
     // Every canonical row is an activatable MenuItem; the cursor row is
     // selected. `Paragraph` is the first row and the default highlight.
     let items = of_role(&nodes, AkRole::MenuItem);
-    assert_eq!(items.len(), 9, "all nine block-type rows are exposed");
+    assert_eq!(items.len(), 11, "all eleven block-type rows are exposed");
     let para = by_label(&nodes, AkRole::MenuItem, "Paragraph");
     assert_eq!(para.position_in_set(), Some(1));
-    assert_eq!(para.size_of_set(), Some(9));
-    assert_eq!(para.is_selected(), Some(true), "the highlighted row is selected");
-    assert!(para.supports_action(AkAction::Click), "menu items are activatable");
+    assert_eq!(para.size_of_set(), Some(11));
+    assert_eq!(
+        para.is_selected(),
+        Some(true),
+        "the highlighted row is selected"
+    );
+    assert!(
+        para.supports_action(AkAction::Click),
+        "menu items are activatable"
+    );
     let h2 = by_label(&nodes, AkRole::MenuItem, "Heading 2");
-    assert_eq!(h2.is_selected(), Some(false), "non-highlighted rows are not selected");
+    assert_eq!(
+        h2.is_selected(),
+        Some(false),
+        "non-highlighted rows are not selected"
+    );
 }
 
 #[test]
@@ -176,15 +210,16 @@ fn slash_menu_closed_is_a_hidden_menu() {
     let nodes = access_nodes(&mut m);
     let menus = of_role(&nodes, AkRole::Menu);
     assert_eq!(menus.len(), 1);
-    assert!(menus[0].is_hidden(), "a closed menu collapses out of the reading order");
+    assert!(
+        menus[0].is_hidden(),
+        "a closed menu collapses out of the reading order"
+    );
     assert_eq!(menus[0].is_expanded(), Some(false));
     // No item rows are exposed while closed.
     assert!(of_role(&nodes, AkRole::MenuItem).is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// tabs::TabBar  →  TabList + Tab children with selected state
-// ---------------------------------------------------------------------------
+// tabs::TabBar -> TabList + Tab children with selected state
 
 #[test]
 fn tab_bar_exposes_each_tab_with_selected_state() {
@@ -202,52 +237,71 @@ fn tab_bar_exposes_each_tab_with_selected_state() {
 
     let lists = of_role(&nodes, AkRole::TabList);
     assert_eq!(lists.len(), 1, "one tab list");
-    assert_eq!(lists[0].value().as_deref(), Some("Details"), "value is the active tab title");
+    assert_eq!(
+        lists[0].value(),
+        Some("Details"),
+        "value is the active tab title"
+    );
 
     let tabs = of_role(&nodes, AkRole::Tab);
     assert_eq!(tabs.len(), 3, "one Tab per descriptor");
     let details = by_label(&nodes, AkRole::Tab, "Details");
     let overview = by_label(&nodes, AkRole::Tab, "Overview");
     assert_eq!(details.is_selected(), Some(true), "active tab is selected");
-    assert_eq!(overview.is_selected(), Some(false), "inactive tab is not selected");
+    assert_eq!(
+        overview.is_selected(),
+        Some(false),
+        "inactive tab is not selected"
+    );
     assert_eq!(details.position_in_set(), Some(2));
     assert_eq!(details.size_of_set(), Some(3));
-    assert!(details.supports_action(AkAction::Click), "tabs are activatable");
+    assert!(
+        details.supports_action(AkAction::Click),
+        "tabs are activatable"
+    );
 }
 
-// ---------------------------------------------------------------------------
-// toggle_group::ToggleGroup  →  Group + ToggleButton children with checked
-// ---------------------------------------------------------------------------
+// toggle_group::ToggleGroup -> Group + ToggleButton children with checked
 
 #[test]
 fn toggle_group_exposes_each_segment_with_checked_state() {
     use super::toggle_group::{Segment, ToggleGroup};
     let mut g = ToggleGroup::new(
-        vec![Segment::new("Light"), Segment::new("Dark"), Segment::new("Auto")],
+        vec![
+            Segment::new("Light"),
+            Segment::new("Dark"),
+            Segment::new("Auto"),
+        ],
         1, // "Dark"
     );
     let nodes = access_nodes(&mut g);
 
     let group = of_role(&nodes, AkRole::Group);
     assert_eq!(group.len(), 1);
-    assert_eq!(group[0].value().as_deref(), Some("Dark"), "value is the selected segment");
+    assert_eq!(
+        group[0].value(),
+        Some("Dark"),
+        "value is the selected segment"
+    );
 
     // Segments map to Buttons carrying the pressed (toggled) state.
     let buttons = of_role(&nodes, AkRole::Button);
     assert_eq!(buttons.len(), 3, "one toggle button per segment");
     let dark = by_label(&nodes, AkRole::Button, "Dark");
     let light = by_label(&nodes, AkRole::Button, "Light");
-    assert_eq!(dark.toggled(), Some(Toggled::True), "selected segment is pressed");
+    assert_eq!(
+        dark.toggled(),
+        Some(Toggled::True),
+        "selected segment is pressed"
+    );
     assert_eq!(light.toggled(), Some(Toggled::False));
     assert_eq!(dark.position_in_set(), Some(2));
     assert_eq!(dark.size_of_set(), Some(3));
     assert!(dark.supports_action(AkAction::Click));
 }
 
-// ---------------------------------------------------------------------------
-// Composed UI: the leaf widgets under one presentational container all reach
+// Composed UI: leaf widgets under one presentational container all reach
 // the window root through the real collapse/reparent walk.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn composed_ui_reaches_every_new_widget_through_the_window_root() {
@@ -259,7 +313,9 @@ fn composed_ui_reaches_every_new_widget_through_the_window_root() {
     let mut slash = SlashMenu::new();
     slash.set_visible(true);
     let mut col = Column::new()
-        .push(Box::new(TriStateControl::allow_inherit_deny().with_selected(2)))
+        .push(Box::new(
+            TriStateControl::allow_inherit_deny().with_selected(2),
+        ))
         .push(Box::new(ColorSwatchPicker::new().with_selected(0)))
         .push(Box::new(RingGauge::new(0.9).with_label("90%", "GPU")))
         .push(Box::new(BarGauge::new(0.5).with_label("Battery", "50%")))
@@ -272,24 +328,30 @@ fn composed_ui_reaches_every_new_widget_through_the_window_root() {
         .iter()
         .find(|(id, _)| *id == crate::accesskit_bridge::ROOT_ID)
         .expect("window root present");
-    assert_eq!(window.children().len(), 5, "all five widgets hang off the window root");
+    assert_eq!(
+        window.children().len(),
+        5,
+        "all five widgets hang off the window root"
+    );
     // No GenericContainer leaked from the collapsed Column.
     assert!(of_role(&nodes, AkRole::GenericContainer).is_empty());
 
     // Each widget's top-level role is present exactly once.
     assert_eq!(of_role(&nodes, AkRole::Group).len(), 1, "tri-state group");
     assert_eq!(of_role(&nodes, AkRole::List).len(), 1, "swatch list");
-    assert_eq!(of_role(&nodes, AkRole::ProgressIndicator).len(), 2, "two gauges");
+    assert_eq!(
+        of_role(&nodes, AkRole::ProgressIndicator).len(),
+        2,
+        "two gauges"
+    );
     assert_eq!(of_role(&nodes, AkRole::Menu).len(), 1, "slash menu");
     // Two distinct gauges, told apart by their accessible names.
-    assert!(nodes.iter().any(|(_, n)| n.label().as_deref() == Some("GPU")));
-    assert!(nodes.iter().any(|(_, n)| n.label().as_deref() == Some("Battery")));
+    assert!(nodes.iter().any(|(_, n)| n.label() == Some("GPU")));
+    assert!(nodes.iter().any(|(_, n)| n.label() == Some("Battery")));
 }
 
-// ---------------------------------------------------------------------------
-// Screen-reader announcement path: focus + value-change narration on the same
-// AccessNodes the bridge consumes.
-// ---------------------------------------------------------------------------
+// Screen-reader announcement path: focus + value-change narration on the
+// same AccessNodes the bridge consumes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -323,9 +385,9 @@ unsafe impl Send for Rec {}
 
 #[test]
 fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
-    use crate::screen_reader::{ScreenReader, describe};
     use super::gauge::RingGauge;
     use super::segmented::TriStateControl;
+    use crate::screen_reader::{ScreenReader, describe};
 
     // Focus narration composes name + role + value + state straight off the
     // widget's own accessibility() node.
@@ -334,8 +396,14 @@ fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
     // The group is unnamed and announces its active choice ("Allow") as value.
     assert_eq!(describe(&group), "group, Allow");
     // Its first segment reads as a checked radio button positioned in the set.
-    assert_eq!(describe(&group.children[0]), "Allow, radio button, checked, 1 of 3");
-    assert_eq!(describe(&group.children[1]), "Inherit, radio button, not checked, 2 of 3");
+    assert_eq!(
+        describe(&group.children[0]),
+        "Allow, radio button, checked, 1 of 3"
+    );
+    assert_eq!(
+        describe(&group.children[1]),
+        "Inherit, radio button, not checked, 2 of 3"
+    );
 
     let gauge = RingGauge::new(0.42).with_label("42%", "CPU");
     let gnode = Widget::accessibility(&gauge).unwrap();
@@ -347,5 +415,8 @@ fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
     reader.announce_focus(&gnode);
     reader.announce_value_change("90%");
     let spoken = rec.0.borrow();
-    assert_eq!(spoken.spoken(), &["CPU, progress bar, 42%".to_string(), "90%".to_string()]);
+    assert_eq!(
+        spoken.spoken(),
+        &["CPU, progress bar, 42%".to_string(), "90%".to_string()]
+    );
 }

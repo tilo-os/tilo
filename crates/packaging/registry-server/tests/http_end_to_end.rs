@@ -154,7 +154,11 @@ async fn signed_post_adds_entry_and_list_returns_it() {
         .expect("decode");
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].package_id, entry.package_id);
-    assert_eq!(list[0].signature_hex.len(), 128, "server preserves entry sig");
+    assert_eq!(
+        list[0].signature_hex.len(),
+        128,
+        "server preserves entry sig"
+    );
 
     // GET /entries/<id> returns the same row.
     let single: RegistryEntry = client
@@ -227,7 +231,11 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
     let v_same = sample_entry(&h.publisher, 100);
     let resp = client
         .post(url(h.addr, "/entries"))
-        .json(&sign_change_request(EntryAction::Update, v_same, &h.publisher))
+        .json(&sign_change_request(
+            EntryAction::Update,
+            v_same,
+            &h.publisher,
+        ))
         .send()
         .await
         .expect("v_same");
@@ -242,7 +250,11 @@ async fn delete_removes_entry() {
     let entry = sample_entry(&h.publisher, 100);
     client
         .post(url(h.addr, "/entries"))
-        .json(&sign_change_request(EntryAction::Add, entry.clone(), &h.publisher))
+        .json(&sign_change_request(
+            EntryAction::Add,
+            entry.clone(),
+            &h.publisher,
+        ))
         .send()
         .await
         .expect("add")
@@ -251,7 +263,11 @@ async fn delete_removes_entry() {
 
     client
         .post(url(h.addr, "/entries"))
-        .json(&sign_change_request(EntryAction::Delete, entry.clone(), &h.publisher))
+        .json(&sign_change_request(
+            EntryAction::Delete,
+            entry.clone(),
+            &h.publisher,
+        ))
         .send()
         .await
         .expect("delete")
@@ -333,7 +349,11 @@ async fn publisher_cannot_hijack_another_publishers_entry() {
     let entry_v1 = sample_entry(&h.publisher, 100);
     client
         .post(url(h.addr, "/entries"))
-        .json(&sign_change_request(EntryAction::Add, entry_v1.clone(), &h.publisher))
+        .json(&sign_change_request(
+            EntryAction::Add,
+            entry_v1.clone(),
+            &h.publisher,
+        ))
         .send()
         .await
         .expect("v1")

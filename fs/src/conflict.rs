@@ -1,13 +1,9 @@
 //! Content-conflict resolution for the move-tree namespace.
 //!
-//! Two cases surface a `<name>.sync-conflict-<hash>` copy so no peer's bytes are
-//! silently dropped:
-//!
-//! 1. **Concurrent edit/edit** of one live file — Automerge keeps both hashes in
-//!    the node's `hash` register; the losing version becomes a sibling copy.
-//! 2. **Modify/delete race** — one peer deletes a file while another edits it.
-//!    Delete wins (the node is trashed), but the concurrent edit is resurrected
-//!    as a conflict copy at the file's pre-deletion location.
+//! Two cases surface a `<name>.sync-conflict-<hash>` copy so no peer's bytes
+//! are silently dropped: **concurrent edit/edit** of one live file (the
+//! losing hash becomes a sibling copy), and a **modify/delete race** (delete
+//! wins, but the concurrent edit is resurrected as a copy at the pre-deletion location).
 //!
 //! Copy names derive purely from name + losing hash, so peers converge on them.
 
@@ -25,8 +21,7 @@ pub struct ContentConflict {
 
 const MARKER: &str = ".sync-conflict-";
 
-/// Deterministic conflict-copy file name for a losing version of `name`. Uses a
-/// 128-bit (32 hex) prefix of the losing hash.
+/// Deterministic conflict-copy file name for a losing version of `name`, using a 128-bit (32 hex) prefix of the losing hash.
 pub fn conflict_name(name: &str, loser: &Hash) -> String {
     let hex = hex::encode(loser.as_bytes());
     format!("{name}{MARKER}{}", &hex[..32])
@@ -38,8 +33,7 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
     Some(Hash::from(arr))
 }
 
-/// Detect conflict copies that don't yet exist. Deterministic across peers,
-/// idempotent once the copies are present.
+/// Detect conflict copies that don't yet exist — deterministic across peers, idempotent once present.
 pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
     let mut out = Vec::new();
 
@@ -68,8 +62,7 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
         }
     }
 
-    // (2) modify/delete: an explicitly-trashed file whose content changed
-    // concurrently with the deletion (current hash != hash-at-deletion).
+    // (2) modify/delete: an explicitly-trashed file whose content changed concurrently with the deletion.
     for id in ns.directly_trashed() {
         let Some((_, name)) = ns.node_parent_name(&id) else {
             continue;
@@ -116,10 +109,7 @@ fn push_copy(
     if ns.child_id_named(parent, &cname).is_some() {
         return; // already resolved
     }
-    if out
-        .iter()
-        .any(|c| c.parent_id == parent && c.name == cname)
-    {
+    if out.iter().any(|c| c.parent_id == parent && c.name == cname) {
         return; // already queued this pass
     }
     out.push(ContentConflict {
@@ -129,8 +119,7 @@ fn push_copy(
     });
 }
 
-/// Materialize the conflict copy for `c`; returns the CRDT delta to broadcast
-/// (empty if it already existed). `loser_len` sizes the copy.
+/// Materialize the conflict copy for `c`; returns the CRDT delta to broadcast (empty if it already existed).
 pub fn materialize(ns: &mut Namespace, c: &ContentConflict, loser_len: u64, now: u64) -> Vec<u8> {
     if ns.create_conflict_copy(&c.parent_id, &c.name, &c.loser, loser_len, now) {
         ns.save_incremental()
@@ -170,7 +159,9 @@ mod tests {
 
         let winner = a.entry_at("doc").unwrap().hash.unwrap();
         assert_ne!(winner, loser);
-        let copy = a.entry_at(&conflict_name("doc", &loser)).expect("conflict copy");
+        let copy = a
+            .entry_at(&conflict_name("doc", &loser))
+            .expect("conflict copy");
         assert_eq!(copy.hash, Some(loser));
         assert!(detect(&a).is_empty(), "idempotent");
     }

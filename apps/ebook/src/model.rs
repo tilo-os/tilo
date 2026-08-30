@@ -13,19 +13,25 @@
 //!    is an **anchor** (which document, where) plus a **payload** (what kind,
 //!    what colour, what note). See [`Annotation`] for the anchoring contract.
 
+// This module's several `from_str(s: &str) -> Self` methods are deliberately
+// infallible tag parsers with a default fallback (unknown/legacy tags map to
+// a sensible variant rather than erroring) -- a different contract from
+// `std::str::FromStr::from_str`, which returns `Result`. Implementing the
+// trait would force a `Result` return and ripple `.parse()`/`?` handling
+// through every call site for no behavioural benefit, so the name collision
+// is accepted here rather than exempted call-by-call.
+#![allow(clippy::should_implement_trait)]
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// ===========================================================================
-// Book content
-// ===========================================================================
+// --- Book content ------------------------------------------------------------
 
 /// Decoded, downscaled cover artwork extracted from an EPUB. Held behind an
-/// `Arc` so a [`Book`] stays cheap to clone and the pixels are decoded exactly
-/// once (at load), never per frame. `rgba` is tightly packed 8-bit RGBA of
-/// `width * height` pixels.
+/// `Arc` so a [`Book`] stays cheap to clone and the pixels are decoded
+/// exactly once (at load), never per frame.
 #[derive(Clone, Debug)]
 pub struct Cover {
     pub rgba: Arc<Vec<u8>>,
@@ -41,6 +47,8 @@ pub struct Book {
     pub title: String,
     pub author: String,
     pub publisher: String,
+    /// BCP-47 language from EPUB metadata, used for TeX/Liang hyphenation.
+    pub language: String,
     pub description: String,
     pub chapters: Vec<Chapter>,
     /// Index into the theme accent/semantic ramps used to tint the spine on
@@ -78,7 +86,10 @@ impl Chapter {
     /// Plain text of one block (spans concatenated) — used for annotation
     /// excerpts and word counts.
     pub fn block_text(&self, i: usize) -> String {
-        self.blocks.get(i).map(|b| b.plain_text()).unwrap_or_default()
+        self.blocks
+            .get(i)
+            .map(Block::plain_text)
+            .unwrap_or_default()
     }
 }
 
@@ -95,7 +106,18 @@ pub enum Block {
     Quote { spans: Vec<Span> },
     /// One `<li>` inside `<ul>`/`<ol>`. `ordered` picks bullet vs number;
     /// `index` is the 1-based ordinal for ordered lists.
-    ListItem { spans: Vec<Span>, ordered: bool, index: usize },
+    ListItem {
+        spans: Vec<Span>,
+        ordered: bool,
+        index: usize,
+    },
+    /// Presentation MathML lowered into the toolkit's shared expression tree.
+    Math {
+        expr: ui::math::MathExpr,
+        /// Linear fallback used for search, accessibility, and annotations.
+        source: String,
+        display: bool,
+    },
     /// `<hr/>` — a section break.
     Separator,
 }
@@ -107,13 +129,16 @@ impl Block {
             | Block::Paragraph { spans }
             | Block::Quote { spans }
             | Block::ListItem { spans, .. } => spans,
-            Block::Separator => &[],
+            Block::Math { .. } | Block::Separator => &[],
         }
     }
 
     pub fn plain_text(&self) -> String {
         // Spans are trimmed; a word break at a style boundary is carried by the
         // next span's `space_before` flag, so re-insert those spaces here.
+        if let Block::Math { source, .. } = self {
+            return source.clone();
+        }
         let mut out = String::new();
         for (i, s) in self.spans().iter().enumerate() {
             if i > 0 && s.space_before {
@@ -139,6 +164,8 @@ impl Block {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Span {
     pub text: String,
+    /// Structured inline MathML. `text` remains its accessible linear form.
+    pub math: Option<ui::math::MathExpr>,
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
@@ -149,13 +176,18 @@ pub struct Span {
 
 impl Span {
     pub fn plain(text: impl Into<String>) -> Self {
-        Self { text: text.into(), bold: false, italic: false, code: false, space_before: false }
+        Self {
+            text: text.into(),
+            math: None,
+            bold: false,
+            italic: false,
+            code: false,
+            space_before: false,
+        }
     }
 }
 
-// ===========================================================================
-// Shared annotation model  (reused by PDF reader + word processor)
-// ===========================================================================
+// --- Shared annotation model (reused by PDF reader + word processor) --------
 
 /// What an annotation *is*. All three share one anchor so a unified
 /// sidebar/list can present them together.
@@ -208,8 +240,13 @@ pub enum HiColor {
 }
 
 impl HiColor {
-    pub const ALL: [HiColor; 5] =
-        [HiColor::Yellow, HiColor::Green, HiColor::Blue, HiColor::Pink, HiColor::Purple];
+    pub const ALL: [HiColor; 5] = [
+        HiColor::Yellow,
+        HiColor::Green,
+        HiColor::Blue,
+        HiColor::Pink,
+        HiColor::Purple,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -241,19 +278,12 @@ impl HiColor {
     }
 }
 
-/// One annotation. **The anchor is the reusable contract:**
-///
-/// - `doc_id` — which document (book id here; file path / doc uuid elsewhere).
-/// - `chapter` — coarse location index (EPUB spine index; PDF page; WP section).
-/// - `block` — the structural unit within that location (paragraph index).
-/// - `start` / `end` — char offsets within the block's plain text. For a
-///   [`AnnoKind::Bookmark`] both are 0 (it anchors to the block, not a range).
-/// - `excerpt` — a snapshot of the anchored text. Lets the sidebar render
-///   without re-resolving, and lets a reflow re-locate the anchor heuristically
-///   if block indices ever drift.
-///
-/// The payload is `kind` + `color` + `note`. A highlight may also carry a
-/// `note` (a commented highlight); a bare note uses a neutral colour.
+/// One annotation. The reusable anchor contract: `doc_id` (which document),
+/// `chapter` (coarse location: spine index / page / section), `block`
+/// (paragraph index), `start`/`end` (char offsets, both 0 for a
+/// [`AnnoKind::Bookmark`]), and `excerpt` (a text snapshot so the sidebar
+/// renders without re-resolving and a reflow can re-locate the anchor).
+/// Payload is `kind` + `color` + `note`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Annotation {
     pub id: Uuid,
@@ -268,13 +298,11 @@ pub struct Annotation {
     pub color: HiColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,
-    /// The logical annotation this row belongs to. A highlight over a range that
-    /// spans several paragraphs is stored as one [`AnnoKind::Highlight`] row per
-    /// spanned block; they all share one `group` so the reader treats them as a
-    /// single mark (one click, one delete). Comments on that highlight are
-    /// [`AnnoKind::Note`] rows carrying the **same** `group`, which is how a
-    /// range can hold more than one comment. A standalone bookmark or note is its
-    /// own group (`group == id`).
+    /// The logical annotation this row belongs to. A multi-paragraph
+    /// highlight is one [`AnnoKind::Highlight`] row per spanned block,
+    /// sharing one `group` (one click, one delete); comments on it are
+    /// [`AnnoKind::Note`] rows carrying the same `group`. A standalone
+    /// bookmark or note is its own group (`group == id`).
     #[serde(default = "Uuid::new_v4")]
     pub group: Uuid,
 }
@@ -323,13 +351,10 @@ pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
-// ===========================================================================
-// Reading settings + per-book progress
-// ===========================================================================
+// --- Reading settings + per-book progress ------------------------------------
 
 /// One of the three classic e-reader page tints. These tint the *content
 /// surface* (the page), layered on top of the OS theme that drives all chrome.
@@ -345,8 +370,12 @@ pub enum ReadTheme {
 }
 
 impl ReadTheme {
-    pub const ALL: [ReadTheme; 4] =
-        [ReadTheme::Light, ReadTheme::Sepia, ReadTheme::Dark, ReadTheme::HighContrast];
+    pub const ALL: [ReadTheme; 4] = [
+        ReadTheme::Light,
+        ReadTheme::Sepia,
+        ReadTheme::Dark,
+        ReadTheme::HighContrast,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             ReadTheme::Light => "Light",
@@ -373,23 +402,57 @@ impl ReadTheme {
     }
 }
 
-/// How the reader lays the book out on the page. The three modes share one
-/// paginated layout ([`crate::paginate::ChapterLayout`]); they differ only in
-/// which slice of the flow is shown and how the reader moves through it:
-///
-/// - [`ReadMode::Paged`] — one viewport-height page at a time (the classic
-///   e-reader). The wheel/arrows turn whole pages.
-/// - [`ReadMode::Continuous`] — the chapter as one uninterrupted column the
-///   reader scrolls through; page boundaries dissolve. The wheel scrolls by
-///   pixels and rolls into the next/previous chapter at the ends.
-/// - [`ReadMode::TwoUp`] — two facing pages side by side (a book spread). The
-///   wheel/arrows turn two pages at a time.
+/// How the reader lays the book out: the three modes share one paginated
+/// layout ([`crate::paginate::ChapterLayout`]), differing only in which
+/// slice of the flow is shown. `Paged` turns whole pages; `Continuous`
+/// scrolls by pixels and rolls into the next/previous chapter at the ends;
+/// `TwoUp` shows two facing pages and turns them together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadMode {
     Paged,
     Continuous,
     TwoUp,
+}
+
+/// Paragraph-composition policy used by the reader. `Book` enables the full
+/// typesetting pipeline; `Ragged` keeps natural spacing and disables automatic
+/// hyphenation/micro-expansion for readers who prefer an uneven right edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositionStyle {
+    #[default]
+    Book,
+    Ragged,
+}
+
+impl CompositionStyle {
+    pub const ALL: [Self; 2] = [Self::Book, Self::Ragged];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Book => "Book",
+            Self::Ragged => "Ragged",
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Book => "book",
+            Self::Ragged => "ragged",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "ragged" => Self::Ragged,
+            _ => Self::Book,
+        }
+    }
+
+    pub const fn justified(self) -> bool {
+        matches!(self, Self::Book)
+    }
 }
 
 impl ReadMode {
@@ -515,29 +578,37 @@ pub fn default_fonts() -> Vec<FontEntry> {
 
 /// Relative luminance (0..1) of an sRGB colour, for light/dark decisions.
 pub fn luminance(c: [u8; 3]) -> f32 {
-    (0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32) / 255.0
+    (0.299 * f32::from(c[0]) + 0.587 * f32::from(c[1]) + 0.114 * f32::from(c[2])) / 255.0
 }
 
 /// Linear blend of two colours; `t` in 0..1 moves from `a` to `b`.
 pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     let t = t.clamp(0.0, 1.0);
     [
-        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round() as u8,
-        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round() as u8,
-        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round() as u8,
+        (f32::from(a[0]) * (1.0 - t) + f32::from(b[0]) * t).round() as u8,
+        (f32::from(a[1]) * (1.0 - t) + f32::from(b[1]) * t).round() as u8,
+        (f32::from(a[2]) * (1.0 - t) + f32::from(b[2]) * t).round() as u8,
     ]
 }
 
 fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
-    let (r, g, b) = (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0);
+    let (r, g, b) = (
+        f32::from(c[0]) / 255.0,
+        f32::from(c[1]) / 255.0,
+        f32::from(c[2]) / 255.0,
+    );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    let l = (max + min) / 2.0;
+    let l = f32::midpoint(max, min);
     if (max - min).abs() < 1e-6 {
         return (0.0, 0.0, l);
     }
     let d = max - min;
-    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
     let h = if max == r {
         ((g - b) / d + if g < b { 6.0 } else { 0.0 }) * 60.0
     } else if max == g {
@@ -578,7 +649,11 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 /// Inverse of [`hsv_to_rgb`]. Returns `(h_degrees, s, v)`; hue is 0 on the
 /// achromatic axis (callers editing a grey preserve their prior hue).
 pub fn rgb_to_hsv(c: [u8; 3]) -> (f32, f32, f32) {
-    let (r, g, b) = (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0);
+    let (r, g, b) = (
+        f32::from(c[0]) / 255.0,
+        f32::from(c[1]) / 255.0,
+        f32::from(c[2]) / 255.0,
+    );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
@@ -603,7 +678,11 @@ pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
         return None;
     }
     let v = u32::from_str_radix(s, 16).ok()?;
-    Some([((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8])
+    Some([
+        ((v >> 16) & 0xFF) as u8,
+        ((v >> 8) & 0xFF) as u8,
+        (v & 0xFF) as u8,
+    ])
 }
 
 /// `#RRGGBB` hex string for an sRGB triple.
@@ -631,6 +710,10 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
     ]
 }
 
+/// The derived palette parts returned by [`ColorScheme::palette_parts`]:
+/// `(page, page_edge, ink, ink_dim, rule, code_bg)`.
+pub type PaletteParts = ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]);
+
 /// A reader colour scheme: a page (paper) colour, body ink, and an accent, plus
 /// a dark flag. The rest of the palette (faint edges, dim ink, rules, code
 /// chips) is **derived**, so a scheme stays coherent from just these three
@@ -651,7 +734,11 @@ pub struct ColorScheme {
 impl ColorScheme {
     /// The three editable colours, labelled — drives the per-colour editor.
     pub fn slots(&self) -> [(&'static str, [u8; 3]); 3] {
-        [("Page", self.page), ("Text", self.ink), ("Accent", self.accent)]
+        [
+            ("Page", self.page),
+            ("Text", self.ink),
+            ("Accent", self.accent),
+        ]
     }
 
     pub fn set_slot(&mut self, i: usize, c: [u8; 3]) {
@@ -670,7 +757,11 @@ impl ColorScheme {
     /// hue-rotated accent that keeps contrast against the paper.
     pub fn from_bg(id: &str, name: &str, bg: [u8; 3]) -> Self {
         let dark = luminance(bg) < 0.5;
-        let ink = if dark { [0xEA, 0xE4, 0xD8] } else { [0x22, 0x20, 0x1E] };
+        let ink = if dark {
+            [0xEA, 0xE4, 0xD8]
+        } else {
+            [0x22, 0x20, 0x1E]
+        };
         let (h, _s, _l) = rgb_to_hsl(bg);
         let acc_l = if dark { 0.64 } else { 0.48 };
         let accent = hsl_to_rgb(h + 150.0, 0.62, acc_l);
@@ -687,7 +778,7 @@ impl ColorScheme {
     }
 
     /// The derived palette parts `(page, page_edge, ink, ink_dim, rule, code_bg)`.
-    pub fn palette_parts(&self) -> ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]) {
+    pub fn palette_parts(&self) -> PaletteParts {
         let page = self.page;
         let ink = self.ink;
         (
@@ -773,6 +864,8 @@ pub struct Settings {
     /// How the page is laid out (single page / continuous scroll / two-up
     /// spread). A reading preference, shared across the library like the tint.
     pub mode: ReadMode,
+    /// Paragraph fitting policy. Defaults to book-quality composition.
+    pub composition: CompositionStyle,
 }
 
 impl Default for Settings {
@@ -787,6 +880,7 @@ impl Default for Settings {
             theme: ReadTheme::Sepia,
             scheme_id: String::new(),
             mode: ReadMode::Paged,
+            composition: CompositionStyle::Book,
         }
     }
 }
@@ -830,9 +924,7 @@ impl Progress {
     }
 }
 
-// ===========================================================================
-// Library shelf preferences
-// ===========================================================================
+// --- Library shelf preferences -----------------------------------------------
 
 /// How the library shelf orders its books. Persisted so the shelf keeps the
 /// reader's chosen ordering across sessions and collaborators.
@@ -848,8 +940,12 @@ pub enum LibrarySort {
 }
 
 impl LibrarySort {
-    pub const ALL: [LibrarySort; 4] =
-        [LibrarySort::Title, LibrarySort::Author, LibrarySort::Recent, LibrarySort::Progress];
+    pub const ALL: [LibrarySort; 4] = [
+        LibrarySort::Title,
+        LibrarySort::Author,
+        LibrarySort::Recent,
+        LibrarySort::Progress,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -877,13 +973,10 @@ impl LibrarySort {
     }
 }
 
-/// One book the reader has added to their library — the app-managed collection,
-/// persisted in the CRDT so the shelf survives a restart and syncs across the
-/// reader's devices. Keyed by the content-hash [`id`](Book::id): re-adding the
-/// same file updates the same entry, and a book shared over the workspace keeps
-/// one identity everywhere. `path` records where the file currently lives so the
-/// book can be re-opened (and re-hydrated from the collaborative filesystem) and
-/// so the shelf can tell a workspace-shared book from a device-local one.
+/// One book the reader has added to their library, persisted in the CRDT.
+/// Keyed by the content-hash [`id`](Book::id): re-adding the same file
+/// updates the same entry, and a workspace-shared book keeps one identity
+/// everywhere. `path` records where the file currently lives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryEntry {
     /// Content-hash id, shared with the book's annotations + progress.
@@ -909,7 +1002,10 @@ pub struct LibraryPrefs {
 
 impl Default for LibraryPrefs {
     fn default() -> Self {
-        Self { sort: LibrarySort::Title, hide_read: false }
+        Self {
+            sort: LibrarySort::Title,
+            hide_read: false,
+        }
     }
 }
 
@@ -944,7 +1040,11 @@ mod tests {
             assert_eq!(ReadMode::from_str(m.as_str()), m);
         }
         assert_eq!(ReadMode::from_str("nonsense"), ReadMode::Paged);
-        assert_eq!(Settings::default().mode, ReadMode::Paged, "readers open paged by default");
+        assert_eq!(
+            Settings::default().mode,
+            ReadMode::Paged,
+            "readers open paged by default"
+        );
         assert_eq!(ReadMode::TwoUp.page_stride(), 2, "a spread turns two pages");
         assert_eq!(ReadMode::Paged.page_stride(), 1);
         assert!(ReadMode::Continuous.is_continuous());
@@ -966,8 +1066,14 @@ mod tests {
     #[test]
     fn default_fonts_are_shown_and_unique() {
         let f = default_fonts();
-        assert!(f.iter().any(|e| e.kind == FontKind::Serif), "a serif face ships by default");
-        assert!(f.iter().all(|e| e.shown), "the built-in fonts all show in quick settings");
+        assert!(
+            f.iter().any(|e| e.kind == FontKind::Serif),
+            "a serif face ships by default"
+        );
+        assert!(
+            f.iter().all(|e| e.shown),
+            "the built-in fonts all show in quick settings"
+        );
         let ids: std::collections::HashSet<_> = f.iter().map(|e| &e.id).collect();
         assert_eq!(ids.len(), f.len(), "font ids are unique");
     }
@@ -977,7 +1083,14 @@ mod tests {
         let b = Block::Paragraph {
             spans: vec![
                 Span::plain("Hello "),
-                Span { text: "world".into(), bold: true, italic: false, code: false, space_before: false },
+                Span {
+                    text: "world".into(),
+                    math: None,
+                    bold: true,
+                    italic: false,
+                    code: false,
+                    space_before: false,
+                },
             ],
         };
         assert_eq!(b.plain_text(), "Hello world");
@@ -985,16 +1098,35 @@ mod tests {
 
     #[test]
     fn settings_body_size_scales() {
-        let mut s = Settings::default();
-        s.font_scale = 1.5;
+        let s = Settings {
+            font_scale: 1.5,
+            ..Default::default()
+        };
         assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn composition_style_has_stable_storage_names() {
+        assert_eq!(CompositionStyle::Book.as_str(), "book");
+        assert_eq!(
+            CompositionStyle::from_str("ragged"),
+            CompositionStyle::Ragged
+        );
+        assert_eq!(
+            CompositionStyle::from_str("unknown"),
+            CompositionStyle::Book,
+            "unknown persisted values retain the book-quality default"
+        );
     }
 
     #[test]
     fn scheme_from_dark_bg_derives_light_ink_and_contrasting_accent() {
         let s = ColorScheme::from_bg("u1", "Midnight", [0x12, 0x14, 0x1C]);
         assert!(s.dark, "a dark background yields a dark scheme");
-        assert!(luminance(s.ink) > 0.7, "ink is a light off-white on a dark paper");
+        assert!(
+            luminance(s.ink) > 0.7,
+            "ink is a light off-white on a dark paper"
+        );
         assert_eq!(s.page, [0x12, 0x14, 0x1C], "paper is the given background");
         // The accent must stand clearly apart from the paper in luminance.
         assert!(
@@ -1023,11 +1155,19 @@ mod tests {
 
     #[test]
     fn hsv_round_trips_through_rgb() {
-        for c in [[0xFA, 0xCC, 0x15], [0x34, 0xD3, 0x99], [0x3B, 0x82, 0xF6], [0x10, 0x10, 0x12]] {
+        for c in [
+            [0xFA, 0xCC, 0x15],
+            [0x34, 0xD3, 0x99],
+            [0x3B, 0x82, 0xF6],
+            [0x10, 0x10, 0x12],
+        ] {
             let (h, s, v) = rgb_to_hsv(c);
             let back = hsv_to_rgb(h, s, v);
             for i in 0..3 {
-                assert!((c[i] as i32 - back[i] as i32).abs() <= 1, "channel {i}: {c:?} -> {back:?}");
+                assert!(
+                    (i32::from(c[i]) - i32::from(back[i])).abs() <= 1,
+                    "channel {i}: {c:?} -> {back:?}"
+                );
             }
         }
     }
@@ -1037,7 +1177,10 @@ mod tests {
         // Full value is bright; zero value is black, hue preserved on the way.
         assert_eq!(hsv_to_rgb(210.0, 0.6, 0.0), [0, 0, 0]);
         let bright = hsv_to_rgb(210.0, 0.6, 1.0);
-        assert!(bright.iter().any(|&c| c > 200), "high value is a bright colour");
+        assert!(
+            bright.iter().any(|&c| c > 200),
+            "high value is a bright colour"
+        );
     }
 
     #[test]
@@ -1058,13 +1201,28 @@ mod tests {
 
     #[test]
     fn progress_is_read_at_the_end() {
-        assert!(!Progress { fraction: 0.5, ..Default::default() }.is_read());
-        assert!(Progress { fraction: 1.0, ..Default::default() }.is_read());
+        assert!(
+            !Progress {
+                fraction: 0.5,
+                ..Default::default()
+            }
+            .is_read()
+        );
+        assert!(
+            Progress {
+                fraction: 1.0,
+                ..Default::default()
+            }
+            .is_read()
+        );
     }
 
     #[test]
     fn dark_scheme_is_neutral_not_brown() {
-        let dark = default_schemes().into_iter().find(|s| s.id == "dark").unwrap();
+        let dark = default_schemes()
+            .into_iter()
+            .find(|s| s.id == "dark")
+            .unwrap();
         // Warm (red ≥ blue) but only barely — a genuine charcoal, not a sepia.
         assert!(dark.page[0] >= dark.page[2], "kept faintly warm");
         assert!(dark.page[0] - dark.page[2] <= 6, "not a brown/sepia paper");
@@ -1073,8 +1231,14 @@ mod tests {
 
     #[test]
     fn high_contrast_builtin_is_maximal_contrast() {
-        let hc = default_schemes().into_iter().find(|s| s.id == "high-contrast").unwrap();
-        assert!(hc.builtin && hc.dark, "high contrast ships as a dark built-in");
+        let hc = default_schemes()
+            .into_iter()
+            .find(|s| s.id == "high-contrast")
+            .unwrap();
+        assert!(
+            hc.builtin && hc.dark,
+            "high contrast ships as a dark built-in"
+        );
         assert!(luminance(hc.page) < 0.02, "a true-black page");
         assert!(luminance(hc.ink) > 0.98, "white ink");
         // It is a first-class built-in tint: the ReadTheme enum round-trips its id.
@@ -1087,6 +1251,9 @@ mod tests {
         let mut s = default_schemes()[0].clone(); // Light
         assert!(!s.dark);
         s.set_slot(0, [0x10, 0x10, 0x12]); // paint the paper dark
-        assert!(s.dark, "editing the page to a dark colour flips the scheme dark");
+        assert!(
+            s.dark,
+            "editing the page to a dark colour flips the scheme dark"
+        );
     }
 }

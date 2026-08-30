@@ -1,19 +1,16 @@
 //! Reading a layer's change set straight out of the overlay upper directory.
 //!
-//! overlayfs records everything a layer did in its upper directory, in a form
-//! that is fully self-describing:
+//! overlayfs records everything a layer did in its upper directory, fully self-describing:
 //!
-//! * a character device with major 0 / minor 0 is a *whiteout* — the path was
-//!   deleted, and the base copy is still intact underneath;
-//! * a directory carrying the `overlay.opaque` xattr replaced the base
-//!   directory wholesale rather than merging with it;
-//! * any other entry that also exists in the base was modified (overlayfs
-//!   copies a file up on first write);
+//! * a character device with major 0 / minor 0 is a *whiteout* (deleted, base intact
+//!   underneath);
+//! * a directory with the `overlay.opaque` xattr replaced the base directory wholesale;
+//! * any other entry that also exists in the base was modified (overlayfs copies up on
+//!   first write);
 //! * anything else is new.
 //!
-//! That is the whole diff algorithm. It needs no bookkeeping at layer-write
-//! time, which is why it cannot drift out of sync with reality the way a
-//! recorded change journal can.
+//! No bookkeeping at layer-write time is needed, so this cannot drift out of sync with
+//! reality the way a recorded change journal can.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -27,17 +24,16 @@ pub enum ChangeKind {
     Added,
     /// The path existed in the base and the layer wrote over it.
     Modified,
-    /// The layer deleted a path that exists in the base. Recorded as an
-    /// overlayfs whiteout; deleting the whiteout restores the base copy.
+    /// The layer deleted a path that exists in the base. Recorded as an overlayfs whiteout;
+    /// deleting the whiteout restores the base copy.
     Deleted,
-    /// The layer replaced a base directory instead of merging into it, so base
-    /// entries under this path are hidden even though they still exist.
+    /// The layer replaced a base directory instead of merging into it, so base entries under
+    /// this path are hidden even though they still exist.
     Replaced,
 }
 
 impl ChangeKind {
-    /// Single-character marker, in the shape people already read in `git status`
-    /// and `rpm -V` output.
+    /// Single-character marker, in the shape people already read in `git status` and `rpm -V` output.
     pub fn marker(self) -> char {
         match self {
             ChangeKind::Added => '+',
@@ -51,22 +47,21 @@ impl ChangeKind {
 /// One changed path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Change {
-    /// Path as it appears inside the layer, absolute and base-relative
-    /// (`/usr/bin/cowsay`, not the upper-directory path on the host).
+    /// Path as it appears inside the layer, absolute and base-relative (`/usr/bin/cowsay`, not
+    /// the upper-directory path on the host).
     pub path: PathBuf,
     pub kind: ChangeKind,
     /// Size in bytes for regular files; `None` for whiteouts and directories.
     pub size: Option<u64>,
 }
 
-/// A layer's complete change set, plus the interpretation a person actually
-/// wants: which packages arrived, and what was changed by hand.
+/// A layer's complete change set, plus the interpretation a person actually wants: which
+/// packages arrived, and what was changed by hand.
 #[derive(Debug, Clone, Default)]
 pub struct Diff {
     pub changes: Vec<Change>,
-    /// Packages whose install receipt appears in the layer, by package manager
-    /// name. Derived from the manager's own on-disk records, not guessed from
-    /// filenames.
+    /// Packages whose install receipt appears in the layer, by package manager name. Derived
+    /// from the manager's own on-disk records, not guessed from filenames.
     pub packages: BTreeMap<String, Vec<String>>,
     /// Every path claimed by one of those packages' file manifests.
     owned_by_packages: std::collections::BTreeSet<PathBuf>,
@@ -75,25 +70,18 @@ pub struct Diff {
 impl Diff {
     /// Changes that are not accounted for by an installed package.
     ///
-    /// This is the distinction that makes a diff worth reading. Installing nine
-    /// small packages writes about 1900 upper-directory entries, and reporting
-    /// that number teaches people to ignore the diff forever. But almost all of
-    /// those files are *explained*: they belong to a package, whose own manifest
-    /// says so. What is left over is what the person did with their own hands —
-    /// the edited config, the dropped-in script, the deleted file — and that is
-    /// the part nobody else can reconstruct.
-    ///
-    /// So the summary a layer owes its user is "nine packages, and these four
-    /// other things", not "1848 changes".
+    /// The distinction that makes a diff worth reading: installing nine small packages writes
+    /// about 1900 upper-directory entries, and reporting that number teaches people to ignore
+    /// the diff. Almost all of those files are explained by a package manifest; what's left is
+    /// what the person did with their own hands — the part nobody else can reconstruct. So the
+    /// summary owed is "nine packages, and these four other things", not "1848 changes".
     pub fn substantive(&self) -> impl Iterator<Item = &Change> {
         self.changes.iter().filter(|c| {
             if is_pkg_metadata(&c.path) {
                 return false;
             }
-            // A deletion or a directory replacement is never something a package
-            // did on the way in, so package ownership does not excuse it. These
-            // are also the most surprising changes a layer can hold, and the ones
-            // a person is most likely to have forgotten about.
+            // A deletion or directory replacement is never something a package did on the way in, so
+            // package ownership does not excuse it — also the most surprising changes a layer can hold.
             if matches!(c.kind, ChangeKind::Deleted | ChangeKind::Replaced) {
                 return true;
             }
@@ -101,8 +89,8 @@ impl Diff {
         })
     }
 
-    /// Changes hidden from [`Diff::substantive`]: package manager bookkeeping
-    /// plus files a package's own manifest accounts for.
+    /// Changes hidden from [`Diff::substantive`]: package manager bookkeeping plus files a
+    /// package's own manifest accounts for.
     pub fn explained_count(&self) -> usize {
         self.changes.len() - self.substantive().count()
     }
@@ -135,8 +123,8 @@ impl fmt::Display for Diff {
     }
 }
 
-/// Paths that exist only because a package manager runs a database there.
-/// Present in the diff, but not what anyone means by "what changed".
+/// Paths that exist only because a package manager runs a database there — present in the
+/// diff, but not what anyone means by "what changed".
 fn is_pkg_metadata(path: &Path) -> bool {
     const PREFIXES: &[&str] = &[
         "/var/lib/dpkg",
@@ -151,23 +139,25 @@ fn is_pkg_metadata(path: &Path) -> bool {
         "/var/log/dpkg.log",
     ];
     let s = path.to_string_lossy();
-    PREFIXES.iter().any(|p| s == *p || s.starts_with(&format!("{p}/")))
+    PREFIXES
+        .iter()
+        .any(|p| s == *p || s.starts_with(&format!("{p}/")))
 }
 
-/// Walk `upper` and classify every entry against `base`.
-///
-/// `base` is the lower directory the layer was stacked on; it is read only to
-/// answer "did this path already exist", so a missing base yields an all-`Added`
-/// diff rather than an error.
+/// Walk `upper` and classify every entry against `base`. `base` is the lower directory the
+/// layer was stacked on, read only to answer "did this path already exist" — a missing base
+/// yields an all-`Added` diff rather than an error.
 pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
     let mut changes = Vec::new();
 
-    for entry in walkdir::WalkDir::new(upper).min_depth(1).follow_links(false) {
+    for entry in walkdir::WalkDir::new(upper)
+        .min_depth(1)
+        .follow_links(false)
+    {
         let entry = match entry {
             Ok(e) => e,
-            // A layer written by a namespace-mapped uid can contain entries the
-            // plain host user cannot stat. Skipping them silently would
-            // under-report the diff, so surface them as unknown-size additions.
+            // A namespace-mapped uid can write entries the plain host user cannot stat. Skipping them
+            // silently would under-report the diff, so they surface as unknown-size additions instead.
             Err(e) => {
                 if let Some(rel) = e.path().and_then(|p| p.strip_prefix(upper).ok()) {
                     changes.push(Change {
@@ -180,7 +170,10 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
             }
         };
 
-        let rel = entry.path().strip_prefix(upper).expect("walked under upper");
+        let rel = entry
+            .path()
+            .strip_prefix(upper)
+            .expect("walked under upper");
         let logical = Path::new("/").join(rel);
         let meta = match entry.metadata() {
             Ok(m) => m,
@@ -188,22 +181,26 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
         };
 
         if is_whiteout(&meta) {
-            changes.push(Change { path: logical, kind: ChangeKind::Deleted, size: None });
+            changes.push(Change {
+                path: logical,
+                kind: ChangeKind::Deleted,
+                size: None,
+            });
             continue;
         }
 
         if meta.is_dir() {
-            // Plain directories in the upper dir are usually just the parent
-            // path of a real change and carry no information.
-            //
-            // An opaque directory only means something when the base has that
-            // directory too: then base entries under it are hidden even though
-            // they still exist, which is worth telling someone about. A package
-            // manager creates a brand-new directory opaque as a matter of course,
-            // and reporting each of those as a "replacement" buries the handful
-            // that really are one.
+            // Plain directories in the upper dir are usually just the parent path of a real change and
+            // carry no information. An opaque directory only means something when the base has that
+            // directory too — base entries under it would then be hidden despite still existing. Package
+            // managers create brand-new directories opaque routinely, and reporting each as a
+            // "replacement" would bury the handful that really are one.
             if is_opaque(entry.path()) && base.is_some_and(|b| b.join(rel).is_dir()) {
-                changes.push(Change { path: logical, kind: ChangeKind::Replaced, size: None });
+                changes.push(Change {
+                    path: logical,
+                    kind: ChangeKind::Replaced,
+                    size: None,
+                });
             }
             continue;
         }
@@ -211,14 +208,22 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
         let existed = base.is_some_and(|b| b.join(rel).symlink_metadata().is_ok());
         changes.push(Change {
             path: logical,
-            kind: if existed { ChangeKind::Modified } else { ChangeKind::Added },
+            kind: if existed {
+                ChangeKind::Modified
+            } else {
+                ChangeKind::Added
+            },
             size: Some(meta.len()),
         });
     }
 
     changes.sort();
     let (packages, owned_by_packages) = read_package_receipts(upper);
-    Ok(Diff { changes, packages, owned_by_packages })
+    Ok(Diff {
+        changes,
+        packages,
+        owned_by_packages,
+    })
 }
 
 /// overlayfs marks a deleted path with a 0:0 character device.
@@ -227,11 +232,9 @@ fn is_whiteout(meta: &std::fs::Metadata) -> bool {
     meta.file_type().is_char_device() && meta.rdev() == 0
 }
 
-/// An `overlay.opaque` xattr means "do not merge the base directory under me".
-///
-/// The attribute lives in the `trusted.` namespace for privileged mounts and the
-/// `user.` namespace for the unprivileged `userxattr` mounts a work layer uses,
-/// so both are checked.
+/// An `overlay.opaque` xattr means "do not merge the base directory under me". Lives in the
+/// `trusted.` namespace for privileged mounts and `user.` for unprivileged `userxattr`
+/// mounts a work layer uses, so both are checked.
 fn is_opaque(path: &Path) -> bool {
     ["user.overlay.opaque", "trusted.overlay.opaque"]
         .iter()
@@ -249,31 +252,34 @@ fn getxattr(path: &Path, name: &str) -> Option<Vec<u8>> {
         libc::lgetxattr(
             cpath.as_ptr(),
             cname.as_ptr(),
-            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.as_mut_ptr().cast::<libc::c_void>(),
             buf.len(),
         )
     };
-    if n < 0 { None } else { Some(buf[..n as usize].to_vec()) }
+    if n < 0 {
+        None
+    } else {
+        Some(buf[..n as usize].to_vec())
+    }
 }
 
-/// Read package names, and the files they claim, out of the package managers'
-/// own install records inside the layer.
+/// Read package names, and the files they claim, out of the package managers' own install
+/// records inside the layer.
 ///
-/// dpkg writes one `<pkg>.list` per installed package under
-/// `/var/lib/dpkg/info`, containing that package's complete file manifest.
-/// Because a layer contains only files it wrote itself, every receipt found in
-/// the upper directory is by construction a package *this layer* added — no
-/// comparison against the base is needed to work that out.
+/// dpkg writes one `<pkg>.list` per installed package under `/var/lib/dpkg/info`, its
+/// complete file manifest. Since a layer contains only files it wrote itself, every receipt
+/// found is by construction a package *this layer* added — no base comparison needed. These
+/// manifests are what lets the diff separate "a package put this here" from "a person put
+/// this here".
 ///
-/// The manifests are also what lets the diff separate "a package put this here"
-/// from "a person put this here", which is the only distinction that makes a
-/// 1900-entry change set legible.
-///
-/// rpm keeps a database rather than per-package files, so its package list is
-/// left to the in-layer `rpm` binary and is not derived here.
+/// rpm keeps a database rather than per-package files, so its package list is left to the
+/// in-layer `rpm` binary and is not derived here.
 fn read_package_receipts(
     upper: &Path,
-) -> (BTreeMap<String, Vec<String>>, std::collections::BTreeSet<PathBuf>) {
+) -> (
+    BTreeMap<String, Vec<String>>,
+    std::collections::BTreeSet<PathBuf>,
+) {
     let mut out = BTreeMap::new();
     let mut owned = std::collections::BTreeSet::new();
     let dpkg_info = upper.join("var/lib/dpkg/info");
@@ -327,9 +333,15 @@ mod tests {
         fs::write(upper.join("usr/bin/fresh"), b"hi").unwrap();
 
         let diff = compute(&upper, Some(&base)).unwrap();
-        let by_path: BTreeMap<_, _> =
-            diff.changes.iter().map(|c| (c.path.clone(), c.kind)).collect();
-        assert_eq!(by_path[Path::new("/usr/bin/existing")], ChangeKind::Modified);
+        let by_path: BTreeMap<_, _> = diff
+            .changes
+            .iter()
+            .map(|c| (c.path.clone(), c.kind))
+            .collect();
+        assert_eq!(
+            by_path[Path::new("/usr/bin/existing")],
+            ChangeKind::Modified
+        );
         assert_eq!(by_path[Path::new("/usr/bin/fresh")], ChangeKind::Added);
         // Plain parent directories are structure, not change.
         assert!(!by_path.contains_key(Path::new("/usr")));
@@ -381,8 +393,8 @@ mod tests {
 
     #[test]
     fn files_a_package_claims_are_attributed_to_it_not_to_the_user() {
-        // The point of the whole exercise: nine packages' worth of files must not
-        // drown the one config a person edited by hand.
+        // The point of the whole exercise: nine packages' worth of files must not drown the one
+        // config a person edited by hand.
         let d = scratch();
         let upper = d.path().join("upper");
         let info = upper.join("var/lib/dpkg/info");
@@ -411,9 +423,9 @@ mod tests {
 
     #[test]
     fn a_deletion_is_shown_even_when_a_package_owns_the_path() {
-        // Deleting a file a package installed is the user's doing, and it is the
-        // single most surprising thing a layer can be hiding. Ownership must not
-        // excuse it. (Constructed directly: making a real whiteout needs a mount.)
+        // Deleting a file a package installed is the user's doing and the single most surprising
+        // thing a layer can hide; ownership must not excuse it. (Constructed directly — a real
+        // whiteout needs a mount.)
         let mut owned = std::collections::BTreeSet::new();
         owned.insert(PathBuf::from("/usr/games/cowsay"));
         owned.insert(PathBuf::from("/usr/share/cowsay/cows/default.cow"));
@@ -437,17 +449,16 @@ mod tests {
         assert_eq!(shown, vec![PathBuf::from("/usr/games/cowsay")]);
     }
 
-    /// `user.overlay.opaque` can only be set on a real overlay mount, so these
-    /// two tests cover the base-existence half of the rule directly and the xattr
-    /// half is exercised by the live layer path.
+    /// `user.overlay.opaque` can only be set on a real overlay mount, so these two tests cover
+    /// the base-existence half directly; the xattr half is exercised by the live layer path.
     #[test]
     fn a_brand_new_directory_is_not_reported_as_a_replacement() {
         let d = scratch();
         let base = d.path().join("base");
         let upper = d.path().join("upper");
         fs::create_dir_all(&base).unwrap();
-        // dpkg creates directories like this constantly; none of them replace
-        // anything, because the base has no such path.
+        // dpkg creates directories like this constantly; none of them replace anything, since the
+        // base has no such path.
         fs::create_dir_all(upper.join("usr/share/cowsay/cows")).unwrap();
         fs::write(upper.join("usr/share/cowsay/cows/default.cow"), b"cow").unwrap();
 

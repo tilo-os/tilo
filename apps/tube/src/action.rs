@@ -19,44 +19,33 @@ pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
     OpenChannel(ChannelId),
-    /// Open a playlist page (its title, creator and video list).
     OpenPlaylist(PlaylistId),
-    /// Toggle a type in the search results' multi-select filter (first click
-    /// narrows to just that type; see [`crate::model::SearchTypeFilter`]).
+    /// Toggle a type in the multi-select filter; first click narrows to just
+    /// that type (see [`crate::model::SearchTypeFilter`]).
     ToggleSearchType(SearchType),
-    /// Pop the navigation stack — return to the previous view. Backed by the
-    /// toolkit's `ui::NavStack`; also reached via Escape / Alt-Left / edge-swipe.
+    /// Pop the navigation stack (`ui::NavStack`); also reached via Escape /
+    /// Alt-Left / edge-swipe.
     Back,
     ToggleSubscribe(ChannelId),
-    /// Seek to a fraction [0,1] of the current video's duration.
+    /// Fraction of the current video's duration, in `[0, 1]`.
     Seek(f64),
     TogglePlay,
-    /// Cycle a SponsorBlock category's mode (auto-skip → show → off) on the
-    /// settings page.
+    /// Cycle a `SponsorBlock` category through auto-skip → show → off.
     ToggleCategory(Category),
-    /// Manually skip the current watch video past a segment, to `to` seconds —
-    /// the button offered for a `Show`-mode segment the playhead is inside.
+    /// Skip to `to` seconds, offered for a `Show`-mode segment the playhead
+    /// is currently inside.
     SkipSegment(f64),
-    /// Flip a named boolean setting.
     ToggleSetting(SettingFlag),
-    /// Run a search using the current contents of the search box.
     SubmitSearch,
     SetQuality(String),
-    /// Toggle the local "liked" flag on a video (reflected on the watch page's
-    /// like pill + count).
     ToggleLike(VideoId),
-    /// Copy a shareable link to the given video to the system clipboard.
     Share(VideoId),
-    /// Flip the navigation sidebar (the hamburger toggle). Only has a visible
-    /// effect on a narrow window, where the rail is an overlay flap.
+    /// Only visible on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,
-    /// Open the Ctrl+K global command palette overlay.
     OpenPalette,
-    /// Close the command palette.
     ClosePalette,
-    /// Activate a palette deep-link hit (`tube://watch/<id>` or
-    /// `tube://channel/<id>`) — routes to the right screen and closes the
-    /// palette.
+    /// `hit` is a deep-link (`tube://watch/<id>`, `tube://channel/<id>`);
+    /// routes to the right screen and closes the palette.
     ActivateHit(String),
 }
 

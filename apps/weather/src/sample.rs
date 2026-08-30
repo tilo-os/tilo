@@ -48,7 +48,7 @@ struct DaySpec {
 /// observation, from a [`DaySpec`].
 fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
     let date = "2026-06-30";
-    let mid = (spec.low + spec.high) / 2.0;
+    let mid = f64::midpoint(spec.low, spec.high);
     let amp = (spec.high - spec.low) / 2.0;
 
     // Temperature follows a cosine that bottoms out near 05:00 and peaks
@@ -76,13 +76,13 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         let h = (spec.now_hour + k) % 24;
         let day_idx = (spec.now_hour + k) / 24; // 0 today, 1 tomorrow
         let is_day = h >= spec.sunrise_h as usize && h < spec.sunset_h as usize;
-        let code = if is_day { spec.code_day } else { spec.code_night };
+        let code = if is_day {
+            spec.code_day
+        } else {
+            spec.code_night
+        };
         hourly.push(HourPoint {
-            time: format!(
-                "2026-06-{:02}T{:02}:00",
-                30 + day_idx as u32,
-                h
-            ),
+            time: format!("2026-06-{:02}T{:02}:00", 30 + day_idx as u32, h),
             temperature: (temp_at(h as f64) * 10.0).round() / 10.0,
             precip_probability: precip_at(h),
             weather_code: code,
@@ -90,15 +90,16 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         });
     }
 
-    let now_code = if spec.is_day_now { spec.code_day } else { spec.code_night };
+    let now_code = if spec.is_day_now {
+        spec.code_day
+    } else {
+        spec.code_night
+    };
     let current = CurrentConditions {
         temperature: (temp_at(spec.now_hour as f64) * 10.0).round() / 10.0,
         apparent: (temp_at(spec.now_hour as f64) - 1.5 + spec.wind * 0.02).round(),
         humidity: spec.humidity,
-        precipitation: spec
-            .precip_peak
-            .map(|(_, m)| (m / 100.0) * 1.2)
-            .unwrap_or(0.0),
+        precipitation: spec.precip_peak.map_or(0.0, |(_, m)| (m / 100.0) * 1.2),
         weather_code: now_code,
         wind_speed: spec.wind,
         wind_direction: spec.wind_dir,
@@ -109,15 +110,7 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
     };
 
     // 7-day outlook: vary code + temps a little each day.
-    let week_codes = [
-        spec.code_day,
-        2,
-        61,
-        80,
-        3,
-        1,
-        spec.code_day,
-    ];
+    let week_codes = [spec.code_day, 2, 61, 80, 3, 1, spec.code_day];
     let mut daily = Vec::new();
     for d in 0..7usize {
         let drift = (d as f64 - 3.0) * 0.8;
@@ -129,7 +122,11 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
             date: String::new(),
             temp_max: ((spec.high + drift) * 10.0).round() / 10.0,
             temp_min: ((spec.low + drift * 0.6) * 10.0).round() / 10.0,
-            precip_probability: if wet { 55.0 + d as f64 * 4.0 } else { 5.0 + d as f64 * 3.0 },
+            precip_probability: if wet {
+                55.0 + d as f64 * 4.0
+            } else {
+                5.0 + d as f64 * 3.0
+            },
             weather_code: code,
             wind_max: spec.wind + 6.0 + d as f64,
             uv_index_max: (spec.uv - d as f64 * 0.4).max(1.0),
@@ -182,7 +179,10 @@ fn synth_air_quality(loc: &SavedLocation, spec: &DaySpec) -> AirQuality {
 /// Build the default multi-location model used for the screenshot and as
 /// the live binary's first-frame seed.
 pub fn sample_model() -> WeatherModel {
-    let mut model = WeatherModel { units: Units::METRIC, ..Default::default() };
+    let mut model = WeatherModel {
+        units: Units::METRIC,
+        ..Default::default()
+    };
 
     let specs: Vec<(SavedLocation, DaySpec)> = vec![
         (
@@ -316,11 +316,51 @@ pub fn sample_model() -> WeatherModel {
 /// the dropdown honest without a network round-trip.
 pub fn sample_geocode_results() -> Vec<SavedLocation> {
     vec![
-        SavedLocation::new("Paris", "Île-de-France", "France", "FR", 48.8566, 2.3522, "Europe/Paris"),
-        SavedLocation::new("Paris", "Texas", "United States", "US", 33.6609, -95.5555, "America/Chicago"),
-        SavedLocation::new("Parma", "Emilia-Romagna", "Italy", "IT", 44.8015, 10.3279, "Europe/Rome"),
-        SavedLocation::new("Parramatta", "New South Wales", "Australia", "AU", -33.815, 151.0, "Australia/Sydney"),
-        SavedLocation::new("Pardubice", "Pardubický", "Czechia", "CZ", 50.0343, 15.7812, "Europe/Prague"),
+        SavedLocation::new(
+            "Paris",
+            "Île-de-France",
+            "France",
+            "FR",
+            48.8566,
+            2.3522,
+            "Europe/Paris",
+        ),
+        SavedLocation::new(
+            "Paris",
+            "Texas",
+            "United States",
+            "US",
+            33.6609,
+            -95.5555,
+            "America/Chicago",
+        ),
+        SavedLocation::new(
+            "Parma",
+            "Emilia-Romagna",
+            "Italy",
+            "IT",
+            44.8015,
+            10.3279,
+            "Europe/Rome",
+        ),
+        SavedLocation::new(
+            "Parramatta",
+            "New South Wales",
+            "Australia",
+            "AU",
+            -33.815,
+            151.0,
+            "Australia/Sydney",
+        ),
+        SavedLocation::new(
+            "Pardubice",
+            "Pardubický",
+            "Czechia",
+            "CZ",
+            50.0343,
+            15.7812,
+            "Europe/Prague",
+        ),
     ]
 }
 
@@ -333,7 +373,9 @@ mod tests {
         let m = sample_model();
         assert!(m.locations.len() >= 3);
         for loc in &m.locations {
-            let snap = m.snapshot_for(loc.id).expect("every location has a snapshot");
+            let snap = m
+                .snapshot_for(loc.id)
+                .expect("every location has a snapshot");
             assert_eq!(snap.hourly.len(), 24);
             assert_eq!(snap.daily.len(), 7);
         }
@@ -343,8 +385,13 @@ mod tests {
     fn sample_carries_air_quality_for_every_place() {
         let m = sample_model();
         for loc in &m.locations {
-            let aq = m.air_quality_for(loc.id).expect("every location has air quality");
-            assert!(aq.has_any(), "the reading carries real index/pollutant values");
+            let aq = m
+                .air_quality_for(loc.id)
+                .expect("every location has air quality");
+            assert!(
+                aq.has_any(),
+                "the reading carries real index/pollutant values"
+            );
             assert!(aq.european_aqi.is_some());
         }
     }

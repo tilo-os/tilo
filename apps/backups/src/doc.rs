@@ -45,10 +45,10 @@ impl BackupsDoc {
             let _ = doc.put(root, "restore_open", false);
         }
         let p = RetentionPolicy::default();
-        Self::seed_int(doc, root, "ret_hourly", p.hourly as i64);
-        Self::seed_int(doc, root, "ret_daily", p.daily as i64);
-        Self::seed_int(doc, root, "ret_weekly", p.weekly as i64);
-        Self::seed_int(doc, root, "ret_monthly", p.monthly as i64);
+        Self::seed_int(doc, root, "ret_hourly", i64::from(p.hourly));
+        Self::seed_int(doc, root, "ret_daily", i64::from(p.daily));
+        Self::seed_int(doc, root, "ret_weekly", i64::from(p.weekly));
+        Self::seed_int(doc, root, "ret_monthly", i64::from(p.monthly));
     }
 
     fn seed_str(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
@@ -147,10 +147,18 @@ impl BackupsDoc {
     pub fn policy(doc: &AutoCommit, root: &ObjId) -> RetentionPolicy {
         let d = RetentionPolicy::default();
         RetentionPolicy {
-            hourly: Self::get_int(doc, root, "ret_hourly").unwrap_or(d.hourly as i64).max(0) as u32,
-            daily: Self::get_int(doc, root, "ret_daily").unwrap_or(d.daily as i64).max(0) as u32,
-            weekly: Self::get_int(doc, root, "ret_weekly").unwrap_or(d.weekly as i64).max(0) as u32,
-            monthly: Self::get_int(doc, root, "ret_monthly").unwrap_or(d.monthly as i64).max(0) as u32,
+            hourly: Self::get_int(doc, root, "ret_hourly")
+                .unwrap_or(i64::from(d.hourly))
+                .max(0) as u32,
+            daily: Self::get_int(doc, root, "ret_daily")
+                .unwrap_or(i64::from(d.daily))
+                .max(0) as u32,
+            weekly: Self::get_int(doc, root, "ret_weekly")
+                .unwrap_or(i64::from(d.weekly))
+                .max(0) as u32,
+            monthly: Self::get_int(doc, root, "ret_monthly")
+                .unwrap_or(i64::from(d.monthly))
+                .max(0) as u32,
         }
     }
 
@@ -159,13 +167,15 @@ impl BackupsDoc {
     /// this reads cleanly against a fresh (un-seeded) document.
     pub fn retention(doc: &AutoCommit, root: &ObjId, field: PolicyField) -> u32 {
         let d = RetentionPolicy::default();
-        let default = match field {
+        let default = i64::from(match field {
             PolicyField::Hourly => d.hourly,
             PolicyField::Daily => d.daily,
             PolicyField::Weekly => d.weekly,
             PolicyField::Monthly => d.monthly,
-        } as i64;
-        Self::get_int(doc, root, field.key()).unwrap_or(default).clamp(0, 999) as u32
+        });
+        Self::get_int(doc, root, field.key())
+            .unwrap_or(default)
+            .clamp(0, 999) as u32
     }
 
     /// Set one retention field to an absolute `count`, clamped to `[0, 999]`.
@@ -173,7 +183,7 @@ impl BackupsDoc {
     /// `crate::actions`); the on-screen +/- affordances resolve their target
     /// count at authoring time and dispatch that absolute set.
     pub fn set_retention(doc: &mut AutoCommit, root: &ObjId, field: PolicyField, count: u32) {
-        let _ = doc.put(root, field.key(), (count as i64).clamp(0, 999));
+        let _ = doc.put(root, field.key(), i64::from(count).clamp(0, 999));
     }
 }
 
