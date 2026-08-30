@@ -27,6 +27,7 @@ use zbus::object_server::SignalContext;
 use zbus::zvariant::OwnedValue;
 
 use crate::portal::{CallerMap, PortalCaller};
+use crate::priority_contacts::{ContactProjection, PriorityContactRegistry};
 
 /// Bus name the freedesktop notification spec reserves for the
 /// notification daemon; owning it makes the compositor the system notification server.
@@ -77,6 +78,13 @@ pub struct IncomingNotification {
     pub urgency: u8,
     /// Workspace/app the call was attributed to (`None` if the sender couldn't be mapped — e.g. an unsandboxed caller).
     pub caller: Option<PortalCaller>,
+    /// qOS extension: exact unread count. It is ignored unless `caller` was
+    /// launcher-verified and policy permits badges for that package.
+    pub badge_count: Option<u32>,
+    /// qOS extension: sender endpoint asserted by an explicitly authorized
+    /// communications app. The shell hashes and checks it against its private
+    /// Contacts-owned registry before it can affect focus policy.
+    pub contact_endpoint: Option<String>,
 }
 
 #[derive(Default, Debug)]
@@ -201,6 +209,23 @@ fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
         .unwrap_or(1)
 }
 
+fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
+    hints
+        .get("x-qos-badge-count")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| u32::try_from(value).ok())
+        .map(|value| value.min(9_999))
+}
+
+fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String> {
+    let value = hints
+        .get("x-qos-contact-handle")?
+        .try_clone()
+        .ok()
+        .and_then(|value| String::try_from(value).ok())?;
+    (value.len() <= 320 && !value.chars().any(char::is_control)).then_some(value)
+}
+
 /// Un-flatten the spec's `[key1, label1, key2, label2, …]` actions array into `(key, label)` pairs, dropping a dangling trailing key.
 fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
     actions
@@ -214,18 +239,51 @@ fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
 pub struct NotificationService {
     bridge: NotificationBridge,
     callers: CallerMap,
+    connection: Option<zbus::Connection>,
+    priority_contacts: PriorityContactRegistry,
 }
 
 impl NotificationService {
     pub fn new(bridge: NotificationBridge, callers: CallerMap) -> Self {
-        Self { bridge, callers }
+        Self {
+            bridge,
+            callers,
+            connection: None,
+            priority_contacts: PriorityContactRegistry::in_memory(),
+        }
+    }
+
+    pub fn with_connection(
+        bridge: NotificationBridge,
+        callers: CallerMap,
+        connection: zbus::Connection,
+        priority_contacts: PriorityContactRegistry,
+    ) -> Self {
+        Self {
+            bridge,
+            callers,
+            connection: Some(connection),
+            priority_contacts,
+        }
     }
 
     /// Resolve the D-Bus sender to a workspace/app caller via the shared
     /// [`CallerMap`]. `None` when no mapping exists — the notification still shows, just without workspace attribution.
-    fn resolve_caller(&self, sender: Option<&OwnedUniqueName>) -> Option<PortalCaller> {
+    async fn resolve_caller(&self, sender: Option<&OwnedUniqueName>) -> Option<PortalCaller> {
         let key = sender.map(|n| n.as_str().to_string()).unwrap_or_default();
-        self.callers.lookup(&key)
+        if let Some(caller) = self.callers.lookup(&key) {
+            return Some(caller);
+        }
+        let connection = self.connection.as_ref()?;
+        let sender = sender?;
+        let bus = zbus::fdo::DBusProxy::new(connection).await.ok()?;
+        let name = zbus::names::BusName::try_from(sender.as_str()).ok()?;
+        let pid = bus.get_connection_unix_process_id(name).await.ok()?;
+        let package = crate::shell::launcher::verified_package_for_descendant(pid)?;
+        Some(PortalCaller::new(
+            crate::shell::state::WorkspaceId::default(),
+            package,
+        ))
     }
 }
 
@@ -254,7 +312,7 @@ impl NotificationService {
             self.bridge.alloc_id()
         };
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = self.resolve_caller(sender.as_ref());
+        let caller = self.resolve_caller(sender.as_ref()).await;
         tracing::debug!(
             "Notifications.Notify: app={app_name:?} id={id} caller_ws={:?}",
             caller.as_ref().map(|c| c.workspace_id)
@@ -268,8 +326,39 @@ impl NotificationService {
             expire_timeout,
             urgency: parse_urgency(&hints),
             caller,
+            badge_count: parse_badge_count(&hints),
+            contact_endpoint: parse_contact_endpoint(&hints),
         });
         id
+    }
+
+    /// qOS extension used by Contacts. The complete favourite projection is
+    /// replaced atomically; only a launcher-verified Contacts process can call
+    /// it. Other apps cannot mutate the host registry even on the same UID.
+    async fn x_qos_replace_priority_contacts(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        contacts: Vec<(String, String, Vec<String>)>,
+    ) -> zbus::fdo::Result<u32> {
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let caller = self.resolve_caller(sender.as_ref()).await;
+        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.qos.contacts") {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "only the verified Contacts provider may replace priority contacts".into(),
+            ));
+        }
+        let contacts = contacts
+            .into_iter()
+            .map(|(id, name, endpoints)| ContactProjection {
+                id,
+                name,
+                endpoints,
+            })
+            .collect();
+        self.priority_contacts
+            .replace_verified(contacts)
+            .map(|count| count as u32)
+            .map_err(zbus::fdo::Error::Failed)
     }
 
     /// `CloseNotification` — ask the server to close a notification by id.
@@ -397,6 +486,8 @@ mod tests {
             expire_timeout: -1,
             urgency: 1,
             caller: None,
+            badge_count: None,
+            contact_endpoint: None,
         });
         assert_eq!(b.pending_incoming_len(), 1);
         let drained = b.drain_incoming();
@@ -461,6 +552,26 @@ mod tests {
         let mut hints: HashMap<String, OwnedValue> = HashMap::new();
         hints.insert("urgency".to_string(), OwnedValue::from(2u8));
         assert_eq!(parse_urgency(&hints), 2);
+    }
+
+    #[test]
+    fn qos_hints_are_bounded_before_they_reach_chrome() {
+        let mut hints = HashMap::new();
+        hints.insert("x-qos-badge-count".into(), OwnedValue::from(u32::MAX));
+        hints.insert(
+            "x-qos-contact-handle".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("ada@example.test")),
+        );
+        assert_eq!(parse_badge_count(&hints), Some(9_999));
+        assert_eq!(
+            parse_contact_endpoint(&hints).as_deref(),
+            Some("ada@example.test")
+        );
+        hints.insert(
+            "x-qos-contact-handle".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
+        );
+        assert_eq!(parse_contact_endpoint(&hints), None);
     }
 
     // D-Bus round-trip over an in-process p2p connection, mirroring
