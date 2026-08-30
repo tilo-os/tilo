@@ -4,6 +4,7 @@
 
 use super::container::OdtContainer;
 use crate::document::MarkSpan;
+use crate::export::InlinePlan;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
@@ -301,15 +302,6 @@ fn escape_attr(s: &str) -> String {
     out
 }
 
-/// The active `link` href at character index `i`, if any. Same-name marks never
-/// overlap in automerge's materialised output, so this is unambiguous.
-fn link_at(marks: &[MarkSpan], i: usize) -> Option<String> {
-    marks
-        .iter()
-        .find(|m| m.name == "link" && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
-}
-
 fn push_escaped(out: &mut String, c: char) {
     match c {
         '&' => out.push_str("&amp;"),
@@ -332,81 +324,6 @@ fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
     snap.comments.iter().map(|c| (c.id.clone(), c)).collect()
 }
 
-/// The note id of a `note-ref` mark covering exactly `[i, i+1)`, if any.
-fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
-    marks
-        .iter()
-        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
-        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
-}
-
-/// The comment ids whose anchoring `comment` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
-fn comment_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The bookmark names whose anchoring `bookmark` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
-fn bookmark_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`, sorted for deterministic output.
-fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| {
-            (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.start == i
-        })
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| {
-            (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.end == i
-        })
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style wrappers
 /// (inner), closing and re-opening each whenever it changes so output stays well-nested even
 /// for overlapping marks; a `note-ref` placeholder emits the referenced inline `text:note`.
@@ -418,111 +335,83 @@ fn render_inline(
     note_ctr: &mut usize,
     comments: &CommentIndex,
 ) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
+    let plan = InlinePlan::new(text, marks);
+    let text_len = text.chars().count();
     let mut out = String::new();
     let mut open: Vec<String> = Vec::new();
-    let mut cur_link: Option<String> = None;
+    let mut cur_link: Option<&str> = None;
     let close_spans = |out: &mut String, open: &mut Vec<String>| {
         for _ in 0..open.len() {
             out.push_str("</text:span>");
         }
         open.clear();
     };
-    // Emit annotation boundary markers at `i`, closing spans/link first so the annotation element is a clean sibling of the surrounding inline content.
-    let emit_comment_boundaries =
-        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-            let ends = comment_ends_at(marks, i);
-            let starts = comment_starts_at(marks, i);
-            if ends.is_empty() && starts.is_empty() {
-                return;
-            }
-            close_spans(out, open);
-            if cur_link.is_some() {
-                out.push_str("</text:a>");
-                *cur_link = None;
-            }
-            // Ends before starts so an adjacent comment's end closes before the next opens.
-            for id in ends {
-                if let Some(c) = comments.get(&id) {
-                    out.push_str(&super::comments::render_annotation_end(c));
+    let close_inline = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<&str>| {
+        close_spans(out, open);
+        if cur_link.take().is_some() {
+            out.push_str("</text:a>");
+        }
+    };
+
+    for point in plan.points() {
+        let boundary = &point.boundary;
+        if !boundary.is_empty() {
+            close_inline(&mut out, &mut open, &mut cur_link);
+
+            // ODF boundary elements must be siblings. End each range before
+            // opening an adjacent one; the shared plan supplies the stable,
+            // format-neutral ordering.
+            for id in &boundary.comments.ends {
+                if let Some(comment) = comments.get(*id) {
+                    out.push_str(&super::comments::render_annotation_end(comment));
                 }
             }
-            for id in starts {
-                if let Some(c) = comments.get(&id) {
-                    out.push_str(&super::comments::render_annotation_start(c));
+            for id in &boundary.comments.starts {
+                if let Some(comment) = comments.get(*id) {
+                    out.push_str(&super::comments::render_annotation_start(comment));
                 }
             }
-        };
-    // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link first.
-    let emit_bookmark_boundaries =
-        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-            let ends = bookmark_ends_at(marks, i);
-            let starts = bookmark_starts_at(marks, i);
-            if ends.is_empty() && starts.is_empty() {
-                return;
-            }
-            close_spans(out, open);
-            if cur_link.is_some() {
-                out.push_str("</text:a>");
-                *cur_link = None;
-            }
-            // Ends before starts so an adjacent bookmark's end closes before the next opens.
-            for name in ends {
+            for name in &boundary.bookmarks.ends {
                 let _ = write!(
                     out,
                     r#"<text:bookmark-end text:name="{}"/>"#,
-                    escape_attr(&name)
+                    escape_attr(name)
                 );
             }
-            for name in starts {
+            for name in &boundary.bookmarks.starts {
                 let _ = write!(
                     out,
                     r#"<text:bookmark-start text:name="{}"/>"#,
-                    escape_attr(&name)
+                    escape_attr(name)
                 );
             }
+            for id in &boundary.changes.ends {
+                out.push_str(&super::changes::render_change_end(id));
+            }
+            for id in &boundary.changes.starts {
+                out.push_str(&super::changes::render_change_start(id));
+            }
+        }
+
+        let Some(run) = point.run.as_ref() else {
+            debug_assert_eq!(point.offset, text_len);
+            continue;
         };
-    // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing spans/link first so each marker is a clean sibling of the surrounding content.
-    let emit_change_boundaries =
-        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
-            let ends = change_ends_at(marks, i);
-            let starts = change_starts_at(marks, i);
-            if ends.is_empty() && starts.is_empty() {
-                return;
-            }
-            close_spans(out, open);
-            if cur_link.is_some() {
-                out.push_str("</text:a>");
-                *cur_link = None;
-            }
-            // Ends before starts so an adjacent change's end closes before the next opens.
-            for id in ends {
-                out.push_str(&super::changes::render_change_end(&id));
-            }
-            for id in starts {
-                out.push_str(&super::changes::render_change_start(&id));
-            }
-        };
-    for i in 0..n {
-        emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
-        emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, i);
-        emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
-        let link = link_at(marks, i);
+        let link = run.link;
         if link != cur_link {
             // A link is the outer element, so close any open spans first, then the old link, then open the new link (spans re-open below).
             close_spans(&mut out, &mut open);
             if cur_link.is_some() {
                 out.push_str("</text:a>");
             }
-            if let Some(href) = &link {
+            if let Some(href) = link {
                 let _ = write!(out, r#"<text:a xlink:href="{}">"#, escape_attr(href));
             }
             cur_link = link;
         }
-        let mut want: Vec<String> = marks
+        let mut want: Vec<String> = run
+            .marks
             .iter()
-            .filter(|m| i >= m.start && i < m.end)
             .filter_map(|m| {
                 mark_style(m).map(|(name, props)| {
                     used.insert(name.clone(), props);
@@ -539,36 +428,18 @@ fn render_inline(
                 open.push(name.clone());
             }
         }
-        if chars[i] == crate::schema::FIELD_PLACEHOLDER
-            && let Some(note_id) = note_ref_at(marks, i)
-        {
-            if let Some(note) = notes.get(&note_id) {
+        if let Some(note_id) = run.note_reference {
+            if let Some(note) = notes.get(note_id) {
                 *note_ctr += 1;
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
             continue;
         }
-        push_escaped(&mut out, chars[i]);
-    }
-    close_spans(&mut out, &mut open);
-    if cur_link.is_some() {
-        out.push_str("</text:a>");
-    }
-    for name in bookmark_ends_at(marks, n) {
-        let _ = write!(
-            out,
-            r#"<text:bookmark-end text:name="{}"/>"#,
-            escape_attr(&name)
-        );
-    }
-    for id in comment_ends_at(marks, n) {
-        if let Some(c) = comments.get(&id) {
-            out.push_str(&super::comments::render_annotation_end(c));
+        for c in run.text.chars() {
+            push_escaped(&mut out, c);
         }
     }
-    for id in change_ends_at(marks, n) {
-        out.push_str(&super::changes::render_change_end(&id));
-    }
+    close_inline(&mut out, &mut open, &mut cur_link);
     out
 }
 
