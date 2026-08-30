@@ -40,7 +40,9 @@ use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
-use super::input_config::{AccessibilityInputSettings, DeviceCaps, InputSettings};
+use super::input_config::{
+    AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
+};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
@@ -119,9 +121,11 @@ pub struct DrmDispatchState {
     /// the plane of the output the pointer is over (hiding the one it left),
     /// all at input rate with no framebuffer redraw. Empty → software cursor from `pointer`.
     pub hw_cursor: CursorPlanes,
-    /// xkb keymap + state translating libinput keycodes into winit
+    /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
-    /// when the keymap couldn't compile, running pointer-only. Built from `XKB_DEFAULT_*` so the installer-seeded layout reaches the session.
+    /// when the keymap couldn't compile, running pointer-only. The persisted
+    /// source list owns the session; installer-seeded XKB environment remains
+    /// only the default before a preference exists.
     pub keyboard: Option<KeyboardXkb>,
 }
 
@@ -1190,9 +1194,30 @@ impl DrmRuntime {
     /// `DeviceAdded`; already-attached ones are re-configured here from the dispatch state's handles, so a pointer-speed change is felt on the touchpad the user is holding, not the next one plugged in.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
+        let keyboard_settings = KeyboardSettings::load();
         let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
         let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
+        if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
+            self.dispatch.keyboard = Some(keyboard);
+            self.dispatch.slow_pending.clear();
+            self.dispatch.physical_modifiers = ModifiersState::empty();
+            self.dispatch.sticky_latched = ModifiersState::empty();
+            self.dispatch
+                .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                    ModifiersState::empty(),
+                )));
+            tracing::info!(
+                sources = ?keyboard_settings.source_ids,
+                active = keyboard_settings.active_index,
+                "DRM input: applied per-user XKB sources"
+            );
+        } else {
+            tracing::warn!(
+                sources = ?keyboard_settings.source_ids,
+                "DRM input: requested XKB keymap did not compile; preserving the working keymap"
+            );
+        }
         self.dispatch.accessibility = accessibility;
         if accessibility.effective_cursor_size() != previous_cursor_size {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
@@ -1481,25 +1506,34 @@ struct KeyOutcome {
 }
 
 impl KeyboardXkb {
-    /// Compile a keymap from the `XKB_DEFAULT_*` environment. Empty rule
-    /// names make xkbcommon consult `XKB_DEFAULT_RULES/_MODEL/_LAYOUT/
-    /// _VARIANT/_OPTIONS` — byte-for-byte what
-    /// `smithay::input::keyboard::XkbConfig::default()` does; the installer
-    /// writes these into `/etc/environment`, PAM-exported into the greetd session.
-    ///
-    /// Returns `None` (caller logs) if the keymap can't build, degrading to pointer-only rather than aborting.
+    /// Compile the validated source list from the per-user settings file.
+    /// Returns `None` (caller logs) if the keymap can't build, degrading to
+    /// pointer-only at boot and preserving the old working map on hot reload.
     pub fn new() -> Option<Self> {
+        let requested = KeyboardSettings::load();
+        Self::from_settings(&requested).or_else(|| {
+            tracing::warn!(
+                sources = ?requested.source_ids,
+                "DRM input: saved XKB sources failed at session start; falling back to US"
+            );
+            Self::from_settings(&KeyboardSettings::default())
+        })
+    }
+
+    pub fn from_settings(settings: &KeyboardSettings) -> Option<Self> {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "",   // rules  -> XKB_DEFAULT_RULES
-            "",   // model  -> XKB_DEFAULT_MODEL
-            "",   // layout -> XKB_DEFAULT_LAYOUT
-            "",   // variant-> XKB_DEFAULT_VARIANT
-            None, // options -> XKB_DEFAULT_OPTIONS
+            "", // rules -> XKB_DEFAULT_RULES (normally evdev)
+            "", // model -> XKB_DEFAULT_MODEL
+            &settings.layouts,
+            &settings.variants,
+            settings.options.clone(),
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )?;
-        let state = xkb::State::new(&keymap);
+        let mut state = xkb::State::new(&keymap);
+        let active = u32::try_from(settings.active_index).ok()?;
+        let _ = state.update_mask(0, 0, 0, 0, 0, active);
         Some(Self {
             _context: context,
             _keymap: keymap,
@@ -1737,6 +1771,10 @@ where
 mod tests {
     use super::*;
     use crate::compositor::backend::drm::devices::ModeInfo;
+
+    fn test_keyboard_settings() -> KeyboardSettings {
+        KeyboardSettings::default()
+    }
 
     // These tests build a `DrmDispatchState` directly; they avoid calling `DrmRuntime::new` which would try to open a real seat.
 
@@ -1987,7 +2025,7 @@ mod tests {
     /// End-to-end through a real keymap: pressing/releasing Left Shift flips the modifier mask — layout-independent; soft-skips if no xkb data installed.
     #[test]
     fn xkb_left_shift_toggles_modifier_mask() {
-        let Some(mut kbd) = KeyboardXkb::new() else {
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
             eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
             return;
         };
@@ -2014,7 +2052,7 @@ mod tests {
     /// End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
     #[test]
     fn xkb_alpha_key_produces_character_input() {
-        let Some(mut kbd) = KeyboardXkb::new() else {
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
             eprintln!("xkb keymap unavailable; skipping");
             return;
         };
@@ -2036,6 +2074,51 @@ mod tests {
             }
             other => panic!("expected KeyboardInput, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["us".into(), "de".into()],
+            layouts: "us,de".into(),
+            variants: ",".into(),
+            options: Some("grp:alt_shift_toggle".into()),
+            active_index: 1,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // AD06 is Y in US and Z in German.
+        let output = keyboard.process(xkb::Keycode::new(29), true);
+        let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("z".into()));
+    }
+
+    #[test]
+    fn xkb_alt_shift_cycles_configured_sources() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["us".into(), "de".into()],
+            layouts: "us,de".into(),
+            variants: ",".into(),
+            options: Some("grp:alt_shift_toggle".into()),
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // evdev Left Alt 56 / Left Shift 42, each plus the XKB offset 8.
+        for (keycode, pressed) in [(64, true), (50, true), (50, false), (64, false)] {
+            let _ = keyboard.process(xkb::Keycode::new(keycode), pressed);
+        }
+        let output = keyboard.process(xkb::Keycode::new(29), true);
+        let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("z".into()));
     }
 
     #[test]

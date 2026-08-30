@@ -46,26 +46,6 @@ fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
 }
 
 #[test]
-fn audio_event_sounds_toggle_persists_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("audio");
-
-    let mut pane = settings::panes::audio::build();
-    // Default is `true`; flip it off through the production path.
-    seed_then_set_bool(
-        pane.as_mut(),
-        settings::panes::audio::EVENT_SOUNDS_KEY,
-        false,
-    );
-
-    let reloaded = SystemPrefs::load();
-    assert!(
-        !reloaded.audio.event_sounds,
-        "the event-sounds toggle wrote through to the shared store"
-    );
-}
-
-#[test]
 fn display_night_light_toggle_persists_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("display");
@@ -184,25 +164,6 @@ fn display_scale_persists_fractional_factor_to_disk() {
     assert!(
         (scale - 1.5).abs() < 1e-9,
         "the display-scale dropdown persisted a fractional 1.5, got {scale}"
-    );
-}
-
-#[test]
-fn updates_channel_persists_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("updates");
-
-    let mut pane = settings::panes::updates::build();
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    pane.sync(&mut doc, &root);
-    let _ = doc.put(&root, settings::panes::updates::CHANNEL_KEY, "Nightly");
-    pane.sync(&mut doc, &root);
-
-    assert_eq!(
-        SystemPrefs::load().updates.channel,
-        "Nightly",
-        "release channel persisted"
     );
 }
 

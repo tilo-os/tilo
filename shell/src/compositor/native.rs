@@ -2491,6 +2491,7 @@ pub fn run() -> ! {
         // (once/sec) to reach input devices and display scale.
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
+            state.reload_keyboard_settings();
             backend.reload_input_settings();
             let policy = qos_power_mgmt::config::load_policy();
             session.set_suspend_timeout(policy.idle_suspend);

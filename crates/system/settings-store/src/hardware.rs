@@ -444,7 +444,14 @@ pub struct RichInputConfig {
     pub left_handed: bool,
     pub accel_profile: AccelProfile,
     pub key_repeat: f64,
-    pub layouts: Vec<String>,
+    /// Active source id (`layout` or `layout:variant`). Kept under the
+    /// historic key so a current compositor and older Settings builds agree
+    /// on the user's primary layout.
+    pub keyboard_layout: String,
+    /// Ordered source ids. `layouts` is accepted as an alias for the brief
+    /// development version that used that spelling.
+    #[serde(alias = "layouts")]
+    pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
     pub touchpad_gestures: bool,
     pub pen_output: Option<String>,
@@ -462,11 +469,158 @@ impl Default for RichInputConfig {
             left_handed: false,
             accel_profile: AccelProfile::Adaptive,
             key_repeat: 0.5,
-            layouts: vec!["us".into()],
+            keyboard_layout: "us".into(),
+            keyboard_layouts: vec!["us".into()],
             compose_key: None,
             touchpad_gestures: true,
             pen_output: None,
         }
+    }
+}
+
+/// Maximum number of simultaneously compiled XKB groups. Four is XKB's
+/// widely interoperable group limit (and is already more than most people
+/// can switch between without losing track of the active source).
+pub const MAX_KEYBOARD_INPUT_SOURCES: usize = 4;
+
+/// A validated XKB source from the per-user settings document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardInputSource {
+    pub id: String,
+    pub layout: String,
+    pub variant: Option<String>,
+}
+
+impl KeyboardInputSource {
+    /// Parse `layout` or `layout:variant`. XKB names come from file names and
+    /// symbol section identifiers, so accepting path punctuation or commas
+    /// would turn one preference into extra rule components. The compositor
+    /// validates independently even though Settings only offers installed
+    /// catalogue entries.
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        let (layout, variant) = value
+            .split_once(':')
+            .map_or((value, None), |(layout, variant)| (layout, Some(variant)));
+        if !valid_xkb_name(layout) || variant.is_some_and(|v| !valid_xkb_name(v)) {
+            return None;
+        }
+        let variant = variant.map(str::to_string);
+        let id = variant
+            .as_deref()
+            .map_or_else(|| layout.to_string(), |v| format!("{layout}:{v}"));
+        Some(Self {
+            id,
+            layout: layout.to_string(),
+            variant,
+        })
+    }
+}
+
+fn valid_xkb_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+impl RichInputConfig {
+    /// Parse the input section using field-by-field defaults, then reconcile
+    /// old single-layout documents with the ordered source list. Invalid and
+    /// duplicate ids are ignored; the active legacy source is inserted when
+    /// it is absent, so `{"keyboard_layout":"de"}` migrates to one German
+    /// source instead of silently falling back to US.
+    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut config: Self =
+            serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default();
+        // Read the keyboard fields independently as well: a wrong-typed
+        // pointer field must not discard an otherwise valid input-source
+        // list merely because serde rejected the whole rich object.
+        config.keyboard_layout = section
+            .get("keyboard_layout")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("us")
+            .to_string();
+        config.keyboard_layouts = section
+            .get("keyboard_layouts")
+            .or_else(|| section.get("layouts"))
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        config.compose_key = section
+            .get("compose_key")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        config.normalise_sources();
+        config
+    }
+
+    pub fn normalise_sources(&mut self) {
+        let active = KeyboardInputSource::parse(&self.keyboard_layout)
+            .unwrap_or_else(|| KeyboardInputSource::parse("us").expect("built-in XKB id"));
+        let mut sources = Vec::<String>::new();
+        for source in &self.keyboard_layouts {
+            let Some(source) = KeyboardInputSource::parse(source) else {
+                continue;
+            };
+            if !sources.contains(&source.id) {
+                sources.push(source.id);
+            }
+            if sources.len() == MAX_KEYBOARD_INPUT_SOURCES {
+                break;
+            }
+        }
+        if !sources.contains(&active.id) {
+            if sources.len() == MAX_KEYBOARD_INPUT_SOURCES {
+                sources.pop();
+            }
+            sources.insert(0, active.id.clone());
+        }
+        if sources.is_empty() {
+            sources.push("us".into());
+        }
+        self.keyboard_layout = active.id;
+        self.keyboard_layouts = sources;
+    }
+
+    pub fn sources(&self) -> Vec<KeyboardInputSource> {
+        self.keyboard_layouts
+            .iter()
+            .filter_map(|value| KeyboardInputSource::parse(value))
+            .collect()
+    }
+
+    pub fn active_source_index(&self) -> usize {
+        self.keyboard_layouts
+            .iter()
+            .position(|id| id == &self.keyboard_layout)
+            .unwrap_or(0)
+    }
+
+    /// XKB option fragments owned by this preference section. Layout
+    /// switching is Alt+Shift because Super+Space is qOS global search;
+    /// Compose remains independently configurable.
+    pub fn xkb_options(&self) -> Vec<String> {
+        let mut options = Vec::new();
+        if self.keyboard_layouts.len() > 1 {
+            options.push("grp:alt_shift_toggle".into());
+        }
+        if let Some(option) = match self.compose_key.as_deref() {
+            Some("ralt") => Some("compose:ralt"),
+            Some("menu") => Some("compose:menu"),
+            Some("caps") => Some("compose:caps"),
+            _ => None,
+        } {
+            options.push(option.into());
+        }
+        options
     }
 }
 
@@ -713,5 +867,61 @@ mod tests {
             Err(ShortcutAction::Search)
         );
         assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+    }
+
+    #[test]
+    fn legacy_single_keyboard_layout_migrates_into_sources() {
+        let section = serde_json::json!({ "keyboard_layout": "de" })
+            .as_object()
+            .unwrap()
+            .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(cfg.keyboard_layout, "de");
+        assert_eq!(cfg.keyboard_layouts, ["de"]);
+        assert_eq!(cfg.active_source_index(), 0);
+    }
+
+    #[test]
+    fn keyboard_sources_are_validated_deduplicated_and_bounded() {
+        let section = serde_json::json!({
+            "keyboard_layout": "de:nodeadkeys",
+            "keyboard_layouts": [
+                "us", "de:nodeadkeys", "us", "../evil", "fr", "es", "gb"
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(cfg.keyboard_layouts.len(), MAX_KEYBOARD_INPUT_SOURCES);
+        assert_eq!(cfg.keyboard_layouts, ["us", "de:nodeadkeys", "fr", "es"]);
+        assert_eq!(cfg.active_source_index(), 1);
+        assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
+    }
+
+    #[test]
+    fn keyboard_options_do_not_steal_the_shell_search_shortcut() {
+        let mut cfg = RichInputConfig {
+            keyboard_layouts: vec!["us".into(), "de".into()],
+            compose_key: Some("ralt".into()),
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle", "compose:ralt"]);
+    }
+
+    #[test]
+    fn malformed_pointer_field_does_not_discard_keyboard_sources() {
+        let section = serde_json::json!({
+            "pointer_speed": "fast",
+            "keyboard_layout": "de",
+            "keyboard_layouts": ["us", "de"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
+        assert_eq!(cfg.active_source_index(), 1);
     }
 }

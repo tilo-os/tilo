@@ -12,6 +12,7 @@ use std::sync::Arc;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
+use smithay::input::keyboard::{Layout, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -416,13 +417,37 @@ impl State {
         let (repeat_delay, repeat_rate) =
             crate::compositor::backend::drm::input_config::InputSettings::load()
                 .key_repeat_params();
-        if let Err(e) = seat.add_keyboard(
-            Default::default(),
+        let keyboard_settings =
+            crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        let initial_keyboard_index = match seat.add_keyboard(
+            XkbConfig {
+                layout: &keyboard_settings.layouts,
+                variant: &keyboard_settings.variants,
+                options: keyboard_settings.options.clone(),
+                ..Default::default()
+            },
             repeat_delay.as_millis() as i32,
             repeat_rate as i32,
         ) {
-            tracing::warn!("seat: failed to add keyboard (text injection disabled): {e}");
-        }
+            Ok(_) => keyboard_settings.active_index,
+            Err(error) => {
+                tracing::warn!(?error, "seat: saved XKB sources failed; falling back to US");
+                if let Err(fallback_error) = seat.add_keyboard(
+                    XkbConfig {
+                        layout: "us",
+                        ..Default::default()
+                    },
+                    repeat_delay.as_millis() as i32,
+                    repeat_rate as i32,
+                ) {
+                    tracing::warn!(
+                        ?fallback_error,
+                        "seat: fallback keymap failed (text injection disabled)"
+                    );
+                }
+                0
+            }
+        };
         // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
         // Text fields are public; the input method and virtual keyboard are
@@ -454,7 +479,7 @@ impl State {
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
         let selection = SelectionState::new(&display_handle);
 
-        Self {
+        let mut state = Self {
             loop_handle,
             display_handle,
             compositor_state,
@@ -496,6 +521,52 @@ impl State {
             pointer_gestures_state,
             client_input: Default::default(),
             osk_surface: None,
+        };
+        state.activate_keyboard_source(initial_keyboard_index);
+        state
+    }
+
+    fn activate_keyboard_source(&mut self, index: usize) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        keyboard.with_xkb_state(self, |mut context| {
+            context.set_layout(Layout(u32::try_from(index).unwrap_or(0)));
+        });
+    }
+
+    /// Recompile the Wayland seat keymap from per-user settings and notify
+    /// every focused client. A bad/missing XKB symbols file leaves the old
+    /// working keymap in place.
+    pub fn reload_keyboard_settings(&mut self) {
+        let settings = crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let config = XkbConfig {
+            layout: &settings.layouts,
+            variant: &settings.variants,
+            options: settings.options.clone(),
+            ..Default::default()
+        };
+        match keyboard.set_xkb_config(self, config) {
+            Ok(()) => {
+                self.activate_keyboard_source(settings.active_index);
+                let (delay, rate) =
+                    crate::compositor::backend::drm::input_config::InputSettings::load()
+                        .key_repeat_params();
+                keyboard.change_repeat_info(rate as i32, delay.as_millis() as i32);
+                tracing::info!(
+                    sources = ?settings.source_ids,
+                    active = settings.active_index,
+                    "Wayland seat: applied per-user XKB sources"
+                );
+            }
+            Err(error) => tracing::warn!(
+                sources = ?settings.source_ids,
+                %error,
+                "Wayland seat: requested XKB keymap did not compile; preserving the working keymap"
+            ),
         }
     }
 

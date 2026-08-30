@@ -7,6 +7,8 @@ case "${1:-}" in
 esac
 
 found=0
+targets=()
+starts=()
 for battery in /sys/class/power_supply/*; do
   [ -d "$battery" ] || continue
   [ "$(cat "$battery/type" 2>/dev/null || true)" = Battery ] || continue
@@ -17,7 +19,24 @@ for battery in /sys/class/power_supply/*; do
   for attribute in charge_control_end_threshold charge_stop_threshold; do
     target="$battery/$attribute"
     [ -f "$target" ] || continue
-    start="$battery/charge_control_start_threshold"
+    targets+=("$target")
+    starts+=("$battery/charge_control_start_threshold")
+    break
+  done
+done
+
+# Validate the complete normalized target set before touching any battery.
+# This prevents a read-only auxiliary battery from leaving a half-applied cap.
+if [ "${#targets[@]}" -gt 0 ]; then
+  for target in "${targets[@]}"; do
+    [ -w "$target" ] || { echo "charge-cap control is not writable: $target" >&2; exit 4; }
+  done
+  for start in "${starts[@]}"; do
+    [ ! -f "$start" ] || [ -w "$start" ] || { echo "start threshold is not writable: $start" >&2; exit 4; }
+  done
+  for index in "${!targets[@]}"; do
+    target="${targets[$index]}"
+    start="${starts[$index]}"
     if [ -f "$start" ]; then
       current_start="$(cat "$start" 2>/dev/null || printf '0')"
       if [[ "$current_start" =~ ^[0-9]+$ ]] && [ "$current_start" -ge "$limit" ]; then
@@ -29,7 +48,7 @@ for battery in /sys/class/power_supply/*; do
     printf '%s\n' "$limit" > "$target"
     found=1
   done
-done
+fi
 
 # Lenovo IdeaPad exposes a deliberately discrete conservation mode rather
 # than pretending to support an arbitrary percentage.

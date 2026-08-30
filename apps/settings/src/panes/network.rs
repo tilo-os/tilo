@@ -69,6 +69,8 @@ pub const ENTERPRISE_PRIVATE_KEY: &str = "network.enterprise.private_key";
 pub const MOBILE_SIM_KEY: &str = "network.mobile.sim";
 pub const DIAGNOSTICS_KEY: &str = "network.diagnostics.run";
 pub const ADVANCED_KEY: &str = "network.advanced";
+pub const ADVANCED_PROFILE_KEY: &str = "network.advanced.profile";
+pub const WIRED_PROFILE_KEY: &str = "network.ipv4.profile";
 pub const CAPTIVE_PORTAL_KEY: &str = "network.captive_portal.open";
 const MOBILE_PIN_BUFFER: &str = "__mobile_pin";
 const ENTERPRISE_PASSWORD_BUFFER: &str = "__enterprise_password";
@@ -98,6 +100,30 @@ fn profile_autoconnect_key(uuid: &str) -> String {
 
 fn profile_forget_key(uuid: &str) -> String {
     format!("network.profile.forget.{uuid}")
+}
+
+fn ipv4_key(uuid: &str, field: &str) -> String {
+    format!("network.ipv4.{field}.{uuid}")
+}
+fn profile_label(profile: &SavedNetworkProfile) -> String {
+    format!(
+        "{} · {}",
+        profile.name,
+        &profile.uuid[..8.min(profile.uuid.len())]
+    )
+}
+
+fn load_profile_settings(
+    profiles: &[SavedNetworkProfile],
+) -> HashMap<String, os_actions::ConnectionProfileSettings> {
+    profiles
+        .iter()
+        .filter_map(|p| {
+            os_actions::connection_profile_settings(&p.uuid)
+                .ok()
+                .map(|s| (p.uuid.clone(), s))
+        })
+        .collect()
 }
 
 /// Nerd Font (Material Design Icons) Wi-Fi signal-strength glyph for a 0..=4
@@ -226,6 +252,9 @@ pub struct NetworkPane {
     radios: os_actions::RadioState,
     connectivity: ConnectivityState,
     profiles: Vec<SavedNetworkProfile>,
+    profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+    selected_wifi_profile: Option<String>,
+    selected_wired_profile: Option<String>,
     sims: Vec<os_actions::SimInfo>,
     diagnostics: Option<os_actions::ConnectionDiagnostics>,
     advanced_open: bool,
@@ -293,6 +322,15 @@ impl NetworkPane {
         let radios = os_actions::get_radio_state().unwrap_or_default();
         let connectivity = os_actions::get_connectivity().unwrap_or_default();
         let profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+        let profile_settings = load_profile_settings(&profiles);
+        let selected_wifi_profile = profiles
+            .iter()
+            .find(|p| p.kind == "802-11-wireless")
+            .map(|p| p.uuid.clone());
+        let selected_wired_profile = profiles
+            .iter()
+            .find(|p| p.kind == "802-3-ethernet")
+            .map(|p| p.uuid.clone());
         let vpn_lister: VpnLister = Arc::new(read_vpn_connections);
         let vpns = vpn_lister();
         Self {
@@ -303,6 +341,9 @@ impl NetworkPane {
             radios,
             connectivity,
             profiles,
+            profile_settings,
+            selected_wifi_profile,
+            selected_wired_profile,
             sims: os_actions::list_mobile_sims().unwrap_or_default(),
             diagnostics: None,
             advanced_open: false,
@@ -349,6 +390,9 @@ impl NetworkPane {
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Unknown,
             profiles: Vec::new(),
+            profile_settings: HashMap::new(),
+            selected_wifi_profile: None,
+            selected_wired_profile: None,
             sims: Vec::new(),
             diagnostics: None,
             advanced_open: false,
@@ -390,6 +434,9 @@ impl NetworkPane {
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Full,
             profiles: Vec::new(),
+            profile_settings: HashMap::new(),
+            selected_wifi_profile: None,
+            selected_wired_profile: None,
             sims: Vec::new(),
             diagnostics: None,
             advanced_open: false,
@@ -765,12 +812,32 @@ impl NetworkPane {
             "Auto-connect and Forget modify the NetworkManager profile itself; Settings keeps no duplicate profile database.",
         ));
         if self.advanced_open
-            && let Some(profile) = wifi_profiles.first()
+            && let Some(profile) = self
+                .selected_wifi_profile
+                .as_ref()
+                .and_then(|uuid| wifi_profiles.iter().find(|p| &p.uuid == uuid).copied())
+                .or_else(|| wifi_profiles.first().copied())
         {
+            if wifi_profiles.len() > 1 {
+                rows_out.push(choice_row(
+                    "Edit profile",
+                    Box::new(
+                        Dropdown::new(
+                            wifi_profiles.iter().map(|p| profile_label(p)).collect(),
+                            ADVANCED_PROFILE_KEY,
+                        )
+                        .with_placeholder(&profile_label(profile)),
+                    ),
+                ));
+            }
             rows_out.push(caption(&format!(
                 "Advanced policy for {}. NetworkManager remains the source of truth.",
                 profile.name
             )));
+            let Some(_settings) = self.profile_settings.get(&profile.uuid) else {
+                rows_out.push(caption("Advanced values could not be read from NetworkManager, so Settings will not offer a destructive default editor."));
+                return rows_out;
+            };
             rows_out.push(choice_row(
                 "Metered",
                 Box::new(
@@ -1114,31 +1181,66 @@ impl NetworkPane {
             out.push(value_row("Interface", dev));
         }
         out.push(value_row("IPv4", self.wired.ipv4.as_deref().unwrap_or("—")));
-        if self.profiles.iter().any(|p| p.kind == "802-3-ethernet") {
+        let wired_profiles: Vec<_> = self
+            .profiles
+            .iter()
+            .filter(|p| p.kind == "802-3-ethernet")
+            .collect();
+        if let Some(profile) = self
+            .selected_wired_profile
+            .as_ref()
+            .and_then(|uuid| wired_profiles.iter().find(|p| &p.uuid == uuid).copied())
+            .or_else(|| wired_profiles.first().copied())
+        {
+            if wired_profiles.len() > 1 {
+                out.push(choice_row(
+                    "Edit profile",
+                    Box::new(
+                        Dropdown::new(
+                            wired_profiles.iter().map(|p| profile_label(p)).collect(),
+                            WIRED_PROFILE_KEY,
+                        )
+                        .with_placeholder(&profile_label(profile)),
+                    ),
+                ));
+            }
+            let Some(_settings) = self
+                .profile_settings
+                .get(&profile.uuid)
+                .and_then(|s| s.ipv4.as_ref())
+            else {
+                out.push(caption("This profile's IPv4 method is unsupported or could not be read; Settings will leave it unchanged."));
+                return out;
+            };
+            let automatic_key = ipv4_key(&profile.uuid, "automatic");
+            let address_key = ipv4_key(&profile.uuid, "address");
+            let gateway_key = ipv4_key(&profile.uuid, "gateway");
+            let dns_key = ipv4_key(&profile.uuid, "dns");
+            let apply_key = ipv4_key(&profile.uuid, "apply");
             out.extend([
                 setting_row(
                     "Automatic IPv4",
                     Box::new(Toggle::new(
                         "settings.network.ipv4.automatic",
-                        IPV4_AUTOMATIC_KEY,
+                        &automatic_key,
                     )),
                 ),
                 Box::new(
                     TextInput::new(Vec::new())
                         .with_id("network.ipv4.address")
-                        .with_on_change_path(IPV4_ADDRESS_KEY)
+                        .with_on_change_path(&address_key)
                         .with_placeholder("Address/prefix · e.g. 192.0.2.10/24"),
                 ),
                 Box::new(
                     TextInput::new(Vec::new())
                         .with_id("network.ipv4.gateway")
-                        .with_on_change_path(IPV4_GATEWAY_KEY)
+                        .with_on_change_path(&gateway_key)
                         .with_placeholder("Gateway"),
                 ),
                 Box::new(
                     TextInput::new(Vec::new())
                         .with_id("network.ipv4.dns")
-                        .with_on_change_path(IPV4_DNS_KEY)
+                        .with_on_change_path(&dns_key)
                         .with_placeholder("DNS servers · comma-separated"),
                 ),
                 Box::new(
@@ -1146,7 +1248,7 @@ impl NetworkPane {
                         .push(Box::new(Button::new(
                             "settings.network.ipv4.apply",
                             "Apply IP settings",
-                            Some(IPV4_APPLY_KEY),
+                            Some(&apply_key),
                         )))
                         .push(Box::new(Spacer::new())),
                 ),
@@ -1247,6 +1349,7 @@ impl Widget for NetworkPane {
                     }
                     self.profiles = os_actions::list_saved_network_profiles()
                         .unwrap_or_else(|_| self.profiles.clone());
+                    self.profile_settings = load_profile_settings(&self.profiles);
                 }
                 Err(error) => {
                     self.connection_notice =
@@ -1307,11 +1410,22 @@ impl Widget for NetworkPane {
             let _ = state.put(root, HOTSPOT_SSID_KEY, self.hotspot_ssid.as_str());
             let _ = crate::ensure_text_object(state, root, HOTSPOT_SSID_KEY);
             let _ = state.put(root, HOTSPOT_BAND_KEY, self.hotspot_band.as_str());
-            let _ = state.put(root, IPV4_AUTOMATIC_KEY, true);
-            for key in [IPV4_ADDRESS_KEY, IPV4_GATEWAY_KEY, IPV4_DNS_KEY] {
-                let _ = crate::ensure_text_object(state, root, key);
+            if let Some(uuid) = &self.selected_wifi_profile
+                && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
+                && state
+                    .get(root, ADVANCED_PROFILE_KEY)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            {
+                let _ = state.put(root, ADVANCED_PROFILE_KEY, profile_label(profile));
             }
-            let _ = state.put(root, IPV4_APPLY_KEY, false);
+            if let Some(uuid) = &self.selected_wired_profile
+                && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
+                && state.get(root, WIRED_PROFILE_KEY).ok().flatten().is_none()
+            {
+                let _ = state.put(root, WIRED_PROFILE_KEY, profile_label(profile));
+            }
             for key in [
                 MOBILE_PROFILE_KEY,
                 MOBILE_APN_KEY,
@@ -1348,6 +1462,56 @@ impl Widget for NetworkPane {
                     profile.autoconnect,
                 );
                 let _ = state.put(root, profile_forget_key(&profile.uuid), false);
+                if let Some(settings) = self.profile_settings.get(&profile.uuid) {
+                    if let Some(value) = settings.metered {
+                        let label = match value {
+                            os_actions::MeteredPolicy::Automatic => "Automatic",
+                            os_actions::MeteredPolicy::Metered => "Metered",
+                            os_actions::MeteredPolicy::Unmetered => "Unmetered",
+                        };
+                        let key = format!("network.profile.metered.{}", profile.uuid);
+                        if state.get(root, &key).ok().flatten().is_none() {
+                            let _ = state.put(root, &key, label);
+                        }
+                    }
+                    if let Some(value) = settings.mac {
+                        let label = match value {
+                            os_actions::MacPolicy::Stable => "Stable per network",
+                            os_actions::MacPolicy::Random => "Random each connection",
+                            os_actions::MacPolicy::Permanent => "Permanent hardware address",
+                        };
+                        let key = format!("network.profile.mac.{}", profile.uuid);
+                        if state.get(root, &key).ok().flatten().is_none() {
+                            let _ = state.put(root, &key, label);
+                        }
+                    }
+                    if let Some(proxy) = &settings.proxy {
+                        let key = format!("network.profile.proxy.{}", profile.uuid);
+                        if state.get(root, &key).ok().flatten().is_none() {
+                            let _ =
+                                state.put(root, &key, proxy.automatic_url.as_deref().unwrap_or(""));
+                        }
+                        let _ = crate::ensure_text_object(state, root, &key);
+                    }
+                    if let Some(ipv4) = &settings.ipv4 {
+                        let automatic_key = ipv4_key(&profile.uuid, "automatic");
+                        if state.get(root, &automatic_key).ok().flatten().is_none() {
+                            let _ = state.put(root, &automatic_key, ipv4.automatic);
+                        }
+                        for (field, value) in [
+                            ("address", ipv4.addresses.join(", ")),
+                            ("gateway", ipv4.gateway.clone().unwrap_or_default()),
+                            ("dns", ipv4.dns.join(", ")),
+                        ] {
+                            let key = ipv4_key(&profile.uuid, field);
+                            if state.get(root, &key).ok().flatten().is_none() {
+                                let _ = state.put(root, &key, value);
+                            }
+                            let _ = crate::ensure_text_object(state, root, &key);
+                        }
+                        let _ = state.put(root, ipv4_key(&profile.uuid, "apply"), false);
+                    }
+                }
             }
             let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
             // Seed the expansion mirror from the field so a pre-expanded
@@ -1534,31 +1698,62 @@ impl Widget for NetworkPane {
             }
             self.structure_dirty = true;
         }
-        if read_bool(state, root, IPV4_APPLY_KEY) {
-            let _ = state.put(root, IPV4_APPLY_KEY, false);
-            if let Some(profile) = self.profiles.iter().find(|p| p.kind == "802-3-ethernet") {
+        for selector in [ADVANCED_PROFILE_KEY, WIRED_PROFILE_KEY] {
+            if let Some(label) = read_str(state, root, selector)
+                && let Some(profile) = self.profiles.iter().find(|p| profile_label(p) == label)
+            {
+                let selected = if selector == ADVANCED_PROFILE_KEY {
+                    &mut self.selected_wifi_profile
+                } else {
+                    &mut self.selected_wired_profile
+                };
+                if selected.as_deref() != Some(&profile.uuid) {
+                    *selected = Some(profile.uuid.clone());
+                    self.structure_dirty = true;
+                }
+            }
+        }
+        for profile in self
+            .profiles
+            .clone()
+            .into_iter()
+            .filter(|p| p.kind == "802-3-ethernet")
+        {
+            let apply_key = ipv4_key(&profile.uuid, "apply");
+            if read_bool(state, root, &apply_key) {
+                let _ = state.put(root, &apply_key, false);
+                if !self
+                    .profile_settings
+                    .get(&profile.uuid)
+                    .is_some_and(|s| s.ipv4.is_some())
+                {
+                    self.connection_notice = Some("IP settings were not applied because the profile could not be read safely.".into());
+                    continue;
+                }
                 let config = IpConfiguration {
-                    automatic: read_bool(state, root, IPV4_AUTOMATIC_KEY),
-                    addresses: read_str(state, root, IPV4_ADDRESS_KEY)
+                    automatic: read_bool(state, root, &ipv4_key(&profile.uuid, "automatic")),
+                    addresses: read_str(state, root, &ipv4_key(&profile.uuid, "address"))
                         .into_iter()
                         .flat_map(|value| {
                             value
                                 .split(',')
                                 .map(str::trim)
                                 .filter(|v| !v.is_empty())
+                                .take(17)
                                 .map(str::to_string)
                                 .collect::<Vec<_>>()
                         })
                         .collect(),
-                    gateway: read_str(state, root, IPV4_GATEWAY_KEY)
+                    gateway: read_str(state, root, &ipv4_key(&profile.uuid, "gateway"))
                         .filter(|v| !v.trim().is_empty()),
-                    dns: read_str(state, root, IPV4_DNS_KEY)
+                    dns: read_str(state, root, &ipv4_key(&profile.uuid, "dns"))
                         .into_iter()
                         .flat_map(|value| {
                             value
                                 .split(',')
                                 .map(str::trim)
                                 .filter(|v| !v.is_empty())
+                                .take(17)
                                 .map(str::to_string)
                                 .collect::<Vec<_>>()
                         })
@@ -1616,7 +1811,11 @@ impl Widget for NetworkPane {
             let apply = format!("network.profile.policy.{}", profile.uuid);
             if read_bool(state, root, &apply) {
                 let _ = state.put(root, &apply, false);
-                let metered = match read_str(
+                let Some(original) = self.profile_settings.get(&profile.uuid).cloned() else {
+                    self.connection_notice = Some("Policy was not applied because NetworkManager's current values could not be read.".into());
+                    continue;
+                };
+                let requested_metered = match read_str(
                     state,
                     root,
                     &format!("network.profile.metered.{}", profile.uuid),
@@ -1625,9 +1824,10 @@ impl Widget for NetworkPane {
                 {
                     Some("Metered") => os_actions::MeteredPolicy::Metered,
                     Some("Unmetered") => os_actions::MeteredPolicy::Unmetered,
-                    _ => os_actions::MeteredPolicy::Automatic,
+                    Some("Automatic") => os_actions::MeteredPolicy::Automatic,
+                    _ => original.metered.unwrap_or_default(),
                 };
-                let mac = match read_str(
+                let requested_mac = match read_str(
                     state,
                     root,
                     &format!("network.profile.mac.{}", profile.uuid),
@@ -1636,24 +1836,38 @@ impl Widget for NetworkPane {
                 {
                     Some("Random each connection") => Some(os_actions::MacPolicy::Random),
                     Some("Permanent hardware address") => Some(os_actions::MacPolicy::Permanent),
-                    _ if profile.kind == "802-11-wireless" => Some(os_actions::MacPolicy::Stable),
-                    _ => None,
+                    Some("Stable per network") => Some(os_actions::MacPolicy::Stable),
+                    _ => original.mac,
                 };
-                let proxy = read_str(
+                let requested_proxy_url = read_str(
                     state,
                     root,
                     &format!("network.profile.proxy.{}", profile.uuid),
                 )
                 .filter(|s| !s.trim().is_empty());
-                let policy = os_actions::ConnectionPolicy {
-                    metered,
-                    mac,
-                    proxy: os_actions::ProxyConfiguration {
-                        automatic_url: proxy,
-                        browser_only: false,
+                let requested_proxy =
+                    original
+                        .proxy
+                        .as_ref()
+                        .map(|old| os_actions::ProxyConfiguration {
+                            automatic_url: requested_proxy_url,
+                            browser_only: old.browser_only,
+                        });
+                let patch = os_actions::ConnectionPolicyPatch {
+                    metered: original
+                        .metered
+                        .filter(|old| *old != requested_metered)
+                        .map(|_| requested_metered),
+                    mac: match (original.mac, requested_mac) {
+                        (Some(old), Some(new)) if old != new => Some(new),
+                        _ => None,
+                    },
+                    proxy: match (&original.proxy, requested_proxy) {
+                        (Some(old), Some(new)) if old != &new => Some(new),
+                        _ => None,
                     },
                 };
-                match os_actions::configure_connection_policy(&profile.uuid, &policy) {
+                match os_actions::configure_connection_policy_patch(&profile.uuid, &patch) {
                     Ok(()) => {
                         self.connection_notice =
                             Some(format!("Applied advanced policy to {}.", profile.name))
@@ -1823,6 +2037,29 @@ impl Widget for NetworkPane {
             self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
             self.connectivity = os_actions::get_connectivity().unwrap_or_default();
             self.profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+            self.profile_settings = load_profile_settings(&self.profiles);
+            if !self
+                .profiles
+                .iter()
+                .any(|p| Some(&p.uuid) == self.selected_wifi_profile.as_ref())
+            {
+                self.selected_wifi_profile = self
+                    .profiles
+                    .iter()
+                    .find(|p| p.kind == "802-11-wireless")
+                    .map(|p| p.uuid.clone());
+            }
+            if !self
+                .profiles
+                .iter()
+                .any(|p| Some(&p.uuid) == self.selected_wired_profile.as_ref())
+            {
+                self.selected_wired_profile = self
+                    .profiles
+                    .iter()
+                    .find(|p| p.kind == "802-3-ethernet")
+                    .map(|p| p.uuid.clone());
+            }
             self.vpns = (self.vpn_lister)();
         }
 
@@ -2386,5 +2623,83 @@ mod tests {
             &root,
             &NetworkPane::vpn_studio_key("Work VPN")
         ));
+    }
+
+    #[test]
+    fn advanced_editors_seed_networkmanager_values_per_profile() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            Vec::new(),
+        );
+        let wifi = SavedNetworkProfile {
+            name: "Office".into(),
+            uuid: "11111111-1111-1111-1111-111111111111".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        };
+        let lan = SavedNetworkProfile {
+            name: "Dock".into(),
+            uuid: "22222222-2222-2222-2222-222222222222".into(),
+            kind: "802-3-ethernet".into(),
+            autoconnect: true,
+        };
+        pane.profiles = vec![wifi.clone(), lan.clone()];
+        pane.selected_wifi_profile = Some(wifi.uuid.clone());
+        pane.selected_wired_profile = Some(lan.uuid.clone());
+        pane.profile_settings.insert(
+            wifi.uuid.clone(),
+            os_actions::ConnectionProfileSettings {
+                metered: Some(os_actions::MeteredPolicy::Metered),
+                mac: Some(os_actions::MacPolicy::Random),
+                proxy: Some(os_actions::ProxyConfiguration {
+                    automatic_url: Some("https://proxy.example/pac".into()),
+                    browser_only: true,
+                }),
+                ipv4: None,
+            },
+        );
+        pane.profile_settings.insert(
+            lan.uuid.clone(),
+            os_actions::ConnectionProfileSettings {
+                ipv4: Some(IpConfiguration {
+                    automatic: false,
+                    addresses: vec!["192.0.2.44/24".into()],
+                    gateway: Some("192.0.2.1".into()),
+                    dns: vec!["1.1.1.1".into()],
+                }),
+                ..Default::default()
+            },
+        );
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            read_str(
+                &doc,
+                &automerge::ROOT,
+                &format!("network.profile.metered.{}", wifi.uuid)
+            )
+            .as_deref(),
+            Some("Metered")
+        );
+        assert_eq!(
+            read_str(
+                &doc,
+                &automerge::ROOT,
+                &format!("network.profile.proxy.{}", wifi.uuid)
+            )
+            .as_deref(),
+            Some("https://proxy.example/pac")
+        );
+        assert!(!read_bool(
+            &doc,
+            &automerge::ROOT,
+            &ipv4_key(&lan.uuid, "automatic")
+        ));
+        assert_eq!(
+            read_str(&doc, &automerge::ROOT, &ipv4_key(&lan.uuid, "address")).as_deref(),
+            Some("192.0.2.44/24")
+        );
     }
 }
