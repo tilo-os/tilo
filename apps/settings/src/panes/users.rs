@@ -10,7 +10,7 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use runtime_identity::IdentitySummary;
+use runtime_identity::{IdentitySummary, KeyProtection};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Widget};
@@ -78,6 +78,7 @@ impl UserAdmin for AccountsServiceAdmin {
 trait IdentityAdmin: Send + Sync {
     fn activate(&self, id: &str) -> Result<(), String>;
     fn remove(&self, id: &str) -> Result<(), String>;
+    fn protect(&self, id: &str) -> Result<(), String>;
 }
 
 struct DiskIdentityAdmin {
@@ -90,6 +91,11 @@ impl IdentityAdmin for DiskIdentityAdmin {
     }
     fn remove(&self, id: &str) -> Result<(), String> {
         runtime_identity::remove_identity(&self.dir, id).map_err(|e| e.to_string())
+    }
+    fn protect(&self, id: &str) -> Result<(), String> {
+        runtime_identity::secure_identity(&self.dir, id)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -258,10 +264,32 @@ impl UsersPane {
             )
         };
         cards.push(card("Your qOS identities", identity_rows));
+        let mut protection_rows: Vec<El> = vec![caption(
+            "Secret Service is preferred. If the desktop keyring is locked, signing pauses and asks the session to unlock it; qOS never silently copies that key into an app.",
+        )];
+        if self
+            .identities
+            .iter()
+            .any(|identity| identity.protection == KeyProtection::BrokerFile)
+        {
+            protection_rows.push(caption(
+                "This session is using the compatible private-file fallback for at least one identity. It is isolated from apps by the signing broker, but is not encrypted at rest. Install and unlock a freedesktop Secret Service to protect future identities in the desktop keyring.",
+            ));
+        }
+        if self
+            .identities
+            .iter()
+            .any(|identity| identity.protection == KeyProtection::HardwareBacked)
+        {
+            protection_rows.push(caption(
+                "Hardware-backed means the installed provider actually sealed this identity. The presence of a TPM alone is never treated as proof.",
+            ));
+        }
+        cards.push(card("Signing protection", rows(protection_rows)));
         cards.push(card(
             "Identity boundary",
             rows(vec![caption(
-                "A login account may have several identities. The active identity is used only by newly launched apps; running apps keep their existing author. Workspaces may restrict which identity can enter, but cannot read another identity's key. Key files stay private to this login account and only the selected file is mounted read-only into an app.",
+                "A login account may have several identities. The active identity is used only by newly launched apps; running apps keep their existing author. Workspaces may restrict which identity can enter, but cannot read another identity's key. Apps receive a short-lived signing connection for the selected identity—never the private key or identity directory.",
             )]),
         ));
         crate::widgets::cards(cards)
@@ -393,6 +421,7 @@ impl UsersPane {
         let activate = format!("settings.users.identity.activate.{}", id.id);
         let remove = format!("settings.users.identity.remove.{}", id.id);
         let confirm = format!("settings.users.identity.confirm_remove.{}", id.id);
+        let protect = format!("settings.users.identity.protect.{}", id.id);
         let name = if id.display_name.is_empty() {
             &id.id
         } else {
@@ -425,6 +454,14 @@ impl UsersPane {
                 top.push(Box::new(Button::new(&remove, "Remove…", Some(&remove))))
             };
         }
+        if id.protection == KeyProtection::LegacyPlaintext {
+            top = top.push(Box::new(Button::new(
+                &protect,
+                "Protect now",
+                Some(&protect),
+            )));
+        }
+        let protection = id.protection.label();
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -432,8 +469,8 @@ impl UsersPane {
                 .push(Box::new(top))
                 .push(Box::new(
                     Text::new(&format!(
-                        "{} · key {}… · {}-of-{}",
-                        id.id, key, id.threshold, id.total_shares
+                        "{} · key {}… · {}-of-{} · {}",
+                        id.id, key, id.threshold, id.total_shares, protection
                     ))
                     .with_size(11.0)
                     .with_color(Theme::dark().text_dim),
@@ -568,6 +605,7 @@ impl Widget for UsersPane {
             let activate = format!("settings.users.identity.activate.{}", id.id);
             let remove = format!("settings.users.identity.remove.{}", id.id);
             let confirm = format!("settings.users.identity.confirm_remove.{}", id.id);
+            let protect = format!("settings.users.identity.protect.{}", id.id);
             if take_bool(state, root, &activate) {
                 let result = self
                     .identity_admin
@@ -587,6 +625,14 @@ impl Widget for UsersPane {
                     .as_ref()
                     .ok_or_else(|| "identity store is unavailable".to_string())
                     .and_then(|admin| admin.remove(&id.id));
+                self.apply(result);
+            }
+            if take_bool(state, root, &protect) {
+                let result = self
+                    .identity_admin
+                    .as_ref()
+                    .ok_or_else(|| "identity store is unavailable".to_string())
+                    .and_then(|admin| admin.protect(&id.id));
                 self.apply(result);
             }
         }
@@ -754,6 +800,10 @@ mod tests {
             self.0.lock().unwrap().push(format!("remove:{id}"));
             Ok(())
         }
+        fn protect(&self, id: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(format!("protect:{id}"));
+            Ok(())
+        }
     }
     fn user(name: &str, current: bool) -> DeviceUser {
         DeviceUser {
@@ -773,6 +823,7 @@ mod tests {
             threshold: 1,
             total_shares: 1,
             active,
+            protection: KeyProtection::BrokerFile,
         }
     }
 
@@ -829,6 +880,25 @@ mod tests {
         .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
         assert_eq!(ids.0.lock().unwrap().as_slice(), ["activate:work"]);
+    }
+
+    #[test]
+    fn legacy_identity_protection_uses_the_narrow_backend() {
+        let users = Arc::new(RecordingAdmin::default());
+        let ids = Arc::new(RecordingIds::default());
+        let mut legacy = identity("personal", true);
+        legacy.protection = KeyProtection::LegacyPlaintext;
+        let mut pane =
+            UsersPane::with_data(vec![user("ada", true)], vec![legacy], users, ids.clone());
+        let mut doc = AutoCommit::new();
+        doc.put(
+            &automerge::ROOT,
+            "settings.users.identity.protect.personal",
+            true,
+        )
+        .unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(ids.0.lock().unwrap().as_slice(), ["protect:personal"]);
     }
 
     #[test]
