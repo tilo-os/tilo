@@ -53,6 +53,7 @@ pub mod launch;
 pub mod math;
 pub mod mpris;
 pub mod nav_stack;
+pub mod num;
 pub mod offscreen;
 pub mod overlay;
 pub mod paragraph;
