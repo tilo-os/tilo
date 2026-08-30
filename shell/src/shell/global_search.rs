@@ -16,7 +16,7 @@ pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 /// Which slice of the command catalog the palette is focusing on. `Any`
 /// shows everything; narrower variants restrict to a prefix family while
 /// always leaving `settings.*` visible as the escape hatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchContext {
     Any,
     Files,
@@ -73,7 +73,7 @@ impl GlobalSearch {
     /// as the escape hatch, narrow contexts additionally keep their prefix
     /// family (`file.*`, `ws.*`, `app.*`).
     pub fn set_context_kind(&mut self, ctx: SearchContext) {
-        self.context = ctx.clone();
+        self.context = ctx;
         match ctx {
             SearchContext::Any => {
                 self.palette

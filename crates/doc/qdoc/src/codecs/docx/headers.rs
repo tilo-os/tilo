@@ -9,6 +9,9 @@ use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// The fixed part names + relationship ids qdoc writes for header/footer.
 pub(super) const HEADER_PART: &str = "word/header1.xml";
@@ -391,14 +394,16 @@ pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
 pub(super) fn section_references(parts: &ExportedParts) -> String {
     let mut s = String::new();
     if parts.header.is_some() {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"<w:headerReference w:type="default" r:id="{HEADER_REL_ID}"/>"#
-        ));
+        );
     }
     if parts.footer.is_some() {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"<w:footerReference w:type="default" r:id="{FOOTER_REL_ID}"/>"#
-        ));
+        );
     }
     s
 }

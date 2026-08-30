@@ -68,6 +68,7 @@ impl MathField {
         }
     }
 
+    #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.base_size = size;
         self
@@ -231,7 +232,9 @@ impl MathField {
         focused: bool,
     ) {
         self.relayout(tr);
-        let layout = self.layout.as_ref().unwrap();
+        let Some(layout) = self.layout.as_ref() else {
+            return;
+        };
         let origin = self.content_origin();
         let steps = &self.editor.caret.steps;
         let caret = render::caret_gap(layout, steps, self.editor.caret.offset);
@@ -302,7 +305,7 @@ impl MathField {
     /// source so a subsequent [`set_source`] with the same value is a no-op.
     pub fn current_linear(&mut self) -> String {
         let s = engine_linear(&self.editor.to_linear());
-        self.source = s.clone();
+        self.source.clone_from(&s);
         s
     }
 

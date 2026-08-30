@@ -17,6 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub type MenuAction = Arc<dyn Fn() + Send + Sync>;
@@ -272,15 +273,13 @@ impl Widget for ContextMenu {
         } else {
             0.0
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(MENU_WIDTH as f32),
-                    height: Dimension::length(height as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(MENU_WIDTH as f32),
+                height: Dimension::length(height as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -288,7 +287,7 @@ impl Widget for ContextMenu {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // The caller-provided anchor wins when open; otherwise the
         // taffy-assigned position keeps offscreen/closed menus sensible.
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
             (f64::from(px), f64::from(py))
         } else {
@@ -595,7 +594,7 @@ mod tests {
     }
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

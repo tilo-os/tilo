@@ -13,6 +13,9 @@
 use crate::snapshot::{ChangeKind, ChangeView};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// One imported changed-region: the ODF `xml:id`, change kind, and author/date.
 pub(super) struct ImportedChange {
@@ -138,11 +141,12 @@ pub(super) fn render_tracked_changes(changes: &[ChangeView]) -> String {
             // only the change-info; an empty `text:p` keeps the element schema-valid.
             ChangeKind::Del => format!("<text:deletion>{info}<text:p/></text:deletion>"),
         };
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<text:changed-region xml:id="{}" text:id="{}">{region}</text:changed-region>"#,
             escape_attr(&c.id),
             escape_attr(&c.id)
-        ));
+        );
     }
     out.push_str("</text:tracked-changes>");
     out

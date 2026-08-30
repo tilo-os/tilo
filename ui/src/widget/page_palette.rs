@@ -25,6 +25,7 @@ use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::PageEntry;
 
@@ -356,7 +357,7 @@ impl Widget for PageJumpPalette {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

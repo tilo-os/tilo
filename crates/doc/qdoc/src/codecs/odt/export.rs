@@ -4,7 +4,6 @@
 
 use super::container::OdtContainer;
 use crate::document::MarkSpan;
-use crate::export::{InlineBoundary, InlinePlan};
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
@@ -13,6 +12,9 @@ use crate::schema::{
 };
 use crate::snapshot::{AttrVal, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
 /// A minimal `styles.xml` skeleton (automatic-styles + master-styles wired to a `pm1`
@@ -179,9 +181,10 @@ fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) 
         if s.contains(&format!(r#"manifest:full-path="{path}""#)) {
             continue;
         }
-        inserts.push_str(&format!(
+        let _ = write!(
+            inserts,
             r#"<manifest:file-entry manifest:full-path="{path}" manifest:media-type="{media}"/>"#
-        ));
+        );
     }
     if inserts.is_empty() {
         return manifest.to_vec();
@@ -298,6 +301,15 @@ fn escape_attr(s: &str) -> String {
     out
 }
 
+/// The active `link` href at character index `i`, if any. Same-name marks never
+/// overlap in automerge's materialised output, so this is unambiguous.
+fn link_at(marks: &[MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == "link" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
+}
+
 fn push_escaped(out: &mut String, c: char) {
     match c {
         '&' => out.push_str("&amp;"),
@@ -320,6 +332,81 @@ fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
     snap.comments.iter().map(|c| (c.id.clone(), c)).collect()
 }
 
+/// The note id of a `note-ref` mark covering exactly `[i, i+1)`, if any.
+fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
+        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
+}
+
+/// The comment ids whose anchoring `comment` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
+fn comment_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The bookmark names whose anchoring `bookmark` mark starts exactly at `i` / ends exactly at `i`, sorted for deterministic output.
+fn bookmark_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`, sorted for deterministic output.
+fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| {
+            (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.start == i
+        })
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
+fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| {
+            (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.end == i
+        })
+        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style wrappers
 /// (inner), closing and re-opening each whenever it changes so output stays well-nested even
 /// for overlapping marks; a `note-ref` placeholder emits the referenced inline `text:note`.
@@ -331,7 +418,8 @@ fn render_inline(
     note_ctr: &mut usize,
     comments: &CommentIndex,
 ) -> String {
-    let plan = InlinePlan::new(text, marks);
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
     let mut out = String::new();
     let mut open: Vec<String> = Vec::new();
     let mut cur_link: Option<String> = None;
@@ -343,12 +431,9 @@ fn render_inline(
     };
     // Emit annotation boundary markers at `i`, closing spans/link first so the annotation element is a clean sibling of the surrounding inline content.
     let emit_comment_boundaries =
-        |out: &mut String,
-         open: &mut Vec<String>,
-         cur_link: &mut Option<String>,
-         boundary: &InlineBoundary<'_>| {
-            let ends = &boundary.comments.ends;
-            let starts = &boundary.comments.starts;
+        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+            let ends = comment_ends_at(marks, i);
+            let starts = comment_starts_at(marks, i);
             if ends.is_empty() && starts.is_empty() {
                 return;
             }
@@ -359,24 +444,21 @@ fn render_inline(
             }
             // Ends before starts so an adjacent comment's end closes before the next opens.
             for id in ends {
-                if let Some(c) = comments.get(*id) {
+                if let Some(c) = comments.get(&id) {
                     out.push_str(&super::comments::render_annotation_end(c));
                 }
             }
             for id in starts {
-                if let Some(c) = comments.get(*id) {
+                if let Some(c) = comments.get(&id) {
                     out.push_str(&super::comments::render_annotation_start(c));
                 }
             }
         };
     // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link first.
     let emit_bookmark_boundaries =
-        |out: &mut String,
-         open: &mut Vec<String>,
-         cur_link: &mut Option<String>,
-         boundary: &InlineBoundary<'_>| {
-            let ends = &boundary.bookmarks.ends;
-            let starts = &boundary.bookmarks.starts;
+        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+            let ends = bookmark_ends_at(marks, i);
+            let starts = bookmark_starts_at(marks, i);
             if ends.is_empty() && starts.is_empty() {
                 return;
             }
@@ -387,47 +469,46 @@ fn render_inline(
             }
             // Ends before starts so an adjacent bookmark's end closes before the next opens.
             for name in ends {
-                out.push_str(&format!(
+                let _ = write!(
+                    out,
                     r#"<text:bookmark-end text:name="{}"/>"#,
-                    escape_attr(name)
-                ));
+                    escape_attr(&name)
+                );
             }
             for name in starts {
-                out.push_str(&format!(
+                let _ = write!(
+                    out,
                     r#"<text:bookmark-start text:name="{}"/>"#,
-                    escape_attr(name)
-                ));
+                    escape_attr(&name)
+                );
             }
         };
     // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing spans/link first so each marker is a clean sibling of the surrounding content.
-    let emit_change_boundaries = |out: &mut String,
-                                  open: &mut Vec<String>,
-                                  cur_link: &mut Option<String>,
-                                  boundary: &InlineBoundary<'_>| {
-        let ends = &boundary.changes.ends;
-        let starts = &boundary.changes.starts;
-        if ends.is_empty() && starts.is_empty() {
-            return;
-        }
-        close_spans(out, open);
-        if cur_link.is_some() {
-            out.push_str("</text:a>");
-            *cur_link = None;
-        }
-        // Ends before starts so an adjacent change's end closes before the next opens.
-        for id in ends {
-            out.push_str(&super::changes::render_change_end(id));
-        }
-        for id in starts {
-            out.push_str(&super::changes::render_change_start(id));
-        }
-    };
-    for point in plan.points().iter().filter(|point| point.run.is_some()) {
-        emit_comment_boundaries(&mut out, &mut open, &mut cur_link, &point.boundary);
-        emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, &point.boundary);
-        emit_change_boundaries(&mut out, &mut open, &mut cur_link, &point.boundary);
-        let run = point.run.as_ref().expect("filtered above");
-        let link = run.link.map(str::to_owned);
+    let emit_change_boundaries =
+        |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+            let ends = change_ends_at(marks, i);
+            let starts = change_starts_at(marks, i);
+            if ends.is_empty() && starts.is_empty() {
+                return;
+            }
+            close_spans(out, open);
+            if cur_link.is_some() {
+                out.push_str("</text:a>");
+                *cur_link = None;
+            }
+            // Ends before starts so an adjacent change's end closes before the next opens.
+            for id in ends {
+                out.push_str(&super::changes::render_change_end(&id));
+            }
+            for id in starts {
+                out.push_str(&super::changes::render_change_start(&id));
+            }
+        };
+    for i in 0..n {
+        emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
+        emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, i);
+        emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
+        let link = link_at(marks, i);
         if link != cur_link {
             // A link is the outer element, so close any open spans first, then the old link, then open the new link (spans re-open below).
             close_spans(&mut out, &mut open);
@@ -435,13 +516,13 @@ fn render_inline(
                 out.push_str("</text:a>");
             }
             if let Some(href) = &link {
-                out.push_str(&format!(r#"<text:a xlink:href="{}">"#, escape_attr(href)));
+                let _ = write!(out, r#"<text:a xlink:href="{}">"#, escape_attr(href));
             }
             cur_link = link;
         }
-        let mut want: Vec<String> = run
-            .marks
+        let mut want: Vec<String> = marks
             .iter()
+            .filter(|m| i >= m.start && i < m.end)
             .filter_map(|m| {
                 mark_style(m).map(|(name, props)| {
                     used.insert(name.clone(), props);
@@ -454,43 +535,39 @@ fn render_inline(
         if want != open {
             close_spans(&mut out, &mut open);
             for name in &want {
-                out.push_str(&format!(r#"<text:span text:style-name="{name}">"#));
+                let _ = write!(out, r#"<text:span text:style-name="{name}">"#);
                 open.push(name.clone());
             }
         }
-        if let Some(note_id) = run.note_reference {
-            if let Some(note) = notes.get(note_id) {
+        if chars[i] == crate::schema::FIELD_PLACEHOLDER
+            && let Some(note_id) = note_ref_at(marks, i)
+        {
+            if let Some(note) = notes.get(&note_id) {
                 *note_ctr += 1;
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
             continue;
         }
-        for c in run.text.chars() {
-            push_escaped(&mut out, c);
-        }
+        push_escaped(&mut out, chars[i]);
     }
     close_spans(&mut out, &mut open);
     if cur_link.is_some() {
         out.push_str("</text:a>");
     }
-    let terminal = &plan
-        .points()
-        .last()
-        .expect("inline plan has terminal point")
-        .boundary;
-    for name in &terminal.bookmarks.ends {
-        out.push_str(&format!(
+    for name in bookmark_ends_at(marks, n) {
+        let _ = write!(
+            out,
             r#"<text:bookmark-end text:name="{}"/>"#,
-            escape_attr(name)
-        ));
+            escape_attr(&name)
+        );
     }
-    for id in &terminal.comments.ends {
-        if let Some(c) = comments.get(*id) {
+    for id in comment_ends_at(marks, n) {
+        if let Some(c) = comments.get(&id) {
             out.push_str(&super::comments::render_annotation_end(c));
         }
     }
-    for id in &terminal.changes.ends {
-        out.push_str(&super::changes::render_change_end(id));
+    for id in change_ends_at(marks, n) {
+        out.push_str(&super::changes::render_change_end(&id));
     }
     out
 }
@@ -514,14 +591,14 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
             _ => "",
         };
         if !v.is_empty() {
-            pp.push_str(&format!(r#" fo:text-align="{v}""#));
+            let _ = write!(pp, r#" fo:text-align="{v}""#);
         }
     }
     // Line spacing → `fo:line-height` percent (1.5 → "150%").
     if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing")
         && *ls > 0.0
     {
-        pp.push_str(&format!(r#" fo:line-height="{}%""#, fmt_num(ls * 100.0)));
+        let _ = write!(pp, r#" fo:line-height="{}%""#, fmt_num(ls * 100.0));
     }
     if pp.is_empty() {
         None
@@ -560,13 +637,13 @@ fn image_frame_xml(
     let anchor = image_anchor(b);
     let wrap = image_wrap(b);
     let mut frame = String::from("<draw:frame");
-    frame.push_str(&format!(r#" draw:name="{}""#, escape_attr(&b.id)));
+    let _ = write!(frame, r#" draw:name="{}""#, escape_attr(&b.id));
     let anchor_type = match anchor {
         "inline" => "as-char",
         "page" => "page",
         _ => "paragraph",
     };
-    frame.push_str(&format!(r#" text:anchor-type="{anchor_type}""#));
+    let _ = write!(frame, r#" text:anchor-type="{anchor_type}""#);
     // A graphic automatic style carries the wrap; only emit it when meaningful (a floating frame, since `as-char` ignores wrap in ODF anyway).
     if anchor != "inline" {
         let gname = format!("gr{}", graphic_styles.len() + 1);
@@ -574,27 +651,28 @@ fn image_frame_xml(
             gname.clone(),
             super::styles::model_wrap_to_odf(wrap).to_string(),
         ));
-        frame.push_str(&format!(r#" draw:style-name="{gname}""#));
+        let _ = write!(frame, r#" draw:style-name="{gname}""#);
     }
     if let Some(AttrVal::Int(w)) = b.attrs.get("width")
         && *w > 0
     {
-        frame.push_str(&format!(r#" svg:width="{w}px""#));
+        let _ = write!(frame, r#" svg:width="{w}px""#);
     }
     if let Some(AttrVal::Int(h)) = b.attrs.get("height")
         && *h > 0
     {
-        frame.push_str(&format!(r#" svg:height="{h}px""#));
+        let _ = write!(frame, r#" svg:height="{h}px""#);
     }
     frame.push('>');
-    frame.push_str(&format!(
+    let _ = write!(
+        frame,
         r#"<draw:image xlink:href="{}"/>"#,
         escape_attr(&href)
-    ));
+    );
     if let Some(AttrVal::Str(alt)) = b.attrs.get("alt")
         && !alt.is_empty()
     {
-        frame.push_str(&format!("<svg:title>{}</svg:title>", escape_text(alt)));
+        let _ = write!(frame, "<svg:title>{}</svg:title>", escape_text(alt));
     }
     frame.push_str("</draw:frame>");
     Some(frame)
@@ -689,7 +767,7 @@ fn open_list_tag(li: &BlockView, list_styles: &mut Vec<ListStyle>) -> String {
     };
     let mut tag = format!(r#"<text:list text:style-name="{name}""#);
     if start != 1 && snap_num_restart(li) {
-        tag.push_str(&format!(r#" text:start-value="{start}""#));
+        let _ = write!(tag, r#" text:start-value="{start}""#);
     } else if start != 1 {
         // A non-default start that continues: mark it continuing so the importer doesn't treat it as a fresh restart.
         tag.push_str(r#" text:continue-numbering="true""#);
@@ -805,13 +883,13 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
         tp.push_str(r#" fo:font-style="italic""#);
     }
     if let Some(sz) = getf(STYLE_SIZE) {
-        tp.push_str(&format!(r#" fo:font-size="{}pt""#, fmt_num(sz)));
+        let _ = write!(tp, r#" fo:font-size="{}pt""#, fmt_num(sz));
     }
     if let Some(f) = gets(STYLE_FONT) {
-        tp.push_str(&format!(r#" style:font-name="{}""#, font_name(f)));
+        let _ = write!(tp, r#" style:font-name="{}""#, font_name(f));
     }
     if let Some(c) = gets(STYLE_COLOR) {
-        tp.push_str(&format!(r#" fo:color="{}""#, escape_attr(c)));
+        let _ = write!(tp, r#" fo:color="{}""#, escape_attr(c));
     }
 
     let mut pp = String::new();
@@ -823,23 +901,23 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
             _ => "",
         };
         if !v.is_empty() {
-            pp.push_str(&format!(r#" fo:text-align="{v}""#));
+            let _ = write!(pp, r#" fo:text-align="{v}""#);
         }
     }
     if let Some(v) = getf(STYLE_SPACE_BEFORE)
         && v != 0.0
     {
-        pp.push_str(&format!(r#" fo:margin-top="{}px""#, fmt_num(v)));
+        let _ = write!(pp, r#" fo:margin-top="{}px""#, fmt_num(v));
     }
     if let Some(v) = getf(STYLE_SPACE_AFTER)
         && v != 0.0
     {
-        pp.push_str(&format!(r#" fo:margin-bottom="{}px""#, fmt_num(v)));
+        let _ = write!(pp, r#" fo:margin-bottom="{}px""#, fmt_num(v));
     }
     if let Some(v) = getf(STYLE_INDENT)
         && v != 0.0
     {
-        pp.push_str(&format!(r#" fo:margin-left="{}px""#, fmt_num(v)));
+        let _ = write!(pp, r#" fo:margin-left="{}px""#, fmt_num(v));
     }
     let display = gets(STYLE_NAME)
         .map(|n| format!(r#" style:display-name="{}""#, escape_attr(n)))
@@ -878,10 +956,11 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                     _ => 1,
                 };
                 let sa = style_attr(b);
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
                     render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
-                ));
+                );
                 i += 1;
             }
             "list_item" => {
@@ -918,10 +997,11 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         }
                     }
                     let sa = style_attr(li);
-                    body.push_str(&format!(
+                    let _ = write!(
+                        body,
                         r"<text:list-item><text:p{sa}>{}</text:p>",
                         render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr, comments)
-                    ));
+                    );
                     item_open = true;
                     i += 1;
                 }
@@ -962,10 +1042,11 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 let cells = &snap.blocks[start..i];
                 let nrows = cells.iter().map(|c| snap_cell_rc(c).0).max().unwrap_or(0) + 1;
                 let ncols = cells.iter().map(|c| snap_cell_rc(c).1).max().unwrap_or(0) + 1;
-                body.push_str(&format!(r#"<table:table table:name="{tid}">"#));
-                body.push_str(&format!(
+                let _ = write!(body, r#"<table:table table:name="{tid}">"#);
+                let _ = write!(
+                    body,
                     r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
-                ));
+                );
                 for r in 0..nrows {
                     body.push_str("<table:table-row>");
                     for c in 0..ncols {
@@ -978,9 +1059,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                                 )
                             })
                             .unwrap_or_default();
-                        body.push_str(&format!(
+                        let _ = write!(
+                            body,
                             r"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"
-                        ));
+                        );
                     }
                     body.push_str("</table:table-row>");
                 }
@@ -988,10 +1070,11 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             }
             _ => {
                 let sa = style_attr(b);
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     r"<text:p{sa}>{}</text:p>",
                     render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
-                ));
+                );
                 i += 1;
             }
         }
@@ -999,9 +1082,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
 
     let mut styles = String::new();
     for (name, props) in &used {
-        styles.push_str(&format!(
+        let _ = write!(
+            styles,
             r#"<style:style style:name="{name}" style:family="text"><style:text-properties {props}/></style:style>"#
-        ));
+        );
     }
     // Named (common) styles referenced by a block's `style` attr, emitted unless already
     // declared in a preserved styles.xml, so the document's CRDT styles render in LibreOffice.
@@ -1018,18 +1102,20 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
             .as_ref()
             .map(|p| format!(r#" style:parent-style-name="{p}""#))
             .unwrap_or_default();
-        styles.push_str(&format!(
+        let _ = write!(
+            styles,
             r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
             idx + 1
-        ));
+        );
     }
     for ls in list_styles.iter() {
         styles.push_str(&ls.xml);
     }
     for (name, wrap) in &graphic_styles {
-        styles.push_str(&format!(
+        let _ = write!(
+            styles,
             r#"<style:style style:name="{name}" style:family="graphic"><style:graphic-properties style:wrap="{wrap}"/></style:style>"#
-        ));
+        );
     }
 
     // Declare the common ODF namespaces so re-emitted fidelity atoms (tables, drawings, …) stay

@@ -45,6 +45,7 @@ impl ActionDecl {
     }
 
     /// Mark the action destructive, so invoking it is confirmed.
+    #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
         self

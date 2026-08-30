@@ -7,6 +7,7 @@ use crate::text_render::{
 };
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -283,19 +284,17 @@ impl Widget for Text {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: taffy::Dimension::auto(),
-                    height: taffy::Dimension::auto(),
-                },
-                // flex_shrink 1.0 lets Taffy propose a smaller width than
-                // natural_w — critical for wrapping.
-                flex_shrink: 1.0,
-                flex_grow: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: taffy::Dimension::auto(),
+                height: taffy::Dimension::auto(),
+            },
+            // flex_shrink 1.0 lets Taffy propose a smaller width than
+            // natural_w — critical for wrapping.
+            flex_shrink: 1.0,
+            flex_grow: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -329,7 +328,7 @@ impl Widget for Text {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

@@ -25,6 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
 /// Same ratio [`TextInput`] centres its own glyph band against, so text
@@ -181,17 +182,15 @@ impl Widget for EditableLabel {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
-                },
-                flex_shrink: 1.0,
-                flex_grow: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
+            },
+            flex_shrink: 1.0,
+            flex_grow: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -217,7 +216,7 @@ impl Widget for EditableLabel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -449,7 +448,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         el.handle_event(
             ev,
             1.0,

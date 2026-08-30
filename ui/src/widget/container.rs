@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -189,16 +190,16 @@ impl Widget for Container {
         };
 
         let node = if let Some(child) = child_node {
-            taffy.new_with_children(style, &[child]).unwrap()
+            taffy.parent_node(style, &[child])
         } else {
-            taffy.new_leaf(style).unwrap()
+            taffy.leaf_node(style)
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -207,8 +208,9 @@ impl Widget for Container {
         );
 
         if let Some(child) = &mut self.child {
-            let child_node = taffy.children(node).unwrap()[0];
-            child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+            if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
+                child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+            }
         }
     }
 
@@ -251,18 +253,19 @@ impl Widget for Container {
         taffy: &TaffyTree<()>,
     ) {
         if let Some(child) = &mut self.child {
-            let child_node = taffy.children(node_id).unwrap()[0];
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            if let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first() {
+                child.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    child_node,
+                    taffy,
+                );
+            }
         }
     }
 

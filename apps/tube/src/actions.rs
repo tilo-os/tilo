@@ -143,10 +143,25 @@ pub fn register(registry: &mut ActionRegistry) {
 }
 
 /// Encode a Tube action; used by the resource specs (and their prompted
-/// builders). Serialization of this enum cannot fail, so the panic is
-/// unreachable — kept explicit rather than swallowing a would-be bug.
+/// builders). Serialization of this enum cannot fail — every variant holds
+/// only `String`/`usize` fields — so the panic is unreachable; kept explicit
+/// rather than swallowing a would-be bug. `ActionSpec::prompted`'s `build`
+/// closure must return `EncodedAction` directly (not `Result`), so there is
+/// no error path to propagate to instead.
 fn encode(action: &TubeAction) -> EncodedAction {
-    EncodedAction::encode(TUBE_ACTION_TYPE, action).expect("TubeAction is always serializable")
+    #[allow(clippy::expect_used)]
+    let encoded =
+        EncodedAction::encode(TUBE_ACTION_TYPE, action).expect("TubeAction is always serializable");
+    encoded
+}
+
+/// `ActionSpec::immediate` for a [`TubeAction`]. Every variant holds only
+/// `String`/`usize` fields, so encoding cannot fail — see [`encode`].
+fn immediate_spec(id: &str, label: &str, action: &TubeAction) -> ActionSpec {
+    #[allow(clippy::expect_used)]
+    let spec = ActionSpec::immediate(id, label, TUBE_ACTION_TYPE, action)
+        .expect("TubeAction always serializes");
+    spec
 }
 
 /// One-line comment preview for the palette label.
@@ -180,27 +195,23 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
     );
 
     root = root.with_action(
-        ActionSpec::immediate(
+        immediate_spec(
             "like",
             "Like video",
-            TUBE_ACTION_TYPE,
             &TubeAction::LikeVideo {
                 video_id: video_id.clone(),
             },
         )
-        .expect("TubeAction always serializes")
         .with_description("Toggle the like on this video"),
     );
     root = root.with_action(
-        ActionSpec::immediate(
+        immediate_spec(
             "queue",
             "Add to queue",
-            TUBE_ACTION_TYPE,
             &TubeAction::AddToQueue {
                 video_id: video_id.clone(),
             },
         )
-        .expect("TubeAction always serializes")
         .with_description("Append to the shared watch queue"),
     );
 
@@ -212,18 +223,14 @@ pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
             "tube.comment",
             comment_label(&comment.author, &comment.text),
         )
-        .with_action(
-            ActionSpec::immediate(
-                "like",
-                "Like comment",
-                TUBE_ACTION_TYPE,
-                &TubeAction::LikeComment {
-                    video_id: vid.clone(),
-                    index,
-                },
-            )
-            .expect("TubeAction always serializes"),
-        )
+        .with_action(immediate_spec(
+            "like",
+            "Like comment",
+            &TubeAction::LikeComment {
+                video_id: vid.clone(),
+                index,
+            },
+        ))
         .with_action(ActionSpec::prompted(
             "reply",
             "Reply to comment",

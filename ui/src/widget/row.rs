@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -106,45 +107,43 @@ impl Widget for Row {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    flex_wrap: if self.no_wrap {
-                        taffy::FlexWrap::NoWrap
-                    } else {
-                        taffy::FlexWrap::Wrap
-                    },
-                    // Stretch children to the row height when it is a fill-body
-                    // row (so the file list spans the available height);
-                    // otherwise centre them (toolbar/button rows).
-                    align_items: Some(if self.fill_height {
-                        taffy::AlignItems::Stretch
-                    } else {
-                        taffy::AlignItems::Center
-                    }),
-                    flex_grow: if self.fill_height { 1.0 } else { 0.0 },
-                    flex_shrink: 0.0, // Prevent vertical squashing
-                    gap: taffy::Size {
-                        width: length(theme.gap_standard),
-                        height: length(theme.gap_standard),
-                    },
-                    size: taffy::Size {
-                        width: percent(1.0_f32),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                flex_wrap: if self.no_wrap {
+                    taffy::FlexWrap::NoWrap
+                } else {
+                    taffy::FlexWrap::Wrap
                 },
-                &child_nodes,
-            )
-            .unwrap();
+                // Stretch children to the row height when it is a fill-body
+                // row (so the file list spans the available height);
+                // otherwise centre them (toolbar/button rows).
+                align_items: Some(if self.fill_height {
+                    taffy::AlignItems::Stretch
+                } else {
+                    taffy::AlignItems::Center
+                }),
+                flex_grow: if self.fill_height { 1.0 } else { 0.0 },
+                flex_shrink: 0.0, // Prevent vertical squashing
+                gap: taffy::Size {
+                    width: length(theme.gap_standard),
+                    height: length(theme.gap_standard),
+                },
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         // See `Column::apply_layout` for why we max() against
         // content_size — covers taffy under-reporting under a
         // constrained-height parent.
@@ -158,7 +157,7 @@ impl Widget for Row {
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
         }
@@ -189,7 +188,7 @@ impl Widget for Row {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let child_nodes = taffy.children(node_id).unwrap();
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
         // Same pointer-capture short-circuit as `Column::handle_event` —
         // a dragging child gets exclusive event routing so the drag
         // survives the cursor wandering through peer widgets.

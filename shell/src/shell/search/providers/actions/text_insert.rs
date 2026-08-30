@@ -44,22 +44,28 @@ const TEXT_TILES: &[(&str, &str)] = &[
 fn focused_text_tab(st: &ChromeState) -> Option<(u64, &'static str)> {
     let tab_id = st.active_tab_id()?;
     let tree = st.tree();
-    for w in &tree.workspaces {
-        for s in &w.strips {
-            for g in &s.window_groups {
-                for t in &g.tabs {
-                    if t.id != tab_id {
-                        continue;
+    // Found (or not) while the read lock is held; the lock is released
+    // below, before this returns to the caller.
+    let found = 'search: {
+        for w in &tree.workspaces {
+            for s in &w.strips {
+                for g in &s.window_groups {
+                    for t in &g.tabs {
+                        if t.id != tab_id {
+                            continue;
+                        }
+                        break 'search TEXT_TILES
+                            .iter()
+                            .find(|(app, _)| tile_hosts_app(&t.tile, app))
+                            .map(|(_, key)| (t.id, *key));
                     }
-                    return TEXT_TILES
-                        .iter()
-                        .find(|(app, _)| tile_hosts_app(&t.tile, app))
-                        .map(|(_, key)| (t.id, *key));
                 }
             }
         }
-    }
-    None
+        None
+    };
+    drop(tree);
+    found
 }
 
 /// Insert `text` into the focused text tile's document.
@@ -93,7 +99,7 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
         let char_len = body.text.chars().count();
         let at_chars = match args.integer("at") {
             Some(n) if n < 0 => 0,
-            Some(n) => (n as usize).min(char_len),
+            Some(n) => usize::try_from(n).unwrap_or(usize::MAX).min(char_len),
             None => char_len,
         };
         let at_bytes = body.char_index_to_byte(at_chars);
@@ -176,8 +182,8 @@ mod tests {
             .expect("the test's arguments must satisfy the declared parameters")
     }
 
-    fn insert(chrome: &Chrome, a: ActionArgs) -> Result<(), ActionError> {
-        apply(&mut chrome.borrow_mut(), &a)
+    fn insert(chrome: &Chrome, a: &ActionArgs) -> Result<(), ActionError> {
+        apply(&mut chrome.borrow_mut(), a)
     }
 
     /// Asserted through `tab_body`, the same read the shell's own search
@@ -187,7 +193,7 @@ mod tests {
         let (chrome, store) = chrome_focused_on("Notes");
         insert(
             &chrome,
-            args(vec![("text", ArgValue::Text("hello".into()))]),
+            &args(vec![("text", ArgValue::Text("hello".into()))]),
         )
         .expect("inserting into a focused Notes tab must work");
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("hello"));
@@ -198,11 +204,11 @@ mod tests {
     #[test]
     fn the_offset_is_a_character_offset_and_defaults_to_the_end() {
         let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, args(vec![("text", ArgValue::Text("aβc".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("aβc".into()))])).unwrap();
         // β is two bytes; character 2 must land between β and c.
         insert(
             &chrome,
-            args(vec![
+            &args(vec![
                 ("text", ArgValue::Text("X".into())),
                 ("at", ArgValue::Integer(2)),
             ]),
@@ -211,7 +217,7 @@ mod tests {
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc"));
 
         // No `at` appends to the end of what is there now.
-        insert(&chrome, args(vec![("text", ArgValue::Text("!".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("!".into()))])).unwrap();
         assert_eq!(tab_body(&store, TAB, BODY_KEY).as_deref(), Some("aβXc!"));
     }
 
@@ -219,10 +225,10 @@ mod tests {
     #[test]
     fn an_out_of_range_offset_is_clamped_into_the_buffer() {
         let (chrome, store) = chrome_focused_on("Notes");
-        insert(&chrome, args(vec![("text", ArgValue::Text("abc".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("abc".into()))])).unwrap();
         insert(
             &chrome,
-            args(vec![
+            &args(vec![
                 ("text", ArgValue::Text("Z".into())),
                 ("at", ArgValue::Integer(999)),
             ]),
@@ -230,7 +236,7 @@ mod tests {
         .unwrap();
         insert(
             &chrome,
-            args(vec![
+            &args(vec![
                 ("text", ArgValue::Text("A".into())),
                 ("at", ArgValue::Integer(-5)),
             ]),
@@ -249,7 +255,7 @@ mod tests {
         let (chrome, store) = chrome_focused_on("Notes");
         insert(
             &chrome,
-            args(vec![("text", ArgValue::Text("x".repeat(64)))]),
+            &args(vec![("text", ArgValue::Text("x".repeat(64)))]),
         )
         .unwrap();
 
@@ -261,7 +267,7 @@ mod tests {
             })
             .unwrap();
 
-        insert(&chrome, args(vec![("text", ArgValue::Text("y".into()))])).unwrap();
+        insert(&chrome, &args(vec![("text", ArgValue::Text("y".into()))])).unwrap();
 
         let after = store
             .read(&record, |doc| {
@@ -284,7 +290,7 @@ mod tests {
         let (chrome, store) = chrome_focused_on("Editor");
         insert(
             &chrome,
-            args(vec![("text", ArgValue::Text("fn main".into()))]),
+            &args(vec![("text", ArgValue::Text("fn main".into()))]),
         )
         .unwrap();
         assert_eq!(
@@ -302,7 +308,7 @@ mod tests {
     #[test]
     fn a_tab_that_is_not_a_text_document_is_refused() {
         let (chrome, store) = chrome_focused_on("Terminal");
-        let err = insert(&chrome, args(vec![("text", ArgValue::Text("hi".into()))]))
+        let err = insert(&chrome, &args(vec![("text", ArgValue::Text("hi".into()))]))
             .expect_err("a terminal has no text document to write into");
         assert!(
             matches!(&err, ActionError::Refused(m) if m.contains("not a text document")),

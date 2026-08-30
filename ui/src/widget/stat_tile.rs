@@ -27,6 +27,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 const PAD: f64 = 14.0;
@@ -245,21 +246,19 @@ impl Widget for StatTile {
     ) -> NodeId {
         let h = tile_height(self.delta.is_some(), theme) as f32;
         // Grows to share a row evenly, but keeps the fixed content height.
-        let node = taffy
-            .new_leaf(Style {
-                flex_grow: 1.0,
-                flex_basis: length(0.0_f32),
-                min_size: taffy::Size {
-                    width: length(120.0_f32),
-                    height: length(h),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            flex_grow: 1.0,
+            flex_basis: length(0.0_f32),
+            min_size: taffy::Size {
+                width: length(120.0_f32),
+                height: length(h),
+            },
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(h),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -278,7 +277,7 @@ impl Widget for StatTile {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -366,24 +365,22 @@ mod tests {
         for w in widgets.iter_mut() {
             nodes.push(w.build_layout(&mut taffy, &theme, &mut node_map));
         }
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    gap: taffy::Size {
-                        width: length(12.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    size: taffy::Size {
-                        width: length(600.0_f32),
-                        height: length(120.0_f32),
-                    },
-                    ..Default::default()
+        let root = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                gap: taffy::Size {
+                    width: length(12.0_f32),
+                    height: length(0.0_f32),
                 },
-                &nodes,
-            )
-            .unwrap();
+                size: taffy::Size {
+                    width: length(600.0_f32),
+                    height: length(120.0_f32),
+                },
+                ..Default::default()
+            },
+            &nodes,
+        );
         taffy
             .compute_layout(
                 root,

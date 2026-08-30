@@ -12,6 +12,7 @@ use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use crate::color_compat::ColorCompat;
+use crate::widget::TaffyTreeExt;
 
 /// Middle of the 400-600ms comfort band: shows help promptly on a
 /// deliberate hover without firing on a pointer merely passing through.
@@ -250,21 +251,19 @@ impl Widget for Tooltip {
         } else {
             (0.0, 0.0)
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(w),
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -633,7 +632,7 @@ mod tests {
 
     fn feed(t: &mut Tooltip, p: Point) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();

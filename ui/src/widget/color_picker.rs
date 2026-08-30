@@ -7,6 +7,7 @@ use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TaffyTreeExt;
 use crate::widget::TextInput;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
@@ -424,21 +425,19 @@ impl Widget for ColorPicker {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(PICKER_WIDTH as f32),
-                    height: Dimension::length(PICKER_HEIGHT as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(PICKER_WIDTH as f32),
+                height: Dimension::length(PICKER_HEIGHT as f32),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let x0 = origin.x + f64::from(layout.location.x);
         let y0 = origin.y + f64::from(layout.location.y);
         let x1 = x0 + f64::from(layout.size.width);
@@ -901,7 +900,7 @@ mod tests {
 
     fn dispatch(p: &mut ColorPicker, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

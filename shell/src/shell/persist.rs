@@ -120,6 +120,11 @@ pub fn fs_capability_export_path() -> PathBuf {
 /// Atomic. Capabilities whose expiry doesn't survive a restart
 /// (`EndOfSession`, `AfterUse`) are dropped, or persisting a session
 /// grant would quietly promote it to a permanent one.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory can't be created, `tree`
+/// can't be serialised, or the atomic write fails.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -134,6 +139,11 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     atomic_file::write(path, json.as_bytes())
 }
 
+/// # Errors
+///
+/// Returns an error if `path` can't be read, its contents don't parse as
+/// a [`WorkspaceTree`], or its `schema_version` is newer than
+/// [`STATE_SCHEMA_VERSION`].
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     let s = std::fs::read_to_string(path)?;
     let mut tree: WorkspaceTree = serde_json::from_str::<WorkspaceTree>(&s)
@@ -205,7 +215,9 @@ pub fn load_or_default(path: &Path) -> (WorkspaceTree, Option<StateNotice>) {
 fn schema_version_in(path: &Path) -> Option<u32> {
     let s = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&s).ok()?;
-    v.get("schema_version")?.as_u64().map(|n| n as u32)
+    v.get("schema_version")?
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 #[cfg(test)]
@@ -444,7 +456,7 @@ mod tests {
                 assert_eq!(*found, future);
                 assert_eq!(*understood, STATE_SCHEMA_VERSION);
             }
-            other => panic!(
+            other @ StateNotice::Unreadable { .. } => panic!(
                 "expected NewerSchema so the person is told their data is \
                  intact and this build is the wrong one, got {other:?}"
             ),

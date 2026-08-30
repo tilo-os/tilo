@@ -19,11 +19,13 @@ use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use unic_langid::LanguageIdentifier;
 
 /// The source language id (`en-US`). Parsed from a known-good literal; if the
-/// parse ever fails (it cannot for this constant) we fall back to a bare `en`.
+/// parse ever fails (it cannot for this constant) we fall back to a bare `en`,
+/// then to the undetermined locale — the module never panics on a bad parse.
 fn source_lang() -> LanguageIdentifier {
     "en-US"
         .parse()
-        .unwrap_or_else(|_| "en".parse().expect("`en` is a valid language id"))
+        .or_else(|_| "en".parse())
+        .unwrap_or_default()
 }
 
 /// The source locale — always present, the fallback for every other locale.

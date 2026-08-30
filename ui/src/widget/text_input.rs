@@ -18,6 +18,7 @@ use crate::text_selection::{
     prev_word_boundary, word_boundaries,
 };
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span, token_color};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
@@ -2163,21 +2164,19 @@ impl Widget for TextInput {
         } else {
             Dimension::length(40.0)
         };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height,
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height,
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3672,7 +3671,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let event = char_key_event("x");
         ti.handle_event(
             &event,
@@ -3720,7 +3719,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
 
         let moved = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -3774,7 +3773,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let moved = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(x, y),
@@ -3902,7 +3901,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let moved = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(280.0, 38.0),
@@ -4284,7 +4283,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         ti.handle_event(
             ev,
             1.0,

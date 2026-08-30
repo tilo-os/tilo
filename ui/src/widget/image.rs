@@ -15,6 +15,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -417,23 +418,21 @@ impl Widget for Image {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: taffy::Dimension::auto(),
-                    height: taffy::Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                flex_grow: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: taffy::Dimension::auto(),
+                height: taffy::Dimension::auto(),
+            },
+            flex_shrink: 1.0,
+            flex_grow: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

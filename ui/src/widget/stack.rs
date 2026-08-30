@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -80,37 +81,35 @@ impl Widget for Stack {
 
         // Absolute so all children overlap.
         for &node in &child_nodes {
-            let mut style = taffy.style(node).unwrap().clone();
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
-            taffy.set_style(node, style).unwrap();
+            let _ = taffy.set_style(node, style);
         }
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    size: taffy::Size {
-                        width: percent(1.0_f32),
-                        // With every child `position: Absolute`, the stack
-                        // contributes zero to intrinsic size, so `Dimension::auto()`
-                        // here made the parent ration percent-based descendant
-                        // heights from 0 rather than the viewport — a Column's
-                        // bottom-padding got silently dropped. Pinning to the
-                        // parent's height makes the viewport size flow through
-                        // to absolute children correctly.
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    // With every child `position: Absolute`, the stack
+                    // contributes zero to intrinsic size, so `Dimension::auto()`
+                    // here made the parent ration percent-based descendant
+                    // heights from 0 rather than the viewport — a Column's
+                    // bottom-padding got silently dropped. Pinning to the
+                    // parent's height makes the viewport size flow through
+                    // to absolute children correctly.
+                    height: percent(1.0_f32),
                 },
-                &child_nodes,
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -118,7 +117,7 @@ impl Widget for Stack {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, Point::new(self.rect.x0, self.rect.y0));
         }
@@ -149,7 +148,7 @@ impl Widget for Stack {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let child_nodes = taffy.children(node_id).unwrap();
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
         // Reverse order: top-most first.
         for (child_widget, &child_node) in
             self.children.iter_mut().rev().zip(child_nodes.iter().rev())

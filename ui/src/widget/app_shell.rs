@@ -25,6 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 type Element = Box<dyn Widget>;
@@ -544,44 +545,42 @@ impl Widget for AppShell {
         if self.sidebar_shown() {
             if let Some(search) = &mut self.search {
                 let node = search.build_layout(taffy, theme, node_map);
-                let base = taffy.style(node).unwrap().clone();
+                let base = taffy.style(node).cloned().unwrap_or_default();
                 let _ = taffy.set_style(node, self.slot_style(Slot::Search, &base));
                 self.slots.push(Slot::Search);
                 child_nodes.push(node);
             }
             let node = self.nav.build_layout(taffy, theme, node_map);
-            let base = taffy.style(node).unwrap().clone();
+            let base = taffy.style(node).cloned().unwrap_or_default();
             let _ = taffy.set_style(node, self.slot_style(Slot::Nav, &base));
             self.slots.push(Slot::Nav);
             child_nodes.push(node);
         }
         if self.content_shown() {
             let node = self.content.build_layout(taffy, theme, node_map);
-            let base = taffy.style(node).unwrap().clone();
+            let base = taffy.style(node).cloned().unwrap_or_default();
             let _ = taffy.set_style(node, self.slot_style(Slot::Content, &base));
             self.slots.push(Slot::Content);
             child_nodes.push(node);
         }
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    size: taffy::Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
-                &child_nodes,
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

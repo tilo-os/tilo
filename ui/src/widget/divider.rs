@@ -19,6 +19,7 @@ use winit::event::WindowEvent;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,23 +86,21 @@ impl Widget for Divider {
             DividerAxis::Horizontal => (percent(1.0_f32), length(self.thickness)),
             DividerAxis::Vertical => (length(self.thickness), percent(1.0_f32)),
         };
-        let node = taffy
-            .new_leaf(Style {
-                // Never shrink the 1px cross-axis away under tight budgets.
-                flex_shrink: 0.0,
-                size: taffy::Size {
-                    width: w,
-                    height: h,
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            // Never shrink the 1px cross-axis away under tight budgets.
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: w,
+                height: h,
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -165,18 +164,16 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         // Wrap in a fixed-size flex parent so percent() resolves.
         let child = d.build_layout(&mut taffy, &theme, &mut node_map);
-        let parent = taffy
-            .new_with_children(
-                Style {
-                    size: taffy::Size {
-                        width: length(400.0_f32),
-                        height: length(200.0_f32),
-                    },
-                    ..Default::default()
+        let parent = taffy.parent_node(
+            Style {
+                size: taffy::Size {
+                    width: length(400.0_f32),
+                    height: length(200.0_f32),
                 },
-                &[child],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[child],
+        );
         taffy
             .compute_layout(parent, taffy::Size::max_content())
             .unwrap();

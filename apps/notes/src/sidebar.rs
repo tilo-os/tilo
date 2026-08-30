@@ -39,6 +39,7 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::drag::{DragController, ListMetrics};
 
 use crate::model::{PageId, Workspace};
+use crate::num;
 
 /// Per-row height. Comfortable rather than cramped — a page row breathes
 /// with vertical air above and below its label instead of butting rows
@@ -393,11 +394,11 @@ impl NoteTreeView {
         if rel < 0.0 {
             return None;
         }
-        let raw = (rel / ROW_HEIGHT).floor() as usize;
+        let raw = num::usize_of_f64((rel / ROW_HEIGHT).floor());
         if raw >= n {
             return None;
         }
-        let frac = (rel / ROW_HEIGHT) - raw as f64;
+        let frac = (rel / ROW_HEIGHT) - num::f64_of_usize(raw);
         if raw == from || self.is_descendant_of_dragged(raw, from) {
             return None;
         }
@@ -480,7 +481,7 @@ impl NoteTreeView {
             return DropPlan::Cancel;
         }
         let list_top = self.rect.y0 + HEADER_HEIGHT;
-        let list_bottom = list_top + n as f64 * ROW_HEIGHT;
+        let list_bottom = list_top + num::f64_of_usize(n) * ROW_HEIGHT;
         if pt.y < list_top - ROW_HEIGHT || pt.y > list_bottom + ROW_HEIGHT {
             return DropPlan::Cancel;
         }
@@ -516,7 +517,7 @@ impl NoteTreeView {
         // The separator sits between "Duplicate" and "Delete"; keep the
         // action list aligned to the *action* rows only (see the index
         // remap in `apply_menu_selection`).
-        menu.open_at([at.x as f32, at.y as f32]);
+        menu.open_at([num::f32_of_f64(at.x), num::f32_of_f64(at.y)]);
         self.menu = menu;
         self.dirty = true;
     }
@@ -528,7 +529,7 @@ impl NoteTreeView {
         self.empty_menu = true;
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("New note", || {}));
-        menu.open_at([at.x as f32, at.y as f32]);
+        menu.open_at([num::f32_of_f64(at.x), num::f32_of_f64(at.y)]);
         self.menu = menu;
         self.dirty = true;
     }
@@ -608,7 +609,7 @@ impl Widget for NoteTreeView {
                 },
                 min_size: Size {
                     width: Dimension::length(160.0),
-                    height: Dimension::length(height as f32),
+                    height: Dimension::length(num::f32_of_f64(height)),
                 },
                 ..Default::default()
             })
@@ -695,7 +696,9 @@ impl Widget for NoteTreeView {
             ROW_TEXT_SIZE - 2.0,
             tokens.colors.text_dim,
             transform * Affine::translate((self.rect.x0 + ROW_INSET_X, header_text_y)),
-            Some((self.new_page_btn_rect.x0 - self.rect.x0 - ROW_INSET_X - 6.0).max(0.0) as f32),
+            Some(num::f32_of_f64(
+                (self.new_page_btn_rect.x0 - self.rect.x0 - ROW_INSET_X - 6.0).max(0.0),
+            )),
         );
         // Button chip — brighter when hovered so it reads as clickable.
         let btn_bg = if self.new_page_btn_hover {
@@ -843,7 +846,7 @@ impl Widget for NoteTreeView {
                     ROW_TEXT_SIZE,
                     tokens.colors.text_primary,
                     transform * Affine::translate((label_x, text_y)),
-                    Some((row_rect.x1 - label_x - 4.0) as f32),
+                    Some(num::f32_of_f64(row_rect.x1 - label_x - 4.0)),
                 );
             }
         }
@@ -927,7 +930,7 @@ impl Widget for NoteTreeView {
                 ROW_TEXT_SIZE,
                 tokens.colors.text_primary,
                 transform * Affine::translate((label_x, text_y)),
-                Some((ghost.x1 - label_x - 4.0) as f32),
+                Some(num::f32_of_f64(ghost.x1 - label_x - 4.0)),
             );
         }
 
@@ -1437,7 +1440,7 @@ impl NoteTreeView {
     pub fn row_disclosure_x_for_test(&self, idx: usize) -> Option<f64> {
         let row = self.row_rects.get(idx)?;
         let depth = self.flat_rows.get(idx)?.depth;
-        Some(row.x0 + ROW_INSET_X + depth as f64 * INDENT_PX + GLYPH_WIDTH / 2.0)
+        Some(row.x0 + ROW_INSET_X + num::f64_of_usize(depth) * INDENT_PX + GLYPH_WIDTH / 2.0)
     }
 
     /// Test hook: the tree depth of visible row `idx` (0 = root), so a test

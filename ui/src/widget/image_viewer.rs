@@ -24,6 +24,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Minimum/maximum zoom factor. Below 0.1 the image becomes effectively
@@ -136,23 +137,21 @@ impl Widget for ImageViewer {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -390,7 +389,7 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::DEFAULT).unwrap();
+        let node = taffy.leaf_node(Style::DEFAULT);
 
         // So the wheel handler's `inside` check passes.
         iv.handle_event(
@@ -446,7 +445,7 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::DEFAULT).unwrap();
+        let node = taffy.leaf_node(Style::DEFAULT);
 
         iv.handle_event(
             &WindowEvent::CursorMoved {

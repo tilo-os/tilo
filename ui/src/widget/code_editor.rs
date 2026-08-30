@@ -33,6 +33,7 @@ use winit::event::WindowEvent;
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
 /// The syntactic category a run of source falls into. The editor never
@@ -435,15 +436,13 @@ impl Widget for CodeEditor {
     ) -> NodeId {
         // Registers *this* widget (not the inner input) so the host
         // drives CodeEditor's own passes.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        });
         let _ = theme;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -459,7 +458,7 @@ impl Widget for CodeEditor {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1405,7 +1404,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         ed.handle_event(
             ev,
             1.0,

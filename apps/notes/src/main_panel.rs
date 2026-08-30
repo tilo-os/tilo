@@ -45,6 +45,7 @@ use ui::theme::Theme;
 use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
 
 use crate::model::PageId;
+use crate::num;
 
 /// Page-title size. The title is the note's most prominent element — a
 /// large, editable heading pinned above the body, the way Notion/Bear put
@@ -378,9 +379,11 @@ impl Widget for MainPanel {
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
-                        left: length(PADDING_PX as f32),
-                        right: length(PADDING_PX as f32),
-                        top: length((PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP) as f32),
+                        left: length(num::f32_of_f64(PADDING_PX)),
+                        right: length(num::f32_of_f64(PADDING_PX)),
+                        top: length(num::f32_of_f64(
+                            PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
+                        )),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
                     ..existing
