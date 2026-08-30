@@ -41,7 +41,7 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 /// Seed a small, realistic workspace into `root`: a handful of pages in
 /// the tree plus one content-rich note selected so the shot shows real
 /// blocks (headings, lists, checklist, code, an inline link).
-fn seed_sample_workspace(root: &Path) {
+fn seed_sample_workspace(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut ws = Workspace::new();
 
     let inbox = ws.create_page(None);
@@ -140,10 +140,11 @@ Active work, one page each.
         ),
     ];
 
-    storage::save_workspace(root, &ws).expect("seed workspace save");
+    storage::save_workspace(root, &ws)?;
     for (id, body) in bodies {
-        storage::write_page_body(root, id, body).expect("seed page body");
+        storage::write_page_body(root, id, body)?;
     }
+    Ok(())
 }
 
 /// Run the five-pass layout cycle until the responsive structure settles,
@@ -196,7 +197,10 @@ fn settle_layout(
             break;
         }
     }
-    Ok(kept.expect("layout cycle runs at least once"))
+    let Some(result) = kept else {
+        return Err("layout cycle never ran".into());
+    };
+    Ok(result)
 }
 
 /// Render the notes app at `viewport` into a PNG at `out`, optionally in a
@@ -213,6 +217,11 @@ fn settle_layout(
 /// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
 /// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
+///
+/// # Errors
+///
+/// Returns an error if the hermetic workspace can't be created/seeded, the
+/// app fails to spawn, or the layout cycle never runs.
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
@@ -222,7 +231,7 @@ pub fn render_to_path(
     // don't collide, cleaned up on exit.
     let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
     storage::ensure_layout(&root)?;
-    seed_sample_workspace(&root);
+    seed_sample_workspace(&root)?;
 
     let mut app = NotesApp::spawn(root.clone())?;
 
@@ -351,6 +360,183 @@ fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
     p
 }
 
+fn cursor_event(x: f64, y: f64) -> WindowEvent {
+    WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    }
+}
+
+fn mouse_event(state: ElementState, button: MouseButton) -> WindowEvent {
+    WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state,
+        button,
+    }
+}
+
+fn char_key_event(s: &str) -> WindowEvent {
+    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = Key::Character(SmolStr::new(s));
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = winit::keyboard::KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = Some(SmolStr::new(s));
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
+fn named_key_event(k: winit::keyboard::NamedKey) -> WindowEvent {
+    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = Key::Named(k);
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = winit::keyboard::KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = None;
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
+fn dispatch_drag(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Grab a lower row and drag it up between the first two rows — the
+    // ghost floats at the cursor and the list reflows a gap.
+    if let (Some(from), Some(dst)) = (
+        app.sidebar_row_center_for_test(2),
+        app.sidebar_row_center_for_test(1),
+    ) {
+        send(app, &cursor_event(from.x, from.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        // Drop the cursor near the top of row 1 so the drop lands between
+        // rows 0 and 1 (a clear reflow gap, no re-parent).
+        send(app, &cursor_event(from.x, dst.y - 8.0));
+    }
+}
+
+fn dispatch_menu(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    if let Some(row) = app.sidebar_row_center_for_test(1) {
+        send(app, &cursor_event(row.x, row.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Right));
+    }
+}
+
+fn dispatch_rename(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Double-click a page row to open the in-place rename field —
+    // plain-chrome, sitting exactly over the row's label.
+    if let Some(row) = app.sidebar_row_center_for_test(1) {
+        send(app, &cursor_event(row.x, row.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        send(app, &cursor_event(row.x, row.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    }
+}
+
+fn dispatch_rename_commit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Open the rename field, edit it, then click well outside it —
+    // focus-out commits the edit and closes the field.
+    if let Some(row) = app.sidebar_row_center_for_test(1) {
+        send(app, &cursor_event(row.x, row.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        send(app, &cursor_event(row.x, row.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        send(app, &char_key_event(" v2"));
+        send(app, &cursor_event(900.0, 400.0));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    }
+}
+
+fn dispatch_slash_applied(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Fresh page → open the block menu → filter to "Heading 1" → click
+    // that row. The `/` trigger is stripped and the block becomes a
+    // heading, which we then type into. Proves the slash command applies
+    // AND removes its trigger text.
+    let btn = app.sidebar_new_page_btn_center_for_test();
+    send(app, &cursor_event(btn.x, btn.y));
+    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    for s in ["/", "h", "1"] {
+        send(app, &char_key_event(s));
+    }
+    let (cx, cy) = {
+        let rect = app.main_panel_mut().editor().slash_menu().rect();
+        (rect.center().x, rect.y0 + 14.0)
+    };
+    send(app, &cursor_event(cx, cy));
+    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    for s in ["O", "v", "e", "r", "v", "i", "e", "w"] {
+        send(app, &char_key_event(s));
+    }
+}
+
+fn dispatch_heading(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Fresh page → type a `# ` markdown shortcut: the paragraph promotes
+    // to an H1 and the prefix is stripped as the space lands.
+    let btn = app.sidebar_new_page_btn_center_for_test();
+    send(app, &cursor_event(btn.x, btn.y));
+    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    for s in ["#", " ", "R", "o", "a", "d", "m", "a", "p"] {
+        send(app, &char_key_event(s));
+    }
+    // A second line of body under the heading, for context.
+    send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+    for s in ["S", "h", "i", "p", " ", "b", "y", " ", "Q", "3"] {
+        send(app, &char_key_event(s));
+    }
+}
+
+fn dispatch_title_edit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Click the prominent title to open its inline rename, then type —
+    // shows the editable title mid-edit (caret + selection replace).
+    let c = app.main_title_center_for_test();
+    send(app, &cursor_event(c.x, c.y));
+    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    for s in ["L", "a", "u", "n", "c", "h", " ", "p", "l", "a", "n"] {
+        send(app, &char_key_event(s));
+    }
+}
+
+fn dispatch_recipes(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Select the "Recipes" row (index 4) so the shot shows the numbered
+    // "Method" list rendered with its ordinals.
+    if let Some(row) = app.sidebar_row_center_for_test(4) {
+        send(app, &cursor_event(row.x, row.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+    }
+}
+
+/// Route one named `scenario` to the helper that drives its events, using
+/// `send` to dispatch each synthetic [`WindowEvent`] into `app`.
+fn dispatch_scenario(
+    app: &mut NotesApp,
+    send: &mut impl FnMut(&mut NotesApp, &WindowEvent),
+    scenario: Option<&str>,
+) {
+    match scenario {
+        Some("drawer") => app.open_drawer_for_shots(),
+        Some("drag") => dispatch_drag(app, send),
+        Some("menu") => dispatch_menu(app, send),
+        Some("rename") => dispatch_rename(app, send),
+        Some("rename_commit") => dispatch_rename_commit(app, send),
+        // The editor holds focus on load; `/` opens the block menu.
+        Some("slash") => send(app, &char_key_event("/")),
+        Some("slash_applied") => dispatch_slash_applied(app, send),
+        Some("heading") => dispatch_heading(app, send),
+        Some("title_edit") => dispatch_title_edit(app, send),
+        Some("recipes") => dispatch_recipes(app, send),
+        // Force the floating status bubble fully visible for the still.
+        Some("status") => app.arm_status_bubble_for_shots(),
+        _ => {}
+    }
+}
+
 /// Dispatch the events that drive `app` into the requested interaction
 /// state, against the settled `taffy`/`child` layout, before the frame is
 /// drawn. Produces output identical to the live binary reaching the same
@@ -378,155 +564,5 @@ fn drive_scenario(
             taffy,
         );
     };
-    let cursor = |x: f64, y: f64| WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    };
-    let mouse = |st: ElementState, b: MouseButton| WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: st,
-        button: b,
-    };
-    let char_key = |s: &str| {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    };
-
-    let named_key = |k: winit::keyboard::NamedKey| {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    };
-    match scenario {
-        Some("drawer") => app.open_drawer_for_shots(),
-        Some("drag") => {
-            // Grab a lower row and drag it up between the first two rows —
-            // the ghost floats at the cursor and the list reflows a gap.
-            if let (Some(from), Some(dst)) = (
-                app.sidebar_row_center_for_test(2),
-                app.sidebar_row_center_for_test(1),
-            ) {
-                send(app, &cursor(from.x, from.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-                // Drop the cursor near the top of row 1 so the drop lands
-                // between rows 0 and 1 (a clear reflow gap, no re-parent).
-                send(app, &cursor(from.x, dst.y - 8.0));
-            }
-        }
-        Some("menu") => {
-            if let Some(row) = app.sidebar_row_center_for_test(1) {
-                send(app, &cursor(row.x, row.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Right));
-            }
-        }
-        Some("rename") => {
-            // Double-click a page row to open the in-place rename field —
-            // plain-chrome, sitting exactly over the row's label.
-            if let Some(row) = app.sidebar_row_center_for_test(1) {
-                send(app, &cursor(row.x, row.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-                send(app, &cursor(row.x, row.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            }
-        }
-        Some("rename_commit") => {
-            // Open the rename field, edit it, then click well outside it —
-            // focus-out commits the edit and closes the field.
-            if let Some(row) = app.sidebar_row_center_for_test(1) {
-                send(app, &cursor(row.x, row.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-                send(app, &cursor(row.x, row.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-                send(app, &char_key(" v2"));
-                send(app, &cursor(900.0, 400.0));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            }
-        }
-        Some("slash") => {
-            // The editor holds focus on load; `/` opens the block menu.
-            send(app, &char_key("/"));
-        }
-        Some("slash_applied") => {
-            // Fresh page → open the block menu → filter to "Heading 1" →
-            // click that row. The `/` trigger is stripped and the block
-            // becomes a heading, which we then type into. Proves the slash
-            // command applies AND removes its trigger text.
-            let btn = app.sidebar_new_page_btn_center_for_test();
-            send(app, &cursor(btn.x, btn.y));
-            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            for s in ["/", "h", "1"] {
-                send(app, &char_key(s));
-            }
-            let (cx, cy) = {
-                let rect = app.main_panel_mut().editor().slash_menu().rect();
-                (rect.center().x, rect.y0 + 14.0)
-            };
-            send(app, &cursor(cx, cy));
-            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            for s in ["O", "v", "e", "r", "v", "i", "e", "w"] {
-                send(app, &char_key(s));
-            }
-        }
-        Some("heading") => {
-            // Fresh page → type a `# ` markdown shortcut: the paragraph
-            // promotes to an H1 and the prefix is stripped as the space lands.
-            let btn = app.sidebar_new_page_btn_center_for_test();
-            send(app, &cursor(btn.x, btn.y));
-            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            for s in ["#", " ", "R", "o", "a", "d", "m", "a", "p"] {
-                send(app, &char_key(s));
-            }
-            // A second line of body under the heading, for context.
-            send(app, &named_key(winit::keyboard::NamedKey::Enter));
-            for s in ["S", "h", "i", "p", " ", "b", "y", " ", "Q", "3"] {
-                send(app, &char_key(s));
-            }
-        }
-        Some("title_edit") => {
-            // Click the prominent title to open its inline rename, then type —
-            // shows the editable title mid-edit (caret + selection replace).
-            let c = app.main_title_center_for_test();
-            send(app, &cursor(c.x, c.y));
-            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            for s in ["L", "a", "u", "n", "c", "h", " ", "p", "l", "a", "n"] {
-                send(app, &char_key(s));
-            }
-        }
-        Some("recipes") => {
-            // Select the "Recipes" row (index 4) so the shot shows the
-            // numbered "Method" list rendered with its ordinals.
-            if let Some(row) = app.sidebar_row_center_for_test(4) {
-                send(app, &cursor(row.x, row.y));
-                send(app, &mouse(ElementState::Pressed, MouseButton::Left));
-            }
-        }
-        Some("status") => {
-            // Force the floating status bubble fully visible for the still.
-            app.arm_status_bubble_for_shots();
-        }
-        _ => {}
-    }
+    dispatch_scenario(app, &mut send, scenario);
 }
