@@ -11,6 +11,8 @@ pub enum QsLevel {
     WifiDetails(String),
     Bluetooth,
     BluetoothDetails(String),
+    /// Configured NetworkManager VPN profiles.
+    Vpn,
 }
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket

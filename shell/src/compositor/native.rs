@@ -1755,9 +1755,9 @@ pub fn run() -> ! {
     let mut backend: Box<dyn Backend> = match backend_kind {
         BackendKind::Winit => {
             let mut b = WinitBackend::new().expect("init winit backend");
-            // Match the FrameBuilder's internal theme so the host window clears to
-            // chrome bg before the first frame paints; only `Theme::dark()` is in play today.
-            b.set_base_color(ui::theme::Theme::dark().bg_app);
+            // Match the FrameBuilder's configured theme so the host window
+            // clears to chrome background before the first frame paints.
+            b.set_base_color(ui::theme::Theme::configured().bg_app);
             Box::new(b)
         }
         BackendKind::Drm => match DrmBackend::new() {
@@ -1801,6 +1801,7 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    frame_builder.enable_configured_theme();
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
     }
@@ -1867,6 +1868,16 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
+    // Settings can request a small, typed set of contextual tools through a
+    // connected descriptor. The shell owns package resolution and launching;
+    // failure only removes the advanced handoff, never core Settings controls.
+    let tool_service = match crate::shell::tool_intents::spawn() {
+        Ok(service) => Some(service),
+        Err(e) => {
+            tracing::error!(error = %e, "typed tool service unavailable");
+            None
+        }
+    };
 
     // Read the session's own broker for pointer presence and relay it to the
     // room's other hosts; subscribing by room is what makes a cursor crossing
@@ -2919,6 +2930,7 @@ pub fn run() -> ! {
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
+    drop(tool_service);
     std::process::exit(0)
 }
 
