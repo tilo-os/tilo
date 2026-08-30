@@ -133,58 +133,71 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
         Key::Named(NamedKey::Space) => {
             let r = sel.range();
             buf.replace_range(r.clone(), " ");
-            *sel = Selection::collapsed(r.start + 1);
+            *sel = Selection::collapsed(r.start.saturating_add(1));
             Edit::Changed
         }
-        Key::Character(s) if ctrl => match s.as_str() {
-            "a" | "A" => {
-                sel.anchor = 0;
-                sel.cursor = buf.len();
-                Edit::ConsumedQuiet
-            }
-            "c" | "C" => {
-                let r = sel.range();
-                if !r.is_empty() {
-                    clipboard_copy(&buf[r]);
-                }
-                Edit::ConsumedQuiet
-            }
-            "x" | "X" => {
-                let r = sel.range();
-                if r.is_empty() {
-                    return Edit::ConsumedQuiet;
-                }
-                clipboard_copy(&buf[r.clone()]);
-                buf.replace_range(r.clone(), "");
-                *sel = Selection::collapsed(r.start);
-                Edit::Changed
-            }
-            "v" | "V" => match clipboard_paste() {
-                Some(paste) => {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), &paste);
-                    *sel = Selection::collapsed(r.start + paste.len());
-                    Edit::Changed
-                }
-                None => Edit::ConsumedQuiet,
-            },
-            _ => Edit::Ignored,
-        },
-        Key::Character(s) => {
-            // Control characters never enter a buffer — invisible,
-            // unremovable by eye, and travels into whatever the field
-            // feeds (an nmcli argument, a synced workspace name).
-            let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-            if filtered.is_empty() {
-                return Edit::Ignored;
-            }
-            let r = sel.range();
-            buf.replace_range(r.clone(), &filtered);
-            *sel = Selection::collapsed(r.start + filtered.len());
-            Edit::Changed
-        }
+        Key::Character(s) if ctrl => apply_ctrl_char(s, buf, sel),
+        Key::Character(s) => apply_plain_char(s, buf, sel),
         _ => Edit::Ignored,
     }
+}
+
+/// `Key::Character` under Ctrl/Super: select-all, copy, cut, paste, or
+/// (any other character) ignored.
+fn apply_ctrl_char(s: &str, buf: &mut String, sel: &mut Selection) -> Edit {
+    match s {
+        "a" | "A" => {
+            sel.anchor = 0;
+            sel.cursor = buf.len();
+            Edit::ConsumedQuiet
+        }
+        "c" | "C" => {
+            let r = sel.range();
+            if let Some(selected) = buf.get(r) {
+                clipboard_copy(selected);
+            }
+            Edit::ConsumedQuiet
+        }
+        "x" | "X" => {
+            let r = sel.range();
+            if r.is_empty() {
+                return Edit::ConsumedQuiet;
+            }
+            let Some(selected) = buf.get(r.clone()) else {
+                return Edit::ConsumedQuiet;
+            };
+            clipboard_copy(selected);
+            buf.replace_range(r.clone(), "");
+            *sel = Selection::collapsed(r.start);
+            Edit::Changed
+        }
+        "v" | "V" => match clipboard_paste() {
+            Some(paste) => {
+                let r = sel.range();
+                buf.replace_range(r.clone(), &paste);
+                *sel = Selection::collapsed(r.start.saturating_add(paste.len()));
+                Edit::Changed
+            }
+            None => Edit::ConsumedQuiet,
+        },
+        _ => Edit::Ignored,
+    }
+}
+
+/// An ordinary typed character (not a chord): control characters are
+/// filtered out, everything else replaces the current selection.
+fn apply_plain_char(s: &str, buf: &mut String, sel: &mut Selection) -> Edit {
+    // Control characters never enter a buffer — invisible, unremovable
+    // by eye, and travels into whatever the field feeds (an nmcli
+    // argument, a synced workspace name).
+    let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
+    if filtered.is_empty() {
+        return Edit::Ignored;
+    }
+    let r = sel.range();
+    buf.replace_range(r.clone(), &filtered);
+    *sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
+    Edit::Changed
 }
 
 /// One bullet per character. Bullets over asterisks: `•` is round and even
