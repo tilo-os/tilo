@@ -21,6 +21,11 @@ use crate::action::{self, Action, ActionBus};
 
 /// A pill toggle that renders `on` and pushes `action` through Tube's
 /// [`ActionBus`] when activated.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent render/interaction cache (on-state, hover, focus, \
+              dirty), not a state machine"
+)]
 pub struct Switch {
     on: bool,
     action: Action,
@@ -50,6 +55,7 @@ impl Switch {
 
     /// Stable, addressable id so headless click-tests can flip this exact
     /// switch through the real `handle_event` path.
+    #[must_use]
     pub fn id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
         self
@@ -57,6 +63,7 @@ impl Switch {
 
     /// Spoken name for switches whose adjacent visual label is not available
     /// to an accessibility tree consumer.
+    #[must_use]
     pub fn accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
@@ -76,6 +83,11 @@ impl Widget for Switch {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
+                      `Widget::build_layout` returns `NodeId` directly with no fallible path"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -91,7 +103,9 @@ impl Widget for Switch {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
