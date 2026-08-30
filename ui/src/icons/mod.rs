@@ -108,6 +108,7 @@ pub enum Icon {
     /// Lucide `ethernet-port` — the RJ45 socket outline reads as
     /// "cable" at 14 px where a plug icon does not.
     EthernetPort,
+    Mic,
     MicOff,
     SkipForward,
     SkipBack,
@@ -376,6 +377,11 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M10 8v1"),
             path_from_d("M14 8v1"),
             path_from_d("M18 8v1"),
+        ],
+        Icon::Mic => vec![
+            path_from_d("M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"),
+            path_from_d("M19 10v2a7 7 0 0 1-14 0v-2"),
+            line_path(12.0, 19.0, 12.0, 22.0),
         ],
         Icon::MicOff => vec![
             line_path(2.0, 2.0, 22.0, 22.0),
