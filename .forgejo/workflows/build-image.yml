@@ -166,6 +166,37 @@ jobs:
           cache-from: type=registry,ref=code.sandbox.example/qos/qos-buildcache:latest
           cache-to: type=registry,ref=code.sandbox.example/qos/qos-buildcache:latest,mode=max
 
+      - name: Install, boot, and exercise the projection stack in a VM
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          QOS_IMAGE_REF: code.sandbox.example/qos/qos@${{ steps.build.outputs.digest }}
+          QOS_RUN: /tmp/qos-projection-vm
+          QOS_OUTPUT: /tmp/qos-projection-image
+          QOS_USER: tester
+          QOS_PASS: quickdesktop
+        run: |
+          set -euo pipefail
+          podman pull "$QOS_IMAGE_REF"
+          mkdir -p "$QOS_OUTPUT/qcow2" "$QOS_RUN"
+          ./os/dev/disk-image.sh "$QOS_IMAGE_REF" "$QOS_OUTPUT/qcow2" \
+            --user "$QOS_USER:$QOS_PASS:wheel"
+          export QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
+          trap './os/dev/vm.sh stop || true' EXIT
+          ./os/dev/vm.sh boot --2d
+          ./os/dev/vm.sh wait
+          ./os/dev/vm.sh login "$QOS_USER" "$QOS_PASS"
+          for attempt in $(seq 1 60); do
+            if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == 60 ]]; then
+              ./os/dev/vm.sh serial | tail -120
+              exit 1
+            fi
+            sleep 2
+          done
+          ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
+
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
       # an image (see os/etc/containers/policy.json + the update path). Signs by

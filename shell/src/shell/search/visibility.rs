@@ -73,6 +73,7 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         "overview.toggle"
         | "settings.open"
         | "quick-settings.open"
+        | "projection.open"
         | "collaborators.open"
         | "room.activity.open" => None,
 
@@ -154,6 +155,7 @@ mod tests {
             "overview.toggle",
             "settings.open",
             "quick-settings.open",
+            "projection.open",
             "collaborators.open",
             "room.activity.open",
         ] {
