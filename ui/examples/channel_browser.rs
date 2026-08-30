@@ -4,7 +4,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo run -p ui --example channel_browser
+//! cargo run -p ui --example ui-lab -- channel_browser
 //! ```
 //!
 //! Notes:
@@ -42,7 +42,7 @@ fn ch(
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     // Mocked entries — two spaces, a mix of roles, pins, and unread
     // counts. Matches the shape the shell will produce in Phase 5
     // once the wheel-disc auto-promote algorithm runs.

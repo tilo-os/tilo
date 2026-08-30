@@ -5,7 +5,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo run -p ui --example conflict_picker
+//! cargo run -p ui --example ui-lab -- conflict_picker
 //! ```
 //!
 //! Notes:
@@ -35,7 +35,7 @@ fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     // Two writers concurrently moved the same kanban card to
     // different columns. Wrap that as a `PickOne` kind so the
     // picker shows them side-by-side.

@@ -2,8 +2,8 @@
 //! a **real** document's change graph.
 //!
 //! ```bash
-//! cargo run -p ui --example activity_timeline                  # interactive
-//! cargo run -p ui --example activity_timeline -- --shots o.png # headless frame
+//! cargo run -p ui --example ui-lab -- activity_timeline                  # interactive
+//! cargo run -p ui --example ui-lab -- activity_timeline --shots o.png    # headless frame
 //! ```
 //!
 //! Nothing here is hand-authored feed data. The example builds a document that
@@ -109,8 +109,7 @@ fn collaborated_document() -> AutoCommit {
     alice
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+pub fn run(args: &[String]) {
     let shot = args
         .iter()
         .position(|a| a == "--shots")

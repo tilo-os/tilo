@@ -8,8 +8,8 @@
 //! that the selection band renders, the number field + steppers lay out, and
 //! the colour picker embeds cleanly.
 //!
-//! Run:  cargo run -p ui --example `text_shots`
-//! Out:  $`TEXT_SHOTS_OUT` (default /`tmp/text_shots`)
+//! Run:  cargo run -p ui --example ui-shots -- text_shots
+//! Out:  $TEXT_SHOTS_OUT (default /tmp/text_shots)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ use ui::widget::{ColorPicker, NumberInput, TextInput, Widget};
 
 /// Lay a single widget out at `origin` through the real taffy pass and return
 /// nothing (the widget stores its own rect). Used for the widgets whose
-/// `build_layout` carries an intrinsic size (`NumberInput`, `ColorPicker`).
+/// `build_layout` carries an intrinsic size (NumberInput, ColorPicker).
 fn layout_one(w: &mut dyn Widget, origin: Point) {
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -45,9 +45,9 @@ fn layout_one(w: &mut dyn Widget, origin: Point) {
                 height: AvailableSpace::MaxContent,
             },
             |known, available, node_id, _, _| {
-                nm.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, &mut tr)
-                })
+                nm.get(&node_id)
+                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                    .unwrap_or(Size::ZERO)
             },
         )
         .unwrap();
@@ -78,7 +78,7 @@ fn cursor(x: f64, y: f64) -> WindowEvent {
         position: PhysicalPosition::new(x, y),
     }
 }
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXT_SHOTS_OUT").unwrap_or_else(|_| "/tmp/text_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);

@@ -13,8 +13,8 @@
 //! self-checking geometry probe — a green run means "the thumb is where the
 //! offset says".
 //!
-//! Run:  cargo run -p ui --example `data_table`
-//! Out:  $`DATA_TABLE_SHOTS_OUT` (default /`tmp/data_table_shots`)
+//! Run:  cargo run -p ui --example ui-shots -- data_table
+//! Out:  $DATA_TABLE_SHOTS_OUT (default /tmp/data_table_shots)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -150,7 +150,7 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
     // The visible region is the header + body viewport; the renderer canvas
     // clips everything below it, which is exactly the virtualized viewport.
     let h = (HEADER_H + BODY_VP).ceil() as u32;
-    let clip = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(h));
+    let clip = Rect::new(0.0, 0.0, WIDTH as f64, h as f64);
 
     let mut scene = Scene::new();
     scene.push_layer(
@@ -171,7 +171,7 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: PathBuf) -> Rect {
         .expect("bar live in internal-scroll mode")
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("DATA_TABLE_SHOTS_OUT")
         .unwrap_or_else(|_| "/tmp/data_table_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
@@ -194,8 +194,8 @@ fn main() {
         top.y0,
         bottom.y0,
     );
-    let track_top = f64::from(HEADER_H) + 2.0; // rect.y0(0) + HEADER + BAR_MARGIN
-    let track_bottom = f64::from(HEADER_H) + f64::from(BODY_VP) - 2.0;
+    let track_top = HEADER_H as f64 + 2.0; // rect.y0(0) + HEADER + BAR_MARGIN
+    let track_bottom = HEADER_H as f64 + BODY_VP as f64 - 2.0;
     assert!(
         (top.y0 - track_top).abs() < 1.0,
         "top thumb at track top: {}",

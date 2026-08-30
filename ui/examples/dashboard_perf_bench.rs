@@ -22,7 +22,7 @@
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --release --example dashboard_perf_bench
+//! cargo run -p ui --release --example ui-perf -- dashboard_perf_bench
 //! ```
 //! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
 
@@ -291,7 +291,7 @@ fn make_wheel(dy: f32) -> WindowEvent {
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     // Register every label key so `Text::new(key)` resolves
     // through i18n without panicking.
