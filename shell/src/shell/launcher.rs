@@ -414,12 +414,44 @@ pub fn gui_apps() -> Vec<InstalledApp> {
 /// name for a stable-across-boots answer. A user-visible default-app
 /// preference is the real long-term fix; this is the deterministic stand-in.
 pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
-    let mut candidates: Vec<InstalledApp> = gui_apps()
-        .into_iter()
-        .filter(|a| a.opens_extension(ext))
-        .collect();
-    candidates.sort_by(|a, b| a.display_name.cmp(&b.display_name));
-    candidates.into_iter().next()
+    app_for_extension_with_policy(ext, "", None)
+}
+
+/// Resolve an extension through the shared personal/workspace policy engine.
+/// The returned id is looked up in the same installed-app snapshot used to
+/// build candidates, so policy can never launch an uninstalled or non-claiming
+/// package.
+pub fn app_for_extension_with_policy(
+    ext: &str,
+    user_id: &str,
+    workspace: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Option<InstalledApp> {
+    let apps = gui_apps();
+    let candidates = default_app_candidates_from(&apps);
+    let resource = desktop_policy::ResourceKind::extension(ext).ok()?;
+    let personal = desktop_policy::PersonalDefaults::load();
+    let selected = desktop_policy::DefaultAppResolver::new(&candidates)
+        .resolve(&resource, user_id, &personal, workspace)?;
+    apps.into_iter()
+        .find(|app| app.package_id == selected.package_id)
+}
+
+pub fn default_app_candidates() -> Vec<desktop_policy::AppCandidate> {
+    default_app_candidates_from(&gui_apps())
+}
+
+fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::AppCandidate> {
+    apps.iter()
+        .map(|app| desktop_policy::AppCandidate {
+            package_id: app.package_id.clone(),
+            display_name: app.display_name.clone(),
+            resources: app
+                .opens_extensions
+                .iter()
+                .filter_map(|ext| desktop_policy::ResourceKind::extension(ext).ok())
+                .collect(),
+        })
+        .collect()
 }
 
 /// `dev.qos.text-editor` → `Text Editor`, derived from the trailing id

@@ -37,6 +37,21 @@ pub enum FirewallRoute {
     Rules,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisksRoute {
+    #[default]
+    Overview,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupsRoute {
+    #[default]
+    Overview,
+    Restore,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
 pub enum ToolIntent {
@@ -49,6 +64,14 @@ pub enum ToolIntent {
     Firewall {
         #[serde(default)]
         route: FirewallRoute,
+    },
+    Disks {
+        #[serde(default)]
+        route: DisksRoute,
+    },
+    Backups {
+        #[serde(default)]
+        route: BackupsRoute,
     },
 }
 
@@ -73,6 +96,7 @@ impl ToolIntent {
                 Ok(())
             }
             Self::Firewall { .. } => Ok(()),
+            Self::Disks { .. } | Self::Backups { .. } => Ok(()),
         }
     }
 
@@ -80,6 +104,8 @@ impl ToolIntent {
         match self {
             Self::Vpn { .. } => "dev.qos.vpn",
             Self::Firewall { .. } => "dev.qos.firewall",
+            Self::Disks { .. } => "dev.qos.disks",
+            Self::Backups { .. } => "dev.qos.backups",
         }
     }
 }
