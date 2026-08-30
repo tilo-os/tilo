@@ -124,8 +124,8 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             "The famous media player — already installed here.",
             "AudioVideo",
             InstalledState::Installed {
-                version: "3.0.20".into(),
-                available: "3.0.21".into(),
+                version: "3.2.1".into(),
+                available: "3.2.1".into(),
                 pinned: false,
             },
         ),
