@@ -1,5 +1,39 @@
 # Patches against upstream
 
+## Exportable histories
+
+The fork changes also live in two standalone histories, disconnected from the
+qOS application history. Their root commits are pristine Cargo registry
+sources; every following commit is a reviewable topic change:
+
+- `vendor-upstream/vello-0.9` contains `vello` and `vello_encoding` together,
+  because the adaptive allocator API crosses the crate boundary. Its baseline
+  is crates.io `vello` 0.9.0 plus `vello_encoding` 0.9.0.
+- `vendor-upstream/winit-0.30.13` contains winit alone, based on crates.io
+  `winit` 0.30.13. It retains the registry metadata and updates
+  `Cargo.toml.orig` alongside Cargo's normalized manifest, making the topic
+  commits straightforward to apply to an upstream source checkout.
+
+Run `tools/vendor-history.sh verify` to check the recorded roots and tips. Run
+`tools/vendor-history.sh export OUTPUT_DIRECTORY` to create portable Git
+bundles (baseline plus full history) and `git format-patch` series (topic
+commits only). The script refuses to overwrite an existing output directory.
+
+Published crate checksums used for the baselines:
+
+- `vello-0.9.0.crate`:
+  `261359dbef879f8110ef7e1c442246c838d33d3d91cb05e0ea9288d432760c9f`
+- `vello_encoding-0.9.0.crate`:
+  `2346f5f0d7dccb3582fcd397b4a57b43165209f1424e0d76e85dd814db164af7`
+- `winit-0.30.13.crate`:
+  `a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d`
+
+The qOS build does not depend on these refs. They are review/export artifacts;
+the existing portable path overrides remain authoritative until the upstream
+changes are accepted and the vendoring can be removed.
+
+## Vello changes
+
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
 `vello_encoding` 0.9.0 from crates.io, verbatim, except for the eight files
 below. Everything else in both trees — including `Cargo.toml`, `Cargo.lock`,
