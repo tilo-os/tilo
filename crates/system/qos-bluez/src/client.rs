@@ -258,6 +258,28 @@ impl BluezClient {
         Ok(())
     }
 
+    /// Set the user-visible Device1 Alias. This is the BlueZ-owned rename,
+    /// not a second Settings-side nickname database, so every Bluetooth UI
+    /// and application sees the same name.
+    pub async fn set_alias(&self, device: &str, alias: &str) -> zbus::Result<()> {
+        let alias = alias.trim();
+        if alias.is_empty() {
+            return Err(zbus::Error::Failure(
+                "A Bluetooth name cannot be empty".into(),
+            ));
+        }
+        let proxy =
+            zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
+        proxy
+            .call_method(
+                "Set",
+                &(DEVICE_IFACE, "Alias", zbus::zvariant::Value::from(alias)),
+            )
+            .await?;
+        self.names.set(device, alias);
+        Ok(())
+    }
+
     /// Forget a device: drops the bond, the keys and the trust. The device must pair again from scratch.
     pub async fn remove_device(&self, adapter: &str, device: &str) -> zbus::Result<()> {
         let proxy =

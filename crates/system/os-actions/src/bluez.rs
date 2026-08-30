@@ -159,6 +159,13 @@ pub fn set_trusted(device_path: &str, trusted: bool) -> Result<(), String> {
     block(async { c.set_trusted(device_path, trusted).await })
 }
 
+/// Rename a device through BlueZ's Device1.Alias property. No parallel local
+/// nickname store is maintained.
+pub fn set_alias(device_path: &str, alias: &str) -> Result<(), String> {
+    let c = client()?;
+    block(async { c.set_alias(device_path, alias).await })
+}
+
 /// Power the controller on or off.
 pub fn set_powered(on: bool) -> Result<(), String> {
     let c = client()?;

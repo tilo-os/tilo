@@ -12475,6 +12475,7 @@ dependencies = [
  "media",
  "os-actions",
  "qos-actions",
+ "qos-bluez",
  "runtime-identity",
  "runtime-portal-xdg",
  "serde",
