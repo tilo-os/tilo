@@ -72,7 +72,7 @@ impl FileTree {
 
     /// Rebuild the cached row list from the project's current expansion state.
     pub fn set_project(&mut self, project: &Project) {
-        self.project_name = project.name.clone();
+        self.project_name.clone_from(&project.name);
         self.rows = project.visible_rows();
         self.row_meta = self
             .rows
@@ -143,6 +143,10 @@ impl Widget for FileTree {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -156,6 +160,10 @@ impl Widget for FileTree {
         node
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
@@ -166,6 +174,10 @@ impl Widget for FileTree {
         );
     }
 
+    #[allow(
+        clippy::similar_names,
+        reason = "icon_cx/icon_cy are a coordinate pair; the x/y suffix is the clearest possible name for each and a rename would not read better"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -238,6 +250,10 @@ impl Widget for FileTree {
 
             let base_x = self.rect.x0 + 10.0 + meta.depth as f64 * INDENT;
             let icon_cx = base_x + 6.0;
+            #[allow(
+                clippy::similar_names,
+                reason = "icon_cx/icon_cy is the conventional x/y pairing for a center point, used the same way throughout this crate's draw code — renaming either would read worse, not better"
+            )]
             let icon_cy = y + ROW_HEIGHT / 2.0;
 
             if meta.is_folder {
@@ -312,8 +328,9 @@ impl Widget for FileTree {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(idx) = self.row_at(self.last_cursor) {
-                    let meta = &self.row_meta[idx];
+                if let Some(idx) = self.row_at(self.last_cursor)
+                    && let Some(meta) = self.row_meta.get(idx)
+                {
                     if meta.is_folder {
                         self.pending.push(TreeEvent::ToggleFolder(meta.id));
                     } else {
