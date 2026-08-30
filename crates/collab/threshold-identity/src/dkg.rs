@@ -34,6 +34,7 @@ use frost_ed25519::keys::dkg::{
 use frost_ed25519::keys::{KeyPackage, PublicKeyPackage};
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_bytes as serde_bytes_codec;
 
 use collab_types::Ed25519PublicKey;
 
@@ -51,7 +52,7 @@ pub struct EnrolmentRound1 {
     pub from_share_index: u16,
     /// Serialised `frost_ed25519::keys::dkg::round1::Package`, opaque to
     /// callers — round-tripped through frost-ed25519's own serializer.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub package_bytes: Vec<u8>,
 }
 
@@ -66,7 +67,7 @@ pub struct EnrolmentRound2 {
     /// 1-indexed share number of the intended recipient.
     pub to_share_index: u16,
     /// Serialised `frost_ed25519::keys::dkg::round2::Package`.
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub package_bytes: Vec<u8>,
 }
 

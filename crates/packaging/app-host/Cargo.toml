@@ -8,6 +8,10 @@ publish.workspace = true
 license.workspace = true
 description = "qOS app host — content-addressed package store + Cap'n Proto control socket. Resolves package_id → manifest + payload-root for the launcher, tracks Pinned vs LRU, runs size-pressure GC."
 
+[package.metadata.cargo-machete]
+# Invoked by build.rs to compile the Cap'n Proto schema.
+ignored = ["capnpc"]
+
 [[bin]]
 name = "qos-app-host"
 path = "src/main.rs"
