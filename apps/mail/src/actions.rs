@@ -435,7 +435,7 @@ mod tests {
     use crate::app::{MailApp, avatar_store_offline};
     use crate::model::Folder;
     use crate::state::{CtxAction, MailState};
-    use automerge::ROOT;
+
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 

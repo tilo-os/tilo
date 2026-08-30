@@ -7411,7 +7411,7 @@ mod tests {
         // The wide editor is a modal card: it carries an X close button (a
         // small top-right target) AND a dismiss scrim over the calendar behind
         // it (clicking outside closes it). No Back — that's narrow-only.
-        let mut h = Harness::new(1280, 800);
+        let h = Harness::new(1280, 800);
         assert!(
             h.app.detail_open,
             "demo opens with a selected event → modal editor"
@@ -7486,7 +7486,7 @@ mod tests {
         // The flap switcher is narrow-only; the wide layout already has the
         // topbar segmented control, so the flap must NOT add a second set of
         // View targets (which would double every view hit).
-        let mut h = Harness::new(1280, 800);
+        let h = Harness::new(1280, 800);
         let view_targets = h
             .app
             .hits
@@ -7534,7 +7534,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.relayout();
 
-        let theme = Theme::dark();
+        let _theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let area = app.view_rect();
         let days = crate::date::week_days(app.anchor);

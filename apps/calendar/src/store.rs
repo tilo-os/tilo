@@ -104,7 +104,7 @@ mod tests {
         doc.put_object(&ROOT, "events", ObjType::Map).unwrap();
         save(&path, &mut doc).unwrap();
 
-        let mut loaded = load(&path).expect("file present after save");
+        let loaded = load(&path).expect("file present after save");
         assert!(matches!(
             loaded.get(&ROOT, "events"),
             Ok(Some((automerge::Value::Object(ObjType::Map), _)))

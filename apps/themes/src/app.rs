@@ -38,7 +38,7 @@ use crate::customizer::{self, Customizer};
 use crate::doc;
 use crate::draw;
 use crate::gallery::Gallery;
-use crate::model::{self, FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
+use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
 use crate::preview::PreviewPane;
 use crate::store;
 use crate::widgets::{Btn, BtnVariant};

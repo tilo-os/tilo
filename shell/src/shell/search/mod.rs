@@ -673,7 +673,7 @@ mod tests {
     /// another entry's subtitle, even though actions sort above applications.
     #[test]
     fn an_exact_app_name_beats_an_action_that_only_matched_its_subtitle() {
-        for (needle, action_title, action_subtitle, action_score) in [
+        for (needle, action_title, _action_subtitle, action_score) in [
             // "permissions" appears only in the action's subtitle (25).
             (
                 "permissions",
