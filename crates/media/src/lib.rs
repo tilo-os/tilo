@@ -29,6 +29,7 @@
 //!   *through* `PipeWire`; this is where the OS routes it.
 
 pub mod audio;
+pub mod audio_runtime;
 pub mod engine;
 pub mod event;
 pub mod ring;
