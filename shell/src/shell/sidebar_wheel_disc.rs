@@ -186,6 +186,17 @@ const SPOKE_ANGLE_STEP_DEG: f32 = 5.5;
 /// sector too small to carry a name.
 const SECTORS_ACROSS_BAND: usize = 5;
 
+/// Widens each sector past the plain `band / sectors` share, so a workspace
+/// reads as a place rather than a stripe.
+///
+/// 5% is what the geometry affords. Past about 7% the third workspace drops
+/// off a 400 px-tall sidebar — the invariant
+/// `every_workspace_stays_on_the_disc_at_every_size` holds — and the rim's
+/// lag behind a fast drag crosses the ceiling
+/// `the_rim_trails_a_fast_drag_further_than_a_slow_one` puts on it. Taller
+/// sidebars have room for more; this is a single figure for all of them.
+const SECTOR_SIZE_BOOST: f32 = 1.05;
+
 /// Floor and ceiling on the derived spoke gap. The floor is load-bearing:
 /// [`slot_reach`] divides the sweep by the gap, so a degenerate (few-px-tall)
 /// band could drive the gap toward zero and the slot loop toward billions of
@@ -378,7 +389,8 @@ impl SidebarWheelDisc {
     /// was actually laid out into — a fixed angle can't be right at more
     /// than one window size, since arc length per degree grows with
     /// radius. Divides the band's angular height across up to
-    /// [`SECTORS_ACROSS_BAND`] sectors.
+    /// [`SECTORS_ACROSS_BAND`] sectors, then widens each by
+    /// [`SECTOR_SIZE_BOOST`].
     pub fn spoke_gap_deg(&self) -> f32 {
         let n = self.spokes.len();
         // Single-workspace disc is treated as 360° so it can't scroll
@@ -389,7 +401,7 @@ impl SidebarWheelDisc {
         let Some(span) = self.band_angular_height_deg() else {
             return SPOKE_ANGLE_STEP_DEG; // No layout yet.
         };
-        let gap = span / n.min(SECTORS_ACROSS_BAND) as f32;
+        let gap = span / n.min(SECTORS_ACROSS_BAND) as f32 * SECTOR_SIZE_BOOST;
         if gap.is_finite() {
             gap.clamp(MIN_SPOKE_GAP_DEG, MAX_SPOKE_GAP_DEG)
         } else {
