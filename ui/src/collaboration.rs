@@ -26,9 +26,6 @@ use std::io::{Read, Write};
 #[cfg(feature = "legacy-broker")]
 use std::os::unix::net::UnixStream;
 
-// Only used by the `#[cfg(test)]` `SdkConnectSource::Fd` path; gated the
-// same way to keep a release build warning-free.
-#[cfg(test)]
 use std::os::fd::RawFd;
 use std::sync::mpsc;
 use std::thread;
@@ -361,12 +358,10 @@ struct LegacyStream {
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
-/// launcher passed `QOS_SVC_COLLAB_FD`. `Fd` is for in-tree tests — the
-/// mock server hands us a specific connected fd (no env var, no
-/// cross-test races).
+/// launcher passed `QOS_SVC_COLLAB_FD`. `Fd` is an already-connected typed
+/// endpoint, used by tests and headless diagnostics without environment races.
 enum SdkConnectSource {
     Env,
-    #[cfg(test)]
     Fd(RawFd),
 }
 
@@ -374,7 +369,6 @@ impl SdkConnectSource {
     fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
         match self {
             SdkConnectSource::Env => runtime_collab::try_connect(),
-            #[cfg(test)]
             SdkConnectSource::Fd(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
                 let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
@@ -397,6 +391,63 @@ pub struct CollaborationManager {
 }
 
 impl CollaborationManager {
+    /// Connect to the launcher-inherited typed collaboration service and
+    /// announce an explicit route. Headless participants use this instead of
+    /// relying on process-wide `QUICK_APP_ID` / `QOS_WORKSPACE_ID` variables.
+    pub fn for_route(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Env,
+            app_id.into(),
+            cluster_id,
+            record,
+            handle,
+        )
+    }
+
+    /// Explicit typed endpoint for diagnostics and headless harnesses that
+    /// are not launched through the app launcher. Takes ownership of `fd`.
+    pub fn for_route_fd(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            handle,
+        )
+    }
+
+    fn for_route_from(
+        source: SdkConnectSource,
+        app_id: String,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        let sdk = Self::spawn_sdk(source, Vec::new())?;
+        let mut manager = Self {
+            backend: Backend::Sdk(sdk),
+            identity: None,
+        };
+        manager.send(CollabRequest::Hello {
+            app_id,
+            cluster_id,
+            record,
+            handle,
+        });
+        Ok(manager)
+    }
+
     /// If `legacy-broker` is on **and** `QUICK_COLLAB_SOCK` is set, uses the
     /// legacy Unix-socket dialect; otherwise tries `runtime_collab::try_connect()`,
     /// entering SDK mode on `Ok`, Disabled on `Err`.
