@@ -2649,7 +2649,7 @@ fn draw_sidebar(
                     dot_color,
                 );
             }
-            RowRole::Folder { .. } => {}
+            RowRole::Section => {}
         }
 
         // Badge (right-aligned), then label clipped to the remaining width.

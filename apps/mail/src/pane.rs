@@ -2024,41 +2024,6 @@ impl Widget for Pane {
         clippy::too_many_arguments,
         reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
     )]
-    fn forward_html_view_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let over_html = self.role == Role::Reader
-            && self.html_view_rect.is_some()
-            && matches!(
-                event,
-                WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
-            );
-        if !over_html {
-            return;
-        }
-        if let Some(view) = self.html_view.as_mut() {
-            view.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-    }
 
     /// Route a keyboard event to the focused search field (list role only),
     /// reflecting the field's value into the query + first-row selection.
@@ -2070,51 +2035,6 @@ impl Widget for Pane {
         clippy::too_many_arguments,
         reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
     )]
-    fn handle_search_keyboard(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
-            return false;
-        }
-        let focused = self.shared.borrow().search_focused;
-        if focused {
-            if let Some(inp) = self.search_input.as_mut() {
-                inp.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-            }
-            // Reflect the field into the query + first-row selection.
-            let value = self
-                .search_input
-                .as_ref()
-                .map(|i| i.value().to_string())
-                .unwrap_or_default();
-            let mut st = self.shared.borrow_mut();
-            st.search = value;
-            crate::doc::MailDoc::set_search(state, &st.search);
-            st.selected = st.list_rows().first().map(|(id, _)| *id);
-            st.dirty = true;
-            *handled = true;
-        }
-        true
-    }
 
     fn handle_event(
         &mut self,
@@ -2273,6 +2193,90 @@ impl Widget for Pane {
         if let Some(v) = self.html_view.as_mut() {
             v.mark_drawn();
         }
+    }
+}
+
+impl Pane {
+    fn forward_html_view_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let over_html = self.role == Role::Reader
+            && self.html_view_rect.is_some()
+            && matches!(
+                event,
+                WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
+            );
+        if !over_html {
+            return;
+        }
+        if let Some(view) = self.html_view.as_mut() {
+            view.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+    }
+
+    fn handle_search_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
+            return false;
+        }
+        let focused = self.shared.borrow().search_focused;
+        if focused {
+            if let Some(inp) = self.search_input.as_mut() {
+                inp.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+            // Reflect the field into the query + first-row selection.
+            let value = self
+                .search_input
+                .as_ref()
+                .map(|i| i.value().to_string())
+                .unwrap_or_default();
+            let mut st = self.shared.borrow_mut();
+            st.search = value;
+            crate::doc::MailDoc::set_search(state, &st.search);
+            st.selected = st.list_rows().first().map(|(id, _)| *id);
+            st.dirty = true;
+            *handled = true;
+        }
+        true
     }
 }
 
