@@ -46,6 +46,24 @@ of them.
 - removal is confirmed and explains local versus provider data. Account
   metadata, sealed credentials and runtime health are removed together.
 
+Runtime consumers report health through `accounts::AccountSyncReporter`. It is
+the lifecycle writer for `started`, `succeeded`, `offline`, authentication
+required, and bounded generic failures, and it preserves the previous
+successful-sync timestamp. Consumers keep protocol errors in private logs and
+never persist URLs, credentials, response bodies, or raw transport errors as UI
+status. Calendar uses it around the real background CalDAV pass. Files status
+must be emitted by the eventual WebDAV/Nextcloud network worker, not inferred
+from Files' read-only hydration badges; this repository does not yet contain
+that worker.
+
+Printer settings consume `os_actions::printing` rather than maintaining a
+printer inventory. The service asks local CUPS for standard IPP printer/job
+attributes through `ipptool`, overlays the result on `lpstat`'s queue model, and
+bounds all device-provided names/reasons before returning them. Missing marker
+or impression attributes remain `None`; a failed query is distinct from a
+printer which answered but omitted supplies. Settings says "not reported" or
+"unavailable" instead of estimating ink or page progress.
+
 ## Notifications and accessibility
 
 - per-app notification rules are keyed only by installed/previously-configured
