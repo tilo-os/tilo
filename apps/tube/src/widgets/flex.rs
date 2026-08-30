@@ -96,6 +96,11 @@ pub struct Surface {
     pub border: Option<(f64, Color)>,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent layout toggle set by its own builder method \
+              (wrap, block, clip, overlay, float), not a state machine"
+)]
 pub struct Flex {
     children: Vec<Box<dyn Widget>>,
     axis: Axis,
@@ -189,73 +194,90 @@ impl Flex {
         Self::new(Axis::Col)
     }
 
+    #[must_use]
     pub fn push(mut self, child: impl IntoElement) -> Self {
         self.children.push(child.into_element());
         self
     }
 
+    #[must_use]
     pub fn push_if(self, cond: bool, child: impl IntoElement) -> Self {
         if cond { self.push(child) } else { self }
     }
 
+    #[must_use]
     pub fn gap(mut self, g: f32) -> Self {
         self.gap = g;
         self
     }
 
+    #[must_use]
     pub fn pad(mut self, p: f32) -> Self {
         self.pad = [p; 4];
         self
     }
 
+    #[must_use]
     pub fn pad_xy(mut self, x: f32, y: f32) -> Self {
         self.pad = [x, y, x, y];
         self
     }
 
+    #[must_use]
     pub fn pad_each(mut self, l: f32, t: f32, r: f32, b: f32) -> Self {
         self.pad = [l, t, r, b];
         self
     }
 
+    #[must_use]
     pub fn w(mut self, w: Len) -> Self {
         self.width = w;
         self
     }
+    #[must_use]
     pub fn h(mut self, h: Len) -> Self {
         self.height = h;
         self
     }
+    #[must_use]
     pub fn fill_w(self) -> Self {
         self.w(Len::Fill)
     }
+    #[must_use]
     pub fn fill_h(self) -> Self {
         self.h(Len::Fill)
     }
+    #[must_use]
     pub fn fixed(self, w: f32, h: f32) -> Self {
         self.w(Len::Px(w)).h(Len::Px(h))
     }
+    #[must_use]
     pub fn min_w(mut self, w: f32) -> Self {
         self.min_w = Some(w);
         self
     }
+    #[must_use]
     pub fn min_h(mut self, h: f32) -> Self {
         self.min_h = Some(h);
         self
     }
+    #[must_use]
     pub fn max_w(mut self, w: f32) -> Self {
         self.max_w = Some(w);
         self
     }
 
+    #[must_use]
     pub fn align(mut self, a: Align) -> Self {
         self.align = a;
         self
     }
+    #[must_use]
     pub fn justify(mut self, j: Justify) -> Self {
         self.justify = j;
         self
     }
+    #[must_use]
     pub fn wrap(mut self) -> Self {
         self.wrap = true;
         self
@@ -267,14 +289,17 @@ impl Flex {
     /// added and they snap back) — so cards scale with the window and the row is
     /// always exactly filled, never leaving blank space on the right. The grid's
     /// `gap` is the existing [`Flex::gap`].
+    #[must_use]
     pub fn grid(mut self, min_col_px: f32) -> Self {
         self.grid_min_col = Some(min_col_px.max(1.0));
         self
     }
+    #[must_use]
     pub fn grow(mut self, g: f32) -> Self {
         self.grow = g;
         self
     }
+    #[must_use]
     pub fn shrink(mut self, s: f32) -> Self {
         self.shrink = s;
         self
@@ -282,10 +307,12 @@ impl Flex {
     /// Lay children out as a block stack (needed when this box is the
     /// direct child of a `Scrollable` so its height sums instead of
     /// truncating). See `ui::widget::Column::with_intrinsic_height`.
+    #[must_use]
     pub fn block(mut self) -> Self {
         self.block = true;
         self
     }
+    #[must_use]
     pub fn clip(mut self) -> Self {
         self.clip = true;
         self
@@ -295,6 +322,7 @@ impl Flex {
     /// block (inset 0), so it stacks on top of its siblings. The containing
     /// block is the nearest positioned ancestor — the shell root sets itself
     /// `position: relative` implicitly by being the flex parent.
+    #[must_use]
     pub fn overlay(mut self) -> Self {
         self.overlay = true;
         self
@@ -304,27 +332,32 @@ impl Flex {
     /// block) with correct z-order + hit priority but no modal capture — clicks
     /// that miss its children pass through to the content beneath. For a small
     /// on-video affordance like the "Skip" button.
+    #[must_use]
     pub fn float(mut self) -> Self {
         self.float = true;
         self
     }
 
+    #[must_use]
     pub fn surface(mut self, s: Surface) -> Self {
         self.surface = Some(s);
         self
     }
+    #[must_use]
     pub fn hover_surface(mut self, s: Surface) -> Self {
         self.hover_surface = Some(s);
         self
     }
 
     /// Make the whole box a button that pushes `action` on click.
+    #[must_use]
     pub fn on_click(mut self, bus: &ActionBus, action: Action) -> Self {
         self.bus = Some(bus.clone());
         self.action = Some(action);
         self
     }
 
+    #[must_use]
     pub fn id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
         self
@@ -351,6 +384,12 @@ impl Widget for Flex {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "translates this box's dozen independent layout properties (align, justify, \
+                  wrap/grid, padding, sizing) into their taffy::Style fields one field at a \
+                  time; the length is the number of properties, not accidental complexity"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -599,9 +638,10 @@ impl Widget for Flex {
     ) {
         // Children first so inner interactive widgets win.
         if let Ok(child_nodes) = taffy.children(node_id) {
-            if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-                let cn = child_nodes[idx];
-                self.children[idx].handle_event(
+            if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture())
+                && let (Some(&cn), Some(child)) = (child_nodes.get(idx), self.children.get_mut(idx))
+            {
+                child.handle_event(
                     event,
                     scale_factor,
                     modifiers,
