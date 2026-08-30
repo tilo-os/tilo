@@ -1253,18 +1253,61 @@ impl EditorView {
 
     // ---- draw helpers (split out of `Widget::draw`, which orchestrates them) ----
 
-    /// Draw each visible source line: the active-line highlight, find-bar
-    /// match bands, selection bands, the gutter line number, and the
-    /// syntax-highlighted text itself.
+    /// Measure the real monospace cell width once a renderer is available,
+    /// caching it on `self` (the fallback stays in place until the first
+    /// successful measurement).
+    fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer) {
+        let (mw, _) =
+            text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+        if mw > 0.0 {
+            self.cell_w = f64::from(mw);
+        }
+    }
+
+    /// The geometry a draw pass threads through: gutter width, the code
+    /// area's left edge, the first (possibly partial) visible line, its
+    /// fractional scroll offset, and how many rows fit in the viewport.
+    fn layout_metrics(&self) -> (f64, f64, usize, f64, usize) {
+        let gutter_w = self.gutter_width();
+        let code_x0 = self.rect.x0 + gutter_w + CODE_PAD_LEFT;
+        let first_line = self.scroll_y.floor() as usize;
+        let frac = self.scroll_y - first_line as f64;
+        let n_visible = self.visible_lines();
+        (gutter_w, code_x0, first_line, frac, n_visible)
+    }
+
+    /// Fill the editor background and the (subtly raised) gutter background.
+    fn draw_backgrounds(&self, scene: &mut Scene, transform: Affine, theme: &Theme, gutter_w: f64) {
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
+        let gutter_rect = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + gutter_w,
+            self.rect.y1,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &gutter_rect,
+        );
+    }
+
+    /// Draw the per-line background bands for every visible row: the
+    /// active-line highlight, find-bar match bands, and selection bands.
+    /// Runs as its own pass over the visible rows (before [`Self::draw_line_text`]
+    /// paints line numbers and code on top) — safe because rows never overlap,
+    /// so the pass order only has to hold within a single row, not across rows.
     #[allow(
         clippy::too_many_arguments,
         reason = "a draw pass over one screenful of lines threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
     )]
-    fn draw_visible_lines(
+    fn draw_line_backgrounds(
         &self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
         theme: &Theme,
         gutter_w: f64,
         code_x0: f64,
@@ -1356,6 +1399,38 @@ impl EditorView {
                     let sel_color = c.accent[5].multiply_alpha(0.35);
                     scene.fill(Fill::NonZero, transform, sel_color, None, &sel);
                 }
+            }
+        }
+    }
+
+    /// Draw the gutter line number and syntax-highlighted code text for every
+    /// visible row (the pass on top of [`Self::draw_line_backgrounds`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass over one screenful of lines threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_line_text(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        gutter_w: f64,
+        code_x0: f64,
+        first_line: usize,
+        frac: f64,
+        n_visible: usize,
+        primary_line: usize,
+    ) {
+        let c = &theme.tokens.colors;
+        for vi in 0..n_visible {
+            let line_idx = first_line + vi;
+            let Some(line) = self.lines.get(line_idx) else {
+                break;
+            };
+            let y = self.rect.y0 + (vi as f64 - frac) * LINE_HEIGHT;
+            if y > self.rect.y1 {
+                break;
             }
 
             // Line number, right-aligned in the gutter.
@@ -2133,36 +2208,9 @@ impl Widget for EditorView {
         _presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        // Measure the real monospace cell width once we have a renderer.
-        let (mw, _) =
-            text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
-        if mw > 0.0 {
-            self.cell_w = f64::from(mw);
-        }
-
-        // Editor background.
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
-        let gutter_w = self.gutter_width();
-        let code_x0 = self.rect.x0 + gutter_w + CODE_PAD_LEFT;
-        let first_line = self.scroll_y.floor() as usize;
-        let frac = self.scroll_y - first_line as f64;
-        let n_visible = self.visible_lines();
-
-        // Gutter background (very subtly raised).
-        let gutter_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x0 + gutter_w,
-            self.rect.y1,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &gutter_rect,
-        );
+        self.measure_cell_width(text_renderer);
+        let (gutter_w, code_x0, first_line, frac, n_visible) = self.layout_metrics();
+        self.draw_backgrounds(scene, transform, theme, gutter_w);
 
         if self.text_obj.is_none() {
             // A composed zero-state through the shared primitive: a hero icon,
@@ -2185,7 +2233,18 @@ impl Widget for EditorView {
         }
 
         let primary_line = self.primary().line;
-        self.draw_visible_lines(
+        self.draw_line_backgrounds(
+            scene,
+            transform,
+            theme,
+            gutter_w,
+            code_x0,
+            first_line,
+            frac,
+            n_visible,
+            primary_line,
+        );
+        self.draw_line_text(
             scene,
             transform,
             text_renderer,
