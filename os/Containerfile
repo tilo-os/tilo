@@ -554,8 +554,19 @@ RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
 
 # Fonts
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    adwaita-sans-fonts \
     google-noto-sans-fonts \
     google-noto-sans-mono-fonts \
+    google-noto-serif-fonts \
+    google-noto-color-emoji-fonts \
+    google-noto-sans-symbols-fonts \
+    google-noto-sans-symbols-2-fonts \
+    google-noto-sans-cjk-fonts \
+    google-noto-sans-arabic-fonts \
+    google-noto-sans-hebrew-fonts \
+    google-noto-sans-devanagari-fonts \
+    google-noto-sans-bengali-fonts \
+    google-noto-sans-thai-fonts \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Wayland runtime libraries (needed by compositor)

@@ -2169,6 +2169,8 @@ impl App {
             render: None,
             a11y_adapter: None,
             a11y_proxy,
+            ime_allowed: false,
+            ime_cursor_rect: None,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
@@ -2283,6 +2285,9 @@ struct AppHandler {
     /// running.
     a11y_adapter: Option<accesskit_winit::Adapter>,
     a11y_proxy: EventLoopProxy<UserEvent>,
+    /// Cached so a steady frame does not issue platform text-input requests.
+    ime_allowed: bool,
+    ime_cursor_rect: Option<vello::kurbo::Rect>,
 }
 
 impl AppHandler {
@@ -2547,6 +2552,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let Some(render) = self.render.as_mut() else {
                     return;
                 };
+                let ime_allowed_cache = &mut self.ime_allowed;
+                let ime_rect_cache = &mut self.ime_cursor_rect;
                 let app = &mut self.app;
                 // A `Reconfigured` or `Skipped` previous frame re-requests a
                 // redraw so the user doesn't see a stale image.
@@ -2733,6 +2740,33 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.theme,
                     &app.presence_ctx,
                 );
+
+                // Text widgets publish the caret rectangle after shaping, so
+                // the platform IME candidate window follows the exact glyph
+                // position (including wrapping, scrolling, and RTL). A
+                // focused non-text control returns `None`, disabling IME.
+                let ime_rect = app.focused_node.and_then(|id| {
+                    app.node_map
+                        .get(&id)
+                        .and_then(|&widget| unsafe { (*widget).ime_cursor_rect() })
+                });
+                let ime_allowed = ime_rect.is_some();
+                if *ime_allowed_cache != ime_allowed {
+                    window.set_ime_allowed(ime_allowed);
+                    *ime_allowed_cache = ime_allowed;
+                }
+                if ime_rect != *ime_rect_cache {
+                    if let Some(rect) = ime_rect {
+                        window.set_ime_cursor_area(
+                            winit::dpi::LogicalPosition::new(rect.x0.max(0.0), rect.y0.max(0.0)),
+                            winit::dpi::LogicalSize::new(
+                                rect.width().max(1.0),
+                                rect.height().max(1.0),
+                            ),
+                        );
+                    }
+                    *ime_rect_cache = ime_rect;
+                }
 
                 if let Some(ap) = app.action_palette.as_mut() {
                     let win_w = f64::from(width) / f64::from(scale_factor);
