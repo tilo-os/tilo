@@ -23,12 +23,12 @@ use qos_actions::EncodedAction;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Toggle, Widget};
+use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
 use crate::widgets::{El, caption, card, rows, setting_row_described, status_pill};
 
@@ -37,6 +37,35 @@ pub const BANNERS_KEY: &str = "notifications.show_banners";
 pub const PREVIEWS_KEY: &str = "notifications.show_previews";
 pub const SOUNDS_KEY: &str = "notifications.play_sounds";
 pub const LOCK_SCREEN_KEY: &str = "notifications.show_on_lock_screen";
+pub const BADGES_KEY: &str = "notifications.show_badges";
+pub const FOCUS_ENABLED_KEY: &str = "notifications.focus.enabled";
+pub const FOCUS_START_KEY: &str = "notifications.focus.start";
+pub const FOCUS_END_KEY: &str = "notifications.focus.end";
+
+const FOCUS_TIMES: &[(&str, u16)] = &[
+    ("18:00", 18 * 60),
+    ("20:00", 20 * 60),
+    ("22:00", 22 * 60),
+    ("23:00", 23 * 60),
+    ("00:00", 0),
+    ("06:00", 6 * 60),
+    ("07:00", 7 * 60),
+    ("08:00", 8 * 60),
+    ("09:00", 9 * 60),
+];
+
+fn focus_time_label(minutes: u16) -> &'static str {
+    FOCUS_TIMES
+        .iter()
+        .min_by_key(|(_, value)| value.abs_diff(minutes.min(1439)))
+        .map_or("22:00", |(label, _)| *label)
+}
+
+fn focus_time_minutes(label: &str) -> Option<u16> {
+    FOCUS_TIMES
+        .iter()
+        .find_map(|(candidate, value)| (*candidate == label).then_some(*value))
+}
 
 pub struct NotificationsPane {
     prefs: NotificationPrefs,
@@ -129,6 +158,27 @@ impl NotificationsPane {
         }
     }
 
+    fn reconcile_text(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        canonical: &str,
+        field: &str,
+    ) -> (String, bool) {
+        let scratch = Self::scratch_key(canonical);
+        let cv = Self::read_text(state, root, canonical).unwrap_or_else(|| field.to_string());
+        let sv = Self::read_text(state, root, &scratch).unwrap_or_else(|| cv.clone());
+        if cv != field {
+            let _ = state.put(root, scratch.as_str(), cv.as_str());
+            (cv, true)
+        } else if sv != cv {
+            self.perform_action(state, set_text_action(canonical, sv.clone()));
+            (sv, true)
+        } else {
+            (field.to_string(), false)
+        }
+    }
+
     pub fn prefs(&self) -> &NotificationPrefs {
         &self.prefs
     }
@@ -204,8 +254,45 @@ impl NotificationsPane {
                 ),
                 setting_row_described(
                     "Show on lock screen",
-                    "Mirror notifications while the session is locked",
+                    "Show only a redacted count while the session is locked",
                     Self::toggle("notifications.lock_screen", LOCK_SCREEN_KEY),
+                ),
+                setting_row_described(
+                    "Show app badges",
+                    "Allow unread counts on application icons",
+                    Self::toggle("notifications.badges", BADGES_KEY),
+                ),
+            ]),
+        );
+
+        let focus_options: Vec<String> = FOCUS_TIMES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect();
+        let focus_card = card(
+            "Focus schedule",
+            rows(vec![
+                setting_row_described(
+                    "Scheduled quiet hours",
+                    "Hold banners and sounds automatically",
+                    Self::toggle("notifications.focus.enabled", FOCUS_ENABLED_KEY),
+                ),
+                crate::widgets::choice_row(
+                    "From",
+                    Box::new(
+                        Dropdown::new(focus_options.clone(), &Self::scratch_key(FOCUS_START_KEY))
+                            .with_placeholder(focus_time_label(self.prefs.focus.start_minute)),
+                    ),
+                ),
+                crate::widgets::choice_row(
+                    "Until",
+                    Box::new(
+                        Dropdown::new(focus_options, &Self::scratch_key(FOCUS_END_KEY))
+                            .with_placeholder(focus_time_label(self.prefs.focus.end_minute)),
+                    ),
+                ),
+                caption(
+                    "The schedule follows local time. User-approved priority apps may \n+                     still notify; an app cannot mark itself as priority.",
                 ),
             ]),
         );
@@ -219,7 +306,13 @@ impl NotificationsPane {
             )]),
         );
 
-        crate::widgets::cards(vec![dnd_card, banners_card, delivery_card, explainer])
+        crate::widgets::cards(vec![
+            dnd_card,
+            focus_card,
+            banners_card,
+            delivery_card,
+            explainer,
+        ])
     }
 
     /// Persist the current prefs into the shared store, preserving other
@@ -236,6 +329,16 @@ impl NotificationsPane {
         match state.get(root, key) {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                 automerge::ScalarValue::Boolean(b) => Some(*b),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
+        match state.get(root, key) {
+            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                automerge::ScalarValue::Str(text) => Some(text.to_string()),
                 _ => None,
             },
             _ => None,
@@ -266,6 +369,22 @@ impl Widget for NotificationsPane {
             seed(state, PREVIEWS_KEY, self.prefs.show_previews);
             seed(state, SOUNDS_KEY, self.prefs.play_sounds);
             seed(state, LOCK_SCREEN_KEY, self.prefs.show_on_lock_screen);
+            seed(state, BADGES_KEY, self.prefs.show_badges);
+            seed(state, FOCUS_ENABLED_KEY, self.prefs.focus.enabled);
+            let seed_text = |state: &mut AutoCommit, canonical: &str, value: &str| {
+                let _ = state.put(root, canonical, value);
+                let _ = state.put(root, Self::scratch_key(canonical), value);
+            };
+            seed_text(
+                state,
+                FOCUS_START_KEY,
+                focus_time_label(self.prefs.focus.start_minute),
+            );
+            seed_text(
+                state,
+                FOCUS_END_KEY,
+                focus_time_label(self.prefs.focus.end_minute),
+            );
             self.needs_seed = false;
         }
 
@@ -288,6 +407,24 @@ impl Widget for NotificationsPane {
         let (v, c) =
             self.reconcile_bool(state, root, LOCK_SCREEN_KEY, self.prefs.show_on_lock_screen);
         self.prefs.show_on_lock_screen = v;
+        changed |= c;
+        let (v, c) = self.reconcile_bool(state, root, BADGES_KEY, self.prefs.show_badges);
+        self.prefs.show_badges = v;
+        changed |= c;
+        let (v, c) = self.reconcile_bool(state, root, FOCUS_ENABLED_KEY, self.prefs.focus.enabled);
+        self.prefs.focus.enabled = v;
+        changed |= c;
+        let current = focus_time_label(self.prefs.focus.start_minute);
+        let (value, c) = self.reconcile_text(state, root, FOCUS_START_KEY, current);
+        if let Some(minutes) = focus_time_minutes(&value) {
+            self.prefs.focus.start_minute = minutes;
+        }
+        changed |= c;
+        let current = focus_time_label(self.prefs.focus.end_minute);
+        let (value, c) = self.reconcile_text(state, root, FOCUS_END_KEY, current);
+        if let Some(minutes) = focus_time_minutes(&value) {
+            self.prefs.focus.end_minute = minutes;
+        }
         changed |= c;
 
         if changed {
@@ -425,6 +562,7 @@ mod tests {
             show_previews: true,
             play_sounds: false,
             show_on_lock_screen: true,
+            ..NotificationPrefs::default()
         });
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
