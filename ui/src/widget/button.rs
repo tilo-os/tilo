@@ -9,9 +9,13 @@ use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent interaction/lifecycle flag (hover, press, focus, enabled, cache-dirty), not a combinatorial state machine"
+)]
 pub struct Button {
     _id: String,
     label: String,
@@ -84,12 +88,14 @@ impl Button {
     }
 
     /// An empty path leaves presence opt-out (the default).
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// When the scope is denied the widget renders dimmed and rejects input.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -98,6 +104,7 @@ impl Button {
     /// Fires once per completed click (left-button release while the
     /// cursor is still over the button), in addition to any
     /// `on_click_path` CRDT mutation.
+    #[must_use]
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Box::new(f));
         self
@@ -105,6 +112,7 @@ impl Button {
 
     /// With an empty label the icon is centred (icon-only button); with
     /// a label it sits to its left.
+    #[must_use]
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
@@ -114,6 +122,7 @@ impl Button {
     /// place of the empty visible label. Use for every icon-only toolbar
     /// control so the glyph isn't silent. A button that shows a label
     /// doesn't need this; the label is its accessible name.
+    #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
@@ -124,6 +133,7 @@ impl Button {
     /// becomes the accessible name, so the same short label serves both
     /// mouse and screen-reader users. Rendered centrally by the host's
     /// [`TooltipHost`](crate::widget::TooltipHost) — no per-app wiring.
+    #[must_use]
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
         self
@@ -134,11 +144,13 @@ impl Button {
     }
 
     /// Overrides the default 120×40 intrinsic size.
+    #[must_use]
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self
     }
 
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -154,21 +166,25 @@ impl Button {
     /// Colours resolve through [`face_colors`], so the retained widget
     /// and the immediate-mode [`Button::paint`] face stay pixel-identical
     /// for the same style + interaction state.
+    #[must_use]
     pub fn with_style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
         self
     }
 
+    #[must_use]
     pub fn primary(mut self) -> Self {
         self.style = ButtonStyle::Primary;
         self
     }
 
+    #[must_use]
     pub fn danger(mut self) -> Self {
         self.style = ButtonStyle::Danger;
         self
     }
 
+    #[must_use]
     pub fn ghost(mut self) -> Self {
         self.style = ButtonStyle::Ghost;
         self
@@ -186,7 +202,10 @@ impl Button {
     /// the button still owns its focus / a11y / activation contract, only
     /// its geometry is caller-driven.
     pub fn apply_layout_external(&mut self, rect: Rect) {
-        let size_changed = rect.width() != self.rect.width() || rect.height() != self.rect.height();
+        // Bitwise: this asks whether the stored size changed at all, not
+        // whether it changed by more than some tolerance.
+        let size_changed = rect.width().to_bits() != self.rect.width().to_bits()
+            || rect.height().to_bits() != self.rect.height().to_bits();
         self.rect = rect;
         if size_changed {
             self.dirty = true;
@@ -211,6 +230,10 @@ pub enum ButtonStyle {
 /// (a canvas app that owns its own hit-testing) passes what it knows —
 /// usually just `hovered`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a POD bundle of independent interaction flags a button can be in any combination of; not a state machine"
+)]
 pub struct ButtonInteract {
     pub hovered: bool,
     pub pressed: bool,
@@ -289,7 +312,22 @@ pub fn face_colors(
             } else {
                 0
             };
-            let shift = |a: u8| (f32::from(a) * 0.85 + f32::from(toward) * 0.15).round() as u8;
+            let shift = |a: u8| {
+                let blended = (f32::from(a) * 0.85 + f32::from(toward) * 0.15)
+                    .round()
+                    .clamp(0.0, 255.0);
+                // `blended` is a convex combination of two `u8`-derived
+                // values (weights 0.85 + 0.15), clamped immediately above,
+                // so it can't wrap or flip sign on the way into `u8`.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "blended is clamped to [0.0, 255.0] on the line above"
+                )]
+                {
+                    blended as u8
+                }
+            };
             let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
             let bg = if interact.hovered || interact.pressed {
                 active
@@ -352,55 +390,68 @@ impl<'a> ButtonFace<'a> {
             accessible_name: None,
         }
     }
+    #[must_use]
     pub fn style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
         self
     }
+    #[must_use]
     pub fn primary(mut self) -> Self {
         self.style = ButtonStyle::Primary;
         self
     }
+    #[must_use]
     pub fn danger(mut self) -> Self {
         self.style = ButtonStyle::Danger;
         self
     }
+    #[must_use]
     pub fn ghost(mut self) -> Self {
         self.style = ButtonStyle::Ghost;
         self
     }
+    #[must_use]
     pub fn icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
     }
+    #[must_use]
     pub fn radius(mut self, radius: f64) -> Self {
         self.radius = radius;
         self
     }
+    #[must_use]
     pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self {
         self.weight = weight;
         self
     }
+    #[must_use]
     pub fn text_size(mut self, size: f32) -> Self {
         self.text_size = size;
         self
     }
+    #[must_use]
     pub fn hovered(mut self, v: bool) -> Self {
         self.interact.hovered = v;
         self
     }
+    #[must_use]
     pub fn pressed(mut self, v: bool) -> Self {
         self.interact.pressed = v;
         self
     }
+    #[must_use]
     pub fn focused(mut self, v: bool) -> Self {
         self.interact.focused = v;
         self
     }
+    #[must_use]
     pub fn disabled(mut self, v: bool) -> Self {
         self.interact.disabled = v;
         self
     }
     /// For callers that expose their own accessibility node for the region.
+    #[must_use]
     pub fn accessible_name(mut self, name: &'a str) -> Self {
         self.accessible_name = Some(name);
         self
@@ -424,6 +475,73 @@ impl<'a> ButtonFace<'a> {
         vello::peniko::Color,
     ) {
         face_colors(theme, self.style, self.interact)
+    }
+}
+
+/// Paints the icon and/or label centred in `rect`: icon-only centres the
+/// glyph, otherwise the icon (if any) sits left of the label with a fixed
+/// gap, the cluster as a whole centred. Shared by the immediate-mode
+/// [`Button::paint`] and the retained widget's cached [`Widget::draw`] so
+/// the two stay pixel-identical.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a painting primitive shared by two call sites; splitting further would only re-bundle these into a throwaway struct"
+)]
+fn paint_icon_and_label(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    rect: Rect,
+    icon: Option<crate::icons::Icon>,
+    label: &str,
+    text_size: f32,
+    weight: crate::text_render::TextWeight,
+    fg: vello::peniko::Color,
+) {
+    let icon_px = (rect.height() - 14.0).clamp(12.0, 22.0);
+    match (icon, label.is_empty()) {
+        (Some(icon), true) => {
+            // Icon-only — centre the glyph.
+            let ix = rect.center().x - icon_px / 2.0;
+            let iy = rect.center().y - icon_px / 2.0;
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                icon,
+                fg,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
+        (icon, _) => {
+            let (text_width, _) = text_renderer.measure_weighted(label, text_size, None, weight);
+            let gap = if icon.is_some() { 6.0 } else { 0.0 };
+            let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+            let cluster_w = icon_w + gap + f64::from(text_width);
+            let start_x = rect.center().x - cluster_w / 2.0;
+            if let Some(icon) = icon {
+                let iy = rect.center().y - icon_px / 2.0;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                    icon,
+                    fg,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            let text_x = start_x + icon_w + gap;
+            let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                text_size,
+                fg,
+                transform.pre_translate(Vec2::new(text_x, text_y)),
+                None,
+                weight,
+            );
+        }
     }
 }
 
@@ -468,57 +586,49 @@ impl Button {
             scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, bc, None, &shape);
         }
 
-        let rect = face.rect;
         let label = i18n!(face.label);
-        let icon_px = (rect.height() - 14.0).clamp(12.0, 22.0);
-        match (face.icon, label.is_empty()) {
-            (Some(icon), true) => {
-                // Icon-only — centre the glyph.
-                let ix = rect.center().x - icon_px / 2.0;
-                let iy = rect.center().y - icon_px / 2.0;
-                crate::icons::draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-                    icon,
-                    fg,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            }
-            (icon, _) => {
-                let (text_width, _) =
-                    text_renderer.measure_weighted(&label, face.text_size, None, face.weight);
-                let gap = if icon.is_some() { 6.0 } else { 0.0 };
-                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-                let cluster_w = icon_w + gap + f64::from(text_width);
-                let start_x = rect.center().x - cluster_w / 2.0;
-                if let Some(icon) = icon {
-                    let iy = rect.center().y - icon_px / 2.0;
-                    crate::icons::draw_icon(
-                        scene,
-                        transform,
-                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
-                        icon,
-                        fg,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                let text_x = start_x + icon_w + gap;
-                let text_y = rect.y0 + (rect.height() - f64::from(face.text_size)) / 2.0;
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &label,
-                    face.text_size,
-                    fg,
-                    transform * Affine::translate((text_x, text_y)),
-                    None,
-                    face.weight,
-                );
-            }
-        }
+        paint_icon_and_label(
+            scene,
+            transform,
+            text_renderer,
+            face.rect,
+            face.icon,
+            &label,
+            face.text_size,
+            face.weight,
+            fg,
+        );
 
         if dim {
             scene.pop_layer();
+        }
+    }
+
+    /// Appends the cached face scene, wrapped in the `DISABLED_ALPHA` dim
+    /// layer when the button is disabled. `inner` lets the fast
+    /// (no re-encode) path in [`Widget::draw`] pass a translated
+    /// transform while the freshly-encoded path passes `out_transform`
+    /// unchanged.
+    fn append_cached(
+        &self,
+        out_scene: &mut Scene,
+        out_transform: Affine,
+        inner: Affine,
+        theme: &Theme,
+    ) {
+        if self.enabled {
+            out_scene.append(&self.cached, Some(inner));
+        } else {
+            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+            out_scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                out_transform,
+                &clip,
+            );
+            out_scene.append(&self.cached, Some(inner));
+            out_scene.pop_layer();
         }
     }
 }
@@ -553,8 +663,10 @@ impl Widget for Button {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
+        // Bitwise: this asks whether the cached size is stale at all, not
+        // whether it drifted by more than some tolerance.
+        let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
+            || self.rect.height().to_bits() != self.cache_rect.height().to_bits();
         if size_changed {
             self.dirty = true;
         }
@@ -577,21 +689,8 @@ impl Widget for Button {
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            let inner = out_transform * Affine::translate((dx, dy));
-            if self.enabled {
-                out_scene.append(&self.cached, Some(inner));
-            } else {
-                let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-                out_scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    crate::widget::DISABLED_ALPHA,
-                    out_transform,
-                    &clip,
-                );
-                out_scene.append(&self.cached, Some(inner));
-                out_scene.pop_layer();
-            }
+            let inner = out_transform.pre_translate(Vec2::new(dx, dy));
+            self.append_cached(out_scene, out_transform, inner, theme);
             return;
         }
         // cache_rect tracks *where* the cache was emitted so subsequent
@@ -641,67 +740,24 @@ impl Widget for Button {
             );
         }
 
-        let text_size = 14.0;
+        // Regular weight and a fixed 14px size, matching what `measure`/
+        // `draw_text` use internally — spelled out here since this now
+        // goes through the `_weighted` entry points shared with
+        // `ButtonFace`'s (independently weighted/sized) immediate-mode path.
         let label = i18n!(&self.label);
-        let icon_px = (self.rect.height() - 14.0).clamp(12.0, 22.0);
-        match (self.icon, label.is_empty()) {
-            (Some(icon), true) => {
-                // Icon-only button — centre the glyph.
-                let ix = self.rect.center().x - icon_px / 2.0;
-                let iy = self.rect.center().y - icon_px / 2.0;
-                crate::icons::draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-                    icon,
-                    fg_color,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            }
-            (icon, _) => {
-                let (text_width, _) = text_renderer.measure(&label, text_size as f32, None);
-                let gap = if icon.is_some() { 6.0 } else { 0.0 };
-                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-                let cluster_w = icon_w + gap + f64::from(text_width);
-                let start_x = self.rect.center().x - cluster_w / 2.0;
-                if let Some(icon) = icon {
-                    let iy = self.rect.center().y - icon_px / 2.0;
-                    crate::icons::draw_icon(
-                        scene,
-                        transform,
-                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
-                        icon,
-                        fg_color,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                let text_x = start_x + icon_w + gap;
-                let text_y = self.rect.y0 + (self.rect.height() - text_size) / 2.0;
-                text_renderer.draw_text(
-                    scene,
-                    &label,
-                    text_size as f32,
-                    fg_color,
-                    transform * Affine::translate((text_x, text_y)),
-                    None,
-                );
-            }
-        }
+        paint_icon_and_label(
+            scene,
+            transform,
+            text_renderer,
+            self.rect,
+            self.icon,
+            &label,
+            14.0,
+            crate::text_render::TextWeight::Regular,
+            fg_color,
+        );
         self.cache_rect = self.rect;
-        if self.enabled {
-            out_scene.append(&self.cached, Some(out_transform));
-        } else {
-            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-            out_scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                out_transform,
-                &clip,
-            );
-            out_scene.append(&self.cached, Some(out_transform));
-            out_scene.pop_layer();
-        }
+        self.append_cached(out_scene, out_transform, out_transform, theme);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -770,9 +826,8 @@ impl Widget for Button {
                                         automerge::ScalarValue::Counter(_) => {
                                             let _ = state.increment(root, path.as_str(), 1);
                                         }
-                                        automerge::ScalarValue::Boolean(_) => {
-                                            let _ = state.put(root, path.as_str(), true);
-                                        }
+                                        // Boolean and every other scalar type
+                                        // both just get set true.
                                         _ => {
                                             let _ = state.put(root, path.as_str(), true);
                                         }
@@ -993,6 +1048,7 @@ mod tests {
 
     #[test]
     fn face_colors_ghost_is_transparent_at_rest_then_tints() {
+        use crate::a11y::contrast_ratio;
         let theme = Theme::dark();
         let rest = ButtonInteract::default();
         let hover = ButtonInteract {
@@ -1012,7 +1068,6 @@ mod tests {
         assert_eq!(border, None, "ghost has no border");
         // Quiet is a rank, not a licence to be unreadable: the tone starts
         // at `text_dim` and steps out only as far as the hover surface demands.
-        use crate::a11y::contrast_ratio;
         let base = theme.tokens.colors.surfaces.base;
         assert!(
             contrast_ratio(fg, base) < contrast_ratio(theme.tokens.colors.text_primary, base),
