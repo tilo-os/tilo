@@ -543,6 +543,7 @@ impl ApiTesterApp {
 
     /// Number shown on a request-builder tab badge (kept for the tests + the
     /// var hint; the tab strip itself no longer paints badges).
+    #[cfg(test)]
     fn tab_count(&self, tab: RequestTab) -> usize {
         match tab {
             RequestTab::Params => Request::enabled_count(&self.request.params),

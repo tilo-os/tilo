@@ -567,6 +567,7 @@ impl TypstApp {
     /// Compile the current source to a PDF and write it into `dir`, named after
     /// the open document with a `.pdf` extension. Returns the written path.
     /// Split out so a test can drive it against a scratch directory.
+    #[cfg(test)]
     fn export_pdf_to(
         &mut self,
         doc: &mut AutoCommit,
