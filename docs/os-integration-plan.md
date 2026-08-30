@@ -40,7 +40,7 @@ enterprise = the same workspace with its host being that machine. Everything dow
    - On `main`: registry spine (`app-registry`), sandbox (`launcher`), `runtime-bundle` crate.
    - Branches: `shell-app-model-integration` (+6), `registry-infra` (+3), `apps-store` (+5),
      `apps-qpkg-fleet` (+10), `ci-app-model` (+8).
-   - Build gap: apps link the shared runtime dylib; software_store
+   - Build gap: apps link the shared runtime dylib; store
      Open/add-not-install path; a deployed registry. Prove: one relinked app <2MB runs.
    - Measured 2026-08-23 on the word processor, the first `ui` app relinked this way
      (`ui` re-exported from `runtime-dylib`, app built `--profile thin-app --features thin`

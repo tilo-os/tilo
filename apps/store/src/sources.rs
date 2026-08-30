@@ -142,10 +142,10 @@ pub fn flathub_record_to_item(
         } else {
             r.name.clone()
         },
-        description: if r.summary.is_empty() {
-            r.description.clone()
-        } else {
+        description: if r.description.is_empty() {
             r.summary.clone()
+        } else {
+            plain_text(&r.description)
         },
         categories,
         icon_url: r.icon.clone(),
@@ -163,6 +163,20 @@ pub fn flathub_record_to_item(
         publisher_pubkey_hex: None,
         installed,
     }
+}
+
+fn plain_text(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for character in input.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => output.push(character),
+            _ => {}
+        }
+    }
+    output.trim().to_string()
 }
 
 /// Merge a qOS pile and a Flathub pile into one deduped list.
@@ -310,5 +324,25 @@ mod tests {
         b.categories = vec!["Games".into(), "Productivity".into()];
         let cats = distinct_categories(&[a, b]);
         assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);
+    }
+
+    #[test]
+    fn appstream_detail_prefers_plain_long_description() {
+        let record = AppStreamRecord {
+            app_id: "org.example.App".into(),
+            name: "Example".into(),
+            summary: "Short".into(),
+            description: "<p>Long description</p>".into(),
+            icon: None,
+            current_release_version: Some("2".into()),
+            categories: Vec::new(),
+            homepage: None,
+            urls: None,
+            screenshots: Vec::new(),
+        };
+        assert_eq!(
+            flathub_record_to_item(&record, &[]).description,
+            "Long description"
+        );
     }
 }

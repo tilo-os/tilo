@@ -100,6 +100,8 @@ pub enum ActionKind {
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
     FlatpakInstall,
+    /// Flatpak, installed with a newer catalogue version → **Update**.
+    FlatpakUpdate,
     /// Flatpak, installed → **Open**.
     ///
     /// Installing an app and then having no way to start it is not a
@@ -128,6 +130,7 @@ impl ActionKind {
             ActionKind::MarkInstalled => "Mark installed",
             ActionKind::Unmark => "Installed",
             ActionKind::FlatpakInstall => "Install",
+            ActionKind::FlatpakUpdate => "Update",
             ActionKind::FlatpakOpen => "Open",
             ActionKind::FlatpakRemove => "Remove",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
@@ -217,6 +220,11 @@ impl StoreItem {
             }
             (StoreSource::Flathub, _, false) => ActionKind::NeedsFlatpakHost,
             (StoreSource::Flathub, InstalledState::Not, true) => ActionKind::FlatpakInstall,
+            (StoreSource::Flathub, InstalledState::Installed { .. }, true)
+                if !self.latest_version().is_empty() && self.installed.update_available() =>
+            {
+                ActionKind::FlatpakUpdate
+            }
             (StoreSource::Flathub, InstalledState::Installed { .. }, true) => {
                 ActionKind::FlatpakOpen
             }
@@ -442,6 +450,9 @@ mod tests {
              that can install a Flatpak and then not start it is not \
              finished"
         );
+
+        let update = flatpak_item("Chess", qinstalled("0.9", "1.0", false));
+        assert_eq!(update.action_kind(true), ActionKind::FlatpakUpdate);
         assert_eq!(
             e.remove_action(),
             Some(ActionKind::FlatpakRemove),

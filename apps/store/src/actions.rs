@@ -186,6 +186,47 @@ pub fn flatpak_plan(item: &StoreItem, install: bool) -> SpawnPlan {
     }
 }
 
+/// `flatpak update --user --noninteractive <app-id>`.
+pub fn flatpak_update_plan(item: &StoreItem) -> SpawnPlan {
+    SpawnPlan {
+        program: "flatpak".into(),
+        args: vec![
+            "update".into(),
+            "--user".into(),
+            "--noninteractive".into(),
+            item.id.clone(),
+        ],
+        status_line: format!("Updating Flatpak {}…", item.name),
+    }
+}
+
+pub fn flatpak_remote_add_plan(name: &str, url: &str) -> SpawnPlan {
+    SpawnPlan {
+        program: "flatpak".into(),
+        args: vec![
+            "remote-add".into(),
+            "--user".into(),
+            "--if-not-exists".into(),
+            name.into(),
+            url.into(),
+        ],
+        status_line: format!("Adding Flatpak remote {name}…"),
+    }
+}
+
+pub fn flatpak_remote_remove_plan(name: &str) -> SpawnPlan {
+    SpawnPlan {
+        program: "flatpak".into(),
+        args: vec![
+            "remote-delete".into(),
+            "--user".into(),
+            "--force".into(),
+            name.into(),
+        ],
+        status_line: format!("Removing Flatpak remote {name}…"),
+    }
+}
+
 /// The staging directory for downloaded `.qpkg`s. Lives under the
 /// store's cache dir so a container-mounted read-only home isn't a
 /// problem. Best-effort creation.
@@ -259,6 +300,7 @@ pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> Acti
         (ActionKind::MarkInstalled, StoreSource::Qos { .. }) => run_step(&pin_plan(item, true)),
         (ActionKind::Unmark, StoreSource::Qos { .. }) => run_step(&pin_plan(item, false)),
         (ActionKind::FlatpakInstall, StoreSource::Flathub) => run_step(&flatpak_plan(item, true)),
+        (ActionKind::FlatpakUpdate, StoreSource::Flathub) => run_step(&flatpak_update_plan(item)),
         (ActionKind::FlatpakOpen, StoreSource::Flathub) => run_step(&flatpak_open_plan(item)),
         (ActionKind::FlatpakRemove, StoreSource::Flathub) => run_step(&flatpak_plan(item, false)),
         (ActionKind::NeedsFlatpakHost, _) => {
@@ -466,6 +508,20 @@ mod tests {
         assert!(ins.args.contains(&"org.example.Chess".to_string()));
         let rm = flatpak_plan(&item, false);
         assert_eq!(rm.args[0], "uninstall");
+        let update = flatpak_update_plan(&item);
+        assert_eq!(update.args[0], "update");
+        assert!(update.args.contains(&"org.example.Chess".to_string()));
+    }
+
+    #[test]
+    fn flatpak_remote_plans_are_user_scoped_and_noninteractive() {
+        let add = flatpak_remote_add_plan("flathub", "https://example.test/repo");
+        assert_eq!(add.args[0], "remote-add");
+        assert!(add.args.contains(&"--user".to_string()));
+        assert!(add.args.contains(&"--if-not-exists".to_string()));
+        let remove = flatpak_remote_remove_plan("flathub");
+        assert_eq!(remove.args[0], "remote-delete");
+        assert!(remove.args.contains(&"--force".to_string()));
     }
 
     #[test]
