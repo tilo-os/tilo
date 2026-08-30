@@ -4769,18 +4769,23 @@ impl WorkspaceTree {
 
         // Mirror the append into the doc so peer-sync sees a discrete
         // change. Creates the list lazily, for trees not yet seeded.
+        // Doc writes here are best-effort, same as `seed_doc_from_cache`
+        // — the cache push above already happened, so a doc-write
+        // failure just means this append doesn't replicate, not that it
+        // fails outright.
         let workspaces_id = match self.doc.get(&ROOT, "workspaces").ok().flatten() {
             Some((_, id)) => id,
-            None => self
-                .doc
-                .put_object(&ROOT, "workspaces", ObjType::List)
-                .expect("create workspaces list"),
+            None => {
+                let Ok(id) = self.doc.put_object(&ROOT, "workspaces", ObjType::List) else {
+                    return ws_id;
+                };
+                id
+            }
         };
         let idx = self.doc.length(&workspaces_id);
-        let entry = self
-            .doc
-            .insert_object(&workspaces_id, idx, ObjType::Map)
-            .expect("insert workspace map");
+        let Ok(entry) = self.doc.insert_object(&workspaces_id, idx, ObjType::Map) else {
+            return ws_id;
+        };
         let _ = self.doc.put(&entry, "id", ScalarValue::Uint(ws_id.raw()));
         let _ = self.doc.put(&entry, "name", name.to_string());
         // Room goes in with the workspace, not after: a peer must learn
