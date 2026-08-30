@@ -4040,7 +4040,7 @@ mod tests {
             .unwrap();
         let from_spec = match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("new-file is an immediate action"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
         };
 
         app.apply_command(Command::NewFile, &mut doc);
