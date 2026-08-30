@@ -8,11 +8,12 @@ FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
 # vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# bubblewrap is a test *subject*, not a tool — the launcher's confinement
-# suites drive the real thing and refuse to skip when it is absent. So is
-# rust-analyzer, for the code editor's language-server suite, but it comes from
-# rustup below: the shims in /usr/local/cargo/bin precede /usr/bin, so a Fedora
-# package here would be shadowed by a shim that reports the component missing.
+# bubblewrap and alacritty are test *subjects*, not tools — the launcher's
+# confinement suites and the Wayland handshake test drive the real things and
+# refuse to skip when they are absent. So is rust-analyzer, for the code
+# editor's language-server suite, but it comes from rustup below: the shims in
+# /usr/local/cargo/bin precede /usr/bin, so a Fedora package here would be
+# shadowed by a shim that reports the component missing.
 RUN dnf install -y \
       nodejs \
       capnproto \
@@ -29,7 +30,7 @@ RUN dnf install -y \
       fuse3-devel dbus-devel \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
-      bubblewrap \
+      bubblewrap alacritty \
     && dnf clean all
 
 ENV RUSTUP_HOME=/usr/local/rustup \
