@@ -79,6 +79,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         fuse3 \
         ca-certificates \
         NetworkManager \
+        NetworkManager-openvpn \
+        ModemManager \
+        fwupd \
     && dnf clean all
 
 # Copy binaries + systemd unit + tmpfiles snippet.
