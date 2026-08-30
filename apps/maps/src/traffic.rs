@@ -93,7 +93,9 @@ impl TrafficData {
     pub fn counts(&self) -> [usize; 4] {
         let mut c = [0usize; 4];
         for s in &self.segments {
-            c[s.level as usize] += 1;
+            if let Some(n) = c.get_mut(s.level as usize) {
+                *n += 1;
+            }
         }
         c
     }
@@ -124,8 +126,12 @@ impl TrafficData {
             let mut sub = 0u64;
             while i + 1 < road.pts.len() {
                 let end = (i + WINDOW).min(road.pts.len());
-                let geom = road.pts[i..end].to_vec();
-                let seed = geom[0];
+                let Some(geom) = road.pts.get(i..end).map(<[_]>::to_vec) else {
+                    break;
+                };
+                let Some(&seed) = geom.first() else {
+                    break;
+                };
                 // Deterministic per-sub-segment hash.
                 let h = (seed.lat.abs() * 1000.0) as u64 * 73
                     + (seed.lon.abs() * 1000.0) as u64 * 19
