@@ -19,3 +19,21 @@ status-level = "fail"
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Tests that spawn a real compositor process, or drive the GPU through the
+# offscreen renderer, cannot all run at once: `clipboard_e2e` starts a whole
+# `shell` binary plus two Wayland clients and waits 25 s for a drop, which is
+# comfortable alone and not comfortable against two thousand other tests.
+#
+# The in-file `TEST_LOCK` some of these hold does not help — nextest gives each
+# test its own process, so a mutex inside one serialises nothing. This does.
+[test-groups]
+compositor = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'binary(it) and (test(clipboard_e2e::) or test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::) or test(interaction_test::) or test(wayland_test::))'
+test-group = "compositor"
+
+[[profile.ci.overrides]]
+filter = 'binary(it) and (test(clipboard_e2e::) or test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::) or test(interaction_test::) or test(wayland_test::))'
+test-group = "compositor"
