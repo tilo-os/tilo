@@ -119,9 +119,8 @@ where
                             continue;
                         };
                         let mut workspace = workspace.lock().await;
-                        if let Ok(devices) = workspace.store.load_membership() {
-                            workspace.membership.set(devices);
-                        }
+                        let devices = workspace.store.load_membership()?;
+                        workspace.membership.set(devices);
                         let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
                             && peer.user_public_key == own_user_public_key
                             && workspace.known_peer_relays.contains(&peer.device_public_key);
@@ -227,9 +226,8 @@ async fn handle_envelope(
                 }));
             };
             let mut wr = ws.lock().await;
-            if let Ok(devices) = wr.store.load_membership() {
-                wr.membership.set(devices);
-            }
+            let devices = wr.store.load_membership()?;
+            wr.membership.set(devices);
             // Membership gates DEVICE subscribers. Peer-relay
             // subscribers are already gated by cross-user auth (they
             // must chain to the same user root, same handshake as any
@@ -252,14 +250,24 @@ async fn handle_envelope(
             // Replay retained document baselines first. Unlike a per-device
             // pending queue these exist before a newly invited device has ever
             // connected, which is what makes an offline owner + new guest work.
-            let retained = wr.store.load_retained().unwrap_or_default();
+            let retained = wr.store.load_retained()?;
             let mut retained_count = 0u32;
             for raw in retained {
-                if let Some(payload) = raw.get(4..)
-                    && let Ok(envelope) = crate::transport::decode(payload)
-                {
-                    replay.push(envelope);
-                    retained_count = retained_count.saturating_add(1);
+                let Some(payload) = raw.get(4..) else {
+                    tracing::warn!(
+                        workspace_id,
+                        "retained envelope is shorter than its frame prefix"
+                    );
+                    continue;
+                };
+                match crate::transport::decode(payload) {
+                    Ok(envelope) => {
+                        replay.push(envelope);
+                        retained_count = retained_count.saturating_add(1);
+                    }
+                    Err(error) => {
+                        tracing::warn!(workspace_id, %error, "retained envelope could not be decoded");
+                    }
                 }
             }
             // Load pending deltas before advertising Ready, but retain their
@@ -270,12 +278,28 @@ async fn handle_envelope(
             for entry in pending {
                 // Each pending entry is a full pre-encoded envelope
                 // — send it verbatim.
-                if let Some(payload) = entry.bytes.get(4..)
-                    && let Ok(envelope) = crate::transport::decode(payload)
-                {
-                    replay.push(envelope);
-                    replay_cleanup.push(entry.path);
-                    pending_count = pending_count.saturating_add(1);
+                let Some(payload) = entry.bytes.get(4..) else {
+                    tracing::warn!(
+                        workspace_id,
+                        path = %entry.path.display(),
+                        "pending envelope is shorter than its frame prefix"
+                    );
+                    continue;
+                };
+                match crate::transport::decode(payload) {
+                    Ok(envelope) => {
+                        replay.push(envelope);
+                        replay_cleanup.push(entry.path);
+                        pending_count = pending_count.saturating_add(1);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            workspace_id,
+                            path = %entry.path.display(),
+                            %error,
+                            "pending envelope could not be decoded"
+                        );
+                    }
                 }
             }
             wr.add_subscriber(Subscriber {

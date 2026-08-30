@@ -79,7 +79,7 @@ pub fn parse_peer_sync(args: &[&str]) -> bool {
 /// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
 /// filesystem; production wires up [`XdgConfigMarkerSource`], checking
 /// `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
-/// `os/docs/peer-sync.md`: the `quick-desktop-peer-sync.service` user unit drops this marker so the next launch picks up peer-sync without the CLI flag.
+/// `os/docs/peer-sync.md`: the `shell-peer-sync.service` user unit drops this marker so the next launch picks up peer-sync without the CLI flag.
 pub trait MarkerSource {
     /// Returns true if the peer-sync marker exists.
     fn peer_sync_marker_exists(&self) -> bool;
