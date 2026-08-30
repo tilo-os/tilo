@@ -1180,6 +1180,10 @@ COPY os/usr/lib/systemd/system/qos-repair@.service /usr/lib/systemd/system/qos-r
 COPY os/usr/lib/systemd/system/qos-deployment-rollback.service /usr/lib/systemd/system/qos-deployment-rollback.service
 COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/system/qos-deployment-update.service
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf
+COPY os/usr/lib/systemd/system/qos-update-policy@.service /usr/lib/systemd/system/qos-update-policy@.service
+COPY os/usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-set
+COPY os/usr/libexec/qos-update-policy-check /usr/libexec/qos-update-policy-check
 # The narrow polkit grant that makes Settings' rollback control and its automatic
 # -updates switch able to do what they say. See the rule for how narrow.
 COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
@@ -1190,6 +1194,7 @@ COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
 RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
         /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
+        /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
         /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
         /usr/lib/systemd/system-generators/qos-boot-mode-generator
 

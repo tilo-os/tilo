@@ -411,7 +411,7 @@ pub fn theme_by_name(name: &str) -> ui::Theme {
 /// when it decides whether to raise a banner, reveal its contents, sound it,
 /// or mirror it to the lock screen. Every field carries `#[serde(default)]`
 /// so a config written before this section existed still loads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationPrefs {
     /// Master "Do Not Disturb": suppress banners and sounds while set.
     #[serde(default)]
@@ -437,6 +437,13 @@ pub struct NotificationPrefs {
     /// beside this record in the shared notification policy.
     #[serde(default)]
     pub focus: settings_store::notification_policy::FocusSchedule,
+    /// Rules keyed by the launcher's verified package id. The compositor
+    /// deliberately never indexes this map with an app-supplied display name.
+    #[serde(default)]
+    pub per_app: std::collections::BTreeMap<
+        String,
+        settings_store::notification_policy::AppNotificationRule,
+    >,
 }
 
 fn default_true() -> bool {
@@ -453,6 +460,7 @@ impl Default for NotificationPrefs {
             show_on_lock_screen: false,
             show_badges: true,
             focus: settings_store::notification_policy::FocusSchedule::default(),
+            per_app: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -630,7 +638,7 @@ impl SystemPrefs {
         }
         obj.insert(
             "notifications".into(),
-            serde_json::to_value(self.notifications).unwrap_or_default(),
+            serde_json::to_value(&self.notifications).unwrap_or_default(),
         );
         obj.insert(
             "accessibility".into(),

@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply validated qOS update policy (%i)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-update-policy-set %i
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qos /etc/systemd/system/bootc-fetch-apply-updates.timer.d
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
