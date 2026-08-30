@@ -36,6 +36,17 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
+              matrix math; it never panics or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
 /// Diameter of the hero-icon disc.
 const DISC_D: f64 = 72.0;
 /// Icon glyph size drawn inside the disc.
@@ -175,7 +186,7 @@ fn paint_empty_state(
         title,
         title_size,
         theme.text_primary,
-        transform * Affine::translate((cx - f64::from(title_w) / 2.0, y)),
+        translated(transform, cx - f64::from(title_w) / 2.0, y),
         None,
     );
     y += f64::from(title_h);
@@ -187,7 +198,7 @@ fn paint_empty_state(
             msg,
             msg_size,
             theme.text_dim,
-            transform * Affine::translate((cx - f64::from(msg_w) / 2.0, y)),
+            translated(transform, cx - f64::from(msg_w) / 2.0, y),
             None,
         );
         y += f64::from(msg_h);
@@ -213,7 +224,7 @@ fn paint_empty_state(
             label,
             btn_size,
             Color::WHITE,
-            transform * Affine::translate((cx - f64::from(act_w) / 2.0, ty)),
+            translated(transform, cx - f64::from(act_w) / 2.0, ty),
             None,
         );
         Some(action_rect)
@@ -253,12 +264,14 @@ impl EmptyState {
     }
 
     /// Add a hero icon rendered inside a soft tinted disc above the title.
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// Add the dim one-line message under the title.
+    #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
@@ -266,6 +279,7 @@ impl EmptyState {
 
     /// Add an accent call-to-action pill under the message. The label is a
     /// pre-resolved display string (callers do the `i18n!` lookup).
+    #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
         self.action_label = Some(label.into());
         self
@@ -465,10 +479,9 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(vh),
                 },
                 |k, a, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
-                        .unwrap_or(taffy::Size::ZERO)
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
                 },
             )
             .unwrap();
