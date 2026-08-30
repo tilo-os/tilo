@@ -53,6 +53,7 @@ pub mod mpris;
 pub mod nav_stack;
 pub mod offscreen;
 pub mod overlay;
+pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod portal;
@@ -100,6 +101,7 @@ pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
+pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
@@ -112,6 +114,7 @@ pub use search::{
 };
 pub use selection::SelectionModel;
 pub use state::{State, UndoEntry, UndoLog};
+pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
 pub use view::{
     FROZEN_VERSION, FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect,

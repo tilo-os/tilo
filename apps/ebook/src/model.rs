@@ -47,6 +47,8 @@ pub struct Book {
     pub title: String,
     pub author: String,
     pub publisher: String,
+    /// BCP-47 language from EPUB metadata, used for TeX/Liang hyphenation.
+    pub language: String,
     pub description: String,
     pub chapters: Vec<Chapter>,
     /// Index into the theme accent/semantic ramps used to tint the spine on
