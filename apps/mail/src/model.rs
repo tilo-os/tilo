@@ -7,6 +7,7 @@
 //! attachments) is hydrated from the server in the live app, or from the
 //! bundled `sample.rs` corpus when running headless (`--shots`).
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -108,8 +109,8 @@ impl Folder {
     /// the transport layer when issuing `SELECT`.
     pub fn imap_name(self) -> &'static str {
         match self {
-            Folder::Inbox => "INBOX",
-            Folder::Starred => "INBOX", // virtual: filtered by \Flagged
+            // Starred is virtual: filtered by \Flagged within the inbox.
+            Folder::Inbox | Folder::Starred => "INBOX",
             Folder::Sent => "Sent",
             Folder::Drafts => "Drafts",
             Folder::Archive => "Archive",
@@ -235,9 +236,7 @@ impl Attachment {
         let m = self.mime.to_ascii_lowercase();
         if m.starts_with("image/") {
             Icon::Image
-        } else if m.contains("pdf") {
-            Icon::FileText
-        } else if m.starts_with("text/") {
+        } else if m.contains("pdf") || m.starts_with("text/") {
             Icon::FileText
         } else if m.contains("zip")
             || m.contains("compressed")
@@ -320,22 +319,23 @@ impl Message {
 /// Strip `Re:` / `RE:` / `Fwd:` / `FW:` prefixes (possibly repeated) and
 /// trim, so replies thread under the original subject.
 pub fn normalize_subject(subject: &str) -> String {
+    /// Reply/forward markers stripped from the front of a subject, matched
+    /// case-insensitively.
+    const PREFIXES: [&str; 3] = ["re:", "fwd:", "fw:"];
+
     let mut s = subject.trim();
-    loop {
-        let lower = s.to_ascii_lowercase();
-        let trimmed = if let Some(rest) = lower.strip_prefix("re:") {
-            s.len() - rest.trim_start().len()
-        } else if let Some(rest) = lower.strip_prefix("fwd:") {
-            s.len() - rest.trim_start().len()
-        } else if let Some(rest) = lower.strip_prefix("fw:") {
-            s.len() - rest.trim_start().len()
+    // Strip the prefix off `s` directly rather than computing a byte offset
+    // against a lowercased copy — the offsets only line up while every
+    // prefix stays ASCII, and slicing a str at a stale offset panics.
+    while let Some(rest) = PREFIXES.iter().find_map(|p| {
+        let head = s.get(..p.len())?;
+        if head.eq_ignore_ascii_case(p) {
+            s.get(p.len()..)
         } else {
-            0
-        };
-        if trimmed == 0 {
-            break;
+            None
         }
-        s = s[trimmed..].trim_start();
+    }) {
+        s = rest.trim_start();
     }
     s.to_string()
 }
@@ -609,7 +609,7 @@ impl Mailbox {
                 f => m.folder == f,
             })
             .collect();
-        v.sort_by(|a, b| b.timestamp_min.cmp(&a.timestamp_min));
+        v.sort_by_key(|m| Reverse(m.timestamp_min));
         v
     }
 
@@ -623,7 +623,7 @@ impl Mailbox {
         let mut threads: Vec<Thread> = by_subject
             .into_iter()
             .map(|(subject, mut ids)| {
-                ids.sort_by_key(|id| self.messages[id].timestamp_min);
+                ids.sort_by_key(|id| self.messages.get(id).map_or(0, |m| m.timestamp_min));
                 Thread {
                     subject,
                     message_ids: ids,
@@ -635,13 +635,13 @@ impl Mailbox {
             let an = a
                 .message_ids
                 .iter()
-                .map(|id| self.messages[id].timestamp_min)
+                .filter_map(|id| self.messages.get(id).map(|m| m.timestamp_min))
                 .max()
                 .unwrap_or(0);
             let bn = b
                 .message_ids
                 .iter()
-                .map(|id| self.messages[id].timestamp_min)
+                .filter_map(|id| self.messages.get(id).map(|m| m.timestamp_min))
                 .max()
                 .unwrap_or(0);
             bn.cmp(&an)
@@ -671,7 +671,7 @@ impl Mailbox {
                     || m.body.to_ascii_lowercase().contains(&q)
             })
             .collect();
-        v.sort_by(|a, b| b.timestamp_min.cmp(&a.timestamp_min));
+        v.sort_by_key(|m| Reverse(m.timestamp_min));
         v
     }
 
