@@ -25,10 +25,15 @@ impl ResourceKind {
 
     pub fn mime(mime: &str) -> Result<Self, DefaultAppError> {
         let mime = mime.trim().to_ascii_lowercase();
-        if mime.is_empty()
-            || mime.len() > 255
-            || !mime.contains('/')
-            || mime.chars().any(char::is_control)
+        let Some((top, subtype)) = mime.split_once('/') else {
+            return Err(DefaultAppError::InvalidResource);
+        };
+        if mime.len() > 255
+            || subtype.contains('/')
+            || !valid_mime_token(top)
+            || !valid_mime_token(subtype)
+            || top == "*"
+            || subtype == "*"
         {
             return Err(DefaultAppError::InvalidResource);
         }
@@ -38,9 +43,11 @@ impl ResourceKind {
     pub fn scheme(scheme: &str) -> Result<Self, DefaultAppError> {
         let scheme = scheme.trim().trim_end_matches(':').to_ascii_lowercase();
         let mut chars = scheme.chars();
-        if scheme.len() > 32
+        if scheme.is_empty()
+            || scheme.len() > 32
             || !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
             || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            || matches!(scheme.as_str(), "file" | "data" | "javascript")
         {
             return Err(DefaultAppError::InvalidResource);
         }
@@ -54,6 +61,38 @@ impl ResourceKind {
     pub fn extension_name(&self) -> Option<&str> {
         self.0.strip_prefix("ext:")
     }
+
+    pub fn mime_name(&self) -> Option<&str> {
+        self.0.strip_prefix("mime:")
+    }
+
+    pub fn scheme_name(&self) -> Option<&str> {
+        self.0.strip_prefix("scheme:")
+    }
+
+    pub fn display_label(&self) -> String {
+        if let Some(ext) = self.extension_name() {
+            format!(".{ext} files")
+        } else if let Some(mime) = self.mime_name() {
+            mime.to_string()
+        } else if let Some(scheme) = self.scheme_name() {
+            format!("{scheme}: links")
+        } else {
+            self.0.clone()
+        }
+    }
+}
+
+fn valid_mime_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 127
+        && token.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                )
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -433,5 +472,28 @@ mod tests {
         };
         defaults.save_at(&path).unwrap();
         assert_eq!(PersonalDefaults::load_at(&path), defaults);
+    }
+
+    #[test]
+    fn resource_identifiers_are_normalized_and_active_schemes_rejected() {
+        assert_eq!(
+            ResourceKind::mime(" Text/HTML ").unwrap().as_str(),
+            "mime:text/html"
+        );
+        assert_eq!(
+            ResourceKind::scheme("HTTPS:").unwrap().as_str(),
+            "scheme:https"
+        );
+        for mime in [
+            "text",
+            "text/*",
+            "text/html; charset=utf-8",
+            "text/html/extra",
+        ] {
+            assert!(ResourceKind::mime(mime).is_err(), "accepted {mime:?}");
+        }
+        for scheme in ["file", "data", "javascript", "1https", "bad scheme"] {
+            assert!(ResourceKind::scheme(scheme).is_err(), "accepted {scheme:?}");
+        }
     }
 }

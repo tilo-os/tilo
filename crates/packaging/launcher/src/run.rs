@@ -86,6 +86,8 @@ pub enum RunError {
         #[source]
         source: crate::netgate::GateError,
     },
+    #[error("refusing URI open: {0}")]
+    InvalidOpenUri(String),
 }
 
 impl RunError {
@@ -154,6 +156,83 @@ pub struct RunOptions {
     /// A document to open, forwarded as `argv[1]`. Only an argument — binds
     /// and unlocks nothing on its own. `None` launches with no arguments.
     pub open_document: Option<PathBuf>,
+    /// A URI to open, forwarded as one opaque argv value. The caller must
+    /// validate its scheme against the freshly-read installed manifest.
+    pub open_uri: Option<String>,
+}
+
+fn gui_open_args(opts: &RunOptions) -> Vec<String> {
+    if let Some(uri) = &opts.open_uri {
+        vec![uri.clone()]
+    } else {
+        opts.open_document
+            .as_ref()
+            .map(|path| vec![path.display().to_string()])
+            .unwrap_or_default()
+    }
+}
+
+fn validate_open_uri(manifest: &MinimalManifest, opts: &RunOptions) -> Result<(), RunError> {
+    let Some(uri) = opts.open_uri.as_deref() else {
+        return Ok(());
+    };
+    if uri.is_empty()
+        || uri.len() > 8 * 1024
+        || uri.trim() != uri
+        || uri.chars().any(char::is_control)
+    {
+        return Err(RunError::InvalidOpenUri("malformed URI".into()));
+    }
+    let (scheme, rest) = uri
+        .split_once(':')
+        .ok_or_else(|| RunError::InvalidOpenUri("URI has no scheme".into()))?;
+    let scheme = scheme.to_ascii_lowercase();
+    if rest.is_empty() || !manifest.opens_schemes.iter().any(|claim| claim == &scheme) {
+        return Err(RunError::InvalidOpenUri(format!(
+            "{} does not declare scheme {scheme}",
+            manifest.package_id
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod resource_claim_tests {
+    use super::*;
+
+    fn browser_manifest() -> MinimalManifest {
+        toml::from_str(
+            "package_id = \"dev.qos.browser\"\nversion = \"1\"\n\
+             [entrypoint]\nbin = \"bin/browser\"\n\
+             [providers]\nschemes = [\"https\"]\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn uri_is_revalidated_against_the_launch_manifest() {
+        let manifest = browser_manifest();
+        let accepted = RunOptions {
+            open_uri: Some("https://example.test/a --not-an-argument".into()),
+            ..Default::default()
+        };
+        validate_open_uri(&manifest, &accepted).unwrap();
+
+        for uri in [
+            "http://example.test",
+            "file:///etc/passwd",
+            "https://x\n--flag",
+        ] {
+            let opts = RunOptions {
+                open_uri: Some(uri.into()),
+                ..Default::default()
+            };
+            assert!(
+                validate_open_uri(&manifest, &opts).is_err(),
+                "accepted {uri:?}"
+            );
+        }
+    }
 }
 
 /// Resolve the capability plan: read the compositor's file, evaluate it
@@ -535,6 +614,7 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    validate_open_uri(manifest, opts)?;
     // 0a. A host application has no manifest and no sandbox. Refusing here,
     // before any socket/directory/argv exists, keeps the two launch kinds
     // from quietly converging.
@@ -630,10 +710,7 @@ pub fn run_with(
             None,
             // A GUI launch carries at most one argument — the document to open —
             // riding the same tail as CLI passthrough (opaque bytes after entrypoint).
-            opts.open_document
-                .as_ref()
-                .map(|p| vec![p.display().to_string()])
-                .unwrap_or_default(),
+            gui_open_args(opts),
         ),
         LaunchMode::Cli {
             command,
@@ -1019,6 +1096,7 @@ pub fn run_with_captured(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
+    validate_open_uri(manifest, opts)?;
     // Same refusals as `run_with`: this is a second entry into the sandbox
     // builder, and a policy with one enforced door is a door beside it.
     if let LaunchMode::Host { desktop_id } = &opts.mode {
@@ -1063,10 +1141,7 @@ pub fn run_with_captured(
                 .gui_bin()
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string(),
-            opts.open_document
-                .as_ref()
-                .map(|p| vec![p.display().to_string()])
-                .unwrap_or_default(),
+            gui_open_args(opts),
         ),
         LaunchMode::Cli {
             passthrough_argv, ..

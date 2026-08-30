@@ -76,6 +76,8 @@ fn manifest() -> MinimalManifest {
         },
         cli_commands: Vec::new(),
         opens_ext: Vec::new(),
+        opens_mime: Vec::new(),
+        opens_schemes: Vec::new(),
     }
 }
 

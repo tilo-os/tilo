@@ -86,10 +86,7 @@ impl PersonalAppsPane {
                 .and_then(|id| apps.iter().find(|a| &a.package_id == id))
                 .map(|a| Self::option(a))
                 .unwrap_or_else(|| options[0].clone());
-            let label = resource
-                .extension_name()
-                .map(|e| format!(".{} files", e))
-                .unwrap_or_else(|| resource.as_str().to_string());
+            let label = resource.display_label();
             let picker = Dropdown::new(options, &Self::key(resource))
                 .with_id(&format!("personal-default.{}", resource.as_str()))
                 .with_placeholder(&current);
@@ -101,7 +98,7 @@ impl PersonalAppsPane {
         }
         let body = if file_rows.is_empty() {
             rows(vec![caption(
-                "No installed application currently declares a file type. Defaults appear here as apps are installed.",
+                "No installed application currently declares a supported file or link type. Defaults appear here as apps are installed.",
             )])
         } else {
             rows(file_rows)
@@ -115,7 +112,7 @@ impl PersonalAppsPane {
                 ),
             ]),
         );
-        crate::widgets::cards(vec![scope, card("Open files with", body)])
+        crate::widgets::cards(vec![scope, card("Open files and links with", body)])
     }
 
     fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
@@ -154,6 +151,18 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
             .opens_ext
             .iter()
             .filter_map(|e| ResourceKind::extension(e).ok())
+            .chain(
+                manifest
+                    .opens_mime
+                    .iter()
+                    .filter_map(|mime| ResourceKind::mime(mime).ok()),
+            )
+            .chain(
+                manifest
+                    .opens_schemes
+                    .iter()
+                    .filter_map(|scheme| ResourceKind::scheme(scheme).ok()),
+            )
             .collect();
         let package_id = if manifest.package_id.is_empty() {
             entry.id
@@ -357,6 +366,32 @@ mod tests {
                 .get(&ResourceKind::extension("pdf").unwrap())
                 .map(String::as_str),
             Some("dev.qos.b")
+        );
+    }
+
+    #[test]
+    fn mime_and_scheme_claims_are_exposed_as_personal_defaults() {
+        let candidate = AppCandidate {
+            package_id: "dev.qos.browser".into(),
+            display_name: "Browser".into(),
+            resources: [
+                ResourceKind::mime("text/html").unwrap(),
+                ResourceKind::scheme("https").unwrap(),
+            ]
+            .into(),
+        };
+        let mut pane = PersonalAppsPane::with_state(vec![candidate], PersonalDefaults::default());
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html")
+                .as_deref(),
+            Some("Browser — dev.qos.browser")
+        );
+        assert_eq!(
+            PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.scheme.https")
+                .as_deref(),
+            Some("Browser — dev.qos.browser")
         );
     }
 }

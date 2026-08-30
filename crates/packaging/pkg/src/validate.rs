@@ -32,6 +32,12 @@ pub enum ManifestError {
     AppMissingEntrypoint,
     #[error("kind=format-provider requires non-empty `providers.mime`")]
     FormatProviderMissingMime,
+    #[error("invalid provider file extension {0:?}")]
+    BadProviderExtension(String),
+    #[error("invalid provider MIME type {0:?}")]
+    BadProviderMime(String),
+    #[error("invalid or reserved provider URI scheme {0:?}")]
+    BadProviderScheme(String),
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -133,6 +139,27 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         Kind::Service | Kind::Plugin | Kind::Runtime => {}
     }
 
+    for ext in &m.providers.ext {
+        if ext.is_empty()
+            || ext.len() > 64
+            || !ext
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+        {
+            return Err(ManifestError::BadProviderExtension(ext.clone()));
+        }
+    }
+    for mime in &m.providers.mime {
+        if !valid_mime(mime) {
+            return Err(ManifestError::BadProviderMime(mime.clone()));
+        }
+    }
+    for scheme in &m.providers.schemes {
+        if !valid_scheme(scheme) {
+            return Err(ManifestError::BadProviderScheme(scheme.clone()));
+        }
+    }
+
     m.publisher
         .identity_bytes()
         .map_err(|e| ManifestError::BadPublisherIdentity(e.to_string()))?;
@@ -141,6 +168,39 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
 
     Ok(())
+}
+
+fn valid_mime(mime: &str) -> bool {
+    let Some((top, subtype)) = mime.split_once('/') else {
+        return false;
+    };
+    mime.len() <= 255
+        && !subtype.contains('/')
+        && top != "*"
+        && subtype != "*"
+        && valid_mime_token(top)
+        && valid_mime_token(subtype)
+}
+
+fn valid_mime_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 127
+        && token.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+                )
+        })
+}
+
+fn valid_scheme(scheme: &str) -> bool {
+    let mut chars = scheme.chars();
+    !scheme.is_empty()
+        && scheme.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !matches!(scheme, "file" | "data" | "javascript")
 }
 
 fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {

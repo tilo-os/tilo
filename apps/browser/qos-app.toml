@@ -85,3 +85,4 @@ ext  = [
     "html",
     "htm",
 ]
+schemes = ["http", "https"]
