@@ -1600,6 +1600,14 @@ impl WorkspaceTree {
     }
 }
 
+/// Owner, capability blobs, and peer-name claims read from a room
+/// document's governance keys. See [`WorkspaceTree::governance_of`].
+type RoomGovernance = (
+    Option<String>,
+    std::collections::BTreeMap<String, Vec<u8>>,
+    std::collections::BTreeMap<String, String>,
+);
+
 impl WorkspaceTree {
     /// Set the process-wide peer salt [`next_id`] stamps into the high
     /// 16 bits of every freshly-allocated id. Default `0` keeps
@@ -1714,6 +1722,12 @@ impl WorkspaceTree {
     /// applying, the cache fields are rebuilt via
     /// [`Self::rebuild_cache_from_doc`] so subsequent reads observe the
     /// merged state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `automerge::AutomergeError` if any blob
+    /// fails to decode as a `Change`, or if applying the (otherwise
+    /// well-formed) batch to `self.doc` fails.
     pub fn apply_changes(&mut self, changes: &[Vec<u8>]) -> Result<(), automerge::AutomergeError> {
         let parsed: Result<Vec<automerge::Change>, _> = changes
             .iter()
@@ -2989,13 +3003,7 @@ impl WorkspaceTree {
     /// list — a peer able to write either controls the whole security
     /// policy. The room's **name** is deliberately not governed. The
     /// **id** is stricter still: a mismatched payload is refused outright.
-    fn governance_of(
-        doc: Option<&AutoCommit>,
-    ) -> (
-        Option<String>,
-        std::collections::BTreeMap<String, Vec<u8>>,
-        std::collections::BTreeMap<String, String>,
-    ) {
+    fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let Some(doc) = doc else {
             return (
@@ -3068,50 +3076,10 @@ impl WorkspaceTree {
         )
     }
 
-    /// Merge a peer's changes to `room` into the cached workspace, and
-    /// report whether it changed.
-    ///
-    /// Refuses, before anything is stored: a room this machine isn't in;
-    /// a payload whose `room` disagrees with the envelope; and a payload
-    /// changing the room's governance unless `from` is entitled to write
-    /// it ([`Self::room_authority`]) — automerge has no per-key ACL, so
-    /// otherwise a guest's cache wins a coin toss over its host's
-    /// ownership.
-    ///
-    /// Refusal is of the **whole batch**: a partial merge would advance
-    /// local heads past rejected ops (the sender's next export then skips
-    /// them, unrecoverably) while leaving those ops in the graph exported
-    /// onward. This also blocks a stale lineage from resurrecting a
-    /// capability revoked while that peer was away.
-    pub fn apply_room_changes(
-        &mut self,
-        room: RoomId,
-        changes: &[Vec<u8>],
-        from: &PeerOrigin,
-    ) -> Result<bool, automerge::AutomergeError> {
+    /// True (and logs a warning) if the payload's own `room` field
+    /// disagrees with the room it was sent to answer.
+    fn declared_room_mismatches(candidate: &AutoCommit, room: RoomId) -> bool {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        if self.workspace_in_room(room).is_none() {
-            return Ok(false);
-        }
-        let parsed: Result<Vec<automerge::Change>, _> = changes
-            .iter()
-            .map(|b| automerge::Change::try_from(b.as_slice()))
-            .collect();
-        let parsed = parsed?;
-
-        // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check.
-        let mut candidate = self
-            .room_docs
-            .get(&room)
-            .cloned()
-            .unwrap_or_else(AutoCommit::new);
-        // See `sync_room_doc`: a patch log carried into `apply_changes`
-        // is what turns a peer's first delta into a panic.
-        candidate.reset_diff_cursor();
-        candidate.apply_changes(parsed)?;
-
         let declared = match candidate.get(&ROOT, "room").ok().flatten() {
             Some((Value::Scalar(s), _)) => match s.as_ref() {
                 ScalarValue::Str(v) => RoomId::parse(v.as_str()),
@@ -3127,90 +3095,122 @@ impl WorkspaceTree {
                 "room sync refused: the payload names a different room than \
                  the one it answers",
             );
-            return Ok(false);
+            true
+        } else {
+            false
         }
+    }
 
+    /// True (and logs a warning, or pins an unpinned authority) if
+    /// `from` is not entitled to write the governance changes
+    /// `candidate` carries relative to what's currently held for `room`.
+    fn governance_write_refused(
+        &mut self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
         // Write authority on the room's governance. Compared by value,
         // not op id: a peer echoing governance it learned from us
         // re-states it under its own actor, which is not a change.
         let before = Self::governance_of(self.room_docs.get(&room));
-        let after = Self::governance_of(Some(&candidate));
-        if before != after {
-            match self.room_authority(room) {
-                // We administer the room, so no peer is entitled to write
-                // its governance.
-                RoomAuthority::Local => {
-                    tracing::warn!(
-                        target: "shell::state",
-                        room = %room,
-                        from = %from,
-                        "room sync refused: a peer's changes would rewrite \
-                         the governance of a room this machine administers",
-                    );
-                    return Ok(false);
-                }
-                // Someone else's room, and this is not them.
-                RoomAuthority::Peer(pinned) if pinned != *from => {
-                    tracing::warn!(
-                        target: "shell::state",
-                        room = %room,
-                        from = %from,
-                        pinned = %pinned,
-                        "room sync refused: governance may only come from \
-                         the peer that administers the room",
-                    );
-                    return Ok(false);
-                }
-                RoomAuthority::Peer(_) => {}
-                // Joined without an invite naming an administrator —
-                // the first peer to supply governance becomes it, and
-                // is pinned so the second is refused above.
-                RoomAuthority::Unpinned => {
-                    tracing::info!(
-                        target: "shell::state",
-                        room = %room,
-                        from = %from,
-                        "room sync: pinning this peer as the room's \
-                         governance authority (joined without an invite \
-                         naming one)",
-                    );
-                    self.room_authority
-                        .insert(room, RoomAuthority::Peer(from.clone()));
-                }
+        let after = Self::governance_of(Some(candidate));
+        if before == after {
+            return false;
+        }
+        match self.room_authority(room) {
+            // We administer the room, so no peer is entitled to write
+            // its governance.
+            RoomAuthority::Local => {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    from = %from,
+                    "room sync refused: a peer's changes would rewrite \
+                     the governance of a room this machine administers",
+                );
+                true
+            }
+            // Someone else's room, and this is not them.
+            RoomAuthority::Peer(pinned) if pinned != *from => {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    from = %from,
+                    pinned = %pinned,
+                    "room sync refused: governance may only come from \
+                     the peer that administers the room",
+                );
+                true
+            }
+            RoomAuthority::Peer(_) => false,
+            // Joined without an invite naming an administrator —
+            // the first peer to supply governance becomes it, and
+            // is pinned so the second is refused above.
+            RoomAuthority::Unpinned => {
+                tracing::info!(
+                    target: "shell::state",
+                    room = %room,
+                    from = %from,
+                    "room sync: pinning this peer as the room's \
+                     governance authority (joined without an invite \
+                     naming one)",
+                );
+                self.room_authority
+                    .insert(room, RoomAuthority::Peer(from.clone()));
+                false
             }
         }
+    }
 
+    /// True (and logs a warning) if `candidate` would rewrite windows
+    /// this machine owns in `room` — compared only over entries both
+    /// sides already hold, so a guest's own history syncing back after a
+    /// restart (room documents aren't persisted) is never refused.
+    fn owned_contents_conflict(
+        &self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
         // Write authority over this machine's own windows: entries this
         // machine minted are this machine's to write — same
         // "refuse the whole batch" reasoning as the governance check above.
         let local_salt = self.local_salt();
         let before = Self::owned_contents_digest(self.room_docs.get(&room), local_salt);
-        let after = Self::owned_contents_digest(Some(&candidate), local_salt);
+        let after = Self::owned_contents_digest(Some(candidate), local_salt);
         // Compared over the **intersection**: an entry of ours the batch
         // changes is refused; one it merely carries that we don't have
         // yet is not. Matters after a restart — room documents aren't
         // persisted, so comparing whole sets would refuse a guest's own
         // history back forever. Our next projection sweeps any gap.
-        let changed_ours: Vec<&(u64, String)> = {
-            let before_by_id: std::collections::BTreeMap<u64, &String> =
-                before.iter().map(|(id, v)| (*id, v)).collect();
-            after
-                .iter()
-                .filter(|(id, v)| before_by_id.get(id).is_some_and(|prev| *prev != v))
-                .collect()
-        };
-        if !changed_ours.is_empty() {
-            tracing::warn!(
-                target: "shell::state",
-                room = %room,
-                from = %from,
-                entries = changed_ours.len(),
-                "room sync refused: a peer's changes would rewrite windows \
-                 this machine owns",
-            );
-            return Ok(false);
+        let before_by_id: std::collections::BTreeMap<u64, &String> =
+            before.iter().map(|(id, v)| (*id, v)).collect();
+        let changed_ours = after
+            .iter()
+            .filter(|(id, v)| before_by_id.get(id).is_some_and(|prev| *prev != v))
+            .count();
+        if changed_ours == 0 {
+            return false;
         }
+        tracing::warn!(
+            target: "shell::state",
+            room = %room,
+            from = %from,
+            entries = changed_ours,
+            "room sync refused: a peer's changes would rewrite windows \
+             this machine owns",
+        );
+        true
+    }
 
+    /// `(name, owner, capability overrides)` a candidate room document
+    /// declares — the governed fields [`Self::apply_room_changes`] folds
+    /// into the cached workspace once every refusal gate passes.
+    fn extract_governed_fields(
+        candidate: &AutoCommit,
+    ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let name = match candidate.get(&ROOT, "name").ok().flatten() {
             Some((Value::Scalar(s), _)) => match s.as_ref() {
                 ScalarValue::Str(v) => Some(v.to_string()),
@@ -3237,11 +3237,18 @@ impl WorkspaceTree {
                 }
             }
         }
+        (name, owner, caps)
+    }
 
+    /// Diffs `candidate`'s room-record index against what's already held
+    /// for `room`, queues the difference for the shell to fold in (see
+    /// [`Self::take_inbound_room_records`]), and reports whether
+    /// anything arrived.
+    fn queue_inbound_records(&mut self, room: RoomId, candidate: &AutoCommit) -> bool {
         // The difference from what's already held is what a peer
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
-        let arrived = Self::room_records_of(&candidate);
+        let arrived = Self::room_records_of(candidate);
         let already = self.room_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
         for (id, kind) in arrived {
@@ -3252,6 +3259,69 @@ impl WorkspaceTree {
         }
         let records_changed = !inbound.is_empty();
         self.room_records_inbound.extend(inbound);
+        records_changed
+    }
+
+    /// Merge a peer's changes to `room` into the cached workspace, and
+    /// report whether it changed.
+    ///
+    /// Refuses, before anything is stored: a room this machine isn't in;
+    /// a payload whose `room` disagrees with the envelope; and a payload
+    /// changing the room's governance unless `from` is entitled to write
+    /// it ([`Self::room_authority`]) — automerge has no per-key ACL, so
+    /// otherwise a guest's cache wins a coin toss over its host's
+    /// ownership.
+    ///
+    /// Refusal is of the **whole batch**: a partial merge would advance
+    /// local heads past rejected ops (the sender's next export then skips
+    /// them, unrecoverably) while leaving those ops in the graph exported
+    /// onward. This also blocks a stale lineage from resurrecting a
+    /// capability revoked while that peer was away.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `automerge::AutomergeError` if any blob in
+    /// `changes` fails to decode, or if applying them to the room's
+    /// document fails.
+    pub fn apply_room_changes(
+        &mut self,
+        room: RoomId,
+        changes: &[Vec<u8>],
+        from: &PeerOrigin,
+    ) -> Result<bool, automerge::AutomergeError> {
+        if self.workspace_in_room(room).is_none() {
+            return Ok(false);
+        }
+        let parsed: Result<Vec<automerge::Change>, _> = changes
+            .iter()
+            .map(|b| automerge::Change::try_from(b.as_slice()))
+            .collect();
+        let parsed = parsed?;
+
+        // Applied to a copy first: a check that runs after the merge has
+        // already happened is not a check.
+        let mut candidate = self
+            .room_docs
+            .get(&room)
+            .cloned()
+            .unwrap_or_else(AutoCommit::new);
+        // See `sync_room_doc`: a patch log carried into `apply_changes`
+        // is what turns a peer's first delta into a panic.
+        candidate.reset_diff_cursor();
+        candidate.apply_changes(parsed)?;
+
+        if Self::declared_room_mismatches(&candidate, room) {
+            return Ok(false);
+        }
+        if self.governance_write_refused(room, &candidate, from) {
+            return Ok(false);
+        }
+        if self.owned_contents_conflict(room, &candidate, from) {
+            return Ok(false);
+        }
+
+        let (name, owner, caps) = Self::extract_governed_fields(&candidate);
+        let records_changed = self.queue_inbound_records(room, &candidate);
 
         self.room_docs.insert(room, candidate);
 
