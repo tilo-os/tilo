@@ -6,6 +6,7 @@
 //! remain the authority for what the currently attached hardware can do.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +39,7 @@ impl OutputMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDescriptor {
     /// Connector name exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
     pub connector: String,
@@ -46,6 +47,199 @@ pub struct OutputDescriptor {
     pub hdr: bool,
     pub vrr: bool,
     pub color_profiles: Vec<String>,
+}
+
+/// One compositor-published output capability snapshot.  Settings consumes
+/// this instead of probing DRM itself: the process that owns KMS is the only
+/// authority that can say which modes and output features are actually
+/// usable by the active renderer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayOutputSnapshot {
+    pub descriptor: OutputDescriptor,
+    pub current_mode: OutputMode,
+    pub builtin: bool,
+    /// The sink/EDID may support HDR even when the active scanout pipeline
+    /// cannot safely signal or encode it. `descriptor.hdr` is the usable
+    /// capability; this field explains the distinction without creating a
+    /// decorative toggle.
+    pub sink_hdr: bool,
+    pub hdr_unavailable_reason: Option<String>,
+    pub sink_vrr: bool,
+    pub vrr_unavailable_reason: Option<String>,
+    /// Stable profile identifier (currently the canonical ICC path) to a
+    /// user-facing label. Only profiles in this map may be selected.
+    pub color_profile_labels: BTreeMap<String, String>,
+}
+
+/// Read-only state written atomically by the compositor in the private user
+/// runtime directory. It is deliberately separate from durable intent:
+/// unplugging a monitor changes this document, not the user's saved layout.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayHardwareSnapshot {
+    pub generated_unix_ms: u64,
+    pub backend: String,
+    pub publisher_pid: u32,
+    /// Linux `/proc/<pid>/stat` start-time ticks. Paired with the PID so a
+    /// stale runtime file cannot become trusted after PID reuse.
+    pub publisher_start_ticks: u64,
+    pub outputs: Vec<DisplayOutputSnapshot>,
+}
+
+impl DisplayHardwareSnapshot {
+    pub fn load() -> Option<Self> {
+        let path = display_snapshot_path()?;
+        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let live_start = process_start_ticks(snapshot.publisher_pid)?;
+        (snapshot.publisher_pid != 0 && live_start == snapshot.publisher_start_ticks)
+            .then_some(snapshot)
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = display_snapshot_path()
+            .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        body.push(b'\n');
+        atomic_file::write_creating_parent(&path, &body)
+    }
+}
+
+pub fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name is parenthesised and may contain spaces or `)`, so
+    // split only after its final closing paren. starttime is field 22, which
+    // is index 19 in the remainder beginning at field 3.
+    let (_, remainder) = stat.rsplit_once(") ")?;
+    remainder.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// The compositor/Settings handshake for a potentially screen-blanking
+/// change. Settings writes `Requested`; the compositor validates and applies
+/// it, then changes it to `AwaitingConfirmation`. Only `ConfirmRequested`
+/// commits durable intent. A timeout or `RevertRequested` restores
+/// `previous`, including after Settings itself crashed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayTransactionState {
+    #[default]
+    Requested,
+    AwaitingConfirmation,
+    ConfirmRequested,
+    RevertRequested,
+    Confirmed,
+    Reverted,
+    Rejected,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayTransaction {
+    pub id: u64,
+    pub state: DisplayTransactionState,
+    pub previous: DisplayConfig,
+    pub candidate: DisplayConfig,
+    pub deadline_unix_ms: Option<u64>,
+    pub message: Option<String>,
+}
+
+impl Default for DisplayTransaction {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            state: DisplayTransactionState::Requested,
+            previous: DisplayConfig::default(),
+            candidate: DisplayConfig::default(),
+            deadline_unix_ms: None,
+            message: None,
+        }
+    }
+}
+
+impl DisplayTransaction {
+    pub const CONFIRM_TIMEOUT_MS: u64 = 15_000;
+
+    pub fn request(candidate: DisplayConfig) -> std::io::Result<Self> {
+        let now = unix_ms();
+        let transaction = Self {
+            id: now,
+            state: DisplayTransactionState::Requested,
+            previous: DisplayConfig::load(),
+            candidate,
+            deadline_unix_ms: None,
+            message: None,
+        };
+        transaction.save()?;
+        Ok(transaction)
+    }
+
+    pub fn load() -> Option<Self> {
+        Self::from_section(super::load_section("display_transaction"))
+    }
+
+    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        // `load_section` intentionally represents a missing section as an
+        // empty map. Do not deserialize that through this type's serde
+        // defaults: it would manufacture a phantom `Requested` transaction
+        // whose empty candidate overrides the committed layout.
+        if !section.contains_key("id") {
+            return None;
+        }
+        let value = serde_json::Value::Object(section);
+        serde_json::from_value(value).ok()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        super::update_section(
+            "display_transaction",
+            value.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
+    pub fn request_confirmation(&mut self) -> std::io::Result<()> {
+        if self.state == DisplayTransactionState::AwaitingConfirmation {
+            self.state = DisplayTransactionState::ConfirmRequested;
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    pub fn request_revert(&mut self) -> std::io::Result<()> {
+        if matches!(
+            self.state,
+            DisplayTransactionState::Requested
+                | DisplayTransactionState::AwaitingConfirmation
+                | DisplayTransactionState::ConfirmRequested
+        ) {
+            self.state = DisplayTransactionState::RevertRequested;
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    pub fn expired(&self, now_unix_ms: u64) -> bool {
+        self.state == DisplayTransactionState::AwaitingConfirmation
+            && self.deadline_unix_ms.is_some_and(|d| now_unix_ms >= d)
+    }
+}
+
+/// Private session state path. A relative or absent `XDG_RUNTIME_DIR` is not
+/// accepted: falling back to `/tmp` would let another user forge display
+/// capabilities shown by Settings.
+pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("qos/display-state.json"))
+}
+
+pub fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -95,6 +289,7 @@ pub enum DisplayConfigError {
     MultiplePrimary,
     UnknownMirrorTarget { output: String, target: String },
     MirrorCycle { output: String },
+    IncompatibleMirrorModes { output: String, target: String },
     UnsupportedMode { output: String },
     InvalidScale { output: String },
     UnsupportedHdr { output: String },
@@ -168,6 +363,26 @@ impl DisplayConfig {
                     }
                     cursor = next;
                 }
+                let Some(target_desc) = attached
+                    .iter()
+                    .find(|candidate| candidate.connector == *target)
+                else {
+                    continue;
+                };
+                let target_mode = self.outputs.get(target).and_then(|output| output.mode);
+                let compatible = match (cfg.mode, target_mode) {
+                    (Some(source), Some(target)) => source == target,
+                    _ => desc
+                        .modes
+                        .iter()
+                        .any(|mode| target_desc.modes.contains(mode)),
+                };
+                if !compatible {
+                    return Err(DisplayConfigError::IncompatibleMirrorModes {
+                        output: desc.connector.clone(),
+                        target: target.clone(),
+                    });
+                }
             }
         }
         Ok(())
@@ -178,6 +393,26 @@ impl DisplayConfig {
             "display_outputs",
         )))
         .unwrap_or_default()
+    }
+
+    /// Configuration the compositor should apply right now. A staged
+    /// transaction temporarily overrides committed intent while the user can
+    /// still see and confirm the result; rejection/revert always resolves to
+    /// the last known-good configuration.
+    pub fn load_effective() -> Self {
+        let committed = Self::load();
+        let Some(transaction) = DisplayTransaction::load() else {
+            return committed;
+        };
+        match transaction.state {
+            DisplayTransactionState::Requested
+            | DisplayTransactionState::AwaitingConfirmation
+            | DisplayTransactionState::ConfirmRequested => transaction.candidate,
+            DisplayTransactionState::RevertRequested => transaction.previous,
+            DisplayTransactionState::Confirmed
+            | DisplayTransactionState::Reverted
+            | DisplayTransactionState::Rejected => committed,
+        }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -397,6 +632,72 @@ mod tests {
             cfg.validate_for(&[display("DP-1"), display("DP-2")]),
             Err(DisplayConfigError::MirrorCycle { .. })
         ));
+    }
+    #[test]
+    fn rejects_mirror_pair_with_different_explicit_modes() {
+        let mut left = display("DP-1");
+        left.modes.push(OutputMode {
+            width: 1280,
+            height: 720,
+            refresh_mhz: 60_000,
+        });
+        let right = display("DP-2");
+        let mut cfg = DisplayConfig::default();
+        cfg.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                mode: Some(left.modes[1]),
+                mirror_of: Some("DP-2".into()),
+                ..Default::default()
+            },
+        );
+        cfg.outputs.insert(
+            "DP-2".into(),
+            OutputConfig {
+                mode: Some(right.modes[0]),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            cfg.validate_for(&[left, right]),
+            Err(DisplayConfigError::IncompatibleMirrorModes { .. })
+        ));
+    }
+
+    #[test]
+    fn display_confirmation_expiry_is_a_precise_state_transition() {
+        let mut transaction = DisplayTransaction {
+            state: DisplayTransactionState::AwaitingConfirmation,
+            deadline_unix_ms: Some(25_000),
+            ..Default::default()
+        };
+        assert!(!transaction.expired(24_999));
+        assert!(transaction.expired(25_000));
+        transaction.state = DisplayTransactionState::Confirmed;
+        assert!(!transaction.expired(u64::MAX));
+    }
+
+    #[test]
+    fn missing_transaction_section_does_not_create_a_phantom_request() {
+        assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
+    }
+
+    #[test]
+    fn process_start_identity_rejects_pid_reuse_shape() {
+        let current = process_start_ticks(std::process::id())
+            .expect("the current Linux process has /proc stat data");
+        assert!(current > 0);
+        let stale = DisplayHardwareSnapshot {
+            generated_unix_ms: 0,
+            backend: "test".into(),
+            publisher_pid: std::process::id(),
+            publisher_start_ticks: current.saturating_add(1),
+            outputs: Vec::new(),
+        };
+        assert_ne!(
+            process_start_ticks(stale.publisher_pid),
+            Some(stale.publisher_start_ticks)
+        );
     }
     #[test]
     fn shortcut_parser_normalises_and_rejects_plain_letters() {

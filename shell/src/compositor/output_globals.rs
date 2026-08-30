@@ -48,6 +48,7 @@ pub struct AdvertisedState {
     pub size: (u32, u32),
     pub position: (i32, i32),
     pub scale: f32,
+    pub transform: settings_store::hardware::OutputTransform,
 }
 
 impl From<&Output> for AdvertisedState {
@@ -56,6 +57,7 @@ impl From<&Output> for AdvertisedState {
             size: o.size,
             position: o.position,
             scale: o.scale,
+            transform: o.transform,
         }
     }
 }
@@ -171,7 +173,7 @@ impl OutputGlobals {
                     let mode = mode_for(out, refresh);
                     handle.change_current_state(
                         Some(mode),
-                        Some(Transform::Normal),
+                        Some(wayland_transform(out.transform)),
                         Some(Scale::Fractional(f64::from(out.scale))),
                         Some(out.position.into()),
                     );
@@ -203,7 +205,7 @@ impl OutputGlobals {
                     let mode = mode_for(out, refresh);
                     live.handle.change_current_state(
                         Some(mode),
-                        Some(Transform::Normal),
+                        Some(wayland_transform(out.transform)),
                         Some(Scale::Fractional(f64::from(out.scale))),
                         Some(out.position.into()),
                     );
@@ -229,9 +231,20 @@ impl OutputGlobals {
 }
 
 fn mode_for(out: &Output, refresh: i32) -> OutputMode {
+    let physical = out.physical_size();
     OutputMode {
-        size: Size::from((out.size.0 as i32, out.size.1 as i32)),
+        size: Size::from((physical.0 as i32, physical.1 as i32)),
         refresh,
+    }
+}
+
+fn wayland_transform(transform: settings_store::hardware::OutputTransform) -> Transform {
+    use settings_store::hardware::OutputTransform as O;
+    match transform {
+        O::Normal => Transform::Normal,
+        O::Rotate90 => Transform::_90,
+        O::Rotate180 => Transform::_180,
+        O::Rotate270 => Transform::_270,
     }
 }
 
@@ -245,6 +258,8 @@ mod tests {
             position,
             size,
             scale,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
         }
     }
 
