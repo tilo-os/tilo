@@ -156,15 +156,26 @@ pub fn room_people(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomPerson> {
     let me = local_user_id();
     ws.roster()
         .into_iter()
-        .map(|(id, role)| RoomPerson {
-            name: display_name(&id, ws, tree),
+        .map(|(id, role)| {
             // Being the local user isn't evidence of being in *this*
-            // room — you're only in the one you're looking at.
-            present: ws.collaborators.iter().any(|c| c.id == id)
-                || (id == me && ws.id == tree.active),
-            is_you: id == me,
-            role,
-            id,
+            // room — you're only in the one you're looking at. These are
+            // two independent conditions (are-you-a-listed-collaborator,
+            // are-you-the-local-user-in-the-active-room), not a mixed-up
+            // field pairing, despite the superficial `a == b && c == d`
+            // shape.
+            #[allow(
+                clippy::suspicious_operation_groupings,
+                reason = "id == me and ws.id == tree.active are independent identity checks, not a swapped field pair"
+            )]
+            let present = ws.collaborators.iter().any(|c| c.id == id)
+                || (id == me && ws.id == tree.active);
+            RoomPerson {
+                name: display_name(&id, ws, tree),
+                present,
+                is_you: id == me,
+                role,
+                id,
+            }
         })
         .collect()
 }
@@ -240,9 +251,20 @@ pub fn room_access_label(card: &RoomCard) -> String {
                 "Private to you".to_string()
             }
         }
-        1 => format!("Shared with {}", others[0].name),
-        2 => format!("Shared with {} and {}", others[0].name, others[1].name),
-        n => format!("Shared with {} and {} others", others[0].name, n - 1),
+        1 => format!(
+            "Shared with {}",
+            others.first().map_or("", |p| p.name.as_str())
+        ),
+        2 => format!(
+            "Shared with {} and {}",
+            others.first().map_or("", |p| p.name.as_str()),
+            others.get(1).map_or("", |p| p.name.as_str())
+        ),
+        n => format!(
+            "Shared with {} and {} others",
+            others.first().map_or("", |p| p.name.as_str()),
+            n.saturating_sub(1)
+        ),
     }
 }
 
@@ -262,9 +284,15 @@ pub fn room_presence_label(card: &RoomCard) -> Option<String> {
     match (live.iter().any(|p| p.is_you), others.len()) {
         (false, 0) => None,
         (true, 0) => Some("You are here".to_string()),
-        (true, 1) => Some(format!("You and {} are here", others[0].name)),
+        (true, 1) => Some(format!(
+            "You and {} are here",
+            others.first().map_or("", |p| p.name.as_str())
+        )),
         (true, n) => Some(format!("You and {n} others are here")),
-        (false, 1) => Some(format!("{} is here", others[0].name)),
+        (false, 1) => Some(format!(
+            "{} is here",
+            others.first().map_or("", |p| p.name.as_str())
+        )),
         (false, n) => Some(format!("{n} people are here")),
     }
 }
@@ -281,10 +309,12 @@ mod room_tests {
     }
 
     fn tree_with(workspaces: Vec<Workspace>) -> WorkspaceTree {
-        let mut t = WorkspaceTree::default();
-        t.active = workspaces[0].id;
-        t.workspaces = workspaces;
-        t
+        let active = workspaces.first().map(|w| w.id).unwrap_or_default();
+        WorkspaceTree {
+            active,
+            workspaces,
+            ..WorkspaceTree::default()
+        }
     }
 
     #[test]
