@@ -397,7 +397,7 @@ fn render_live_shot_to_png(
                         std::fs::create_dir_all(parent).ok();
                     }
                     let mut renderer = OffscreenRenderer::new(w, h);
-                    renderer.render_png(&scene, Color::TRANSPARENT, out);
+                    renderer.render_png(&scene, vello::peniko::Color::TRANSPARENT, out);
                     println!("browser: wrote live shot of {url} to {}", out.display());
                     return Ok(());
                 }
