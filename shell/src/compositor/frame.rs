@@ -722,6 +722,7 @@ impl FrameBuilder {
             ("general", WsTab::General),
             ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
+            ("apps", WsTab::Apps),
         ] {
             put(
                 format!("ws_settings_tab[{key}]"),
