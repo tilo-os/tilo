@@ -254,7 +254,7 @@ impl StyleRegistry {
     pub(super) fn heading_level(&self, name: &str) -> Option<i64> {
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
-            let n = cur?;
+            let n = cur.take()?;
             let Some(p) = self.para.get(&n) else {
                 let (h, l) = heading_from_name(&n, None);
                 return if h {
@@ -277,7 +277,7 @@ impl StyleRegistry {
     pub(super) fn para_align(&self, name: &str) -> Option<String> {
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
-            let n = cur?;
+            let n = cur.take()?;
             let p = self.para.get(&n)?;
             if let Some(a) = &p.align {
                 return Some(a.clone());
@@ -291,7 +291,7 @@ impl StyleRegistry {
     pub(super) fn para_line_spacing(&self, name: &str) -> Option<f64> {
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
-            let n = cur?;
+            let n = cur.take()?;
             let p = self.para.get(&n)?;
             if let Some(ls) = p.line_spacing {
                 return Some(ls);
@@ -306,7 +306,7 @@ impl StyleRegistry {
         let mut chain: Vec<&ParaStyle> = Vec::new();
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
-            let Some(n) = cur else { break };
+            let Some(n) = cur.take() else { break };
             let Some(p) = self.para.get(&n) else { break };
             chain.push(p);
             cur.clone_from(&p.parent);
@@ -336,7 +336,7 @@ impl StyleRegistry {
         let mut chain = Vec::new();
         let mut cur = Some(name.to_string());
         for _ in 0..8 {
-            let Some(n) = cur else { break };
+            let Some(n) = cur.take() else { break };
             let Some(p) = self.para.get(&n) else { break };
             chain.push(p);
             cur.clone_from(&p.parent);
