@@ -1742,6 +1742,7 @@ pub fn run() -> ! {
     let display_handle = display.handle();
 
     let mut state = State::new(event_loop.handle(), display_handle.clone());
+    spawn_auto_brightness_worker();
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
     crate::compositor::selection::install_host_clipboard(state.selection_store());
@@ -2932,6 +2933,37 @@ pub fn run() -> ! {
     drop(collab_broker);
     drop(tool_service);
     std::process::exit(0)
+}
+
+/// Session-owned ambient-light loop. Settings only records policy; the
+/// compositor owns the display and therefore owns applying that policy after
+/// Settings exits. Missing sensors/backlights simply produce no write.
+fn spawn_auto_brightness_worker() {
+    let _ = std::thread::Builder::new()
+        .name("qos-auto-brightness".into())
+        .spawn(|| {
+            let mut controller = os_actions::AmbientBrightnessController::default();
+            loop {
+                let settings = settings_store::load();
+                let enabled = settings_store::bool_at(
+                    &settings,
+                    "display",
+                    "auto_brightness",
+                )
+                .unwrap_or(false);
+                if enabled {
+                    if let Some(lux) = os_actions::ambient_lux()
+                        && let Some(percent) = controller.update(lux)
+                        && let Err(error) = os_actions::set_brightness(percent)
+                    {
+                        tracing::warn!(target: "qos::display", %error, "automatic brightness write failed");
+                    }
+                } else {
+                    controller.reset();
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
 }
 
 #[cfg(test)]
