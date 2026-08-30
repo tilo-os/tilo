@@ -15,7 +15,7 @@ pub mod seek_bar;
 pub mod thumbnail;
 
 pub use channel_avatar::ChannelAvatar;
-pub use controls::{Icon, IconKind, Switch};
+pub use controls::Switch;
 pub use flex::{Align, Axis, Flex, IntoElement, Justify, Len, Surface};
 pub use image_box::ImageBox;
 pub use player_host::{PlayerHost, SharedPlayer};
