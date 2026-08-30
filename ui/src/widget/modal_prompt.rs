@@ -236,6 +236,10 @@ impl Widget for PromptBody {
         self.input.is_focused()
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
     fn name(&self) -> &'static str {
         "PromptBody"
     }

@@ -189,7 +189,8 @@ pub enum Action {
     Collapse,
     /// Text field, spin button.
     SetValue(String),
-    /// UTF-8 byte offsets into the value.
+    /// Extended-grapheme indices into the accessible TextRun, matching
+    /// AccessKit's selectable-character model rather than Unicode scalars.
     SetSelection {
         /// Where the selection started.
         anchor: usize,
@@ -223,6 +224,9 @@ pub struct AccessNode {
     pub description: Option<String>,
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
+    /// Direction-preserving UTF-8 byte endpoints for editable text. The
+    /// AccessKit bridge converts these to grapheme indices in a TextRun.
+    pub text_selection: Option<AccessibleTextSelection>,
     pub state: AccessState,
     /// The `App` watches its spoken text each frame and announces changes at
     /// the given politeness *without* moving focus. `None` = not a live region.
@@ -246,6 +250,7 @@ impl AccessNode {
             name: None,
             description: None,
             value: None,
+            text_selection: None,
             state: AccessState::default(),
             live: None,
             set_size: None,
@@ -281,6 +286,14 @@ impl AccessNode {
         self
     }
 
+    /// Publish an editable caret (`anchor == focus`) or selection. Endpoints
+    /// are UTF-8 bytes and are clamped to extended grapheme boundaries by the
+    /// bridge, matching the toolkit editing contract.
+    pub fn with_text_selection(mut self, anchor: usize, focus: usize) -> Self {
+        self.text_selection = Some(AccessibleTextSelection { anchor, focus });
+        self
+    }
+
     pub fn with_state(mut self, state: AccessState) -> Self {
         self.state = state;
         self
@@ -307,6 +320,13 @@ impl AccessNode {
         self.children = children;
         self
     }
+}
+
+/// Editable-text selection in the widget's native UTF-8 document space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccessibleTextSelection {
+    pub anchor: usize,
+    pub focus: usize,
 }
 
 /// Stored in the per-user settings CRDT and mirrored into spawned sandboxes

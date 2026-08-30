@@ -580,7 +580,7 @@ impl Widget for RichTextLine {
         {
             // Intercepted so the character doesn't get inserted via the
             // text branch (TextInput's own Ctrl-handler skips b/i/e/u).
-            if modifiers.state().control_key()
+            if (modifiers.state().control_key() || modifiers.state().super_key())
                 && let Key::Character(c) = logical_key
             {
                 match c.to_lowercase().as_str() {
@@ -630,7 +630,7 @@ impl Widget for RichTextLine {
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     let m = modifiers.state();
-                    self.signal = if m.control_key() && m.shift_key() {
+                    self.signal = if (m.control_key() || m.super_key()) && m.shift_key() {
                         Some(LineSignal::SelectBlockUp {
                             caret: self.inner.cursor_pos(),
                         })
@@ -642,7 +642,7 @@ impl Widget for RichTextLine {
                 }
                 Key::Named(NamedKey::ArrowDown) => {
                     let m = modifiers.state();
-                    self.signal = if m.control_key() && m.shift_key() {
+                    self.signal = if (m.control_key() || m.super_key()) && m.shift_key() {
                         Some(LineSignal::SelectBlockDown {
                             caret: self.inner.cursor_pos(),
                         })
@@ -724,19 +724,28 @@ impl Widget for RichTextLine {
         self.inner.is_focused()
     }
 
-    /// `multiline` is cleared — a block editor stacks many of these to form a document.
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.inner)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::TextInput)
-                .with_value(self.value().to_string())
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: false,
-                    ..Default::default()
-                }),
-        )
+        Widget::accessibility(&self.inner)
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let handled = Widget::perform_action(&mut self.inner, action, state, path);
+        if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
+            self.marks.clear();
+            self.pending_marks.clear();
+            self.prev_text = self.inner.value().to_string();
+            self.prev_cursor = self.inner.cursor_pos();
+        }
+        handled
     }
 }
 

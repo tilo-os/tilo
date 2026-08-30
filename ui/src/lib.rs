@@ -58,6 +58,10 @@ pub mod persist;
 pub mod portal;
 pub mod presence;
 pub mod profiling;
+pub mod query_text;
+pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
+pub mod text_break;
+pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod reader_hud;
 pub mod record;
 pub mod render_thread;
@@ -116,7 +120,7 @@ pub use view::{
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid
 // clashing with `permissions::{Role}` / `permissions::Verb`, which are
 // already re-exported at the crate root.
-pub use a11y::{A11ySettings, AccessNode, AccessState};
+pub use a11y::{A11ySettings, AccessNode, AccessState, AccessibleTextSelection};
 pub use a11y_tree::{
     SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta,
 };
@@ -180,12 +184,18 @@ pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
 pub use text_edit::{Edit, EditCore, Motion};
-pub use text_render::{FontChoice, TextRenderer, TextWeight};
+pub use text_render::{
+    FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,
+    OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, TextRenderer, TextStyle,
+    TextWeight, TextWrapMode, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
+    configured_font_system,
+};
 pub use text_selection::{
-    Selection, clipboard_copy, clipboard_copy_image, clipboard_copy_primary, clipboard_paste,
-    clipboard_paste_primary, extend_span_drag, line_boundaries, next_char_boundary,
-    next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
-    prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
+    Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,
+    clipboard_copy_primary, clipboard_paste, clipboard_paste_primary, extend_span_drag,
+    grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
+    next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
+    word_boundaries, word_boundaries_chars,
 };
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
