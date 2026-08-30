@@ -27,6 +27,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Element, Widget};
 
 /// Default sidebar width (logical px) when docked or fully revealed.
@@ -578,21 +579,19 @@ impl Widget for NavSplit {
         // The split occupies its whole allocation; children are laid out in
         // an isolated inner tree (their rects escape normal flow in overlay
         // mode). Same approach as ModalDialog / PopoverWidget.
-        let node = _taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = _taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1188,7 +1187,7 @@ mod tests {
     }
     fn dispatch(ns: &mut NavSplit, event: &WindowEvent, handled: &mut bool) {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1230,20 +1229,18 @@ mod tests {
                 node_map: &mut HashMap<NodeId, *mut dyn Widget>,
             ) -> NodeId {
                 self.builds.set(self.builds.get() + 1);
-                let n = taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        ..Default::default()
-                    })
-                    .unwrap();
+                let n = taffy.leaf_node(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                });
                 node_map.insert(n, self as *mut dyn Widget);
                 n
             }
             fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-                let l = taffy.layout(node).unwrap();
+                let l = taffy.layout(node).copied().unwrap_or_default();
                 self.rect = Rect::new(
                     origin.x + l.location.x as f64,
                     origin.y + l.location.y as f64,

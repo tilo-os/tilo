@@ -9,6 +9,9 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
 use super::styles::reassemble_bcp47;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// Import the document default language from the first paragraph-family
 /// `style:default-style` in `styles.xml`. No-op when none carries `fo:language`.
@@ -82,7 +85,7 @@ fn split_bcp47(code: &str) -> (String, Option<String>) {
 fn lang_attrs(lang: &str, country: Option<&str>) -> String {
     let mut s = format!(r#"fo:language="{}""#, escape_attr(lang));
     if let Some(c) = country {
-        s.push_str(&format!(r#" fo:country="{}""#, escape_attr(c)));
+        let _ = write!(s, r#" fo:country="{}""#, escape_attr(c));
     }
     s
 }

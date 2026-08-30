@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 
+use crate::widget::TaffyTreeExt;
 use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
@@ -312,22 +313,20 @@ impl Widget for Dropdown {
     ) -> NodeId {
         // The open list is intentionally NOT a taffy child: it paints in the
         // overlay pass, so it doesn't reserve layout space.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(CONTROL_HEIGHT as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(CONTROL_HEIGHT as f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -809,7 +808,7 @@ mod tests {
     /// Drive a key through a focused dropdown with a throwaway taffy node.
     fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         dd.handle_event(

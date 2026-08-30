@@ -25,6 +25,7 @@ use winit::keyboard::{Key, SmolStr};
 
 use crate::NotesApp;
 use crate::model::Workspace;
+use crate::num;
 use crate::storage;
 
 /// Default viewport when `--viewport` is omitted. A 16:9-ish desktop
@@ -163,8 +164,8 @@ fn settle_layout(
         let root_node = taffy.new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
+                    width: Dimension::length(num::f32_of_u32(w)),
+                    height: Dimension::length(num::f32_of_u32(h)),
                 },
                 ..Default::default()
             },
@@ -176,8 +177,8 @@ fn settle_layout(
             taffy.compute_layout_with_measure(
                 root_node,
                 taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
+                    width: AvailableSpace::Definite(num::f32_of_u32(w)),
+                    height: AvailableSpace::Definite(num::f32_of_u32(h)),
                 },
                 |known, available, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {

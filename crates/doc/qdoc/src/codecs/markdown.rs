@@ -15,6 +15,9 @@ use crate::schema::{
 };
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot, NoteView};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 pub struct MarkdownCodec;
 
@@ -859,7 +862,7 @@ impl<'a> Footnotes<'a> {
                         .join(" ")
                 })
                 .unwrap_or_default();
-            out.push_str(&format!("[^{n}]: {body}\n"));
+            let _ = write!(out, "[^{n}]: {body}\n");
         }
         out
     }
@@ -907,7 +910,7 @@ fn render_inline_notes(
         let link_changing = link != cur_link;
         // Close the vertical wrapper first (innermost) when it, the span, or the link changes.
         if (link_changing || span != cur_span || wrap != cur_wrap) && cur_wrap.is_some() {
-            out.push_str(&format!("</{}>", cur_wrap.take().unwrap()));
+            let _ = write!(out, "</{}>", cur_wrap.take().unwrap());
         }
         if (link_changing || span != cur_span) && cur_span.is_some() {
             out.push_str("</span>");
@@ -927,13 +930,13 @@ fn render_inline_notes(
         if cur_span.is_none()
             && let Some(style) = &span
         {
-            out.push_str(&format!(r#"<span style="{style}">"#));
+            let _ = write!(out, r#"<span style="{style}">"#);
             cur_span = Some(style.clone());
         }
         if cur_wrap.is_none()
             && let Some(w) = wrap
         {
-            out.push_str(&format!("<{w}>"));
+            let _ = write!(out, "<{w}>");
             cur_wrap = Some(w);
         }
         for d in &open_at[i] {
@@ -942,7 +945,7 @@ fn render_inline_notes(
         if i < n {
             if let (Some(fns), Some(note_id)) = (footnotes.as_deref_mut(), note_ref_at(marks, i)) {
                 let num = fns.number(note_id);
-                out.push_str(&format!("[^{num}]"));
+                let _ = write!(out, "[^{num}]");
             } else {
                 out.push(chars[i]);
             }

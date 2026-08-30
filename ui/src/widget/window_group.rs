@@ -3,6 +3,7 @@ use crate::icons;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
 use automerge::{AutoCommit, ObjId};
@@ -703,7 +704,7 @@ impl Widget for WindowGroup {
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.build_layout(taffy, theme, node_map)
         } else {
-            taffy.new_leaf(Style::default()).unwrap()
+            taffy.leaf_node(Style::default())
         };
         // Niri-style infinite strip: `flex_grow: 0` keeps a group at its
         // declared `WindowWidth` regardless of sibling count or slack —
@@ -731,25 +732,23 @@ impl Widget for WindowGroup {
             style.flex_basis = Dimension::length(0.0);
             // Fullscreen: the tab strip neither paints (see `draw`) nor
             // reserves height; the floating pill draws over the content.
-            let mut bar_style = taffy.style(bar_node).unwrap().clone();
+            let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
             bar_style.display = taffy::Display::None;
-            taffy.set_style(bar_node, bar_style).unwrap();
+            let _ = taffy.set_style(bar_node, bar_style);
         }
-        let node = taffy
-            .new_with_children(style, &[bar_node, tile_node])
-            .unwrap();
+        let node = taffy.parent_node(style, &[bar_node, tile_node]);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        let children = taffy.children(node).unwrap();
+        let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         self.bar.apply_layout(taffy, children[0], new_origin);
         let active_id = self.bar.active_id();
@@ -1104,7 +1103,7 @@ impl Widget for WindowGroup {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let children = taffy.children(node_id).unwrap();
+        let children = taffy.children(node_id).unwrap_or_default();
         let handle_rect = Rect::new(
             self.rect.x1 - RESIZE_HANDLE_PX,
             self.rect.y0,
@@ -1434,7 +1433,7 @@ mod tests {
             _t: &crate::theme::Theme,
             _m: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            taffy.new_leaf(taffy::Style::default()).unwrap()
+            taffy.leaf_node(taffy::Style::default())
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -1507,7 +1506,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -1646,7 +1645,7 @@ mod tests {
             _t: &crate::theme::Theme,
             _m: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            taffy.new_leaf(taffy::Style::default()).unwrap()
+            taffy.leaf_node(taffy::Style::default())
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -1803,9 +1802,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -1928,9 +1925,7 @@ mod tests {
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
         let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         use taffy::prelude::TaffyMaxContent;
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
@@ -1974,9 +1969,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2022,9 +2015,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2098,7 +2089,7 @@ mod tests {
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let node = g.build_layout(&mut taffy, theme, &mut node_map);
-            let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+            let root = taffy.parent_node(Style::default(), &[node]);
             taffy
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
@@ -2159,24 +2150,22 @@ mod tests {
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let node = g.build_layout(&mut taffy, theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(1600.0),
-                            height: Dimension::length(900.0),
-                        },
-                        ..Default::default()
+            let root = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
                     },
-                    &[node],
-                )
-                .unwrap();
+                    ..Default::default()
+                },
+                &[node],
+            );
             taffy
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             g.apply_layout(&taffy, node, Point::ZERO);
             let tile = taffy.children(node).unwrap()[1];
-            let tile_h = taffy.layout(tile).unwrap().size.height as f64;
+            let tile_h = taffy.layout(tile).copied().unwrap_or_default().size.height as f64;
             (g.get_rect().height(), tile_h)
         }
 
@@ -2214,7 +2203,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2272,18 +2261,16 @@ mod tests {
         // Definite-size root: `percent(1.0)` height resolves to 0 against
         // an indefinite parent, which would leave the resize handle's
         // rect empty and unhittable.
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
-                    },
-                    ..Default::default()
+        let root = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(1600.0),
+                    height: Dimension::length(900.0),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        );
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2355,18 +2342,16 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
-                    },
-                    ..Default::default()
+        let root = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(1600.0),
+                    height: Dimension::length(900.0),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        );
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2660,9 +2645,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2762,9 +2745,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2858,9 +2839,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -2932,9 +2911,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
@@ -3166,9 +3143,7 @@ mod tests {
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(Style::default(), &[group_node])
-                .unwrap();
+            let root = taffy.parent_node(Style::default(), &[group_node]);
             taffy
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
@@ -3260,9 +3235,7 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(Style::default(), &[group_node])
-            .unwrap();
+        let root = taffy.parent_node(Style::default(), &[group_node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();

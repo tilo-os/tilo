@@ -25,6 +25,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
 const HEIGHT: f64 = 38.0;
@@ -221,42 +222,41 @@ impl Widget for SearchField {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.input.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    align_items: Some(taffy::AlignItems::Center),
-                    flex_shrink: 0.0,
-                    padding: taffy::Rect {
-                        left: length(ICON_GUTTER as f32),
-                        right: length(CLEAR_GUTTER as f32),
-                        top: length(0.0_f32),
-                        bottom: length(0.0_f32),
-                    },
-                    size: taffy::Size {
-                        width: percent(1.0_f32),
-                        height: length(HEIGHT as f32),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            Style {
+                display: taffy::Display::Flex,
+                align_items: Some(taffy::AlignItems::Center),
+                flex_shrink: 0.0,
+                padding: taffy::Rect {
+                    left: length(ICON_GUTTER as f32),
+                    right: length(CLEAR_GUTTER as f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
                 },
-                &[child],
-            )
-            .unwrap();
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: length(HEIGHT as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        let child_node = taffy.children(node).unwrap()[0];
-        self.input
-            .apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
+            self.input
+                .apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -367,18 +367,19 @@ impl Widget for SearchField {
             *handled = true;
             return;
         }
-        let child_node = taffy.children(node_id).unwrap()[0];
-        self.input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            child_node,
-            taffy,
-        );
+        if let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first() {
+            self.input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+        }
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

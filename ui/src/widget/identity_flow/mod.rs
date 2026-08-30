@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
 use collab_types::{
     Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey, Role,
@@ -1154,12 +1155,12 @@ impl Widget for IdentityFlow {
             IdentityFlowScreen::InviteAccept => {
                 self.invite_accept.build_layout(taffy, theme, node_map)
             }
-            IdentityFlowScreen::Done => taffy.new_leaf(Default::default()).unwrap(),
+            IdentityFlowScreen::Done => taffy.leaf_node(Default::default()),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

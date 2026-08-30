@@ -3,6 +3,7 @@ use crate::record::{RecordCheckout, RecordId, RecordStore};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Spinner;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::app_widget::AppWidget;
 use automerge::{AutoCommit, ObjId, ROOT};
@@ -479,34 +480,30 @@ impl Widget for TileHost {
         let node = match &mut self.content {
             TileContent::App(w) => {
                 let child = w.build_layout(taffy, theme, node_map);
-                taffy
-                    .new_with_children(
-                        Style {
-                            size: Size {
-                                width: Dimension::percent(1.0),
-                                height: Dimension::percent(1.0),
-                            },
-                            ..Default::default()
+                taffy.parent_node(
+                    Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::percent(1.0),
                         },
-                        &[child],
-                    )
-                    .unwrap()
-            }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
+                        ..Default::default()
                     },
-                    ..Default::default()
-                })
-                .unwrap(),
+                    &[child],
+                )
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            }),
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1063,7 +1060,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.new_leaf(Style::default()).unwrap();
+            let n = taffy.leaf_node(Style::default());
             node_map.insert(n, self as *mut dyn Widget);
             n
         }
@@ -1295,7 +1292,7 @@ mod tests {
                 _theme: &Theme,
                 node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
             ) -> NodeId {
-                let n = taffy.new_leaf(Style::default()).unwrap();
+                let n = taffy.leaf_node(Style::default());
                 node_map.insert(n, self as *mut dyn Widget);
                 n
             }
@@ -1446,7 +1443,7 @@ mod tests {
                 _theme: &Theme,
                 node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
             ) -> NodeId {
-                let n = taffy.new_leaf(Style::default()).unwrap();
+                let n = taffy.leaf_node(Style::default());
                 node_map.insert(n, self as *mut dyn Widget);
                 n
             }
@@ -1652,7 +1649,7 @@ mod tests {
             _t: &Theme,
             _m: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            taffy.new_leaf(Style::default()).unwrap()
+            taffy.leaf_node(Style::default())
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(

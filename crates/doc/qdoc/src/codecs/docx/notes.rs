@@ -8,6 +8,9 @@ use crate::snapshot::{BlockView, NoteView};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// The fixed part names + relationship ids qdoc writes for footnotes/endnotes.
 pub(super) const FOOTNOTES_PART: &str = "word/footnotes.xml";
@@ -255,18 +258,21 @@ fn part_xml(notes: &[ExportNote], root: &str, item: &str) -> Option<Vec<u8>> {
     }
     let mut inner = String::new();
     // Reserved separator notes (no user content; Word expects them).
-    inner.push_str(&format!(
+    let _ = write!(
+        inner,
         r#"<w:{item} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{item}>"#
-    ));
-    inner.push_str(&format!(
+    );
+    let _ = write!(
+        inner,
         r#"<w:{item} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{item}>"#
-    ));
+    );
     for en in notes {
-        inner.push_str(&format!(
+        let _ = write!(
+            inner,
             r#"<w:{item} w:id="{}">{}</w:{item}>"#,
             en.docx_id,
             render_note_body(&en.note.blocks)
-        ));
+        );
     }
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

@@ -11,6 +11,7 @@
 pub mod actions;
 pub mod history_panel;
 pub mod i18n;
+pub mod num;
 pub mod styles;
 pub mod widget;
 pub mod word_processor;
@@ -104,7 +105,7 @@ impl WpFormat {
     }
 
     pub(crate) fn import(
-        &self,
+        self,
         bytes: &[u8],
         dm: &mut qdoc::DocMut,
     ) -> Result<(), qdoc::CodecError> {
@@ -128,7 +129,7 @@ impl WpFormat {
         }
     }
 
-    pub(crate) fn export(&self, dr: qdoc::DocRef) -> Result<Vec<u8>, qdoc::CodecError> {
+    pub(crate) fn export(self, dr: qdoc::DocRef) -> Result<Vec<u8>, qdoc::CodecError> {
         use qdoc::FormatProvider;
         match self {
             WpFormat::Odt => qdoc::OdtCodec.export(dr),
@@ -168,6 +169,11 @@ fn invalid_data<E: std::fmt::Display>(e: E) -> std::io::Error {
 
 /// Open `path` into a fresh `ui::State` (holding the canonical document) plus a
 /// `WordProcessorWidget` to edit it. The format is chosen by extension.
+///
+/// # Errors
+///
+/// Fails if `path` cannot be read, or if the codec for its format rejects the
+/// bytes (a corrupt archive, or an export-only format such as PDF or EPUB).
 pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
     let bytes = std::fs::read(path)?;
     let format = WpFormat::from_path(path);
@@ -277,12 +283,13 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
             c: &containers,
             ids: &mut ids,
         };
-        // Templates are bundled and validated by tests, so import cannot fail in
-        // practice; if a malformed template ever shipped we'd rather surface it
-        // loudly than silently hand back an empty document.
-        format
-            .import(t.content().as_bytes(), &mut dm)
-            .expect("bundled template imports cleanly");
+        // Templates are bundled and validated by tests, so import cannot fail
+        // in practice; if a malformed one ever shipped, say so on stderr and
+        // hand back the empty document rather than killing the process — the
+        // release profile sets `panic = "abort"`.
+        if let Err(e) = format.import(t.content().as_bytes(), &mut dm) {
+            eprintln!("word-processor: bundled template {t:?} failed to import: {e}");
+        }
     }
     // Intentionally do NOT call `widget.set_file(..)`: leaving the path unset
     // keeps the document untitled (the widget falls back to `Untitled.md` on
@@ -292,6 +299,11 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
 }
 
 /// Export the document currently in `state` to `path` using `format`.
+///
+/// # Errors
+///
+/// Fails if `state` does not hold a well-formed document, if the codec cannot
+/// render it (an import-only format), or if `path` cannot be written.
 pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::io::Result<()> {
     let containers = qdoc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
     let dr = qdoc::DocRef {
@@ -574,7 +586,7 @@ mod tests {
         assert!(
             lower.contains("<!doctype html") || lower.contains("<html"),
             "output is an HTML document: {:?}",
-            &text[..text.len().min(64)]
+            text.get(..text.len().min(64))
         );
     }
 
@@ -806,8 +818,8 @@ mod tests {
             .find(|m| m.name == "strong")
             .expect("bold run survives");
         assert_eq!(
-            &p.text[strong.start..strong.end],
-            "world",
+            p.text.get(strong.start..strong.end),
+            Some("world"),
             "bold covers the right run: {:?}",
             p.marks
         );

@@ -252,10 +252,12 @@ fn starts_a_word(haystack: &str, needle: &str) -> bool {
     }
     haystack.match_indices(needle).any(|(at, _)| {
         at == 0
-            || !haystack[..at]
-                .chars()
-                .next_back()
-                .is_some_and(char::is_alphanumeric)
+            || haystack.get(..at).is_some_and(|prefix| {
+                !prefix
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_alphanumeric)
+            })
     })
 }
 
@@ -327,6 +329,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "here/there are the domain vocabulary for the two rooms under test, not a naming accident"
+    )]
     fn activating_a_row_references_the_same_record_into_this_room() {
         let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
         let (here, there) = (rooms[0], rooms[1]);
@@ -369,6 +375,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "here/there are the domain vocabulary for the two rooms under test, not a naming accident"
+    )]
     fn an_edit_through_one_rooms_reference_is_visible_through_the_others() {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 

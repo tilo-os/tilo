@@ -22,6 +22,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 pub const TITLE_BAR_HEIGHT: f64 = 38.0;
@@ -300,21 +301,19 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Occupies the whole viewport so it can clamp + paint anywhere.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         let viewport = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -599,20 +598,18 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
+            let n = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            });
             node_map.insert(n, self as *mut dyn Widget);
             n
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).unwrap();
+            let l = taffy.layout(node).copied().unwrap_or_default();
             self.rect = Rect::new(
                 origin.x,
                 origin.y,
@@ -700,7 +697,7 @@ mod tests {
     }
     fn dispatch(w: &mut FloatingWindow<Probe>, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
         let mut doc = AutoCommit::new();

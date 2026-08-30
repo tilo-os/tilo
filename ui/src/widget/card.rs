@@ -20,6 +20,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Column, Container, Element, Row, Spacer, Text, Widget};
 
 /// Default minimum card width (logical px) a [`CardGrid`] column will hold
@@ -385,7 +386,7 @@ impl Widget for CardGrid {
         // The cards are laid out in an inner tree during draw, so this node
         // is a measured leaf.
         self.gap = self.gap_override.unwrap_or(f64::from(theme.gap_standard));
-        let node = _taffy.new_leaf(Style::default()).unwrap();
+        let node = _taffy.leaf_node(Style::default());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -412,7 +413,7 @@ impl Widget for CardGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

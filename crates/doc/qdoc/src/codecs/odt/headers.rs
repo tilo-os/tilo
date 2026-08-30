@@ -8,6 +8,9 @@ use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// Import the `style:header`/`style:footer` paragraphs from the first `style:master-page`.
 /// `<text:page-number/>` becomes a page-number field. No-op when neither region is present.
@@ -165,7 +168,7 @@ fn region_xml(blocks: &[BlockView], tag: &str) -> Option<String> {
     for b in blocks {
         out.push_str(&render_region_block(b));
     }
-    out.push_str(&format!("</{tag}>"));
+    let _ = write!(out, "</{tag}>");
     Some(out)
 }
 

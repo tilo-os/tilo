@@ -61,11 +61,11 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn new(title: impl Into<String>, tile: TileContent) -> Self {
+    pub fn new(title: impl Into<String>, tile_content: TileContent) -> Self {
         Self {
             id: next_runtime_id(),
             title: title.into(),
-            tile,
+            tile: tile_content,
         }
     }
 }

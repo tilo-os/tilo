@@ -11,6 +11,9 @@ use crate::schema::{
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// Map an ODF element local-name (within `office:meta`) onto a canonical document-property key.
 fn prop_for_element(local: &[u8]) -> Option<&'static str> {
@@ -114,7 +117,7 @@ fn modeled_children(doc: &DocRef) -> String {
         let Some(el) = element_for_prop(key) else {
             continue;
         };
-        out.push_str(&format!("<{el}>{}</{el}>", escape_text(&val)));
+        let _ = write!(out, "<{el}>{}</{el}>", escape_text(&val));
     }
     out
 }

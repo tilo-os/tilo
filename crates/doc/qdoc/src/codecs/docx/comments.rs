@@ -9,6 +9,9 @@ use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 
 /// The fixed part name + relationship id qdoc writes for comments.
 pub(super) const COMMENTS_PART: &str = "word/comments.xml";
@@ -217,11 +220,12 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
         } else {
             format!(r#" w:date="{}""#, escape_attr(&c.date))
         };
-        inner.push_str(&format!(
+        let _ = write!(
+            inner,
             r#"<w:comment w:id="{docx_id}" w:author="{}"{date} w:initials="">{}</w:comment>"#,
             escape_attr(&c.author),
             render_comment_body(&c.blocks),
-        ));
+        );
     }
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

@@ -7326,8 +7326,11 @@ mod tests {
         // Back-date the toast past its lifetime and draw again → it clears,
         // and the loop is then free to idle.
         if let Some((_, shown)) = app.toast.as_mut() {
-            *shown =
-                Instant::now().checked_sub(TOAST_LIFETIME).unwrap() - Duration::from_millis(50);
+            *shown = Instant::now()
+                .checked_sub(TOAST_LIFETIME)
+                .unwrap()
+                .checked_sub(Duration::from_millis(50))
+                .unwrap();
         }
         assert!(
             app.toast_expired(),

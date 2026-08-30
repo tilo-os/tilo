@@ -14,6 +14,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// ASCII `>` so it always falls back to the system font even when no
@@ -207,22 +208,20 @@ impl Widget for Breadcrumb {
         // Width isn't known until taffy runs, so leave it auto; height is a
         // single line of `sm` text plus 1.5x line-height for click comfort.
         let line_h = theme.tokens.typography.scale.sm * 1.5;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::length(line_h),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(line_h),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -401,7 +400,7 @@ mod tests {
     /// Mirrors `permission_prompt.rs::tests::dispatch`.
     fn dispatch(bc: &mut Breadcrumb, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();

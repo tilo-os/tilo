@@ -29,6 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time, hue_to_rgb,
@@ -1967,21 +1968,19 @@ impl Widget for ActivityTimeline {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -2558,7 +2557,7 @@ mod tests {
 
     fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
@@ -3078,7 +3077,7 @@ mod group_tests {
 
     fn dispatch_mod(t: &mut ActivityTimeline, event: &WindowEvent, m: Modifiers) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();

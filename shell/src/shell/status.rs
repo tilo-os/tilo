@@ -33,6 +33,19 @@ pub struct SystemStatus {
     pub volume: Option<VolumeState>,
 }
 
+/// `level` is nominally `0.0..=1.0`, but reads come from `wpctl` output and
+/// aren't validated against that range, so clamp defensively: the cast
+/// below is only exact because the value is pinned to `0.0..=100.0` first.
+fn volume_percent(level: f32) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=100.0 immediately above, so the cast neither truncates nor loses sign"
+    )]
+    let pct = (level * 100.0).round().clamp(0.0, 100.0) as u32;
+    pct
+}
+
 impl SystemStatus {
     /// Matches `PowerPolicy`'s default low threshold; a charging
     /// battery is never "low" however empty, because it's filling.
@@ -82,7 +95,7 @@ impl SystemStatus {
             parts.push(if v.muted {
                 "Muted".to_string()
             } else {
-                format!("Volume {}%", (v.level * 100.0).round() as u32)
+                format!("Volume {}%", volume_percent(v.level))
             });
         }
         if let Some(pct) = self.battery_percent() {
@@ -315,7 +328,7 @@ mod tests {
             level: 0.8,
             muted: false,
         });
-        assert_eq!(b.snapshot().volume.unwrap().level, 0.8);
+        assert!((b.snapshot().volume.unwrap().level - 0.8).abs() < f32::EPSILON);
     }
 
     #[test]

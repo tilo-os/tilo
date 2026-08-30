@@ -19,6 +19,11 @@ use crate::model::Video;
 /// bulk endpoint may override). Channels that error (deleted / private) are
 /// skipped rather than failing the whole feed — one bad subscription
 /// shouldn't blank the home page.
+///
+/// # Errors
+///
+/// Returns an error when every subscribed channel either failed to fetch or
+/// had no uploads.
 pub fn fan_out_subscription_feed<B: YtBackend + ?Sized>(
     backend: &B,
     channel_ids: &[String],

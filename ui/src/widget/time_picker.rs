@@ -19,6 +19,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
@@ -350,21 +351,19 @@ impl Widget for TimePicker {
         // Total width = spinner + colon + spinner [+ colon + spinner]
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(total_w),
-                    height: Dimension::length(PICKER_HEIGHT),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(total_w),
+                height: Dimension::length(PICKER_HEIGHT),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.apply_layout_external(Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -730,7 +729,7 @@ mod tests {
     /// Drive an event through the picker with default scaffolding.
     fn dispatch(tp: &mut TimePicker, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -756,7 +755,7 @@ mod tests {
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
         let node = tp.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
-        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();

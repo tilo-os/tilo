@@ -33,6 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::merge_strategy::{Alternative, ConflictKind};
 
@@ -384,21 +385,19 @@ impl Widget for ConflictPicker {
     ) -> NodeId {
         // Sized by the host: expands to fill whatever rect the parent
         // assigns — typical use is a centered modal, e.g. 720×360.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -793,7 +792,7 @@ mod tests {
 
     fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
@@ -1010,7 +1009,7 @@ mod tests {
         let banner_chip = banner.review_chip_rect().unwrap();
 
         let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus = None;
         let mut doc = AutoCommit::new();
