@@ -9,6 +9,12 @@
 //! No real broker; everything runs against a hand-rolled fake server
 //! over an in-memory `UnixStream` pair, as in `schema_v2.rs`.
 
+// capnp's generated `Server` traits declare each verb as `-> impl Future`,
+// and these fakes return capnp's own `Promise`, which is the concrete type
+// behind it. The lint's concern is a caller coming to depend on the narrower
+// return; nothing outside this file constructs these servers, so the
+// refinement stays where it is written.
+#![allow(refining_impl_trait_internal)]
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
