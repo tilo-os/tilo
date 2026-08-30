@@ -214,6 +214,12 @@ const MAX_SLOT_REACH: i32 = 64;
 /// overscroll instead, so the control never reads as dead.
 const WHEEL_DETENT_PX: f32 = 48.0;
 
+/// Hard cap on detents drained from one `MouseWheel` event. The
+/// accumulator normally drains in a handful of steps; this only matters
+/// if a delta ever arrives non-finite (e.g. `f32::INFINITY`), where it
+/// stops the drain loop from spinning forever instead of ever firing.
+const MAX_WHEEL_DETENTS_PER_EVENT: u32 = 4096;
+
 /// Idle gap after which a sub-detent residual `wheel_accumulator` is
 /// cleared, so a partial swipe doesn't carry into the next burst. 250 ms
 /// outlasts a continuous flick but reads a pause as deliberate.
@@ -808,6 +814,29 @@ fn i64_to_f64_lossy(v: i64) -> f64 {
     v as f64
 }
 
+/// Clamps an alpha-channel value into `u8`'s range before the (otherwise
+/// saturating but silently-wrong-looking) narrowing cast, for stroke/fill
+/// alphas computed from a fixed base times a `[0, 1]`-ish fade factor.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "explicitly clamped into u8's range on the line above"
+)]
+fn f32_to_u8_saturating(v: f32) -> u8 {
+    v.clamp(0.0, 255.0) as u8
+}
+
+/// Lossy but bounded: motion-token durations (fling projection, timeouts)
+/// are always tiny millisecond counts, nowhere near f32's exact-integer
+/// range.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "motion durations are always tiny millisecond counts"
+)]
+fn u32_to_f32_lossy(n: u32) -> f32 {
+    n as f32
+}
+
 /// Safe lookup into a [`SidebarWheelDisc::slot_indices`] result for
 /// display offset `k` at reach `slots`: `None` for a `k` outside
 /// `[-slots, slots]` or a slot the layout left empty. Shared by both
@@ -1151,7 +1180,7 @@ impl Widget for SidebarWheelDisc {
             if h <= 0.0 {
                 return 0.0;
             }
-            let t = ((y - self.rect.y0) / h).clamp(0.0, 1.0) as f32;
+            let t = f64_to_f32_lossy(((y - self.rect.y0) / h).clamp(0.0, 1.0));
             if t < FADE_IN_STOP {
                 t / FADE_IN_STOP
             } else if t > 1.0 - FADE_IN_STOP {
@@ -1343,7 +1372,7 @@ impl Widget for SidebarWheelDisc {
                     transform * rotate,
                     chip,
                     if names_fit {
-                        self.spokes[idx].text.as_str()
+                        self.spokes.get(idx).map_or("", |s| s.text.as_str())
                     } else {
                         ""
                     },
@@ -1353,15 +1382,23 @@ impl Widget for SidebarWheelDisc {
                     text_renderer,
                 );
 
-                // Nearest slot wins the workspace's click target.
-                if mid.abs() < hit_claim[idx] {
-                    hit_claim[idx] = mid.abs();
-                    self.spoke_hit_rects[idx] = placed;
+                // Nearest slot wins the workspace's click target. `idx` is
+                // always in range here (both vecs are sized to
+                // `self.spokes.len()` above), but a `.get_mut()` fallback
+                // costs nothing and can't panic if that invariant ever
+                // slips.
+                if let Some(claim) = hit_claim.get_mut(idx) {
+                    if mid.abs() < *claim {
+                        *claim = mid.abs();
+                        if let Some(hit_rect) = self.spoke_hit_rects.get_mut(idx) {
+                            *hit_rect = placed;
+                        }
+                    }
                 }
 
                 // Presence dots seated just inside the rim so they ride
                 // the surface with the sector.
-                if let Some(ws_id) = self.spokes[idx].workspace_id {
+                if let Some(ws_id) = self.spokes.get(idx).and_then(|s| s.workspace_id) {
                     let key = PresenceKey::Workspace {
                         id: format!("{ws_id}"),
                     };
@@ -1370,9 +1407,9 @@ impl Widget for SidebarWheelDisc {
                         let peer_count = peers.len().min(3);
                         let dot_r = r_out - LABEL_RIM_GAP / 2.0;
                         let spacing = 7.0_f64 / dot_r;
-                        let centre_bias = (peer_count as f64 - 1.0) / 2.0;
+                        let centre_bias = (usize_to_f64_lossy(peer_count) - 1.0) / 2.0;
                         for (kk, user) in peers.iter().take(peer_count).enumerate() {
-                            let off = (kk as f64 - centre_bias) * spacing;
+                            let off = (usize_to_f64_lossy(kk) - centre_bias) * spacing;
                             let (rr, gg, bb) = presence.color_for(user);
                             // Empty-initials Avatar chip in the peer's
                             // own colour, matching the cursor/avatar sites.
@@ -1409,7 +1446,7 @@ impl Widget for SidebarWheelDisc {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            edge((74.0 * add_fade) as u8),
+            edge(f32_to_u8_saturating(74.0 * add_fade)),
             None,
             &add_circle,
         );
@@ -1447,146 +1484,192 @@ impl Widget for SidebarWheelDisc {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => {
-                // Plus-slot first — outside the rim, must not be
-                // swallowed by the drag-start / spoke-click branches.
-                if self.plus_rect.area() > 0.0
-                    && self
-                        .last_cursor_pos
-                        .is_some_and(|p| self.plus_rect.contains(p))
-                {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().add_workspace("Untitled");
-                    }
-                    *handled = true;
-                    return;
-                }
-
-                // A press inside a non-active spoke's cluster animates
-                // the wheel to it rather than starting a free drag.
-                if let Some(p) = self.last_cursor_pos {
-                    for (i, hit) in self.spoke_hit_rects.iter().enumerate() {
-                        if i == self.active_idx {
-                            continue;
-                        }
-                        if hit.area() > 0.0 && hit.contains(p) {
-                            self.click_to_spoke(i);
-                            // Picking a workspace answers the question a
-                            // summon was called for; it stays up through
-                            // a scroll or drag, which are still browsing.
-                            self.dismiss_summon();
-                            *handled = true;
-                            return;
-                        }
-                    }
-                }
-
-                // Otherwise: start a rotation drag if the press lands
-                // inside the visible arc.
-                if self.rect.area() <= 0.0 {
-                    return;
-                }
-                let anchor = match (self.hover_anchor, self.last_cursor_pos) {
-                    (Some(h), _) => h,
-                    (None, Some(p)) => p,
-                    (None, None) => Point::new(
-                        f64::midpoint(self.rect.x0, self.rect.x1),
-                        f64::midpoint(self.rect.y0, self.rect.y1),
-                    ),
-                };
-                if self.hit_visible_arc(anchor) {
-                    // Take the wheel over wherever it visually is, so
-                    // grabbing a settling wheel catches it mid-flight
-                    // instead of teleporting to the settle's destination.
-                    let caught = self.visual_rotation_deg();
-                    self.rotation_deg = caught;
-                    self.drag_rotation_origin = caught;
-                    self.drag_raw_deg = caught;
-                    if let Some(spring) = self.rotation_spring.as_mut() {
-                        spring.set_params(SpringPresets::default().tracking);
-                        spring.set_target(caught);
-                    }
-                    self.drag_from = Some(anchor);
-                    *handled = true;
-                }
-            }
+            } => self.handle_left_press(handled),
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor_pos = Some(p);
-                if let Some(origin) = self.drag_from {
-                    let dy = p.y - origin.y;
-                    let delta_deg = (dy as f32) * Self::deg_per_pixel();
-                    // Where the pointer asks the wheel to be, before
-                    // resistance and detent magnetism have a say.
-                    let raw = self.drag_rotation_origin + delta_deg;
-                    self.drag_raw_deg = raw;
-                    // Both fold into the target rather than the rendered
-                    // value, so the spring is what the user feels them
-                    // through.
-                    let resisted = self.resist_past_ends(raw);
-                    let from = self.visual_rotation_deg();
-                    self.rotation_deg = resisted + self.detent_magnet(resisted);
-                    let target = self.rotation_deg;
-                    self.aim_follow_spring(from, target);
-                    self.sync_active_from_visual();
-                    *handled = true;
-                } else if self.hit_visible_arc(p) {
-                    // Cached for the next press hit-test without
-                    // claiming pointer capture, reserved for `drag_from`.
-                    self.hover_anchor = Some(p);
-                }
+                self.handle_cursor_moved(position, scale_factor, handled);
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => {
-                if self.drag_from.is_some() {
-                    self.drag_from = None;
-                    self.settle_after_drag();
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // Only consume wheel events when the cursor is over the
-                // disc, so scrolls over neighbouring widgets don't
-                // accidentally rotate the wheel.
-                if !self
-                    .last_cursor_pos
-                    .is_some_and(|p| self.hit_visible_arc(p))
-                {
-                    return;
-                }
-                let dy = match *delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                };
-                // Every `WHEEL_DETENT_PX` triggers a workspace advance via
-                // `click_to_spoke` (a spring settle, not a teleport); at an
-                // end, the unspendable portion resists like a rim-drag.
-                self.wheel_accumulator += dy;
-                self.wheel_last_event = Some(Instant::now());
-                let n = self.spokes.len();
-                if n > 1 {
-                    while self.wheel_accumulator.abs() >= WHEEL_DETENT_PX {
-                        let dir: i32 = if self.wheel_accumulator < 0.0 { 1 } else { -1 };
-                        let target = self.active_idx as i32 + dir;
-                        // `dir` is opposite-signed to the accumulator, so this
-                        // drains toward zero; subtracting would hang the loop
-                        // on any scroll of a full detent.
-                        self.wheel_accumulator += dir as f32 * WHEEL_DETENT_PX;
-                        if (0..n as i32).contains(&target) {
-                            self.click_to_spoke(target as usize);
-                        } else {
-                            self.wheel_overscroll_px -= dir as f32 * WHEEL_DETENT_PX;
-                        }
-                    }
-                }
-                self.apply_wheel_overscroll();
-                *handled = true;
-            }
+            } => self.handle_left_release(handled),
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, handled),
             _ => {}
         }
+    }
+
+    /// `MouseInput { Pressed, Left }`: the add-button, a click onto a
+    /// non-active spoke, or the start of a rotation drag — whichever the
+    /// press lands on first, in that priority order.
+    fn handle_left_press(&mut self, handled: &mut bool) {
+        // Plus-slot first — outside the rim, must not be
+        // swallowed by the drag-start / spoke-click branches.
+        if self.plus_rect.area() > 0.0
+            && self
+                .last_cursor_pos
+                .is_some_and(|p| self.plus_rect.contains(p))
+        {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().add_workspace("Untitled");
+            }
+            *handled = true;
+            return;
+        }
+
+        // A press inside a non-active spoke's cluster animates
+        // the wheel to it rather than starting a free drag.
+        if let Some(p) = self.last_cursor_pos {
+            for (i, hit) in self.spoke_hit_rects.iter().enumerate() {
+                if i == self.active_idx {
+                    continue;
+                }
+                if hit.area() > 0.0 && hit.contains(p) {
+                    self.click_to_spoke(i);
+                    // Picking a workspace answers the question a
+                    // summon was called for; it stays up through
+                    // a scroll or drag, which are still browsing.
+                    self.dismiss_summon();
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // Otherwise: start a rotation drag if the press lands
+        // inside the visible arc.
+        if self.rect.area() <= 0.0 {
+            return;
+        }
+        let anchor = match (self.hover_anchor, self.last_cursor_pos) {
+            (Some(h), _) => h,
+            (None, Some(p)) => p,
+            (None, None) => Point::new(
+                f64::midpoint(self.rect.x0, self.rect.x1),
+                f64::midpoint(self.rect.y0, self.rect.y1),
+            ),
+        };
+        if self.hit_visible_arc(anchor) {
+            // Take the wheel over wherever it visually is, so
+            // grabbing a settling wheel catches it mid-flight
+            // instead of teleporting to the settle's destination.
+            let caught = self.visual_rotation_deg();
+            self.rotation_deg = caught;
+            self.drag_rotation_origin = caught;
+            self.drag_raw_deg = caught;
+            if let Some(spring) = self.rotation_spring.as_mut() {
+                spring.set_params(SpringPresets::default().tracking);
+                spring.set_target(caught);
+            }
+            self.drag_from = Some(anchor);
+            *handled = true;
+        }
+    }
+
+    /// `CursorMoved`: tracks the pointer always; while dragging, also
+    /// re-aims the follow spring at the resisted/magnetised rotation.
+    fn handle_cursor_moved(
+        &mut self,
+        position: &winit::dpi::PhysicalPosition<f64>,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) {
+        let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_cursor_pos = Some(p);
+        if let Some(origin) = self.drag_from {
+            let dy = p.y - origin.y;
+            let delta_deg = f64_to_f32_lossy(dy) * Self::deg_per_pixel();
+            // Where the pointer asks the wheel to be, before
+            // resistance and detent magnetism have a say.
+            let raw = self.drag_rotation_origin + delta_deg;
+            self.drag_raw_deg = raw;
+            // Both fold into the target rather than the rendered
+            // value, so the spring is what the user feels them
+            // through.
+            let resisted = self.resist_past_ends(raw);
+            let from = self.visual_rotation_deg();
+            self.rotation_deg = resisted + self.detent_magnet(resisted);
+            let target = self.rotation_deg;
+            self.aim_follow_spring(from, target);
+            self.sync_active_from_visual();
+            *handled = true;
+        } else if self.hit_visible_arc(p) {
+            // Cached for the next press hit-test without
+            // claiming pointer capture, reserved for `drag_from`.
+            self.hover_anchor = Some(p);
+        }
+    }
+
+    /// `MouseInput { Released, Left }`: ends a drag, if one was live.
+    fn handle_left_release(&mut self, handled: &mut bool) {
+        if self.drag_from.is_some() {
+            self.drag_from = None;
+            self.settle_after_drag();
+            *handled = true;
+        }
+    }
+
+    /// `MouseWheel`: drains the accumulator one detent at a time via
+    /// `click_to_spoke`, banking whatever can't be spent as overscroll.
+    fn handle_mouse_wheel(&mut self, delta: &winit::event::MouseScrollDelta, handled: &mut bool) {
+        // Only consume wheel events when the cursor is over the
+        // disc, so scrolls over neighbouring widgets don't
+        // accidentally rotate the wheel.
+        if !self
+            .last_cursor_pos
+            .is_some_and(|p| self.hit_visible_arc(p))
+        {
+            return;
+        }
+        let dy = match *delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
+            winit::event::MouseScrollDelta::PixelDelta(p) => f64_to_f32_lossy(p.y),
+        };
+        // Every `WHEEL_DETENT_PX` triggers a workspace advance via
+        // `click_to_spoke` (a spring settle, not a teleport); at an
+        // end, the unspendable portion resists like a rim-drag.
+        self.wheel_accumulator += dy;
+        self.wheel_last_event = Some(Instant::now());
+        let n = self.spokes.len();
+        let n_i32 = i32::try_from(n).ok();
+        if n > 1 {
+            // `loop` + an explicit break, rather than `while
+            // ...abs() >= WHEEL_DETENT_PX`, plus `guard`: a
+            // non-finite accumulator (should never happen, but
+            // isn't ruled out by the type) must still terminate
+            // the drain instead of spinning the compositor.
+            let mut guard = 0u32;
+            loop {
+                if self.wheel_accumulator.abs() < WHEEL_DETENT_PX
+                    || guard >= MAX_WHEEL_DETENTS_PER_EVENT
+                {
+                    break;
+                }
+                guard += 1;
+                let neg = self.wheel_accumulator < 0.0;
+                let dir: i32 = if neg { 1 } else { -1 };
+                // Exact for +-1; avoids a generic `dir as f32` cast.
+                let dir_f: f32 = if neg { 1.0 } else { -1.0 };
+                // `dir` is opposite-signed to the accumulator, so this
+                // drains toward zero; subtracting would hang the loop
+                // on any scroll of a full detent.
+                self.wheel_accumulator += dir_f * WHEEL_DETENT_PX;
+                let target = i32::try_from(self.active_idx)
+                    .ok()
+                    .and_then(|a| a.checked_add(dir));
+                match (target, n_i32) {
+                    (Some(target), Some(n_i32)) if (0..n_i32).contains(&target) => {
+                        if let Ok(target) = usize::try_from(target) {
+                            self.click_to_spoke(target);
+                        }
+                    }
+                    _ => {
+                        self.wheel_overscroll_px -= dir_f * WHEEL_DETENT_PX;
+                    }
+                }
+            }
+        }
+        self.apply_wheel_overscroll();
+        *handled = true;
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1760,7 +1843,7 @@ impl SidebarWheelDisc {
         } else {
             // Project from where the gesture *ended*, not the trailing rim
             // position — the lag is meant to be visible, not subtracted.
-            let coast_s = Gesture::default().fling_projection_ms as f32 / 1000.0;
+            let coast_s = u32_to_f32_lossy(Gesture::default().fling_projection_ms) / 1000.0;
             let projected = self.rotation_deg + velocity * coast_s;
             self.rotation_for_idx(self.idx_at_rotation(projected))
         };
@@ -1787,7 +1870,7 @@ impl SidebarWheelDisc {
         if self.active_idx == 0 && self.wheel_accumulator > 0.0 {
             px += self.wheel_accumulator;
         }
-        if self.active_idx + 1 >= n && self.wheel_accumulator < 0.0 {
+        if self.active_idx.saturating_add(1) >= n && self.wheel_accumulator < 0.0 {
             px += self.wheel_accumulator;
         }
         if px == 0.0 {
@@ -1856,6 +1939,13 @@ impl SidebarWheelDisc {
         };
         let mut s = origin;
         let dt = 1.0 / 60.0;
+        // Rust's float-to-int cast saturates; `.max(0.0)` above already
+        // rules out the sign-loss case, and this is an offscreen-capture
+        // step count, not a value that feeds rendering math elsewhere.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "saturating cast of a non-negative step count"
+        )]
         let steps = (elapsed.as_secs_f32() / dt).round().max(0.0) as u32;
         for _ in 0..steps {
             s.step(dt);
