@@ -36,9 +36,9 @@ fn mouse_press() -> WindowEvent {
 fn settle_layout(
     app: &mut NotesApp,
     state: &mut ui::State,
-    w: u32,
-    h: u32,
-) -> (TaffyTree<()>, NodeId) {
+    w: u16,
+    h: u16,
+) -> Result<(TaffyTree<()>, NodeId), String> {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     app.sync(&mut state.doc, &state.root);
@@ -51,14 +51,14 @@ fn settle_layout(
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(f32::from(w)),
+                        height: Dimension::length(f32::from(h)),
                     },
                     ..Default::default()
                 },
                 &[child],
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
         {
             let measure_map = node_map.clone();
             let tr = &mut text_renderer;
@@ -66,8 +66,8 @@ fn settle_layout(
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(f32::from(w)),
+                        height: AvailableSpace::Definite(f32::from(h)),
                     },
                     |known, avail, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -77,7 +77,7 @@ fn settle_layout(
                         }
                     },
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
         }
         app.apply_layout(&taffy, child, Point::ORIGIN);
         let settled = !app.take_structure_dirty();
@@ -86,7 +86,7 @@ fn settle_layout(
             break;
         }
     }
-    result.unwrap()
+    result.ok_or_else(|| "layout never settled".to_string())
 }
 
 fn dispatch(
@@ -126,14 +126,14 @@ fn narrow_window_collapses_sidebar_into_toggleable_drawer() {
     let mut state = ui::State::new();
 
     // Wide window: the sidebar stays inline; no top bar / drawer.
-    let _ = settle_layout(&mut app, &mut state, 1280, 720);
+    let _ = settle_layout(&mut app, &mut state, 1280, 720).unwrap();
     assert!(
         !app.built_narrow_for_test(),
         "1280px window should keep the sidebar inline"
     );
 
     // Narrow window: collapses to a closed overlay drawer.
-    let (taffy, child) = settle_layout(&mut app, &mut state, 560, 720);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 560, 720).unwrap();
     assert!(
         app.built_narrow_for_test(),
         "560px window should collapse the sidebar into the drawer"

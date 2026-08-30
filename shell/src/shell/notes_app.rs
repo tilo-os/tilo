@@ -45,6 +45,46 @@ const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Pixels of cursor wiggle still allowed between rapid clicks before
 /// they're treated as separate click chains.
 const MULTI_CLICK_RADIUS: f64 = 6.0;
+/// ~8px average advance for 15px proportional text; 7.2 avoids
+/// overshooting on the common case.
+const APPROX_ADVANCE_PX: f64 = 7.2;
+
+/// Byte offset where the line containing `pos` starts (one past the
+/// previous `\n`, or 0 for the first line).
+fn line_start_at(text: &str, pos: usize) -> usize {
+    text.get(..pos)
+        .and_then(|s| s.rfind('\n'))
+        .map_or(0, |i| i.saturating_add(1))
+}
+
+/// Byte offset where the line containing `pos` ends (the `\n` itself,
+/// or the text's length on the last line).
+fn line_end_at(text: &str, pos: usize) -> usize {
+    text.get(pos..)
+        .and_then(|s| s.find('\n'))
+        .map_or(text.len(), |i| pos.saturating_add(i))
+}
+
+/// Walks forward from `pos` to the next valid char boundary (or the
+/// text's end). Used after column arithmetic lands mid-character.
+fn snap_forward_to_char_boundary(text: &str, pos: usize) -> usize {
+    let mut p = pos.min(text.len());
+    while p < text.len() && !text.is_char_boundary(p) {
+        p = p.saturating_add(1);
+    }
+    p
+}
+
+/// Widens a small row/column count to `f64` for draw-time geometry.
+fn count_to_f64(n: usize) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "bounded well under 2^53 by every caller (a document row/column count)"
+    )]
+    {
+        n as f64
+    }
+}
 
 pub struct NotesApp {
     rect: Rect,
@@ -147,8 +187,67 @@ impl NotesApp {
         if self.selection.is_collapsed() {
             None
         } else {
-            Some(&self.body.text[self.selection.range()])
+            self.body.text.get(self.selection.range())
         }
+    }
+
+    fn move_or_extend(&mut self, pos: usize, extend: bool) {
+        if extend {
+            self.selection.extend_to(pos);
+        } else {
+            self.selection.move_to(pos);
+        }
+    }
+
+    /// Vertical-nav helper for `ArrowUp`: same column, previous line.
+    fn move_line_up(&mut self, shift: bool) {
+        let cur = self.selection.cursor;
+        let line_start = line_start_at(&self.body.text, cur);
+        let col = cur.saturating_sub(line_start);
+        let new_pos = if line_start == 0 {
+            0
+        } else {
+            let prev_nl = line_start_at(&self.body.text, line_start.saturating_sub(1));
+            let prev_line_end = line_start.saturating_sub(1);
+            let prev_line_len = prev_line_end.saturating_sub(prev_nl);
+            let want_col = col.min(prev_line_len);
+            // `prev_nl` is always itself a valid char boundary (0, or one
+            // past a `\n`), so clamping downward from `want_col` bytes
+            // past it can never walk below `prev_nl`.
+            self.body.clamp(prev_nl.saturating_add(want_col))
+        };
+        self.move_or_extend(new_pos, shift);
+    }
+
+    /// Vertical-nav helper for `ArrowDown`: same column, next line.
+    fn move_line_down(&mut self, shift: bool) {
+        let cur = self.selection.cursor;
+        let line_start = line_start_at(&self.body.text, cur);
+        let col = cur.saturating_sub(line_start);
+        let line_end = line_end_at(&self.body.text, cur);
+        let new_pos = if line_end == self.body.text.len() {
+            self.body.text.len()
+        } else {
+            let next_line_start = line_end.saturating_add(1);
+            let next_line_end = line_end_at(&self.body.text, next_line_start);
+            let next_line_len = next_line_end.saturating_sub(next_line_start);
+            let want_col = col.min(next_line_len);
+            snap_forward_to_char_boundary(
+                &self.body.text,
+                next_line_start.saturating_add(want_col),
+            )
+        };
+        self.move_or_extend(new_pos, shift);
+    }
+
+    fn move_home(&mut self, shift: bool) {
+        let line_start = line_start_at(&self.body.text, self.selection.cursor);
+        self.move_or_extend(line_start, shift);
+    }
+
+    fn move_end(&mut self, shift: bool) {
+        let line_end = line_end_at(&self.body.text, self.selection.cursor);
+        self.move_or_extend(line_end, shift);
     }
 }
 
@@ -196,7 +295,12 @@ impl Widget for NotesApp {
 
         let content_x = self.rect.x0 + PADDING;
         let content_y = self.rect.y0 + PADDING;
-        let wrap_w = (self.rect.width() - PADDING * 2.0).max(40.0) as f32;
+        let wrap_w_f64 = (self.rect.width() - PADDING * 2.0).max(40.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "screen-space width in pixels, always far below f32's exact-integer range"
+        )]
+        let wrap_w = wrap_w_f64 as f32;
         self.wrap_width = wrap_w;
 
         // No header row: the app name lives on the shell's tab pill, and a
@@ -223,71 +327,25 @@ impl Widget for NotesApp {
         self.empty_action_rect = Rect::ZERO;
 
         if !self.selection.is_collapsed() {
-            let sel_lo = self.selection.min();
-            let sel_hi = self.selection.max();
-            let mut line_start = 0usize;
-            let mut row = 0usize;
-            let chunks = self.body.text.split('\n');
-            for line_text in chunks {
-                let line_end = line_start + line_text.len();
-                let lo = sel_lo.max(line_start);
-                let hi = sel_hi.min(line_end);
-                if lo < hi {
-                    let pre = &line_text[..(lo - line_start)];
-                    let mid = &line_text[(lo - line_start)..(hi - line_start)];
-                    let (x0, _) = tr.measure(pre, TEXT_SIZE, Some(wrap_w));
-                    let (mw, _) = tr.measure(mid, TEXT_SIZE, Some(wrap_w));
-                    let y0 = body_top + row as f64 * f64::from(LINE_HEIGHT);
-                    let rect = Rect::new(
-                        content_x + f64::from(x0),
-                        y0,
-                        content_x + f64::from(x0) + f64::from(mw),
-                        y0 + f64::from(LINE_HEIGHT),
-                    );
-                    scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
-                } else if sel_lo <= line_end && sel_hi > line_end {
-                    // Selection spans this line's trailing newline.
-                    let (full_w, _) = tr.measure(line_text, TEXT_SIZE, Some(wrap_w));
-                    let y0 = body_top + row as f64 * f64::from(LINE_HEIGHT);
-                    let rect = Rect::new(
-                        content_x + f64::from(full_w),
-                        y0,
-                        content_x + f64::from(full_w) + (f64::from(TEXT_SIZE) * 0.4),
-                        y0 + f64::from(LINE_HEIGHT),
-                    );
-                    scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
-                }
-                line_start = line_end + 1;
-                row += 1;
-            }
+            self.draw_selection_highlight(scene, transform, tr, sel_color, content_x, body_top, wrap_w);
         }
 
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine::mul is pure matrix composition (translate here), not primitive integer arithmetic that can silently wrap"
+        )]
+        let body_transform = transform * Affine::translate((content_x, body_top));
         tr.draw_text(
             scene,
             &self.body.text,
             TEXT_SIZE,
             text_color,
-            transform * Affine::translate((content_x, body_top)),
+            body_transform,
             Some(wrap_w),
         );
 
         if self.focused {
-            // Count newlines before cursor for the row, measure the last
-            // line's prefix for the column.
-            let cur = self.selection.cursor;
-            let prefix = &self.body.text[..cur];
-            let nl_count = prefix.matches('\n').count();
-            let last_line_prefix = prefix.rsplit('\n').next().unwrap_or("");
-            let (prefix_w, _) = tr.measure(last_line_prefix, TEXT_SIZE, Some(wrap_w));
-            let caret_x = content_x + f64::from(prefix_w);
-            let caret_y = body_top + (nl_count as f64) * f64::from(LINE_HEIGHT);
-            let caret = Rect::new(
-                caret_x,
-                caret_y,
-                caret_x + 1.5,
-                caret_y + f64::from(LINE_HEIGHT),
-            );
-            scene.fill(Fill::NonZero, transform, accent, None, &caret);
+            self.draw_caret(scene, transform, tr, accent, content_x, body_top, wrap_w);
         }
     }
 
@@ -306,303 +364,19 @@ impl Widget for NotesApp {
         self.clamp_cursor();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_mouse = p;
-                let was_hover = self.hovered;
-                self.hovered = self.rect.contains(p);
-                if self.hovered != was_hover {
-                    *handled = true;
-                }
-
-                if self.is_dragging {
-                    // No TextRenderer on the event path; approximate hit
-                    // via per-character advance. The selection re-snaps to
-                    // true glyph bounds on the next draw.
-                    let new_pos = self.approximate_hit(p);
-                    if new_pos != self.selection.cursor {
-                        self.selection.extend_to(new_pos);
-                        *handled = true;
-                    }
-                }
+                self.handle_cursor_moved(*position, scale_factor, handled);
             }
             WindowEvent::MouseInput {
                 state: es,
                 button: MouseButton::Left,
                 ..
-            } => match es {
-                ElementState::Pressed if self.hovered => {
-                    *focus_target = Some(node_id);
-
-                    let now = Instant::now();
-                    let within_time = self
-                        .last_click_time
-                        .is_some_and(|t| now.duration_since(t) <= MULTI_CLICK_INTERVAL);
-                    let within_radius =
-                        (self.last_click_pos - self.last_mouse).hypot() <= MULTI_CLICK_RADIUS;
-                    self.click_count = if within_time && within_radius {
-                        self.click_count + 1
-                    } else {
-                        1
-                    };
-                    self.last_click_time = Some(now);
-                    self.last_click_pos = self.last_mouse;
-
-                    let pos = self.approximate_hit(self.last_mouse);
-                    match self.click_count {
-                        1 => {
-                            if modifiers.state().shift_key() {
-                                self.selection.extend_to(pos);
-                            } else {
-                                self.selection.move_to(pos);
-                                self.is_dragging = true;
-                            }
-                        }
-                        2 => {
-                            let (s, e) = word_boundaries(&self.body.text, pos);
-                            self.selection.anchor = s;
-                            self.selection.cursor = e;
-                        }
-                        _ => {
-                            let (s, e) = line_boundaries(&self.body.text, pos);
-                            self.selection.anchor = s;
-                            self.selection.cursor = e;
-                        }
-                    }
-                    *handled = true;
-                }
-                ElementState::Released if self.is_dragging => {
-                    self.is_dragging = false;
-                    *handled = true;
-                }
-                _ => {}
-            },
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        text,
-                        state: es,
-                        ..
-                    },
-                ..
             } => {
-                if !self.focused || *es != ElementState::Pressed {
-                    return;
-                }
-                let mods = modifiers.state();
-                let shift = mods.shift_key();
-                let ctrl = mods.control_key() || mods.super_key();
-
-                if ctrl {
-                    if let Key::Character(c) = logical_key {
-                        let lc = c.to_lowercase();
-                        match lc.as_str() {
-                            "a" => {
-                                if !self.body.text.is_empty() {
-                                    self.selection.anchor = 0;
-                                    self.selection.cursor = self.body.text.len();
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            "c" => {
-                                if let Some(s) = self.selected_str() {
-                                    clipboard_copy(s);
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            "x" => {
-                                if let Some(s) = self.selected_str() {
-                                    let owned = s.to_string();
-                                    clipboard_copy(&owned);
-                                    self.delete_selection(state, root);
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            "v" => {
-                                if let Some(paste) = clipboard_paste()
-                                    && !paste.is_empty()
-                                {
-                                    // Preserve \n, strip other control chars.
-                                    let cleaned: String = paste
-                                        .chars()
-                                        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-                                        .collect();
-                                    if !cleaned.is_empty() {
-                                        self.insert_str(state, root, &cleaned);
-                                    }
-                                }
-                                *handled = true;
-                                return;
-                            }
-                            _ => {
-                                // Let the shell pick up global Ctrl+Z etc.
-                                return;
-                            }
-                        }
-                    }
-                    // Ctrl + non-character: let shell handle it.
-                    return;
-                }
-
-                match logical_key {
-                    Key::Named(NamedKey::Backspace) => {
-                        if self.selection.is_collapsed() {
-                            self.delete_before(state, root);
-                        } else {
-                            self.delete_selection(state, root);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Delete) => {
-                        if self.selection.is_collapsed() {
-                            self.delete_after(state, root);
-                        } else {
-                            self.delete_selection(state, root);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        self.insert_str(state, root, "\n");
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Space) => {
-                        self.insert_str(state, root, " ");
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Tab) => {
-                        self.insert_str(state, root, "    ");
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        if !shift && !self.selection.is_collapsed() {
-                            self.selection.move_to(self.selection.min());
-                        } else {
-                            let mut p = self.selection.cursor;
-                            if p > 0 {
-                                p -= 1;
-                                while p > 0 && !self.body.text.is_char_boundary(p) {
-                                    p -= 1;
-                                }
-                            }
-                            if shift {
-                                self.selection.extend_to(p);
-                            } else {
-                                self.selection.move_to(p);
-                            }
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        if !shift && !self.selection.is_collapsed() {
-                            self.selection.move_to(self.selection.max());
-                        } else {
-                            let mut p = self.selection.cursor;
-                            if p < self.body.text.len() {
-                                p += 1;
-                                while p < self.body.text.len()
-                                    && !self.body.text.is_char_boundary(p)
-                                {
-                                    p += 1;
-                                }
-                            }
-                            if shift {
-                                self.selection.extend_to(p);
-                            } else {
-                                self.selection.move_to(p);
-                            }
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let cur = self.selection.cursor;
-                        let line_start = self.body.text[..cur].rfind('\n').map_or(0, |i| i + 1);
-                        let col = cur - line_start;
-                        let new_pos = if line_start == 0 {
-                            0
-                        } else {
-                            let prev_nl = self.body.text[..line_start - 1]
-                                .rfind('\n')
-                                .map_or(0, |i| i + 1);
-                            let prev_line_end = line_start - 1;
-                            let prev_line_len = prev_line_end - prev_nl;
-                            let want_col = col.min(prev_line_len);
-                            let mut p = prev_nl + want_col;
-                            while p > prev_nl && !self.body.text.is_char_boundary(p) {
-                                p -= 1;
-                            }
-                            p
-                        };
-                        if shift {
-                            self.selection.extend_to(new_pos);
-                        } else {
-                            self.selection.move_to(new_pos);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let cur = self.selection.cursor;
-                        let line_start = self.body.text[..cur].rfind('\n').map_or(0, |i| i + 1);
-                        let col = cur - line_start;
-                        let line_end = self.body.text[cur..]
-                            .find('\n')
-                            .map_or(self.body.text.len(), |i| cur + i);
-                        let new_pos = if line_end == self.body.text.len() {
-                            self.body.text.len()
-                        } else {
-                            let next_line_start = line_end + 1;
-                            let next_line_end = self.body.text[next_line_start..]
-                                .find('\n')
-                                .map_or(self.body.text.len(), |i| next_line_start + i);
-                            let next_line_len = next_line_end - next_line_start;
-                            let want_col = col.min(next_line_len);
-                            let mut p = next_line_start + want_col;
-                            while p < self.body.text.len() && !self.body.text.is_char_boundary(p) {
-                                p += 1;
-                            }
-                            p
-                        };
-                        if shift {
-                            self.selection.extend_to(new_pos);
-                        } else {
-                            self.selection.move_to(new_pos);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Home) => {
-                        let line_start = self.body.text[..self.selection.cursor]
-                            .rfind('\n')
-                            .map_or(0, |i| i + 1);
-                        if shift {
-                            self.selection.extend_to(line_start);
-                        } else {
-                            self.selection.move_to(line_start);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::End) => {
-                        let line_end = self.body.text[self.selection.cursor..]
-                            .find('\n')
-                            .map_or(self.body.text.len(), |i| self.selection.cursor + i);
-                        if shift {
-                            self.selection.extend_to(line_end);
-                        } else {
-                            self.selection.move_to(line_end);
-                        }
-                        *handled = true;
-                    }
-                    _ => {
-                        if let Some(t) = text {
-                            let s = t.as_str();
-                            if !s.is_empty() && !s.chars().all(char::is_control) {
-                                self.insert_str(state, root, s);
-                                *handled = true;
-                            }
-                        }
-                    }
-                }
+                self.handle_mouse_input(*es, modifiers, handled, focus_target, node_id);
+            }
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
+                self.handle_keyboard_input(key_event, modifiers, state, root, handled);
             }
             _ => {}
         }
@@ -683,6 +457,83 @@ impl Widget for NotesApp {
 }
 
 impl NotesApp {
+    /// The selection-highlight rects painted per visual line, including
+    /// the trailing-newline sliver when the selection spans a line break.
+    fn draw_selection_highlight(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        sel_color: vello::peniko::Color,
+        content_x: f64,
+        body_top: f64,
+        wrap_w: f32,
+    ) {
+        let sel_lo = self.selection.min();
+        let sel_hi = self.selection.max();
+        let mut line_start = 0usize;
+        for (row, line_text) in self.body.text.split('\n').enumerate() {
+            let line_end = line_start.saturating_add(line_text.len());
+            let lo = sel_lo.max(line_start);
+            let hi = sel_hi.min(line_end);
+            let y0 = body_top + count_to_f64(row) * f64::from(LINE_HEIGHT);
+            if lo < hi {
+                let pre_len = lo.saturating_sub(line_start);
+                let mid_end = hi.saturating_sub(line_start);
+                let pre = line_text.get(..pre_len).unwrap_or("");
+                let mid = line_text.get(pre_len..mid_end).unwrap_or("");
+                let (x0, _) = tr.measure(pre, TEXT_SIZE, Some(wrap_w));
+                let (mw, _) = tr.measure(mid, TEXT_SIZE, Some(wrap_w));
+                let rect = Rect::new(
+                    content_x + f64::from(x0),
+                    y0,
+                    content_x + f64::from(x0) + f64::from(mw),
+                    y0 + f64::from(LINE_HEIGHT),
+                );
+                scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
+            } else if sel_lo <= line_end && sel_hi > line_end {
+                // Selection spans this line's trailing newline.
+                let (full_w, _) = tr.measure(line_text, TEXT_SIZE, Some(wrap_w));
+                let rect = Rect::new(
+                    content_x + f64::from(full_w),
+                    y0,
+                    content_x + f64::from(full_w) + (f64::from(TEXT_SIZE) * 0.4),
+                    y0 + f64::from(LINE_HEIGHT),
+                );
+                scene.fill(Fill::NonZero, transform, sel_color, None, &rect);
+            }
+            line_start = line_end.saturating_add(1);
+        }
+    }
+
+    /// Count newlines before the cursor for the row, measure the last
+    /// line's prefix for the column.
+    fn draw_caret(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        accent: vello::peniko::Color,
+        content_x: f64,
+        body_top: f64,
+        wrap_w: f32,
+    ) {
+        let cur = self.selection.cursor;
+        let prefix = self.body.text.get(..cur).unwrap_or("");
+        let nl_count = prefix.matches('\n').count();
+        let last_line_prefix = prefix.rsplit('\n').next().unwrap_or("");
+        let (prefix_w, _) = tr.measure(last_line_prefix, TEXT_SIZE, Some(wrap_w));
+        let caret_x = content_x + f64::from(prefix_w);
+        let caret_y = body_top + count_to_f64(nl_count) * f64::from(LINE_HEIGHT);
+        let caret = Rect::new(
+            caret_x,
+            caret_y,
+            caret_x + 1.5,
+            caret_y + f64::from(LINE_HEIGHT),
+        );
+        scene.fill(Fill::NonZero, transform, accent, None, &caret);
+    }
+
     /// Coarse hit-test for `handle_event` (no `TextRenderer` there); the
     /// visual selection is drawn against true glyph metrics in `draw`.
     fn approximate_hit(&self, point: Point) -> usize {
@@ -691,35 +542,304 @@ impl NotesApp {
         }
         let rel_x = (point.x - self.body_origin.x).max(0.0);
         let rel_y = (point.y - self.body_origin.y).max(0.0);
-        let row = (rel_y / f64::from(LINE_HEIGHT)).floor() as usize;
-
-        // ~8px average advance for 15px proportional text; 7.2 avoids
-        // overshooting on the common case.
-        const APPROX_ADVANCE_PX: f64 = 7.2;
+        let row_f = (rel_y / f64::from(LINE_HEIGHT)).floor().max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to >= 0.0 above and immediately re-clamped to the document's line count below"
+        )]
+        let row = row_f as usize;
 
         let mut line_starts: Vec<usize> = std::iter::once(0)
-            .chain(self.body.text.match_indices('\n').map(|(i, _)| i + 1))
+            .chain(
+                self.body
+                    .text
+                    .match_indices('\n')
+                    .map(|(i, _)| i.saturating_add(1)),
+            )
             .collect();
         if line_starts.is_empty() {
             line_starts.push(0);
         }
         let line_count = line_starts.len();
         let row = row.min(line_count.saturating_sub(1));
-        let line_start = line_starts[row];
-        let line_end = if row + 1 < line_count {
-            line_starts[row + 1] - 1
+        let line_start = line_starts.get(row).copied().unwrap_or(0);
+        let line_end = if row.saturating_add(1) < line_count {
+            line_starts
+                .get(row.saturating_add(1))
+                .copied()
+                .unwrap_or(self.body.text.len())
+                .saturating_sub(1)
         } else {
             self.body.text.len()
         };
 
-        let chars_at = (rel_x / APPROX_ADVANCE_PX).round().max(0.0) as usize;
-        let line_text = &self.body.text[line_start..line_end];
+        let chars_at_f = (rel_x / APPROX_ADVANCE_PX).round().max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to >= 0.0 immediately above; an overshoot just means \"past end of line\", which the loop's fallback return below already handles"
+        )]
+        let chars_at = chars_at_f as usize;
+        let line_text = self.body.text.get(line_start..line_end).unwrap_or("");
         for (i, (b, _)) in line_text.char_indices().enumerate() {
             if i >= chars_at {
-                return line_start + b;
+                return line_start.saturating_add(b);
             }
         }
         line_end
+    }
+
+    fn handle_cursor_moved(
+        &mut self,
+        position: winit::dpi::PhysicalPosition<f64>,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) {
+        let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_mouse = p;
+        let was_hover = self.hovered;
+        self.hovered = self.rect.contains(p);
+        if self.hovered != was_hover {
+            *handled = true;
+        }
+
+        if self.is_dragging {
+            // No TextRenderer on the event path; approximate hit via
+            // per-character advance. The selection re-snaps to true
+            // glyph bounds on the next draw.
+            let new_pos = self.approximate_hit(p);
+            if new_pos != self.selection.cursor {
+                self.selection.extend_to(new_pos);
+                *handled = true;
+            }
+        }
+    }
+
+    fn handle_mouse_input(
+        &mut self,
+        es: ElementState,
+        modifiers: &Modifiers,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        match es {
+            ElementState::Pressed if self.hovered => {
+                *focus_target = Some(node_id);
+
+                let now = Instant::now();
+                let within_time = self
+                    .last_click_time
+                    .is_some_and(|t| now.duration_since(t) <= MULTI_CLICK_INTERVAL);
+                let within_radius =
+                    self.last_click_pos.distance(self.last_mouse) <= MULTI_CLICK_RADIUS;
+                self.click_count = if within_time && within_radius {
+                    self.click_count.saturating_add(1)
+                } else {
+                    1
+                };
+                self.last_click_time = Some(now);
+                self.last_click_pos = self.last_mouse;
+
+                let pos = self.approximate_hit(self.last_mouse);
+                match self.click_count {
+                    1 => {
+                        if modifiers.state().shift_key() {
+                            self.selection.extend_to(pos);
+                        } else {
+                            self.selection.move_to(pos);
+                            self.is_dragging = true;
+                        }
+                    }
+                    2 => {
+                        let (s, e) = word_boundaries(&self.body.text, pos);
+                        self.selection.anchor = s;
+                        self.selection.cursor = e;
+                    }
+                    _ => {
+                        let (s, e) = line_boundaries(&self.body.text, pos);
+                        self.selection.anchor = s;
+                        self.selection.cursor = e;
+                    }
+                }
+                *handled = true;
+            }
+            ElementState::Released if self.is_dragging => {
+                self.is_dragging = false;
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_keyboard_input(
+        &mut self,
+        key_event: &KeyEvent,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        if !self.focused || key_event.state != ElementState::Pressed {
+            return;
+        }
+        let mods = modifiers.state();
+        let shift = mods.shift_key();
+        let ctrl = mods.control_key() || mods.super_key();
+
+        if ctrl {
+            self.handle_ctrl_key(&key_event.logical_key, state, root, handled);
+            return;
+        }
+        self.handle_plain_key(
+            &key_event.logical_key,
+            key_event.text.as_deref(),
+            shift,
+            state,
+            root,
+            handled,
+        );
+    }
+
+    /// Ctrl+A/C/X/V. Any other Ctrl+character (or Ctrl+non-character) is
+    /// left unhandled so the shell can pick up global shortcuts.
+    fn handle_ctrl_key(
+        &mut self,
+        logical_key: &Key,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        let Key::Character(c) = logical_key else {
+            return;
+        };
+        let lc = c.to_lowercase();
+        match lc.as_str() {
+            "a" => {
+                if !self.body.text.is_empty() {
+                    self.selection.anchor = 0;
+                    self.selection.cursor = self.body.text.len();
+                }
+                *handled = true;
+            }
+            "c" => {
+                if let Some(s) = self.selected_str() {
+                    clipboard_copy(s);
+                }
+                *handled = true;
+            }
+            "x" => {
+                if let Some(s) = self.selected_str() {
+                    let owned = s.to_string();
+                    clipboard_copy(&owned);
+                    self.delete_selection(state, root);
+                }
+                *handled = true;
+            }
+            "v" => {
+                if let Some(paste) = clipboard_paste()
+                    && !paste.is_empty()
+                {
+                    // Preserve \n, strip other control chars.
+                    let cleaned: String = paste
+                        .chars()
+                        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+                        .collect();
+                    if !cleaned.is_empty() {
+                        self.insert_str(state, root, &cleaned);
+                    }
+                }
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Everything but Ctrl+combos: editing keys, navigation, and plain
+    /// text insertion.
+    fn handle_plain_key(
+        &mut self,
+        logical_key: &Key,
+        text: Option<&str>,
+        shift: bool,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        match logical_key {
+            Key::Named(NamedKey::Backspace) => {
+                if self.selection.is_collapsed() {
+                    self.delete_before(state, root);
+                } else {
+                    self.delete_selection(state, root);
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                if self.selection.is_collapsed() {
+                    self.delete_after(state, root);
+                } else {
+                    self.delete_selection(state, root);
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.insert_str(state, root, "\n");
+                *handled = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                self.insert_str(state, root, " ");
+                *handled = true;
+            }
+            Key::Named(NamedKey::Tab) => {
+                self.insert_str(state, root, "    ");
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if !shift && !self.selection.is_collapsed() {
+                    self.selection.move_to(self.selection.min());
+                } else {
+                    let p = self.body.prev_boundary(self.selection.cursor);
+                    self.move_or_extend(p, shift);
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if !shift && !self.selection.is_collapsed() {
+                    self.selection.move_to(self.selection.max());
+                } else {
+                    let p = self.body.next_boundary(self.selection.cursor);
+                    self.move_or_extend(p, shift);
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.move_line_up(shift);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.move_line_down(shift);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Home) => {
+                self.move_home(shift);
+                *handled = true;
+            }
+            Key::Named(NamedKey::End) => {
+                self.move_end(shift);
+                *handled = true;
+            }
+            _ => {
+                if let Some(s) = text
+                    && !s.is_empty()
+                    && !s.chars().all(char::is_control)
+                {
+                    self.insert_str(state, root, s);
+                    *handled = true;
+                }
+            }
+        }
     }
 }
 
@@ -904,12 +1024,12 @@ mod tests {
         app.selection.extend_to(p);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 1);
-        assert_eq!(&app.body.text[app.selection.range()], "h");
+        assert_eq!(app.body.text.get(app.selection.range()).unwrap_or_default(), "h");
 
         app.selection.extend_to(3);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 3);
-        assert_eq!(&app.body.text[app.selection.range()], "hel");
+        assert_eq!(app.body.text.get(app.selection.range()).unwrap_or_default(), "hel");
     }
 
     #[test]
@@ -918,7 +1038,7 @@ mod tests {
         let (s, e) = word_boundaries(&app.body.text, 8);
         assert_eq!(s, 6);
         assert_eq!(e, 11);
-        assert_eq!(&app.body.text[s..e], "world");
+        assert_eq!(app.body.text.get(s..e).unwrap_or_default(), "world");
     }
 
     #[test]
@@ -929,7 +1049,7 @@ mod tests {
         assert!(!app.selection.is_collapsed());
         assert_eq!(app.selection.min(), 0);
         assert_eq!(app.selection.max(), app.body.text.len());
-        assert_eq!(&app.body.text[app.selection.range()], "alpha\nbeta\ngamma");
+        assert_eq!(app.body.text.get(app.selection.range()).unwrap_or_default(), "alpha\nbeta\ngamma");
     }
 
     #[test]
@@ -965,7 +1085,7 @@ mod tests {
         // Byte 8 sits inside "beta" (starts at 6, ends at 10 — the \n).
         assert_eq!(s, 6);
         assert_eq!(e, 10);
-        assert_eq!(&app.body.text[s..e], "beta");
+        assert_eq!(app.body.text.get(s..e).unwrap_or_default(), "beta");
     }
 
     #[test]
