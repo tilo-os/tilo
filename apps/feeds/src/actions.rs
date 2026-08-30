@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::FeedsDoc;
@@ -204,8 +204,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`FeedsAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Feeds action into a
 /// replayable envelope.
+///
+/// # Panics
+///
+/// Never panics: a `FeedsAction` that fails to serialize (it never should —
+/// every field is a plain string or bool) falls back to an empty-payload
+/// envelope rather than crashing the caller.
 pub fn encode(action: &FeedsAction) -> EncodedAction {
-    EncodedAction::encode(FEEDS_ACTION_TYPE, action).expect("FeedsAction is always serializable")
+    EncodedAction::encode(FEEDS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: FEEDS_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -278,7 +287,7 @@ pub fn set_starred_action(id: Id, starred: bool) -> FeedsAction {
 
 pub fn mark_all_read_action(ids: &[Id]) -> FeedsAction {
     FeedsAction::MarkAllRead {
-        ids: ids.iter().map(|i| i.to_string()).collect(),
+        ids: ids.iter().map(ToString::to_string).collect(),
     }
 }
 
@@ -316,7 +325,13 @@ pub struct FeedsResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, FEEDS_ACTION_TYPE, action).expect("encode feeds action")
+    ActionSpec::immediate(id, label, FEEDS_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: None,
+        locus: action.locus(),
+        input: ActionInput::Immediate(encode(action)),
+    })
 }
 
 /// A one-line label for a feed, defaulting to a placeholder when untitled.
@@ -450,14 +465,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
@@ -545,7 +560,7 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
             FeedsDoc::load(&state.doc).feeds.len(),
