@@ -42,8 +42,8 @@ use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
 };
 use crate::shell::workspace_settings::{
-    CapEdit, EXPIRY_CHOICES, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    permissions_pane_layout,
+    CapEdit, EXPIRY_CHOICES, default_app_rows, draw_default_apps_pane, draw_members_pane,
+    draw_permissions_pane, members_pane_rows, permissions_pane_layout,
 };
 
 /// The Permissions tab's grant-composer controls, as painted. Cached on
@@ -197,7 +197,11 @@ pub struct ShellOverlayHost {
     /// Hit rects for the WS-settings tab pills, in [`WsTab::all`] order.
     /// `Rect::ZERO` when not painted, so a stale click during a
     /// crossfade can't flip tabs after the modal is gone.
-    ws_settings_tab_pill_rects: [Rect; 3],
+    ws_settings_tab_pill_rects: [Rect; 4],
+    /// Apps & Files rows: resource, workspace-policy control, personal
+    /// workspace-choice control. Geometry is painted and hit-tested from the
+    /// same cache.
+    default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     /// Cached Revoke-button rects for the Permissions pane, keyed by
     /// the capability's stable id — the key
     /// [`crate::shell::state::Workspace::revoke_as`] takes, so a click
@@ -935,7 +939,8 @@ impl ShellOverlayHost {
             content_built_for_ws: None,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
-            ws_settings_tab_pill_rects: [Rect::ZERO; 3],
+            ws_settings_tab_pill_rects: [Rect::ZERO; 4],
+            default_app_rects: Vec::new(),
             permissions_revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
@@ -3290,6 +3295,7 @@ impl ShellOverlayHost {
             WsTab::General => 0,
             WsTab::Members => 1,
             WsTab::Permissions => 2,
+            WsTab::Apps => 3,
         };
         self.ws_settings_tab_pill_rects[idx]
     }
@@ -4425,6 +4431,7 @@ impl ShellOverlayHost {
         let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
             Some(WsTab::Permissions) => 640.0_f64,
             Some(WsTab::Members) => 600.0_f64,
+            Some(WsTab::Apps) => 640.0_f64,
             _ => 440.0_f64,
         };
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -5394,7 +5401,8 @@ impl Widget for ShellOverlayHost {
         if !flags.ws_settings {
             // Clear cached rects so a click during the close fade can't
             // flip tabs, same as `add_workspace_rect` above.
-            self.ws_settings_tab_pill_rects = [Rect::ZERO; 3];
+            self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
+            self.default_app_rects.clear();
             self.permissions_revoke_rects.clear();
             self.grant_composer_rects = None;
             self.member_control_rects.clear();
@@ -7146,6 +7154,57 @@ impl Widget for ShellOverlayHost {
                     .as_ref()
                     .is_some_and(|c| is_active_workspace_owner(&c.borrow()));
 
+                let default_rects = self.default_app_rects.clone();
+                for (resource, workspace_rect, user_rect) in default_rects {
+                    let workspace_hit = workspace_rect.area() > 0.0 && workspace_rect.contains(p);
+                    let user_hit = user_rect.area() > 0.0 && user_rect.contains(p);
+                    if !workspace_hit && !user_hit {
+                        continue;
+                    }
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut state = chrome.borrow_mut();
+                        let actor = state.local_user_id.clone();
+                        let candidates = crate::shell::launcher::default_app_candidates();
+                        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+                        let mut tree = state.tree_mut();
+                        if let Some(ws) = tree.active_workspace_mut() {
+                            if workspace_hit && is_owner {
+                                let next = crate::shell::workspace_settings::next_workspace_default(
+                                    ws.default_apps.policy.get(&resource),
+                                    &resource,
+                                    &candidates,
+                                );
+                                let _ = ws.set_default_app_policy_as(
+                                    &actor,
+                                    resource.clone(),
+                                    next,
+                                    &resolver,
+                                );
+                            } else if user_hit {
+                                let next = crate::shell::workspace_settings::next_user_default(
+                                    ws.default_apps
+                                        .user_choices
+                                        .get(&actor)
+                                        .and_then(|m| m.get(&resource)),
+                                    &resource,
+                                    &candidates,
+                                );
+                                let _ = ws.set_default_app_choice_as(
+                                    &actor,
+                                    &actor,
+                                    resource.clone(),
+                                    next,
+                                    &resolver,
+                                );
+                            }
+                        }
+                        drop(tree);
+                        state.bump();
+                    }
+                    *handled = true;
+                    return;
+                }
+
                 if let Some(composer) = self.grant_composer_rects {
                     let mut hit = None;
                     if composer.subject.area() > 0.0 && composer.subject.contains(p) {
@@ -8788,7 +8847,7 @@ impl ShellOverlayHost {
         let ty = rect.y0 + 112.0;
         // Written into `self.ws_settings_tab_pill_rects` after the loop
         // so one source of geometry feeds draw and click-routing.
-        let mut pill_rects = [Rect::ZERO; 3];
+        let mut pill_rects = [Rect::ZERO; 4];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
             let label = tab.label();
@@ -8905,11 +8964,39 @@ impl ShellOverlayHost {
                 self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
                 return;
             }
+            WsTab::Apps => {
+                self.permissions_revoke_rects.clear();
+                self.grant_composer_rects = None;
+                self.member_control_rects.clear();
+                self.default_app_rects.clear();
+                let body_rect = self.ws_settings_body_rect(rect);
+                let candidates = crate::shell::launcher::default_app_candidates();
+                if let Some(ws) = tree.active_workspace() {
+                    self.default_app_rects.extend(
+                        default_app_rows(body_rect, &candidates)
+                            .into_iter()
+                            .map(|row| (row.resource, row.workspace_rect, row.user_rect)),
+                    );
+                    draw_default_apps_pane(
+                        scene,
+                        transform,
+                        body_rect,
+                        ws,
+                        &state.local_user_id,
+                        &candidates,
+                        text_renderer,
+                        theme,
+                    );
+                }
+                self.draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+                return;
+            }
             WsTab::General => {
                 // Fall through to the General body below.
                 self.permissions_revoke_rects.clear();
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
+                self.default_app_rects.clear();
             }
         }
 
@@ -15341,6 +15428,7 @@ mod maximize_harvest_tests {
         let ws = Workspace {
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -15522,6 +15610,7 @@ mod resync_strips_tests {
         let ws = Workspace {
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
