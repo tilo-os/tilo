@@ -250,10 +250,6 @@ impl Widget for FileTree {
 
             let base_x = self.rect.x0 + 10.0 + meta.depth as f64 * INDENT;
             let icon_cx = base_x + 6.0;
-            #[allow(
-                clippy::similar_names,
-                reason = "icon_cx/icon_cy is the conventional x/y pairing for a center point, used the same way throughout this crate's draw code — renaming either would read worse, not better"
-            )]
             let icon_cy = y + ROW_HEIGHT / 2.0;
 
             if meta.is_folder {
