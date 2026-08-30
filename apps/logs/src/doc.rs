@@ -86,28 +86,6 @@ impl LogsDoc {
         }
     }
 
-    /// Splice a single typed character into the search Text at the end.
-    pub fn search_push(doc: &mut AutoCommit, root: &ObjId, s: &str) {
-        let id = match search_obj(doc, root) {
-            Some(id) => id,
-            None => doc
-                .put_object(root, K_SEARCH, ObjType::Text)
-                .expect("put search text"),
-        };
-        let len = doc.text(&id).unwrap_or_default().chars().count();
-        let _ = doc.splice_text(&id, len, 0, s);
-    }
-
-    /// Delete the last character of the search Text (backspace).
-    pub fn search_backspace(doc: &mut AutoCommit, root: &ObjId) {
-        if let Some(id) = search_obj(doc, root) {
-            let len = doc.text(&id).unwrap_or_default().chars().count();
-            if len > 0 {
-                let _ = doc.splice_text(&id, len - 1, 1, "");
-            }
-        }
-    }
-
     /// Replace the whole search string.
     pub fn search_set(doc: &mut AutoCommit, root: &ObjId, s: &str) {
         let id = match search_obj(doc, root) {
@@ -211,13 +189,9 @@ mod tests {
     }
 
     #[test]
-    fn search_edits_splice_and_round_trip() {
+    fn search_replacement_round_trips() {
         let mut doc = AutoCommit::new();
         LogsDoc::ensure_defaults(&mut doc, &ROOT);
-        LogsDoc::search_push(&mut doc, &ROOT, "err");
-        assert_eq!(LogsDoc::search(&doc, &ROOT), "err");
-        LogsDoc::search_backspace(&mut doc, &ROOT);
-        assert_eq!(LogsDoc::search(&doc, &ROOT), "er");
         LogsDoc::search_set(&mut doc, &ROOT, "mount");
         assert_eq!(LogsDoc::search(&doc, &ROOT), "mount");
     }
