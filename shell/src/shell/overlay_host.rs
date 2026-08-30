@@ -2294,19 +2294,19 @@ impl ShellOverlayHost {
     /// helpers pointing at the group's initial tab. Runs every frame; the
     /// O(groups × tabs) walk stays cheap enough to skip a dirty bit.
     fn harvest_active_tab_writeback(&mut self) {
+        // Widgets and chrome can't be borrowed at once, so collect the
+        // tuples first and apply under one chrome borrow.
+        struct Writeback {
+            strip: StripId,
+            group: GroupId,
+            tab: crate::shell::state::TabId,
+        }
         if self.group_row_ptrs.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Widgets and chrome can't be borrowed at once, so collect the
-        // tuples first and apply under one chrome borrow.
-        struct Writeback {
-            strip_id: StripId,
-            group_id: GroupId,
-            tab_id: crate::shell::state::TabId,
-        }
         let mut writes: Vec<Writeback> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs`
@@ -2316,9 +2316,9 @@ impl ShellOverlayHost {
             let row: &GroupRow = unsafe { &*ptr };
             for g in &row.groups {
                 writes.push(Writeback {
-                    strip_id,
-                    group_id: g.id,
-                    tab_id: g.active_tab_id(),
+                    strip: strip_id,
+                    group: g.id,
+                    tab: g.active_tab_id(),
                 });
             }
         }
@@ -2335,22 +2335,22 @@ impl ShellOverlayHost {
             for w in &writes {
                 for ws in &mut tree.workspaces {
                     for strip in &mut ws.strips {
-                        if strip.id != w.strip_id {
+                        if strip.id != w.strip {
                             continue;
                         }
                         if let Some(group) =
-                            strip.window_groups.iter_mut().find(|g| g.id == w.group_id)
-                            && group.active_tab != w.tab_id
+                            strip.window_groups.iter_mut().find(|g| g.id == w.group)
+                            && group.active_tab != w.tab
                         {
                             // A stale `bar.active_id` (mid-detach
                             // frame) would write a phantom active-tab
                             // id and silently drop the group.
-                            let tab_exists = group.tabs.iter().any(|t| t.id == w.tab_id);
+                            let tab_exists = group.tabs.iter().any(|t| t.id == w.tab);
                             if !tab_exists {
                                 continue;
                             }
-                            group.active_tab = w.tab_id;
-                            focus_writes.push((ws.id, w.strip_id, w.group_id));
+                            group.active_tab = w.tab;
+                            focus_writes.push((ws.id, w.strip, w.group));
                         }
                     }
                 }
@@ -2860,6 +2860,7 @@ impl ShellOverlayHost {
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
+        use crate::shell::launcher::LaunchEventKind;
         let events = crate::shell::launcher::drain_events();
         if events.is_empty() {
             return false;
@@ -2867,7 +2868,6 @@ impl ShellOverlayHost {
         let Some(chrome_handle) = self.chrome.clone() else {
             return false;
         };
-        use crate::shell::launcher::LaunchEventKind;
         let mut posted = false;
         for event in events {
             // Only a failure settles the "Opening…" notice here. `Started`
@@ -5372,7 +5372,7 @@ impl Widget for ShellOverlayHost {
         );
         // One more pass if the card sized against a stale host width;
         // settles in a single extra frame.
-        if self.palette_layout_host_w != self.rect.width() {
+        if (self.palette_layout_host_w - self.rect.width()).abs() > f64::EPSILON {
             self.palette_layout_dirty = true;
         }
         // Wheel-disc slot width plus a gap, reserved so the strip leaves
@@ -5603,7 +5603,7 @@ impl Widget for ShellOverlayHost {
                     &self.rect,
                 );
             }
-            let panel_xform = if dy != 0.0 || scale != 1.0 {
+            let panel_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
                 let cx = panel_rect.center().x;
                 let cy = panel_rect.center().y;
                 transform
@@ -5679,7 +5679,7 @@ impl Widget for ShellOverlayHost {
                     &clip,
                 );
             }
-            let qs_xform = if dy != 0.0 || scale != 1.0 {
+            let qs_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
                 let cx = qs_rect.center().x;
                 let cy = qs_rect.y0;
                 transform
@@ -5837,7 +5837,7 @@ impl Widget for ShellOverlayHost {
                     &self.rect,
                 );
             }
-            let palette_xform = if dy != 0.0 || scale != 1.0 {
+            let palette_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
                 let cx = palette_rect.center().x;
                 let cy = palette_rect.center().y;
                 transform
@@ -7273,7 +7273,7 @@ impl Widget for ShellOverlayHost {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 30.0,
                 winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
             };
-            if dy != 0.0 {
+            if dy.abs() > f64::EPSILON {
                 let max = self.overview_max_scroll_y();
                 self.overview_scroll_y = (self.overview_scroll_y + dy).clamp(0.0, max);
                 *handled = true;
@@ -9738,6 +9738,9 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Sub-line falls back to "Not connected" when unpaired or off
+        // (used by section 3, the toggle card grid, below).
+        const NOT_CONNECTED: &str = "Not connected";
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let qs = self
@@ -9899,9 +9902,7 @@ impl ShellOverlayHost {
 
         // Section 3: Toggle card grid. ON cards use an alpha wash rather
         // than solid indigo-500 — the concept-parity spec pins the
-        // closed→open delta to zero. Sub-line falls back to "Not
-        // connected" when unpaired or off.
-        const NOT_CONNECTED: &str = "Not connected";
+        // closed→open delta to zero.
         let wifi_sub = if qs.wifi {
             qs.wifi_networks
                 .iter()
