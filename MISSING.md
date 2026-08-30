@@ -67,7 +67,7 @@ The socket had two independently-written path expressions on opposite sides of t
 - **No systemd unit for `qos-collab-link`.** Still foreground-only. The broker no longer needs one: it is part of the session process.
 - **Broker federation is the session's, not a daemon's.** Each session's broker bridges to peers through the `ShellNetwork` handle it is given, so fan-out reaches other machines over Iroh gossip and the authenticated workspace host. What has never been exercised is two physical machines.
 - **No xdg-desktop-portal / system-keyring integration for the on-disk identity.** It's plaintext JSON with `0600` as the only mitigation, called out as TODO Phase 8.5.
-- **No cross-host invite flow.** The `qos://invite/...` URL parser works; nothing on the other side processes it into a `ChannelEvent::AttestationIssued`.
+- **Transport invites work across hosts; governance issuance is still incomplete.** Accepting a signed `qos://invite/...` adopts the room and dials its Iroh owner/hosts, but the flow still does not issue the corresponding `ChannelEvent::AttestationIssued` for the cryptographic role layer.
 
 ---
 

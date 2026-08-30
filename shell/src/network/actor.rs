@@ -50,6 +50,13 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
+    /// Publish a shell-tree message that is known to contain the complete
+    /// room history. Only the deliberate `HostReady` baseline uses this;
+    /// ordinary `SyncResp` messages may be partial anti-entropy responses.
+    PublishCheckpoint {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+    },
     Connect {
         addr: EndpointAddr,
     },
@@ -246,32 +253,10 @@ async fn run(
                     }
                 }
                 Some(NetCmd::Publish { ws, msg }) => {
-                    let Some(topic) = topics.get(&ws) else { continue };
-                    match postcard::to_allocvec(&msg) {
-                        Ok(bytes) => {
-                            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
-                                tracing::warn!(ws, %error, "iroh gossip publish failed");
-                            }
-                        }
-                        Err(error) => tracing::warn!(ws, %error, "collaboration message encode failed"),
-                    }
-                    if let Ok(bytes) = postcard::to_allocvec(&msg) {
-                        for ((session_ws, _), runtime) in &host_sessions {
-                            if *session_ws != ws { continue; }
-                            let result = match retention(&msg) {
-                                Some((channel, Retention::Checkpoint)) => runtime
-                                    .session
-                                    .publish_checkpoint(channel, bytes.clone()),
-                                Some((channel, Retention::Delta)) => runtime
-                                    .session
-                                    .publish_retained_delta(channel, bytes.clone()),
-                                None => runtime.session.publish_presence(bytes.clone()),
-                            };
-                            if let Err(error) = result {
-                                tracing::warn!(ws, %error, "workspace host publish failed");
-                            }
-                        }
-                    }
+                    publish(&topics, &host_sessions, ws, msg, false).await;
+                }
+                Some(NetCmd::PublishCheckpoint { ws, msg }) => {
+                    publish(&topics, &host_sessions, ws, msg, true).await;
                 }
                 Some(NetCmd::Connect { addr }) => {
                     let id = addr.id;
@@ -450,6 +435,43 @@ async fn run(
     let _ = router.shutdown().await;
 }
 
+async fn publish(
+    topics: &HashMap<WorkspaceId, TopicRuntime>,
+    host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    ws: WorkspaceId,
+    msg: NeighbourMsg,
+    shell_checkpoint: bool,
+) {
+    let Some(topic) = topics.get(&ws) else { return };
+    let bytes = match postcard::to_allocvec(&msg) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(ws, %error, "collaboration message encode failed");
+            return;
+        }
+    };
+    if let Err(error) = topic.sender.broadcast(Bytes::from(bytes.clone())).await {
+        tracing::warn!(ws, %error, "iroh gossip publish failed");
+    }
+    for ((session_ws, _), runtime) in host_sessions {
+        if *session_ws != ws {
+            continue;
+        }
+        let result = match retention(&msg, shell_checkpoint) {
+            Some((channel, Retention::Checkpoint)) => {
+                runtime.session.publish_checkpoint(channel, bytes.clone())
+            }
+            Some((channel, Retention::Delta)) => runtime
+                .session
+                .publish_retained_delta(channel, bytes.clone()),
+            None => runtime.session.publish_presence(bytes.clone()),
+        };
+        if let Err(error) = result {
+            tracing::warn!(ws, %error, "workspace host publish failed");
+        }
+    }
+}
+
 /// Only replayable state is allowed into the host's durable queue. Everything
 /// else is live session traffic; persisting input, presence, media, permission
 /// prompts or request/response control frames would make them execute late.
@@ -459,9 +481,16 @@ enum Retention {
     Delta,
 }
 
-fn retention(msg: &NeighbourMsg) -> Option<([u8; 32], Retention)> {
+fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Retention)> {
     let (route, kind) = match msg {
-        NeighbourMsg::SyncResp { .. } => (b"shell-tree".as_slice(), Retention::Checkpoint),
+        NeighbourMsg::SyncResp { .. } => (
+            b"shell-tree".as_slice(),
+            if shell_checkpoint {
+                Retention::Checkpoint
+            } else {
+                Retention::Delta
+            },
+        ),
         NeighbourMsg::AppCrdtSnapshot {
             app_id, record_id, ..
         } => {
@@ -629,20 +658,36 @@ mod tests {
     #[test]
     fn host_persists_state_but_never_late_session_actions() {
         assert!(matches!(
-            retention(&NeighbourMsg::SyncResp {
-                changes: vec![vec![1]],
-                room: "room".into(),
-            }),
+            retention(
+                &NeighbourMsg::SyncResp {
+                    changes: vec![vec![1]],
+                    room: "room".into(),
+                },
+                true,
+            ),
             Some((_, Retention::Checkpoint))
         ));
         assert!(matches!(
-            retention(&NeighbourMsg::AppCrdtSnapshot {
-                peer: 1,
-                app_id: "app".into(),
-                cluster_id: "room".into(),
-                record_id: "doc".into(),
-                data: vec![2],
-            }),
+            retention(
+                &NeighbourMsg::SyncResp {
+                    changes: vec![vec![1]],
+                    room: "room".into(),
+                },
+                false,
+            ),
+            Some((_, Retention::Delta))
+        ));
+        assert!(matches!(
+            retention(
+                &NeighbourMsg::AppCrdtSnapshot {
+                    peer: 1,
+                    app_id: "app".into(),
+                    cluster_id: "room".into(),
+                    record_id: "doc".into(),
+                    data: vec![2],
+                },
+                false,
+            ),
             Some((_, Retention::Checkpoint))
         ));
         for live in [
@@ -662,7 +707,7 @@ mod tests {
                 frame: vec![4],
             },
         ] {
-            assert!(retention(&live).is_none());
+            assert!(retention(&live, false).is_none());
         }
     }
 
