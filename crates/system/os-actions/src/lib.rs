@@ -74,8 +74,8 @@ pub use privacy::{
 pub use session::{SessionAction, perform_session_action};
 pub use time::{get_ntp, now_clock, now_date, set_ntp};
 pub use tool_intent::{
-    FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
-    VpnRoute, open_tool, tool_intent_from_env,
+    BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
+    ToolReply, ToolRequest, VpnRoute, open_tool, tool_intent_from_env,
 };
 
 use std::time::Duration;

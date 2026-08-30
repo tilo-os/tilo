@@ -753,6 +753,11 @@ pub struct Workspace {
     /// can't drift the way a second per-app map would.
     #[serde(default)]
     pub capabilities: Vec<CapOverride>,
+    /// Default-application policy belongs to the workspace, while each
+    /// person's ordinary defaults remain in their personal settings. All
+    /// mutation goes through the authority-checked methods below.
+    #[serde(default)]
+    pub default_apps: desktop_policy::WorkspaceDefaults,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -818,6 +823,16 @@ pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum WorkspaceDefaultError {
+    #[error("only a workspace administrator may change workspace policy")]
+    NotAdministrator,
+    #[error("a person may only change their own workspace default")]
+    WrongIdentity,
+    #[error("invalid default application: {0}")]
+    InvalidSelection(desktop_policy::DefaultAppError),
 }
 
 impl Capability {
@@ -914,6 +929,55 @@ impl Capability {
 }
 
 impl Workspace {
+    /// Set the administrator layer of default-app policy. The shell supplies
+    /// the authenticated local identity; a caller cannot widen policy by
+    /// merely painting an enabled control.
+    pub fn set_default_app_policy_as(
+        &mut self,
+        actor: &UserId,
+        resource: desktop_policy::ResourceKind,
+        policy: desktop_policy::WorkspaceDefaultPolicy,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError> {
+        if !self.may_administer(actor) {
+            return Err(WorkspaceDefaultError::NotAdministrator);
+        }
+        if let desktop_policy::WorkspaceDefaultPolicy::App(package) = &policy {
+            resolver
+                .validate_app(&resource, package)
+                .map_err(WorkspaceDefaultError::InvalidSelection)?;
+        }
+        self.default_apps.policy.insert(resource, policy);
+        Ok(())
+    }
+
+    /// Set a person's own workspace-level choice. Even a workspace owner may
+    /// not silently rewrite another person's preference; administrative
+    /// policy is the separate method above and remains visibly attributable.
+    pub fn set_default_app_choice_as(
+        &mut self,
+        actor: &UserId,
+        subject: &UserId,
+        resource: desktop_policy::ResourceKind,
+        choice: desktop_policy::UserWorkspaceChoice,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError> {
+        if actor != subject {
+            return Err(WorkspaceDefaultError::WrongIdentity);
+        }
+        if let desktop_policy::UserWorkspaceChoice::App(package) = &choice {
+            resolver
+                .validate_app(&resource, package)
+                .map_err(WorkspaceDefaultError::InvalidSelection)?;
+        }
+        self.default_apps
+            .user_choices
+            .entry(subject.clone())
+            .or_default()
+            .insert(resource, choice);
+        Ok(())
+    }
+
     // App grants — the portal's view of the one capability list. Not a
     // second store: they read/write `self.capabilities`, filtered to
     // subjects that are apps.
@@ -1324,6 +1388,7 @@ impl Workspace {
             collaborators: Vec::new(),
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         }
     }
@@ -1400,6 +1465,7 @@ impl Default for Workspace {
             collaborators: Vec::new(),
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         }
     }
@@ -4490,6 +4556,7 @@ impl WorkspaceTree {
             collaborators: Vec::new(),
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         };
 
@@ -4580,6 +4647,7 @@ impl WorkspaceTree {
             ],
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         };
 
@@ -4640,6 +4708,7 @@ impl WorkspaceTree {
             collaborators: vec![],
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         };
         self.active_strip.insert(ws_id, strip_id);
@@ -7077,6 +7146,7 @@ mod active_group_tests {
             collaborators: vec![],
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
@@ -7416,6 +7486,7 @@ mod active_workspace_peer_count_tests {
             collaborators: collabs,
             owner: None,
             capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
             shared_surfaces: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
