@@ -6,7 +6,8 @@
 //! behaviour instead of re-deriving the timing/anchor rules.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use vello::kurbo::Point;
 
 // Navigation gestures (back / forward): app-agnostic recognisers for the
@@ -212,9 +213,29 @@ pub struct PressIntent {
     pub granularity: Granularity,
 }
 
-/// Two presses count as a multi-click within this gap and distance.
-const MULTI_CLICK_MS: u128 = 450;
+/// How far apart two presses may be and still count as one multi-click.
+///
+/// A pointer preference the session owns, not a per-widget constant. Five
+/// widgets each carried their own copy of 450–500 ms, so the value could not be
+/// changed for the accessibility setting it is, and a test could only race it:
+/// a slow frame between two presses is indistinguishable from a slow user.
+static MULTI_CLICK_MS: AtomicU64 = AtomicU64::new(450);
+
+/// How far the pointer may travel between them.
 const MULTI_CLICK_DIST: f64 = 4.0;
+
+/// The current multi-click window.
+pub fn multi_click_interval() -> Duration {
+    Duration::from_millis(MULTI_CLICK_MS.load(Ordering::Relaxed))
+}
+
+/// Set the multi-click window for this session.
+pub fn set_multi_click_interval(d: Duration) {
+    MULTI_CLICK_MS.store(
+        d.as_millis().min(u128::from(u64::MAX)) as u64,
+        Ordering::Relaxed,
+    );
+}
 
 /// Tracks a text-selection drag gesture across press → move → release, including
 /// multi-click (word/line) and shift-extend.
@@ -240,7 +261,7 @@ impl DragSelect {
         let multi = !shift
             && self
                 .last_click
-                .is_some_and(|t| now.duration_since(t).as_millis() < MULTI_CLICK_MS)
+                .is_some_and(|t| now.duration_since(t) < multi_click_interval())
             && self.last_pos.distance(pos) < MULTI_CLICK_DIST;
         self.click_count = if multi {
             (self.click_count + 1).min(3)
