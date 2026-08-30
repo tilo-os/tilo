@@ -198,6 +198,46 @@ moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
         vec![att("invite.ics", "text/calendar", 1_842)],
     ));
 
+    insert_sent_archive_and_junk(&mut mb, me, ada, grace, katherine, h);
+
+    // ---- Two messages hydrated through the REAL mail-parser path ----
+    // (one plain, one multipart/mixed with a PDF attachment). This proves
+    // the offline screenshot is running the same parse code the live IMAP
+    // fetch would.
+    if let Some(mut m) = parse_eml(RAW_PLAIN.as_bytes(), SAMPLE_NOW_MIN - 30, Folder::Inbox) {
+        m.read = false;
+        m.starred = false;
+        mb.insert(m);
+    }
+    if let Some(mut m) = parse_eml(
+        RAW_WITH_PDF.as_bytes(),
+        SAMPLE_NOW_MIN - 7 * 60,
+        Folder::Inbox,
+    ) {
+        m.read = true;
+        mb.insert(m);
+    }
+    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
+    // reader exercises the sandboxed WebView path and the remote-content block.
+    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
+        m.read = false;
+        m.starred = true;
+        mb.insert(m);
+    }
+
+    mb
+}
+
+/// The Sent, Archive and Junk folders of the bundled corpus. Split out of
+/// [`sample_mailbox`] so neither half runs past the line budget.
+fn insert_sent_archive_and_junk(
+    mb: &mut Mailbox,
+    me: Addr,
+    ada: Addr,
+    grace: Addr,
+    katherine: Addr,
+    h: i64,
+) {
     // ---- Sent items
     mb.insert(message(
         me.clone(),
@@ -251,33 +291,6 @@ is definitely not a scam.",
         Folder::Junk,
         vec![],
     ));
-
-    // ---- Two messages hydrated through the REAL mail-parser path ----
-    // (one plain, one multipart/mixed with a PDF attachment). This proves
-    // the offline screenshot is running the same parse code the live IMAP
-    // fetch would.
-    if let Some(mut m) = parse_eml(RAW_PLAIN.as_bytes(), SAMPLE_NOW_MIN - 30, Folder::Inbox) {
-        m.read = false;
-        m.starred = false;
-        mb.insert(m);
-    }
-    if let Some(mut m) = parse_eml(
-        RAW_WITH_PDF.as_bytes(),
-        SAMPLE_NOW_MIN - 7 * 60,
-        Folder::Inbox,
-    ) {
-        m.read = true;
-        mb.insert(m);
-    }
-    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
-    // reader exercises the sandboxed WebView path and the remote-content block.
-    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
-        m.read = false;
-        m.starred = true;
-        mb.insert(m);
-    }
-
-    mb
 }
 
 /// A bundled multi-account store so the sidebar shows more than one account
