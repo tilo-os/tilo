@@ -17,7 +17,6 @@ jobs:
     timeout-minutes: 240
     container:
       image: code.sandbox.example/qos/qos-builder:latest
-      options: --pull=always
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
