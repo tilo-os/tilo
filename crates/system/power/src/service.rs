@@ -25,6 +25,7 @@ use crate::bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
 use crate::inhibit::InhibitRegistry;
 use crate::logind::{LogindInhibitor, LogindManager};
 use crate::policy::{PowerAction, PowerPolicy};
+use crate::profiles::PowerProfilesMonitor;
 use crate::upower::UPowerMonitor;
 
 /// What a lid/power-key/critical decision resolves to for the service.
@@ -100,6 +101,7 @@ pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<P
 pub struct PowerService {
     logind: LogindManager,
     upower: UPowerMonitor,
+    power_profiles: Option<PowerProfilesMonitor>,
     bridge: PowerBridge,
     registry: InhibitRegistry,
     policy: PowerPolicy,
@@ -126,6 +128,7 @@ impl PowerService {
         let conn = zbus::Connection::system().await?;
         let logind = LogindManager::with_connection(&conn).await?;
         let upower = UPowerMonitor::with_connection(&conn).await?;
+        let power_profiles = PowerProfilesMonitor::with_connection(&conn).await.ok();
 
         // Best-effort: if logind refuses the delegate lock we still run our policy; logind may
         // just also act on the lid. Do not fail startup.
@@ -143,6 +146,7 @@ impl PowerService {
         Ok(Self {
             logind,
             upower,
+            power_profiles,
             bridge,
             registry,
             policy,
@@ -166,6 +170,17 @@ impl PowerService {
 
         // Resume stream (best-effort; a failed subscribe just disables the resume timer reset).
         let mut sleep_stream = self.logind.receive_prepare_for_sleep().await.ok();
+        let profile_monitor = self.power_profiles.clone();
+        let mut profile_stream = match profile_monitor.as_ref() {
+            Some(monitor) => Some(monitor.receive_active_profile_changed().await),
+            None => None,
+        };
+
+        if let Some(monitor) = profile_monitor.as_ref()
+            && let Ok(profile) = monitor.active_profile().await
+        {
+            self.apply_active_profile(&profile);
+        }
 
         // Prime battery + lid so a machine that boots already-low / lid-closed reacts promptly.
         self.poll_battery().await;
@@ -185,12 +200,33 @@ impl PowerService {
                 Some(msg) = next_or_pending(&mut sleep_stream) => {
                     self.handle_prepare_for_sleep(&msg);
                 }
+                Some(changed) = next_or_pending(&mut profile_stream) => {
+                    match changed.get().await {
+                        Ok(profile) => self.apply_active_profile(&profile),
+                        Err(error) => debug!(target: "qos::power", %error, "active profile change could not be read"),
+                    }
+                }
             }
         }
     }
 
     /// Poll the battery once and apply the threshold reaction.
     async fn poll_battery(&mut self) {
+        match self.upower.history_samples().await {
+            Ok(samples) => {
+                for sample in samples {
+                    if let Err(error) = crate::history::record_power_history(
+                        sample.kind,
+                        sample.capacity,
+                        sample.health,
+                        sample.on_ac,
+                    ) {
+                        debug!(target: "qos::power", %error, "power history sample could not be stored");
+                    }
+                }
+            }
+            Err(error) => debug!(target: "qos::power", %error, "power history sample failed"),
+        }
         let snap = match self.upower.battery_snapshot().await {
             Ok(s) => s,
             Err(e) => {
@@ -199,6 +235,17 @@ impl PowerService {
             }
         };
         self.apply_battery_snapshot(snap).await;
+    }
+
+    fn apply_active_profile(&mut self, profile: &str) {
+        let policy = crate::config::load_policy_for_profile(Some(profile));
+        if policy == self.policy {
+            return;
+        }
+        info!(target: "qos::power", %profile, ?policy, "active power profile policy applied");
+        self.policy = policy;
+        self.bridge
+            .push_signal(PowerSignal::IdleSuspendChanged(policy.idle_suspend));
     }
 
     async fn apply_battery_snapshot(&mut self, snap: BatterySnapshot) {
@@ -258,6 +305,7 @@ impl PowerService {
         for cmd in self.bridge.drain_commands() {
             match cmd {
                 PowerCommand::Suspend => self.do_suspend().await,
+                PowerCommand::UpdatePolicy(policy) => self.policy = policy,
             }
         }
     }

@@ -12,6 +12,9 @@
 //!   async service).
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::policy::PowerPolicy;
 
 /// A battery/power notification the compositor should surface as an OS toast.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +38,9 @@ pub enum PowerSignal {
     /// The machine just resumed from sleep — reset the idle timer so it does
     /// not immediately re-blank/re-suspend on the stale pre-sleep timestamp.
     ResumedFromSleep,
+    /// power-profiles-daemon changed profile; apply the newly resolved idle
+    /// timeout to the live session state machine.
+    IdleSuspendChanged(Option<Duration>),
 }
 
 /// A request from the compositor loop to the power service.
@@ -43,6 +49,8 @@ pub enum PowerCommand {
     /// Suspend the machine via logind. Emitted after the sync loop has
     /// consulted the inhibitor registry and decided suspend should proceed.
     Suspend,
+    /// Settings changed on disk; replace the service's threshold/lid policy.
+    UpdatePolicy(PowerPolicy),
 }
 
 #[derive(Default, Debug)]
@@ -87,6 +95,12 @@ impl PowerBridge {
     /// Ask the power service to suspend the machine.
     pub fn request_suspend(&self) {
         self.lock().commands.push(PowerCommand::Suspend);
+    }
+
+    pub fn update_policy(&self, policy: PowerPolicy) {
+        self.lock()
+            .commands
+            .push(PowerCommand::UpdatePolicy(policy));
     }
 
     /// Drain every pending command (called by the async service loop).
@@ -142,5 +156,16 @@ mod tests {
         a.request_suspend();
         // Command pushed on `a` is visible to `b`.
         assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+    }
+
+    #[test]
+    fn policy_updates_cross_the_bridge_without_stringly_state() {
+        let bridge = PowerBridge::new();
+        let policy = PowerPolicy::default();
+        bridge.update_policy(policy);
+        assert_eq!(
+            bridge.drain_commands(),
+            vec![PowerCommand::UpdatePolicy(policy)]
+        );
     }
 }

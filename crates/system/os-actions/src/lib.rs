@@ -49,7 +49,7 @@ pub use audio::{
 pub use battery::{
     BatteryHistory, BatteryHistoryPoint, BatteryInfo, ChargeCapBackend, ChargeCapCapability,
     PowerDevice, PowerSupplyKind, charge_capability, load_battery_history, power_devices,
-    record_battery_history, set_charge_limit, set_charge_limit_checked,
+    set_charge_limit, set_charge_limit_checked,
 };
 pub use bluetooth::{
     BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,

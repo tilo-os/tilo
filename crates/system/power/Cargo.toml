@@ -20,6 +20,7 @@ serde_json = "1.0"
 # One owner for ~/.config/qos/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
 settings-store = { path = "../../../crates/system/settings-store" }
+atomic-file = { path = "../../../crates/system/atomic-file" }
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { version = "4", default-features = false, features = ["tokio"] }
