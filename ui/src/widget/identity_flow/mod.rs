@@ -24,6 +24,7 @@ use ed25519_dalek::SigningKey as DalekSigningKey;
 use hmac::{Hmac, Mac};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
 use taffy::{NodeId, Style, TaffyTree};
 use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
@@ -92,7 +93,7 @@ pub struct SerializableIdentity {
     pub share_index: u16,
     /// The 32-byte Ed25519 seed `SigningKey::from_bytes` expands from;
     /// anything else here signs for the wrong key.
-    #[serde(default, with = "serde_bytes")]
+    #[serde(default, with = "serde_bytes_codec")]
     pub secret_bytes: Vec<u8>,
 }
 
@@ -534,7 +535,7 @@ pub struct InviteEnvelope {
     pub expires_unix: u64,
     pub delegation_pubkey: Ed25519PublicKey,
     /// Secret — must not be displayed (see struct doc).
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub delegation_secret: Vec<u8>,
     /// Excludes `delegation_secret`; signing `delegation_pubkey` alone
     /// is enough to bind the delegation.

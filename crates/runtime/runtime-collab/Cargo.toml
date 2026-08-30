@@ -11,6 +11,10 @@ license.workspace = true
 # the session's broker over a Unix-socket Cap'n Proto channel passed
 # in by the launcher as QOS_SVC_COLLAB_FD.
 
+[package.metadata.cargo-machete]
+# Invoked by build.rs to compile the Cap'n Proto schema.
+ignored = ["capnpc"]
+
 [lib]
 name = "runtime_collab"
 path = "src/lib.rs"
@@ -24,7 +28,6 @@ capnp.workspace = true
 capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
-futures = { workspace = true, default-features = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

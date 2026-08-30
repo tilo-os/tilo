@@ -67,7 +67,6 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
-bytes.workspace = true
 
 # Signing / hashing — reused for the connection-level nonce challenge.
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
