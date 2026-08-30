@@ -35,6 +35,14 @@ pub struct NotesDoc;
 
 impl NotesDoc {
     /// Get-or-create the top-level `pages` Map.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` on `ROOT` only fails for an invalid or
+    /// deleted parent object, and `ROOT` is permanent for the life of the doc.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn pages_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "pages") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -46,6 +54,14 @@ impl NotesDoc {
 
     /// Get-or-create the per-page Map for `id`. Returns the page Map's
     /// `ObjId`. Does not touch the page's fields.
+    ///
+    /// # Panics
+    /// Never in practice: `pages` was just fetched-or-created above, so
+    /// `put_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "pages is a Map this call itself just fetched-or-created via pages_map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn ensure_page(doc: &mut AutoCommit, id: PageId) -> ObjId {
         let pages = Self::pages_map(doc);
         let key = id.to_string();
@@ -86,9 +102,8 @@ impl NotesDoc {
     /// Read every page's metadata out of the document, sorted by
     /// `order`. Pages with an unparseable id key are skipped.
     pub fn list_pages(doc: &AutoCommit) -> Vec<PageMeta> {
-        let pages = match doc.get(&ROOT, "pages") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(&ROOT, "pages") else {
+            return Vec::new();
         };
 
         let mut out = Vec::new();
@@ -133,12 +148,20 @@ impl NotesDoc {
     /// Get-or-create the `blocks` List for an existing page. Returns
     /// `None` if the page Map doesn't exist yet (caller must
     /// `upsert_page_meta` first).
+    ///
+    /// # Panics
+    /// Never in practice: `page` was just fetched above (and matched as a
+    /// Map), so `put_object` on it only fails for an already-corrupted
+    /// document.
+    #[allow(
+        clippy::expect_used,
+        reason = "page was just fetched-and-matched as a Map above, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn page_blocks_list(doc: &mut AutoCommit, id: PageId) -> Option<ObjId> {
         let pages = Self::pages_map(doc);
         let key = id.to_string();
-        let page = match doc.get(&pages, key.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), pid))) => pid,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), page))) = doc.get(&pages, key.as_str()) else {
+            return None;
         };
         Some(match doc.get(&page, "blocks") {
             Ok(Some((Value::Object(ObjType::List), lid))) => lid,
@@ -151,9 +174,8 @@ impl NotesDoc {
     /// The `Text` `ObjId` for block `index` in a `blocks` List, if that
     /// block exists and has a Text body.
     pub fn block_text_obj(doc: &AutoCommit, blocks: &ObjId, index: usize) -> Option<ObjId> {
-        let block = match doc.get(blocks, index) {
-            Ok(Some((Value::Object(ObjType::Map), m))) => m,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(blocks, index) else {
+            return None;
         };
         match doc.get(&block, "text") {
             Ok(Some((Value::Object(ObjType::Text), t))) => Some(t),
@@ -177,6 +199,15 @@ impl NotesDoc {
 
     /// Append a new block `{ kind, text }` to a `blocks` List and return
     /// the new block's `text` `ObjId` (already seeded with `text`).
+    ///
+    /// # Panics
+    /// Never in practice: `blocks` and the freshly-inserted block map are
+    /// live objects this call itself just created, so these only fail for
+    /// an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "blocks is caller-supplied but always a live List, and the block map was just inserted by this call, so these cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn push_block(doc: &mut AutoCommit, blocks: &ObjId, kind: &str, text: &str) -> ObjId {
         let index = doc.length(blocks);
         let block = doc
