@@ -44,24 +44,35 @@ pub fn peaks_from_file(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     peaks_from_wav_bytes(&data, buckets)
 }
 
+fn le_u16(d: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        *d.get(at..at.checked_add(2)?)?.first_chunk::<2>()?,
+    ))
+}
+fn le_u32(d: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        *d.get(at..at.checked_add(4)?)?.first_chunk::<4>()?,
+    ))
+}
+
 /// Pure peak computation from WAV bytes (unit-testable on crafted PCM).
 pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
     let buckets = buckets.max(1);
-    if d.len() < 12 || &d[0..4] != b"RIFF" || &d[8..12] != b"WAVE" {
+    if d.get(0..4) != Some(b"RIFF".as_slice()) || d.get(8..12) != Some(b"WAVE".as_slice()) {
         return None;
     }
     let mut i = 12usize;
     let (mut fmt, mut channels, mut bits) = (0u16, 1u16, 16u16);
     let mut data_range: Option<(usize, usize)> = None;
     while i + 8 <= d.len() {
-        let id = &d[i..i + 4];
-        let size = u32::from_le_bytes([d[i + 4], d[i + 5], d[i + 6], d[i + 7]]) as usize;
+        let id = d.get(i..i + 4)?;
+        let size = le_u32(d, i + 4)? as usize;
         let body = i + 8;
         match id {
             b"fmt " if body + 16 <= d.len() => {
-                fmt = u16::from_le_bytes([d[body], d[body + 1]]);
-                channels = u16::from_le_bytes([d[body + 2], d[body + 3]]).max(1);
-                bits = u16::from_le_bytes([d[body + 14], d[body + 15]]);
+                fmt = le_u16(d, body)?;
+                channels = le_u16(d, body + 2)?.max(1);
+                bits = le_u16(d, body + 14)?;
             }
             b"data" => {
                 let end = (body + size).min(d.len());
@@ -74,7 +85,7 @@ pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
         i = body + size + (size & 1);
     }
     let (start, end) = data_range?;
-    let samples = decode_samples(&d[start..end], fmt, bits, channels)?;
+    let samples = decode_samples(d.get(start..end)?, fmt, bits, channels)?;
     if samples.is_empty() {
         return None;
     }
@@ -97,21 +108,23 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
         for c in 0..ch {
             let o = base + c * bytes_per;
             let v = match (fmt, bits) {
-                (1, 8) => (f32::from(d[o]) - 128.0) / 128.0,
-                (1, 16) => f32::from(i16::from_le_bytes([d[o], d[o + 1]])) / 32768.0,
+                (1, 8) => (f32::from(*d.get(o)?) - 128.0) / 128.0,
+                (1, 16) => {
+                    f32::from(i16::from_le_bytes(*d.get(o..o + 2)?.first_chunk::<2>()?)) / 32768.0
+                }
                 (1, 24) => {
-                    let mut x =
-                        i32::from(d[o]) | (i32::from(d[o + 1]) << 8) | (i32::from(d[o + 2]) << 16);
+                    let &[b0, b1, b2] = d.get(o..o + 3)?.first_chunk::<3>()?;
+                    let mut x = i32::from(b0) | (i32::from(b1) << 8) | (i32::from(b2) << 16);
                     if x & 0x0080_0000 != 0 {
                         x |= !0x00FF_FFFF;
                     }
                     x as f32 / 8_388_608.0
                 }
                 (1, 32) => {
-                    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f32
+                    i32::from_le_bytes(*d.get(o..o + 4)?.first_chunk::<4>()?) as f32
                         / 2_147_483_648.0
                 }
-                (3, 32) => f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]),
+                (3, 32) => f32::from_le_bytes(*d.get(o..o + 4)?.first_chunk::<4>()?),
                 _ => return None,
             };
             acc += v;
@@ -129,8 +142,10 @@ fn bucketize(samples: &[f32], buckets: usize) -> Vec<f32> {
     for (idx, &s) in samples.iter().enumerate() {
         let b = (idx * buckets / n).min(buckets - 1);
         let a = s.abs();
-        if a > peaks[b] {
-            peaks[b] = a;
+        if let Some(slot) = peaks.get_mut(b)
+            && a > *slot
+        {
+            *slot = a;
         }
     }
     let maxp = peaks.iter().copied().fold(0.0f32, f32::max);

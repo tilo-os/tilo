@@ -13,7 +13,7 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -92,6 +92,7 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     /// Closing clears the placement so the next open re-centres.
+    #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         if !open {
@@ -108,6 +109,7 @@ impl<C: Widget> FloatingWindow<C> {
         }
     }
 
+    #[must_use]
     pub fn with_initial_size(mut self, w: f64, h: f64) -> Self {
         self.initial_size = (w, h);
         self
@@ -242,12 +244,19 @@ impl<C: Widget> FloatingWindow<C> {
         let mut taffy = TaffyTree::<()>::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.content.build_layout(&mut taffy, theme, &mut map);
+        // The content area is a window-sized rect in logical pixels, orders of
+        // magnitude below f32's range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel content size; f32 precision is sufficient"
+        )]
+        let available = Size {
+            width: taffy::AvailableSpace::Definite(inner.width() as f32),
+            height: taffy::AvailableSpace::Definite(inner.height() as f32),
+        };
         let _ = taffy.compute_layout_with_measure(
             node,
-            Size {
-                width: taffy::AvailableSpace::Definite(inner.width() as f32),
-                height: taffy::AvailableSpace::Definite(inner.height() as f32),
-            },
+            available,
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = map.get(&node_id) {
                     unsafe { (*ptr).measure(known, available, text_renderer) }
@@ -266,7 +275,7 @@ impl<C: Widget> FloatingWindow<C> {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -278,7 +287,7 @@ impl<C: Widget> FloatingWindow<C> {
         self.content.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut inner_handled,
@@ -395,7 +404,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             &self.title,
             title_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate(Vec2::new(tx, ty)),
             None,
         );
 
@@ -457,7 +466,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.forward_to_content(
                         event,
                         scale_factor,
-                        modifiers,
+                        *modifiers,
                         state,
                         path,
                         focus_target,
@@ -495,7 +504,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     *handled = true;
                     return;
                 }
-                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -520,7 +529,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
             }
             _ => {}
@@ -605,7 +614,7 @@ mod tests {
                 },
                 ..Default::default()
             });
-            node_map.insert(n, self as *mut dyn Widget);
+            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
             n
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -613,8 +622,8 @@ mod tests {
             self.rect = Rect::new(
                 origin.x,
                 origin.y,
-                origin.x + l.size.width as f64,
-                origin.y + l.size.height as f64,
+                origin.x + f64::from(l.size.width),
+                origin.y + f64::from(l.size.height),
             );
         }
         fn draw(
@@ -638,9 +647,9 @@ mod tests {
             _n: NodeId,
             _t: &TaffyTree<()>,
         ) {
-            self.events.set(self.events.get() + 1);
+            self.events.set(self.events.get().saturating_add(1));
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Probe"
         }
         fn get_rect(&self) -> Rect {

@@ -16,6 +16,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::text_selection::{clipboard_copy, clipboard_paste};
@@ -250,9 +251,21 @@ pub struct BlockEditor {
     /// Placeholder for a single empty paragraph; host-customisable via
     /// [`Self::with_empty_hint`].
     empty_hint: String,
+    /// Reserved preview geometry for the final source line in each TeX/Typst
+    /// fenced block. Source remains an ordinary CRDT-backed code line.
+    formula_preview_rects: Vec<Option<Rect>>,
+    formula_chrome: Vec<Option<FormulaChrome>>,
+    visual_formulas: HashMap<usize, VisualFormulaState>,
+    visual_formula_focus: Option<usize>,
+    preferred_formula_mode: crate::math::FormulaMode,
 }
 
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link a page";
+const FORMULA_BLOCK_MIN_HEIGHT: f32 = 164.0;
+const FORMULA_VISUAL_MIN_HEIGHT: f32 = 132.0;
+const FORMULA_HEADER_HEIGHT: f64 = 28.0;
+const FORMULA_SOURCE_HEIGHT: f64 = 24.0;
+const FORMULA_PREVIEW_GAP: f64 = 6.0;
 
 impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
@@ -280,6 +293,11 @@ impl BlockEditor {
             local_author: None,
             kbd_sel_anchor: None,
             empty_hint: DEFAULT_EMPTY_HINT.to_string(),
+            formula_preview_rects: Vec::new(),
+            formula_chrome: Vec::new(),
+            visual_formulas: HashMap::new(),
+            visual_formula_focus: None,
+            preferred_formula_mode: crate::math::FormulaMode::Visual,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -325,6 +343,11 @@ impl BlockEditor {
             local_author: None,
             kbd_sel_anchor: None,
             empty_hint: DEFAULT_EMPTY_HINT.to_string(),
+            formula_preview_rects: Vec::new(),
+            formula_chrome: Vec::new(),
+            visual_formulas: HashMap::new(),
+            visual_formula_focus: None,
+            preferred_formula_mode: crate::math::FormulaMode::Visual,
         };
         let mut lines = md.split('\n');
         while let Some(line) = lines.next() {
@@ -482,7 +505,7 @@ impl BlockEditor {
         }
         self.is_focused = focused;
         if focused {
-            if self.focused.is_none() {
+            if self.focused.is_none() && self.visual_formula_focus.is_none() {
                 self.focused = Some(0);
             }
             if let Some(idx) = self.focused
@@ -490,16 +513,33 @@ impl BlockEditor {
             {
                 b.line.set_focus(true);
             }
-        } else if let Some(idx) = self.focused
-            && let Some(b) = self.blocks.get_mut(idx)
-        {
-            b.line.set_focus(false);
+        } else {
+            self.visual_formula_focus = None;
+            if let Some(idx) = self.focused
+                && let Some(b) = self.blocks.get_mut(idx)
+            {
+                b.line.set_focus(false);
+            }
         }
         self.dirty = true;
     }
 
     pub fn blocks(&self) -> &[Block] {
         &self.blocks
+    }
+
+    /// Lowest painted edge, including formula previews that intentionally sit
+    /// below their editable source line inside the same layout child.
+    pub fn content_bottom(&self) -> f64 {
+        self.blocks
+            .iter()
+            .map(|block| block.line.get_rect().y1)
+            .chain(
+                self.formula_preview_rects
+                    .iter()
+                    .filter_map(|rect| rect.map(|rect| rect.y1)),
+            )
+            .fold(self.rect.y0, f64::max)
     }
 
     /// For tests + notes-app persistence to seed blocks directly;
@@ -521,6 +561,10 @@ impl BlockEditor {
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
         self.kbd_sel_anchor = None;
+        self.formula_preview_rects.clear();
+        self.formula_chrome.clear();
+        self.visual_formulas.clear();
+        self.visual_formula_focus = None;
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
@@ -912,7 +956,7 @@ impl BlockEditor {
 
     /// Idempotent — if the focused block changed since the menu opened,
     /// still applies the conversion and leaves the text alone.
-    fn commit_slash_selection(&mut self, new_kind: BlockKind) {
+    fn commit_slash_selection(&mut self, mut new_kind: BlockKind) {
         let Some(focused_idx) = self.focused else {
             return;
         };
@@ -934,7 +978,81 @@ impl BlockEditor {
             }
         }
         self.slash_open_at = None;
+        if let Some(mut descriptor) = formula_descriptor(&new_kind) {
+            descriptor.mode = self.preferred_formula_mode;
+            new_kind = BlockKind::CodeBlock {
+                lang: Some(descriptor.fence_language()),
+            };
+        }
         let _ = self.try_convert_to(focused_idx, new_kind);
+    }
+
+    fn set_formula_mode(&mut self, start: usize, mode: crate::math::FormulaMode) {
+        let Some(mut descriptor) = self
+            .blocks
+            .get(start)
+            .and_then(|block| formula_descriptor(&block.kind))
+        else {
+            return;
+        };
+        if descriptor.mode == mode {
+            return;
+        }
+        let end = formula_run_end(&self.blocks, start);
+        let source = self.blocks[start..=end]
+            .iter()
+            .map(Block::text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        descriptor.mode = mode;
+        let language = descriptor.fence_language();
+        for block in &mut self.blocks[start..=end] {
+            block.kind = BlockKind::CodeBlock {
+                lang: Some(language.clone()),
+            };
+            block.line.set_focus(false);
+        }
+        self.preferred_formula_mode = mode;
+        if mode == crate::math::FormulaMode::Visual {
+            self.visual_formulas
+                .insert(start, VisualFormulaState::new(descriptor.syntax, &source));
+            self.visual_formula_focus = Some(start);
+            self.focused = None;
+        } else {
+            self.visual_formula_focus = None;
+            self.focused = Some(start);
+            if let Some(block) = self.blocks.get_mut(start) {
+                block.line.set_focus(true);
+                block.line.set_cursor_pos(block.line.value().len());
+            }
+        }
+        self.structure_dirty = true;
+        self.doc_structure_dirty = true;
+        self.commit_pending = true;
+        self.dirty = true;
+    }
+
+    fn commit_visual_formula_edit(
+        &mut self,
+        start: usize,
+        end: usize,
+        syntax: crate::math::FormulaSyntax,
+    ) {
+        let Some(visual) = self.visual_formulas.get_mut(&start) else {
+            return;
+        };
+        let source = syntax.serialize(&visual.editor.expr);
+        visual.source.clone_from(&source);
+        if let Some(block) = self.blocks.get_mut(start) {
+            block.line.set_text(&source);
+        }
+        for block in self.blocks.iter_mut().take(end + 1).skip(start + 1) {
+            block.line.set_text("");
+        }
+        self.doc_structure_dirty = true;
+        self.commit_pending = true;
+        self.edit_pending = true;
+        self.dirty = true;
     }
 
     /// Host calls this AFTER the main draw pass — popovers must paint
@@ -1195,6 +1313,400 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
 }
 
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
+
+fn formula_descriptor(kind: &BlockKind) -> Option<crate::math::FormulaDescriptor> {
+    let BlockKind::CodeBlock { lang } = kind else {
+        return None;
+    };
+    crate::math::FormulaDescriptor::from_fence_language(lang.as_deref())
+}
+
+fn formula_run_end(blocks: &[Block], start: usize) -> usize {
+    let Some(descriptor) = blocks
+        .get(start)
+        .and_then(|block| formula_descriptor(&block.kind))
+    else {
+        return start;
+    };
+    let mut end = start;
+    while end + 1 < blocks.len()
+        && blocks
+            .get(end + 1)
+            .and_then(|block| formula_descriptor(&block.kind))
+            == Some(descriptor)
+    {
+        end += 1;
+    }
+    end
+}
+
+#[derive(Clone)]
+struct FormulaRunPreview {
+    end: usize,
+    descriptor: crate::math::FormulaDescriptor,
+    source: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FormulaChrome {
+    end: usize,
+    descriptor: crate::math::FormulaDescriptor,
+    syntax_badge: Rect,
+    source_button: Rect,
+    visual_button: Rect,
+    editor_rect: Rect,
+}
+
+struct VisualFormulaState {
+    source: String,
+    syntax: crate::math::FormulaSyntax,
+    editor: crate::math::edit::Editor,
+    layout: Option<crate::math::Layout>,
+}
+
+impl VisualFormulaState {
+    fn new(syntax: crate::math::FormulaSyntax, source: &str) -> Self {
+        Self {
+            source: source.to_string(),
+            syntax,
+            editor: crate::math::edit::Editor::new(syntax.parse(source).expr),
+            layout: None,
+        }
+    }
+
+    fn sync_source(&mut self, syntax: crate::math::FormulaSyntax, source: &str) {
+        if self.syntax != syntax || self.source != source {
+            *self = Self::new(syntax, source);
+        }
+    }
+}
+
+fn draw_formula_preview(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    syntax: crate::math::FormulaSyntax,
+    source: &str,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    if source.trim().is_empty() {
+        text_renderer.draw_text(
+            scene,
+            "Type a formula above to preview it",
+            12.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((rect.x0 + 8.0, rect.y0 + 8.0)),
+            None,
+        );
+        return;
+    }
+
+    let parsed = syntax.parse(source);
+    let diagnostic_height = if parsed.diagnostics.is_empty() {
+        0.0
+    } else {
+        18.0
+    };
+    let available_width = (rect.width() - 16.0).max(1.0);
+    let available_height = (rect.height() - diagnostic_height - 8.0).max(1.0);
+    let mut size = 25.0f32;
+    let mut formula = crate::math::layout(&parsed.expr.root, text_renderer, size);
+    while size > 13.0 && (formula.width > available_width || formula.height > available_height) {
+        size -= 1.5;
+        formula = crate::math::layout(&parsed.expr.root, text_renderer, size);
+    }
+    let origin = Point::new(
+        rect.x0 + (rect.width() - formula.width).max(0.0) * 0.5,
+        rect.y0 + (available_height - formula.height).max(0.0) * 0.5,
+    );
+    crate::math::draw_layout(
+        scene,
+        transform,
+        text_renderer,
+        &formula,
+        origin,
+        theme.tokens.colors.text_primary,
+    );
+    if let Some(diagnostic) = parsed.diagnostics.first() {
+        let mut message = format!("Preview: {}", diagnostic.message);
+        if message.chars().count() > 90 {
+            message = message.chars().take(89).collect::<String>() + "…";
+        }
+        text_renderer.draw_text(
+            scene,
+            &message,
+            11.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((rect.x0 + 6.0, rect.y1 - 15.0)),
+            None,
+        );
+    }
+}
+
+fn draw_formula_chrome(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    chrome: FormulaChrome,
+) {
+    use vello::peniko::Fill;
+
+    let colors = &theme.tokens.colors;
+    let syntax = match chrome.descriptor.syntax {
+        crate::math::FormulaSyntax::Tex => "TeX",
+        crate::math::FormulaSyntax::Typst => "Typst",
+    };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.base,
+        None,
+        &vello::kurbo::RoundedRect::from_rect(chrome.syntax_badge, 5.0),
+    );
+    text_renderer.draw_text(
+        scene,
+        syntax,
+        11.0,
+        colors.text_primary,
+        transform * Affine::translate((chrome.syntax_badge.x0 + 7.0, chrome.syntax_badge.y0 + 5.0)),
+        None,
+    );
+    for (rect, label, selected) in [
+        (
+            chrome.source_button,
+            "Source",
+            chrome.descriptor.mode == crate::math::FormulaMode::Source,
+        ),
+        (
+            chrome.visual_button,
+            "Visual",
+            chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+        ),
+    ] {
+        let shape = vello::kurbo::RoundedRect::from_rect(rect, 5.0);
+        if selected {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.20),
+                None,
+                &shape,
+            );
+        }
+        text_renderer.draw_text(
+            scene,
+            label,
+            11.0,
+            if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+            transform * Affine::translate((rect.x0 + 7.0, rect.y0 + 5.0)),
+            None,
+        );
+    }
+}
+
+fn visual_formula_origin(rect: Rect, layout: &crate::math::Layout) -> Point {
+    Point::new(
+        rect.x0 + (rect.width() - layout.width).max(0.0) * 0.5,
+        rect.y0 + (rect.height() - layout.height).max(0.0) * 0.5,
+    )
+}
+
+fn draw_visual_formula_editor(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    state: &mut VisualFormulaState,
+    focused: bool,
+) {
+    let mut size = 25.0f32;
+    let mut layout = crate::math::layout(&state.editor.expr.root, text_renderer, size);
+    while size > 13.0 && (layout.width > rect.width() - 16.0 || layout.height > rect.height() - 8.0)
+    {
+        size -= 1.5;
+        layout = crate::math::layout(&state.editor.expr.root, text_renderer, size);
+    }
+    let origin = visual_formula_origin(rect, &layout);
+    if let Some(selection) = state.editor.selection() {
+        let row_gaps: Vec<_> = layout
+            .gaps
+            .iter()
+            .filter(|gap| gap.steps == selection.steps)
+            .collect();
+        let x0 = row_gaps
+            .iter()
+            .find(|gap| gap.index == selection.lo())
+            .map(|gap| gap.x);
+        let x1 = row_gaps
+            .iter()
+            .find(|gap| gap.index == selection.hi())
+            .map(|gap| gap.x);
+        if let (Some(x0), Some(x1)) = (x0, x1) {
+            let top = row_gaps
+                .iter()
+                .map(|gap| gap.top)
+                .fold(f64::INFINITY, f64::min);
+            let bottom = row_gaps
+                .iter()
+                .map(|gap| gap.bottom)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let band = Rect::new(
+                origin.x + x0,
+                origin.y + top,
+                origin.x + x1,
+                origin.y + bottom,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[5].with_alpha_factor(0.25),
+                None,
+                &band,
+            );
+        }
+    }
+    crate::math::draw_layout(
+        scene,
+        transform,
+        text_renderer,
+        &layout,
+        origin,
+        theme.tokens.colors.text_primary,
+    );
+    if focused
+        && let Some(gap) = layout.gaps.iter().find(|gap| {
+            gap.steps == state.editor.caret.steps && gap.index == state.editor.caret.offset
+        })
+    {
+        let caret = Rect::new(
+            origin.x + gap.x - 1.0,
+            origin.y + gap.top,
+            origin.x + gap.x + 1.0,
+            origin.y + gap.bottom,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[5],
+            None,
+            &caret,
+        );
+    }
+    state.layout = Some(layout);
+}
+
+fn handle_visual_formula_key(
+    editor: &mut crate::math::edit::Editor,
+    key: &winit::keyboard::Key,
+    modifiers: &Modifiers,
+) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+    let state = modifiers.state();
+    let shift = state.shift_key();
+    let ctrl = state.control_key() || state.super_key();
+    match key {
+        Key::Named(NamedKey::ArrowLeft) => {
+            if ctrl {
+                editor.move_word_left(shift);
+            } else {
+                editor.move_left(shift);
+            }
+            false
+        }
+        Key::Named(NamedKey::ArrowRight) => {
+            if ctrl {
+                editor.move_word_right(shift);
+            } else {
+                editor.move_right(shift);
+            }
+            false
+        }
+        Key::Named(NamedKey::ArrowUp) => {
+            editor.move_up();
+            false
+        }
+        Key::Named(NamedKey::ArrowDown) => {
+            editor.move_down();
+            false
+        }
+        Key::Named(NamedKey::Home) => {
+            editor.home(shift);
+            false
+        }
+        Key::Named(NamedKey::End) => {
+            editor.end(shift);
+            false
+        }
+        Key::Named(NamedKey::Backspace) => {
+            editor.backspace();
+            true
+        }
+        Key::Named(NamedKey::Delete) => {
+            editor.delete();
+            true
+        }
+        Key::Character(value) if ctrl => match value.as_str() {
+            "a" | "A" => {
+                editor.select_all();
+                false
+            }
+            "c" | "C" => {
+                if let Some(value) = editor.selected_linear() {
+                    clipboard_copy(&value);
+                }
+                false
+            }
+            "x" | "X" => {
+                if let Some(value) = editor.selected_linear() {
+                    clipboard_copy(&value);
+                    editor.delete_selection();
+                    return true;
+                }
+                false
+            }
+            "v" | "V" => {
+                if let Some(value) = clipboard_paste() {
+                    editor.paste_linear(
+                        &value
+                            .chars()
+                            .filter(|ch| !ch.is_control())
+                            .collect::<String>(),
+                    );
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        },
+        Key::Character(value) => {
+            let mut changed = false;
+            for mut ch in value.chars() {
+                ch = match ch {
+                    '×' => '·',
+                    '÷' => '/',
+                    '−' => '-',
+                    other => other,
+                };
+                if ch.is_alphanumeric() || "+-*/^(),. %!·π√".contains(ch) {
+                    editor.type_char(ch);
+                    changed = true;
+                }
+            }
+            changed
+        }
+        _ => false,
+    }
+}
 
 /// 1-based ordinal per `Numbered` block, 0 for non-numbered rows.
 /// Numbered per contiguous run at each indent level: a deeper level
@@ -1999,16 +2511,33 @@ struct BlockDrawCtx<'a> {
     transform: Affine,
     theme: &'a Theme,
     presence: &'a PresenceCtx,
-    is_code: &'a [bool],
     line_rects: &'a [Rect],
     ordinals: &'a [u32],
+}
+
+/// Formula-run state threaded through [`draw_block`]'s `CodeBlock` arm —
+/// kept out of [`BlockDrawCtx`] since only that one arm needs it, and
+/// `visual_formulas` needs a mutable borrow the rest of `BlockDrawCtx`
+/// doesn't.
+struct FormulaDrawCtx<'a> {
+    runs: &'a [Option<FormulaRunPreview>],
+    code_languages: &'a [Option<String>],
+    chrome: &'a [Option<FormulaChrome>],
+    preview_rects: &'a [Option<Rect>],
+    visual_formulas: &'a mut HashMap<usize, VisualFormulaState>,
+    focus: Option<usize>,
 }
 
 /// One block's prefix glyph (bullet/ordinal/checkbox/code bar/divider
 /// rule) plus its text line. A free function, not a method — it only
 /// ever needs `b`, not `self`, which keeps `draw`'s per-block loop out
 /// of the borrow checker's way.
-fn draw_block(b: &mut Block, idx: usize, ctx: &mut BlockDrawCtx<'_>) {
+fn draw_block(
+    b: &mut Block,
+    idx: usize,
+    ctx: &mut BlockDrawCtx<'_>,
+    formulas: &mut FormulaDrawCtx<'_>,
+) {
     let line_rect = b.line.get_rect();
     let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
     let gutter = prefix_gutter_for(&b.kind);
@@ -2030,7 +2559,22 @@ fn draw_block(b: &mut Block, idx: usize, ctx: &mut BlockDrawCtx<'_>) {
             draw_checklist_prefix(*done, line_rect, prefix_x0, gutter, ctx);
         }
         BlockKind::CodeBlock { .. } => {
-            draw_code_block_prefix(idx, line_rect, gutter, ctx);
+            draw_code_block_prefix(idx, line_rect, gutter, ctx, formulas);
+            // A block's own line is skipped while its visual formula
+            // editor stands in for it — the raw TeX/Typst source
+            // behind that editor is still there, just not painted.
+            let descriptor = formula_descriptor(&b.kind);
+            if descriptor.is_none_or(|value| value.mode == crate::math::FormulaMode::Source) {
+                b.line.draw(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text_renderer,
+                    ctx.theme,
+                    ctx.presence,
+                );
+            }
+            draw_formula_run(idx, ctx, formulas);
+            return;
         }
         BlockKind::Divider => {
             let cy = f64::midpoint(line_rect.y0, line_rect.y1);
@@ -2146,26 +2690,57 @@ fn draw_checklist_prefix(
 
 /// Paint background + accent bar ONCE per contiguous run of code blocks,
 /// spanning first to last line, not as per-line boxes.
-fn draw_code_block_prefix(idx: usize, line_rect: Rect, gutter: f64, ctx: &mut BlockDrawCtx<'_>) {
+fn draw_code_block_prefix(
+    idx: usize,
+    line_rect: Rect,
+    gutter: f64,
+    ctx: &mut BlockDrawCtx<'_>,
+    formulas: &FormulaDrawCtx<'_>,
+) {
     // 4px: stays inside the inter-block gap, never overlaps neighbours.
     const CODE_PAD_Y: f64 = 4.0;
+    // A run breaks whenever the language changes, not just at the
+    // code/non-code boundary — two adjacent fences in different
+    // languages get their own background rather than merging into one.
     let is_run_start = idx
         .checked_sub(1)
-        .is_none_or(|prev| !ctx.is_code.get(prev).copied().unwrap_or(false));
+        .is_none_or(|prev| formulas.code_languages.get(prev) != formulas.code_languages.get(idx));
     if !is_run_start {
         return;
     }
-    let mut end = idx;
-    while ctx
-        .is_code
-        .get(end.saturating_add(1))
+    // A formula run spans further than a same-language run alone when
+    // its preview sits past the last source line of a shorter language
+    // streak; fall back to the language-run end otherwise.
+    let end = formulas.runs.get(idx).and_then(Option::as_ref).map_or_else(
+        || {
+            let mut end = idx;
+            while formulas.code_languages.get(end.saturating_add(1))
+                == formulas.code_languages.get(idx)
+            {
+                end = end.saturating_add(1);
+            }
+            end
+        },
+        |formula| formula.end,
+    );
+    let top = formulas
+        .chrome
+        .get(idx)
         .copied()
-        .unwrap_or(false)
-    {
-        end = end.saturating_add(1);
-    }
-    let top = line_rect.y0 - CODE_PAD_Y;
-    let bottom = ctx.line_rects.get(end).map_or(line_rect.y1, |r| r.y1) + CODE_PAD_Y;
+        .flatten()
+        .map_or(line_rect.y0 - CODE_PAD_Y, |chrome| {
+            chrome.syntax_badge.y0 - 3.0
+        });
+    let bottom = formulas
+        .preview_rects
+        .get(end)
+        .copied()
+        .flatten()
+        .map_or_else(
+            || ctx.line_rects.get(end).map_or(line_rect.y1, |r| r.y1),
+            |rect| rect.y1,
+        )
+        + CODE_PAD_Y;
     let bg_rect = Rect::new(line_rect.x0 - gutter, top, line_rect.x1, bottom);
     let shape = vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
     ctx.scene.fill(
@@ -2183,6 +2758,55 @@ fn draw_code_block_prefix(idx: usize, line_rect: Rect, gutter: f64, ctx: &mut Bl
         None,
         &bar,
     );
+}
+
+/// Draws a code block's paired formula preview/chrome, if this block
+/// starts a run [`formula_descriptor`] recognises. Part of
+/// [`draw_block`]'s `CodeBlock` arm.
+fn draw_formula_run(idx: usize, ctx: &mut BlockDrawCtx<'_>, formulas: &mut FormulaDrawCtx<'_>) {
+    let Some(formula) = formulas.runs.get(idx).and_then(Option::as_ref) else {
+        return;
+    };
+    let Some(preview_rect) = formulas.preview_rects.get(formula.end).copied().flatten() else {
+        return;
+    };
+    if let Some(chrome) = formulas.chrome.get(idx).copied().flatten() {
+        draw_formula_chrome(
+            ctx.scene,
+            ctx.transform,
+            ctx.text_renderer,
+            ctx.theme,
+            chrome,
+        );
+    }
+    match formula.descriptor.mode {
+        crate::math::FormulaMode::Source => draw_formula_preview(
+            ctx.scene,
+            ctx.transform,
+            ctx.text_renderer,
+            ctx.theme,
+            preview_rect,
+            formula.descriptor.syntax,
+            &formula.source,
+        ),
+        crate::math::FormulaMode::Visual => {
+            let visual = formulas.visual_formulas.entry(idx).or_insert_with(|| {
+                VisualFormulaState::new(formula.descriptor.syntax, &formula.source)
+            });
+            if formulas.focus != Some(idx) {
+                visual.sync_source(formula.descriptor.syntax, &formula.source);
+            }
+            draw_visual_formula_editor(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                ctx.theme,
+                preview_rect,
+                visual,
+                formulas.focus == Some(idx),
+            );
+        }
+    }
 }
 
 impl Widget for BlockEditor {
@@ -2237,6 +2861,17 @@ impl Widget for BlockEditor {
             .iter()
             .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
             .collect();
+        let is_formula_end: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                formula_descriptor(&block.kind).is_some()
+                    && (index + 1 == self.blocks.len()
+                        || formula_descriptor(&self.blocks[index + 1].kind)
+                            != formula_descriptor(&block.kind))
+            })
+            .collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let n = b.line.build_layout(taffy, theme, node_map);
             // Per-block top margin (not the parent's `gap`) so it can be
@@ -2252,7 +2887,7 @@ impl Widget for BlockEditor {
             } else {
                 8.0
             };
-            if top_margin > 0.0 {
+            if top_margin > 0.0 || is_formula_end[i] {
                 let existing = taffy.style(n).cloned().unwrap_or_default();
                 let mut s = existing;
                 s.margin = taffy::Rect {
@@ -2261,6 +2896,16 @@ impl Widget for BlockEditor {
                     top: length(top_margin),
                     bottom: length(0.0_f32),
                 };
+                if is_formula_end[i] {
+                    let min_height = if formula_descriptor(&b.kind).is_some_and(|descriptor| {
+                        descriptor.mode == crate::math::FormulaMode::Visual
+                    }) {
+                        FORMULA_VISUAL_MIN_HEIGHT
+                    } else {
+                        FORMULA_BLOCK_MIN_HEIGHT
+                    };
+                    s.min_size.height = length(min_height);
+                }
                 let _ = taffy.set_style(n, s);
             }
             self.child_nodes.push(n);
@@ -2298,22 +2943,111 @@ impl Widget for BlockEditor {
         // Taffy's child list is authoritative (not `self.child_nodes`)
         // so any internal re-ordering taffy applies is tolerated.
         let children = taffy.children(node).unwrap_or_default();
-        for (b, child_node) in self.blocks.iter_mut().zip(children.iter()) {
+        self.formula_preview_rects = vec![None; self.blocks.len()];
+        self.formula_chrome = vec![None; self.blocks.len()];
+        let is_formula_start: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                formula_descriptor(&block.kind).is_some()
+                    && (index == 0
+                        || formula_descriptor(&self.blocks[index - 1].kind)
+                            != formula_descriptor(&block.kind))
+            })
+            .collect();
+        let is_formula_end: Vec<bool> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                formula_descriptor(&block.kind).is_some()
+                    && (index + 1 == self.blocks.len()
+                        || formula_descriptor(&self.blocks[index + 1].kind)
+                            != formula_descriptor(&block.kind))
+            })
+            .collect();
+        for (index, (b, child_node)) in self.blocks.iter_mut().zip(children.iter()).enumerate() {
             b.line.apply_layout(taffy, *child_node, new_origin);
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind);
             let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
             let original = b.line.get_rect();
-            if gutter > 0.0 || indent_px > 0.0 {
+            let descriptor = formula_descriptor(&b.kind);
+            let source_top = if is_formula_start[index] {
+                (original.y0 + FORMULA_HEADER_HEIGHT).min(original.y1)
+            } else {
+                original.y0
+            };
+            let source_bottom =
+                if descriptor.is_some_and(|value| value.mode == crate::math::FormulaMode::Visual) {
+                    source_top
+                } else if is_formula_end[index] {
+                    (source_top + FORMULA_SOURCE_HEIGHT).min(original.y1)
+                } else {
+                    original.y1
+                };
+            if is_formula_end[index] {
+                let mode = descriptor.map_or(crate::math::FormulaMode::Source, |value| value.mode);
+                let preview = Rect::new(
+                    original.x0 + 12.0,
+                    (if mode == crate::math::FormulaMode::Source {
+                        source_bottom + FORMULA_PREVIEW_GAP
+                    } else {
+                        source_top + 2.0
+                    })
+                    .min(original.y1),
+                    original.x1 - 8.0,
+                    (original.y1 - 6.0).max(source_bottom + FORMULA_PREVIEW_GAP),
+                );
+                self.formula_preview_rects[index] = Some(preview);
+            }
+            if gutter > 0.0
+                || indent_px > 0.0
+                || is_formula_start[index]
+                || descriptor.is_some_and(|value| value.mode == crate::math::FormulaMode::Visual)
+                || is_formula_end[index]
+            {
                 let shifted = Rect::new(
                     original.x0 + indent_px + gutter,
-                    original.y0,
+                    source_top,
                     original.x1,
-                    original.y1,
+                    source_bottom,
                 );
                 b.line.apply_layout_external(shifted);
             }
+        }
+        let mut start = 0usize;
+        while start < self.blocks.len() {
+            let Some(descriptor) = formula_descriptor(&self.blocks[start].kind) else {
+                start += 1;
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, start);
+            if let Some(editor_rect) = self.formula_preview_rects[end] {
+                let first = self.blocks[start].line.get_rect();
+                let last = self.blocks[end].line.get_rect();
+                let header_y = first.y0 - FORMULA_HEADER_HEIGHT;
+                let badge = Rect::new(first.x0, header_y + 3.0, first.x0 + 40.0, header_y + 25.0);
+                let visual_button =
+                    Rect::new(last.x1 - 60.0, header_y + 3.0, last.x1, header_y + 25.0);
+                let source_button = Rect::new(
+                    visual_button.x0 - 68.0,
+                    header_y + 3.0,
+                    visual_button.x0 - 4.0,
+                    header_y + 25.0,
+                );
+                self.formula_chrome[start] = Some(FormulaChrome {
+                    end,
+                    descriptor,
+                    syntax_badge: badge,
+                    source_button,
+                    visual_button,
+                    editor_rect,
+                });
+            }
+            start = end + 1;
         }
     }
 
@@ -2352,15 +3086,38 @@ impl Widget for BlockEditor {
             );
         }
 
-        // Precomputed so a multi-line fenced block paints ONE background
-        // + left bar spanning its lines, not a separate box per line.
-        let is_code: Vec<bool> = self
-            .blocks
-            .iter()
-            .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
-            .collect();
+        // Precompute run geometry so a multi-line fence paints one background
+        // and a formula fence paints one preview after its final source line.
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
         let ordinals = numbered_ordinals(&self.blocks);
+        let code_languages: Vec<Option<String>> = self
+            .blocks
+            .iter()
+            .map(|block| match &block.kind {
+                BlockKind::CodeBlock { lang } => Some(lang.clone().unwrap_or_default()),
+                _ => None,
+            })
+            .collect();
+        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
+        let mut formula_index = 0usize;
+        while formula_index < self.blocks.len() {
+            let Some(descriptor) = formula_descriptor(&self.blocks[formula_index].kind) else {
+                formula_index += 1;
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, formula_index);
+            let source = self.blocks[formula_index..=end]
+                .iter()
+                .map(Block::text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            formula_runs[formula_index] = Some(FormulaRunPreview {
+                end,
+                descriptor,
+                source,
+            });
+            formula_index = end + 1;
+        }
 
         let mut ctx = BlockDrawCtx {
             scene,
@@ -2368,13 +3125,20 @@ impl Widget for BlockEditor {
             transform,
             theme,
             presence,
-            is_code: is_code.as_slice(),
             line_rects: line_rects.as_slice(),
             ordinals: ordinals.as_slice(),
         };
+        let mut formulas = FormulaDrawCtx {
+            runs: formula_runs.as_slice(),
+            code_languages: code_languages.as_slice(),
+            chrome: self.formula_chrome.as_slice(),
+            preview_rects: self.formula_preview_rects.as_slice(),
+            visual_formulas: &mut self.visual_formulas,
+            focus: self.visual_formula_focus,
+        };
 
         for (idx, b) in self.blocks.iter_mut().enumerate() {
-            draw_block(b, idx, &mut ctx);
+            draw_block(b, idx, &mut ctx, &mut formulas);
         }
 
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
@@ -2521,6 +3285,37 @@ impl Widget for BlockEditor {
         // The menu owns arrow nav / Enter / Escape / typing-into-filter.
         if self.handle_slash_menu_key(event, &mut ctx) {
             return;
+        }
+
+        if let Some(start) = self.visual_formula_focus
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+        {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.visual_formula_focus = None;
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+            if !matches!(logical_key, Key::Named(NamedKey::Tab)) {
+                let chrome = self.formula_chrome.get(start).and_then(|value| *value);
+                let changed = self.visual_formulas.get_mut(&start).is_some_and(|visual| {
+                    handle_visual_formula_key(&mut visual.editor, logical_key, modifiers)
+                });
+                if changed && let Some(chrome) = chrome {
+                    self.commit_visual_formula_edit(start, chrome.end, chrome.descriptor.syntax);
+                }
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
         }
 
         // Select-all is document-scoped, like a browser editing host, rather
@@ -2737,6 +3532,49 @@ impl BlockEditor {
             self.slash_open_at = None;
             self.dirty = true;
         }
+        // A click on a formula's source/visual toggle, or inside its
+        // visual editor (to place a caret there). Checked before the
+        // checkbox/cross-block-drag gestures below since the chrome
+        // paints on top of the block it belongs to.
+        if let Some((start, chrome)) = self
+            .formula_chrome
+            .iter()
+            .enumerate()
+            .find_map(|(index, chrome)| chrome.map(|value| (index, value)))
+            .filter(|(_, chrome)| {
+                chrome.source_button.contains(self.last_mouse_pos)
+                    || chrome.visual_button.contains(self.last_mouse_pos)
+                    || (chrome.descriptor.mode == crate::math::FormulaMode::Visual
+                        && chrome.editor_rect.contains(self.last_mouse_pos))
+            })
+        {
+            if chrome.source_button.contains(self.last_mouse_pos) {
+                self.set_formula_mode(start, crate::math::FormulaMode::Source);
+            } else if chrome.visual_button.contains(self.last_mouse_pos) {
+                self.set_formula_mode(start, crate::math::FormulaMode::Visual);
+            } else if let Some(visual) = self.visual_formulas.get_mut(&start)
+                && let Some(layout) = &visual.layout
+            {
+                let origin = visual_formula_origin(chrome.editor_rect, layout);
+                if let Some(gap) = crate::math::nearest_gap(
+                    &layout.gaps,
+                    self.last_mouse_pos.x - origin.x,
+                    self.last_mouse_pos.y - origin.y,
+                ) {
+                    visual.editor.caret.steps.clone_from(&gap.steps);
+                    visual.editor.caret.offset = gap.index;
+                    visual.editor.anchor = None;
+                }
+                self.visual_formula_focus = Some(start);
+                self.focused = None;
+            }
+            self.is_focused = true;
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
+            self.dirty = true;
+            return true;
+        }
+        self.visual_formula_focus = None;
         if let Some(hit_idx) = self.checkbox_hit_test_last_mouse() {
             let _ = self.try_toggle_check(hit_idx);
             *ctx.handled = true;
@@ -3009,6 +3847,11 @@ impl Widget for BlockEditor {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.formula_chrome.iter().flatten().any(|chrome| {
+            chrome.source_button.contains(point) || chrome.visual_button.contains(point)
+        }) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         if self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
@@ -3039,20 +3882,70 @@ impl Widget for BlockEditor {
         Widget::ime_cursor_rect(&block.line)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(AccessNode::new(Role::Document).with_state(AccessState {
-            focusable: self.is_focusable(),
-            focused: self.is_focused(),
-            multiline: true,
-            ..Default::default()
-        }))
+        let formulas = self
+            .formula_chrome
+            .iter()
+            .enumerate()
+            .filter_map(|(start, chrome)| {
+                let chrome = chrome.as_ref()?;
+                let syntax = match chrome.descriptor.syntax {
+                    crate::math::FormulaSyntax::Tex => "TeX",
+                    crate::math::FormulaSyntax::Typst => "Typst",
+                };
+                let source = self.blocks[start..=chrome.end]
+                    .iter()
+                    .map(Block::text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(
+                    AccessNode::new(Role::Group)
+                        .with_name(format!("{syntax} formula"))
+                        .with_value(source)
+                        .with_children(vec![
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Source editor")
+                                .with_state(AccessState {
+                                    checked: Some(
+                                        chrome.descriptor.mode == crate::math::FormulaMode::Source,
+                                    ),
+                                    ..Default::default()
+                                }),
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Visual editor")
+                                .with_state(AccessState {
+                                    checked: Some(
+                                        chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+                                    ),
+                                    ..Default::default()
+                                }),
+                        ]),
+                )
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Document)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    multiline: true,
+                    ..Default::default()
+                })
+                .with_children(formulas),
+        )
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.blocks.iter().any(|b| b.line.is_focused())
+        self.dirty
+            || self.visual_formula_focus.is_some()
+            || self.blocks.iter().any(|b| b.line.is_focused())
     }
 
     fn needs_commit(&self) -> bool {
@@ -3681,6 +4574,67 @@ mod tests {
             "converting to a code block switches the cell to monospace"
         );
         assert!(!Block::paragraph("hi").line.inner().is_mono());
+    }
+
+    #[test]
+    fn formula_fence_reserves_preview_below_editable_source() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![
+            Block::code_block(Some("tex".into()), r"\frac{x^2+1}{\sqrt{y}}"),
+            Block::paragraph("following paragraph"),
+        ]);
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = editor.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .unwrap();
+        editor.apply_layout(&taffy, node, Point::ZERO);
+
+        let preview = editor.formula_preview_rects[0].expect("TeX preview geometry");
+        assert!(preview.height() > 70.0);
+        assert!(preview.y0 >= editor.blocks[0].line.get_rect().y1);
+        assert!(editor.blocks[1].line.get_rect().y0 > preview.y1);
+        assert!(editor.content_bottom() >= editor.blocks[1].line.get_rect().y1);
+    }
+
+    #[test]
+    fn formula_mode_is_persisted_and_visual_edits_emit_native_source() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::code_block(
+            Some("typst".into()),
+            "vec(alpha, beta, gamma)",
+        )]);
+        let original = editor.blocks[0].text().to_string();
+        editor.set_formula_mode(0, crate::math::FormulaMode::Visual);
+        assert!(matches!(
+            &editor.blocks[0].kind,
+            BlockKind::CodeBlock { lang: Some(language) } if language == "typst visual"
+        ));
+        assert_eq!(editor.blocks[0].text(), original);
+        editor.set_formula_mode(0, crate::math::FormulaMode::Source);
+        assert_eq!(editor.blocks[0].text(), original);
+        editor.set_formula_mode(0, crate::math::FormulaMode::Visual);
+
+        let source = editor.blocks[0].text().to_string();
+        assert_eq!(source, original);
+        editor
+            .visual_formulas
+            .get_mut(&0)
+            .unwrap()
+            .editor
+            .type_char('+');
+        editor.commit_visual_formula_edit(0, 0, crate::math::FormulaSyntax::Typst);
+        assert!(editor.blocks[0].text().starts_with("vec("));
+        assert!(editor.blocks[0].text().ends_with('+'));
+        assert!(Widget::needs_commit(&editor));
     }
 
     #[test]

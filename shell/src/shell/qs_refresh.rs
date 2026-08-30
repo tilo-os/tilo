@@ -25,7 +25,13 @@ pub enum QsReading {
         wifi: Option<bool>,
         bluetooth: Option<bool>,
         power: Option<qs::PowerProfile>,
+        wired: Option<qs::WiredInfo>,
+        battery: qs::BatteryInfo,
+        radios: Option<qs::RadioState>,
+        privacy: qs::PrivacyStatus,
+        vpns: Option<Vec<qs::VpnConnectionInfo>>,
     },
+    Firmware(Option<Vec<qs::FirmwareUpdate>>),
     WifiNetworks(Option<Vec<qs::WifiNetworkInfo>>),
     BtDevices(Option<Vec<qs::BtDeviceInfo>>),
 }
@@ -37,6 +43,7 @@ enum Tier {
     Fast,
     Wifi,
     Bt,
+    Firmware,
 }
 
 pub struct QsRefresh {
@@ -101,6 +108,20 @@ impl QsRefresh {
             wifi: qs::log_qs_get("get_wifi", qs::get_wifi()),
             bluetooth: qs::log_qs_get("get_bluetooth", qs::get_bluetooth()),
             power: qs::log_qs_get("get_power_profile", qs::get_power_profile()),
+            wired: qs::log_qs_get("get_wired", qs::get_wired()),
+            battery: qs::BatteryInfo::from_system(),
+            radios: qs::log_qs_get("get_radio_state", qs::get_radio_state()),
+            privacy: qs::get_privacy_status(),
+            vpns: qs::log_qs_get("list_vpn_connections", qs::list_vpn_connections()),
+        });
+    }
+
+    pub fn kick_firmware(&mut self) {
+        self.spawn(Tier::Firmware, || {
+            QsReading::Firmware(qs::log_qs_get(
+                "get_firmware_updates",
+                qs::get_firmware_updates(),
+            ))
         });
     }
 
@@ -127,6 +148,7 @@ impl QsRefresh {
                 QsReading::Fast { .. } => Tier::Fast,
                 QsReading::WifiNetworks(_) => Tier::Wifi,
                 QsReading::BtDevices(_) => Tier::Bt,
+                QsReading::Firmware(_) => Tier::Firmware,
             };
             self.in_flight.remove(&tier);
             out.push(reading);
@@ -161,6 +183,11 @@ mod tests {
             wifi: None,
             bluetooth: None,
             power: None,
+            wired: None,
+            battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
+            radios: None,
+            privacy: qs::PrivacyStatus::default(),
+            vpns: None,
         }
     }
 
@@ -194,6 +221,11 @@ mod tests {
             wifi: Some(true),
             bluetooth: None,
             power: None,
+            wired: None,
+            battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
+            radios: None,
+            privacy: qs::PrivacyStatus::default(),
+            vpns: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut got = Vec::new();

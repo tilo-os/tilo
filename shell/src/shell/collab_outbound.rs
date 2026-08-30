@@ -1,10 +1,9 @@
 //! The broker's outbound half: handing a locally-authored payload to the
-//! peer network, once, for both collaboration transports — one answer
-//! to "does a local edit leave this host", not one per transport.
+//! peer network in one place — one answer to "does a local edit leave this host".
 //!
 //! A publish is addressed by the same [`CrdtRoute`] the caller handed to
 //! the local fanout, rebuilt remotely through [`CrdtRoute::delivers_to`].
-//! Scope follows the payload, not the transport: documents publish the
+//! Scope follows the payload: documents publish the
 //! route verbatim, records included; presence reaches the room only,
 //! since the wire frame has no record field.
 //!
@@ -94,30 +93,10 @@ impl PeerPublishSink for ShellNetwork {
     }
 }
 
-/// Which transport a payload arrived on. Carried only so a refusal
-/// names the door it came through — the routing decision is identical
-/// either way, and that is the point of this module.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Transport {
-    /// The legacy length-prefixed JSON socket (`QUICK_COLLAB_SOCK`).
-    Json,
-    /// The native Cap'n Proto socket — what a sandboxed app dials.
-    Capnp,
-}
-
-impl Transport {
-    fn as_str(self) -> &'static str {
-        match self {
-            Transport::Json => "json",
-            Transport::Capnp => "capnp",
-        }
-    }
-}
-
 /// The one place a local payload becomes a peer publish. Construct with
 /// [`PeerPublisher::new`] (network wired) or [`PeerPublisher::disabled`].
-/// Both brokers hold the same instance, so "did this edit leave the
-/// machine" has one answer per session instead of one per transport.
+/// The broker holds one instance, so "did this edit leave the machine"
+/// has one answer per session.
 pub struct PeerPublisher {
     sink: Option<Arc<dyn PeerPublishSink>>,
     /// Set the first time a publish is dropped for no network — keeps
@@ -171,13 +150,8 @@ impl PeerPublisher {
 
     /// Returns whether it reached the network, so a caller that wants
     /// to assert delivery can.
-    pub fn document_incremental(
-        &self,
-        route: &CrdtRoute,
-        transport: Transport,
-        data: Vec<u8>,
-    ) -> bool {
-        let Some(sink) = self.ready(route, transport, "document increment") else {
+    pub fn document_incremental(&self, route: &CrdtRoute, data: Vec<u8>) -> bool {
+        let Some(sink) = self.ready(route, "document increment") else {
             return false;
         };
         sink.app_crdt_incremental(
@@ -191,13 +165,8 @@ impl PeerPublisher {
 
     /// The remote broker validates against its own channel state before
     /// showing it to anyone — publishing is not vouching.
-    pub fn signed_document(
-        &self,
-        route: &CrdtRoute,
-        transport: Transport,
-        envelope: SignedOp,
-    ) -> bool {
-        let Some(sink) = self.ready(route, transport, "signed document") else {
+    pub fn signed_document(&self, route: &CrdtRoute, envelope: SignedOp) -> bool {
+        let Some(sink) = self.ready(route, "signed document") else {
             return false;
         };
         sink.app_crdt_signed(
@@ -213,13 +182,8 @@ impl PeerPublisher {
     /// reply to a peer's `Arrived`, never on a commit. Without it, deltas
     /// refer to objects the receiver never saw: the peer's caret moves
     /// over a blank page.
-    pub fn document_snapshot(
-        &self,
-        route: &CrdtRoute,
-        transport: Transport,
-        data: Vec<u8>,
-    ) -> bool {
-        let Some(sink) = self.ready(route, transport, "document snapshot") else {
+    pub fn document_snapshot(&self, route: &CrdtRoute, data: Vec<u8>) -> bool {
+        let Some(sink) = self.ready(route, "document snapshot") else {
             return false;
         };
         sink.app_crdt_snapshot(
@@ -234,13 +198,8 @@ impl PeerPublisher {
     /// The app id rides along so the receiver can attribute the caret;
     /// the record is dropped since "who else is here" is a room fact,
     /// and a peer editing a different document is still a legitimate audience.
-    pub fn presence(
-        &self,
-        route: &CrdtRoute,
-        transport: Transport,
-        presence: PeerPresence,
-    ) -> bool {
-        let Some(sink) = self.ready_quietly(route, transport, "presence") else {
+    pub fn presence(&self, route: &CrdtRoute, presence: PeerPresence) -> bool {
+        let Some(sink) = self.ready_quietly(route, "presence") else {
             return false;
         };
         sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), presence);
@@ -253,12 +212,11 @@ impl PeerPublisher {
     pub fn scrollback_request(
         &self,
         route: &CrdtRoute,
-        transport: Transport,
         artifact: ArtifactId,
         before_seq: u64,
         max: u16,
     ) -> bool {
-        let Some(sink) = self.ready(route, transport, "scrollback request") else {
+        let Some(sink) = self.ready(route, "scrollback request") else {
             return false;
         };
         sink.scrollback_request(artifact, before_seq, max);
@@ -270,37 +228,25 @@ impl PeerPublisher {
     /// publisher; the route refusal is not, since repeats name a
     /// specific misbehaving connection. See [`Self::ready_quietly`] for
     /// the opt-out.
-    fn ready(
-        &self,
-        route: &CrdtRoute,
-        transport: Transport,
-        what: &str,
-    ) -> Option<&Arc<dyn PeerPublishSink>> {
-        self.ready_at(route, transport, what, true)
+    fn ready(&self, route: &CrdtRoute, what: &str) -> Option<&Arc<dyn PeerPublishSink>> {
+        self.ready_at(route, what, true)
     }
 
     /// [`Self::ready`] for a payload that repeats (pointer rate) — same
     /// gate, logged at `debug!` so it doesn't bury the warning that matters.
-    fn ready_quietly(
-        &self,
-        route: &CrdtRoute,
-        transport: Transport,
-        what: &str,
-    ) -> Option<&Arc<dyn PeerPublishSink>> {
-        self.ready_at(route, transport, what, false)
+    fn ready_quietly(&self, route: &CrdtRoute, what: &str) -> Option<&Arc<dyn PeerPublishSink>> {
+        self.ready_at(route, what, false)
     }
 
     fn ready_at(
         &self,
         route: &CrdtRoute,
-        transport: Transport,
         what: &str,
         loud: bool,
     ) -> Option<&Arc<dyn PeerPublishSink>> {
         let Some(sink) = self.sink.as_ref() else {
             if loud && !self.warned_no_network.swap(true, Ordering::Relaxed) {
                 tracing::warn!(
-                    transport = transport.as_str(),
                     "collab outbound: dropping every outbound {what} — this \
                      session has no peer network, so edits stay on this \
                      machine. Further drops are not logged.",
@@ -313,7 +259,6 @@ impl PeerPublisher {
         if !route.is_publishable() {
             if loud {
                 tracing::warn!(
-                    transport = transport.as_str(),
                     app_id = %route.app_id,
                     cluster_id = %route.cluster_id,
                     "collab outbound: NOT publishing {what} — the sender's \
@@ -322,7 +267,6 @@ impl PeerPublisher {
                 );
             } else {
                 tracing::debug!(
-                    transport = transport.as_str(),
                     app_id = %route.app_id,
                     cluster_id = %route.cluster_id,
                     "collab outbound: not publishing {what} whose route names \
@@ -337,7 +281,7 @@ impl PeerPublisher {
 
 /// A sink that keeps what it was asked to publish, so a test can ask
 /// "what route reached the wire" without standing up Iroh. Lives here
-/// since both broker transports share this instrument.
+/// for assertions against the broker's single typed ingress.
 #[cfg(test)]
 pub mod recording {
     use super::*;
@@ -487,7 +431,7 @@ mod tests {
     fn record_scope_survives_onto_the_wire() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("notes", "11111111-1111-4111-8111-111111111111", "doc-7");
-        assert!(pubr.document_incremental(&route, Transport::Capnp, vec![9, 9]));
+        assert!(pubr.document_incremental(&route, vec![9, 9]));
         assert_eq!(
             sink.drain(),
             vec![Sent::Incremental {
@@ -505,7 +449,7 @@ mod tests {
     fn a_capnp_cluster_route_publishes_without_an_app_id() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::from_channel_key("22222222-2222-4222-8222-222222222222");
-        assert!(pubr.document_incremental(&route, Transport::Capnp, vec![1]));
+        assert!(pubr.document_incremental(&route, vec![1]));
         assert_eq!(
             sink.drain(),
             vec![Sent::Incremental {
@@ -522,7 +466,7 @@ mod tests {
         let (pubr, sink) = wired();
         let route =
             CrdtRoute::from_channel_key("33333333-3333-4333-8333-333333333333#record:letter");
-        assert!(pubr.document_incremental(&route, Transport::Capnp, vec![2]));
+        assert!(pubr.document_incremental(&route, vec![2]));
         assert_eq!(
             sink.drain(),
             vec![Sent::Incremental {
@@ -543,25 +487,19 @@ mod tests {
             CrdtRoute::record("notes", "", "doc"),
         ] {
             assert!(
-                !pubr.document_incremental(&route, Transport::Json, vec![7]),
+                !pubr.document_incremental(&route, vec![7]),
                 "route {route:?} addresses nobody and must not reach the wire",
             );
             assert!(
-                !pubr.document_snapshot(&route, Transport::Json, vec![7]),
+                !pubr.document_snapshot(&route, vec![7]),
                 "route {route:?} addresses nobody, so no snapshot either",
             );
             assert!(
-                !pubr.presence(&route, Transport::Json, presence()),
+                !pubr.presence(&route, presence()),
                 "route {route:?} addresses nobody, so no presence either",
             );
             assert!(
-                !pubr.scrollback_request(
-                    &route,
-                    Transport::Json,
-                    ArtifactId(uuid::Uuid::nil()),
-                    1,
-                    1
-                ),
+                !pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 1, 1),
                 "route {route:?} addresses nobody, so no history request either",
             );
         }
@@ -573,29 +511,17 @@ mod tests {
         let pubr = PeerPublisher::disabled();
         let route = CrdtRoute::record("notes", "44444444-4444-4444-8444-444444444444", "d");
         assert!(!pubr.is_wired());
-        assert!(!pubr.document_incremental(&route, Transport::Capnp, vec![1]));
-        assert!(!pubr.document_snapshot(&route, Transport::Capnp, vec![1]));
-        assert!(!pubr.presence(&route, Transport::Capnp, presence()));
-        assert!(!pubr.scrollback_request(
-            &route,
-            Transport::Capnp,
-            ArtifactId(uuid::Uuid::nil()),
-            5,
-            3
-        ));
+        assert!(!pubr.document_incremental(&route, vec![1]));
+        assert!(!pubr.document_snapshot(&route, vec![1]));
+        assert!(!pubr.presence(&route, presence()));
+        assert!(!pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 5, 3));
     }
 
     #[test]
     fn scrollback_requests_carry_their_bounds() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("notes", "55555555-5555-4555-8555-555555555555", "d");
-        assert!(pubr.scrollback_request(
-            &route,
-            Transport::Capnp,
-            ArtifactId(uuid::Uuid::nil()),
-            42,
-            9
-        ));
+        assert!(pubr.scrollback_request(&route, ArtifactId(uuid::Uuid::nil()), 42, 9));
         assert_eq!(
             sink.drain(),
             vec![Sent::Scrollback {
@@ -609,7 +535,7 @@ mod tests {
     fn a_snapshot_carries_its_record_onto_the_wire() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("words", "66666666-6666-4666-8666-666666666666", "letter");
-        assert!(pubr.document_snapshot(&route, Transport::Capnp, vec![4, 2]));
+        assert!(pubr.document_snapshot(&route, vec![4, 2]));
         assert_eq!(
             sink.drain(),
             vec![Sent::Snapshot {
@@ -626,7 +552,7 @@ mod tests {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
         let presence = presence();
-        assert!(pubr.presence(&route, Transport::Capnp, presence.clone()));
+        assert!(pubr.presence(&route, presence.clone()));
         assert_eq!(
             sink.drain(),
             vec![Sent::Presence {
@@ -634,22 +560,6 @@ mod tests {
                 cluster_id: "77777777-7777-4777-8777-777777777777".into(),
                 presence,
             }],
-        );
-    }
-
-    #[test]
-    fn both_transports_publish_through_one_instance() {
-        // The publisher never branches on `Transport` for anything but
-        // the wording of a refusal.
-        let (pubr, sink) = wired();
-        let route = CrdtRoute::record("notes", "88888888-8888-4888-8888-888888888888", "doc");
-        assert!(pubr.document_incremental(&route, Transport::Json, vec![5]));
-        assert!(pubr.document_incremental(&route, Transport::Capnp, vec![5]));
-        let sent = sink.drain();
-        assert_eq!(sent.len(), 2);
-        assert_eq!(
-            sent[0], sent[1],
-            "the same route and payload must reach the wire identically              whichever socket the app dialled",
         );
     }
 }

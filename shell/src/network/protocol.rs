@@ -153,9 +153,8 @@ pub enum NeighbourMsg {
     /// into the local broker's validation pipeline
     /// (`collab_types::validate_inbound_op`) before fan-out.
     ///
-    /// Kept alongside the legacy `AppCrdtIncremental` so peers mid-migration
-    /// still interoperate (upgraded peers emit this; unupgraded receivers fall
-    /// back to unsigned, advisory-only fan-out). Boxed so this variant doesn't
+    /// Kept alongside unsigned `AppCrdtIncremental` for documents that have
+    /// not adopted signed governance. Boxed so this variant doesn't
     /// bloat `NeighbourMsg`'s stack size — postcard's wire shape is unaffected.
     AppCrdtIncrementalSigned {
         /// Hashed Iroh `PeerId` of the publisher; used to filter self-published
@@ -178,34 +177,8 @@ pub enum NeighbourMsg {
         /// to fan it to local apps or drop it with an audit-log entry.
         envelope: Box<collab_types::SignedOp>,
     },
-    /// App-level presence crossing the host boundary (caret, selection, pointer,
-    /// just-typed run inside a shared document).
-    ///
-    /// Distinct from [`NeighbourMsg::PresenceMoved`] (a bare point, no caret
-    /// semantics). Retained read-only for peers that still send the former
-    /// JSON-encoded `CollabRequest::Presence` frame.
-    ///
-    /// Deliberately carries no `record_id` — presence fans out at cluster scope
-    /// (`CrdtRoute::to_cluster_scope`, everyone in the room), not record scope,
-    /// so a peer stays visible to the whole room rather than only to apps with
-    /// the same document open.
-    AppPresence {
-        /// Hashed Iroh `PeerId` of the publisher; receiving shells drop their own
-        /// echoes on it, and it's what the frame is attributed to once delivered.
-        peer: PeerId,
-        /// App-id of the originating app — first half of the delivery
-        /// filter, as on the CRDT variants.
-        #[serde(default)]
-        app_id: String,
-        /// Cluster id (room, as uuid string) the presence belongs to; the receiving
-        /// shell refuses a room it isn't in before the frame reaches any app.
-        #[serde(default)]
-        cluster_id: String,
-        /// The originating `CollabRequest::Presence`, serde-encoded, opaque to every hop.
-        frame: Vec<u8>,
-    },
-    /// Typed successor to [`Self::AppPresence`]. New peers write only this
-    /// variant; receivers retain the old variant as a read-only migration seam.
+    /// App-level presence crossing the host boundary. Presence is cluster scoped,
+    /// so a participant remains visible while moving between apps in one room.
     AppPresenceV2 {
         peer: PeerId,
         #[serde(default)]

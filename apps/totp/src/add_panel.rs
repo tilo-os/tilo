@@ -35,7 +35,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Button, ButtonFace, SegmentedFace, TextInput, ToggleGroup, Widget};
 
 use crate::model::{self, Account, Algorithm};
 
@@ -676,20 +676,27 @@ impl AddAccountPanel {
                 "Algorithm",
                 self.alg_rects[0],
             );
-            for (i, alg) in Algorithm::ALL.iter().enumerate() {
-                let selected = *alg == self.algorithm;
-                let hovered = self.alg_rects[i].contains(self.last_mouse);
-                self.draw_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    self.alg_rects[i],
-                    alg.as_str(),
-                    selected,
-                    hovered,
-                );
-            }
+            let algorithm_labels: Vec<&str> = Algorithm::ALL
+                .iter()
+                .map(|algorithm| algorithm.as_str())
+                .collect();
+            let selected = Algorithm::ALL
+                .iter()
+                .position(|algorithm| *algorithm == self.algorithm)
+                .unwrap_or(0);
+            let hovered = self
+                .alg_rects
+                .iter()
+                .position(|rect| rect.contains(self.last_mouse));
+            ToggleGroup::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &SegmentedFace::new(&self.alg_rects, &algorithm_labels, selected)
+                    .pill()
+                    .hovered(hovered),
+            );
             self.draw_field_label(
                 scene,
                 transform,
@@ -698,20 +705,21 @@ impl AddAccountPanel {
                 "Digits",
                 self.digit_rects[0],
             );
-            for (i, d) in [6u8, 8u8].iter().enumerate() {
-                let selected = *d == self.digits;
-                let hovered = self.digit_rects[i].contains(self.last_mouse);
-                self.draw_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    self.digit_rects[i],
-                    &d.to_string(),
-                    selected,
-                    hovered,
-                );
-            }
+            let digit_labels = ["6", "8"];
+            let selected = usize::from(self.digits == 8);
+            let hovered = self
+                .digit_rects
+                .iter()
+                .position(|rect| rect.contains(self.last_mouse));
+            ToggleGroup::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &SegmentedFace::new(&self.digit_rects, &digit_labels, selected)
+                    .pill()
+                    .hovered(hovered),
+            );
             self.draw_field_label(
                 scene,
                 transform,
@@ -1033,56 +1041,6 @@ impl AddAccountPanel {
         );
     }
 
-    fn draw_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        selected: bool,
-        hovered: bool,
-    ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-        let bg = if selected {
-            theme.accent_primary
-        } else if hovered {
-            theme.tokens.colors.surface_white_10
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        if !selected {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &shape,
-            );
-        }
-        let color = if selected {
-            Color::WHITE
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        let (tw, th) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            13.0,
-            color,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(tw) / 2.0,
-                    rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
-    }
-
     fn draw_button(
         &self,
         scene: &mut Scene,
@@ -1094,38 +1052,14 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-        let bg = if hovered && enabled {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-        let color = if enabled {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            color,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(tw) / 2.0,
-                    rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(rect, label)
+                .hovered(hovered)
+                .disabled(!enabled),
         );
     }
 
@@ -1140,28 +1074,15 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-        let bg = if !enabled {
-            theme.accent_primary.with_alpha_factor(0.4)
-        } else if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            Color::WHITE,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(tw) / 2.0,
-                    rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Semibold,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(rect, label)
+                .primary()
+                .hovered(hovered)
+                .disabled(!enabled),
         );
     }
 

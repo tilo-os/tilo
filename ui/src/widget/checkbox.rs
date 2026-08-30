@@ -11,6 +11,60 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+/// Interaction state for an immediate-mode checkbox face. Canvas apps keep
+/// their own hit-testing while sharing the retained checkbox's visual states.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CheckboxInteract {
+    pub hovered: bool,
+    pub focused: bool,
+    pub disabled: bool,
+}
+
+/// Stateless checkbox presentation for hand-laid-out canvases.
+///
+/// [`Checkbox`] remains the right choice when the value is bound directly to
+/// an Automerge path. `CheckboxFace` avoids every immediate-mode app copying
+/// the box, focus border, disabled treatment, and proportional check mark.
+pub struct CheckboxFace {
+    rect: Rect,
+    checked: bool,
+    interact: CheckboxInteract,
+    fill_unchecked: bool,
+}
+
+impl CheckboxFace {
+    pub fn new(rect: Rect, checked: bool) -> Self {
+        Self {
+            rect,
+            checked,
+            interact: CheckboxInteract::default(),
+            fill_unchecked: true,
+        }
+    }
+
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.interact.hovered = hovered;
+        self
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.interact.focused = focused;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.interact.disabled = disabled;
+        self
+    }
+
+    /// Let the surrounding canvas provide the unchecked background. Useful
+    /// for checkboxes embedded in rows and cards rather than standalone forms.
+    pub fn transparent_unchecked(mut self) -> Self {
+        self.fill_unchecked = false;
+        self
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag (is_hovered, is_checked, is_focused, enabled) is an independent piece of \
@@ -97,6 +151,83 @@ impl Checkbox {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
+
+    /// Paint a checkbox without taking ownership of its state or events.
+    pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
+        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.md));
+        if face.interact.disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
+        }
+
+        let box_color = if face.checked {
+            theme.accent_primary
+        } else if face.interact.hovered {
+            theme.bg_hover
+        } else {
+            theme.bg_active
+        };
+        if face.checked || face.fill_unchecked || face.interact.hovered {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                box_color,
+                None,
+                &shape,
+            );
+        }
+
+        let stroke_color = if face.interact.focused {
+            theme.border_focus
+        } else {
+            theme.tokens.colors.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(if face.interact.focused { 2.0 } else { 1.0 }),
+            transform,
+            stroke_color,
+            None,
+            &shape,
+        );
+
+        if face.checked {
+            let mut path = BezPath::new();
+            path.move_to(Point::new(
+                face.rect.x0 + face.rect.width() * 0.25,
+                face.rect.y0 + face.rect.height() * 0.50,
+            ));
+            path.line_to(Point::new(
+                face.rect.x0 + face.rect.width() * 0.42,
+                face.rect.y0 + face.rect.height() * 0.67,
+            ));
+            path.line_to(Point::new(
+                face.rect.x0 + face.rect.width() * 0.75,
+                face.rect.y0 + face.rect.height() * 0.25,
+            ));
+            scene.stroke(
+                &Stroke::new((face.rect.width().min(face.rect.height()) * 0.105).max(1.5))
+                    .with_caps(vello::kurbo::Cap::Round)
+                    .with_join(vello::kurbo::Join::Round),
+                transform,
+                theme.tokens.colors.ink_on_any(
+                    &[box_color],
+                    Color::WHITE,
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                ),
+                None,
+                &path,
+            );
+        }
+
+        if face.interact.disabled {
+            scene.pop_layer();
+        }
+    }
 }
 
 impl Widget for Checkbox {
@@ -144,75 +275,15 @@ impl Widget for Checkbox {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        // Disabled widgets paint their (forced-idle) look under a reduced
-        // group opacity so they read as non-interactive.
-        let disabled = !self.enabled;
-        if disabled {
-            let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &clip,
-            );
-        }
-        let box_color = if self.is_checked {
-            theme.accent_primary
-        } else if self.is_hovered {
-            theme.bg_hover
-        } else {
-            theme.bg_active
-        };
-
-        let box_shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        Self::paint(
+            scene,
             transform,
-            box_color,
-            None,
-            &box_shape,
+            theme,
+            &CheckboxFace::new(self.rect, self.is_checked)
+                .hovered(self.is_hovered)
+                .focused(self.is_focused)
+                .disabled(!self.enabled),
         );
-
-        let stroke_color = if self.is_focused {
-            theme.border_focus
-        } else {
-            theme.tokens.colors.border_standard
-        };
-
-        scene.stroke(
-            &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
-            transform,
-            stroke_color,
-            None,
-            &box_shape,
-        );
-
-        if self.is_checked {
-            let mut path = BezPath::new();
-            path.move_to(Point::new(self.rect.x0 + 6.0, self.rect.y0 + 12.0));
-            path.line_to(Point::new(self.rect.x0 + 10.0, self.rect.y0 + 16.0));
-            path.line_to(Point::new(self.rect.x0 + 18.0, self.rect.y0 + 6.0));
-
-            scene.stroke(
-                &Stroke::new(2.5)
-                    .with_caps(vello::kurbo::Cap::Round)
-                    .with_join(vello::kurbo::Join::Round),
-                transform,
-                theme.tokens.colors.ink_on_any(
-                    &[box_color],
-                    Color::WHITE,
-                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                ),
-                None,
-                &path,
-            );
-        }
-
-        if disabled {
-            scene.pop_layer();
-        }
     }
 
     fn handle_event(
@@ -409,6 +480,22 @@ mod tests {
     fn checkbox_test_id_can_be_overridden() {
         let c = Checkbox::new("any", "path").with_id("remember_me");
         assert_eq!(Widget::test_id(&c), Some("remember_me"));
+    }
+
+    #[test]
+    fn immediate_face_preserves_canvas_owned_state() {
+        let rect = Rect::new(2.0, 3.0, 18.0, 19.0);
+        let face = CheckboxFace::new(rect, true)
+            .hovered(true)
+            .focused(true)
+            .disabled(true)
+            .transparent_unchecked();
+        assert_eq!(face.rect, rect);
+        assert!(face.checked);
+        assert!(face.interact.hovered);
+        assert!(face.interact.focused);
+        assert!(face.interact.disabled);
+        assert!(!face.fill_unchecked);
     }
 
     #[test]

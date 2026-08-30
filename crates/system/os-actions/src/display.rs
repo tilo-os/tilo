@@ -27,6 +27,7 @@ use crate::process::{run, run_capture, which};
 /// The kernel's backlight class. A parameter on the inner functions so the tests can point
 /// at a fixture tree.
 const BACKLIGHT: &str = "/sys/class/backlight";
+const IIO_DEVICES: &str = "/sys/bus/iio/devices";
 
 /// Set the backlight brightness to `pct` percent, clamped to `[0, 100]`.
 pub fn set_brightness(pct: f32) -> Result<(), String> {
@@ -66,6 +67,88 @@ pub fn get_brightness() -> Result<f32, String> {
 /// and the quick-settings panel uses this to leave the slider out rather than show a dead one.
 pub fn has_backlight() -> bool {
     preferred_device(Path::new(BACKLIGHT)).is_some()
+}
+
+/// Read ambient illuminance in lux from the kernel IIO ABI.  Drivers expose
+/// either a processed `in_illuminance_input`, or `raw × scale`; both are
+/// standard IIO forms.  No sensor means `None`, which Settings renders as an
+/// unavailable capability rather than a working-looking toggle.
+pub fn ambient_lux() -> Option<f32> {
+    ambient_lux_from(Path::new(IIO_DEVICES))
+}
+
+pub fn has_ambient_light_sensor() -> bool {
+    ambient_lux().is_some()
+}
+
+fn ambient_lux_from(root: &Path) -> Option<f32> {
+    let mut devices: Vec<PathBuf> = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    devices.sort();
+    for device in devices {
+        if let Some(v) = read_f32(&device.join("in_illuminance_input")) {
+            return v.is_finite().then_some(v.max(0.0));
+        }
+        if let Some(raw) = read_f32(&device.join("in_illuminance_raw")) {
+            let scale = read_f32(&device.join("in_illuminance_scale")).unwrap_or(1.0);
+            let value = raw * scale;
+            if value.is_finite() {
+                return Some(value.max(0.0));
+            }
+        }
+    }
+    None
+}
+
+fn read_f32(path: &Path) -> Option<f32> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Stateful lux→brightness policy.  Logarithmic mapping matches human light
+/// perception; the EMA and deadband prevent a desk shadow from making the
+/// panel visibly pulse.  The controller emits only meaningful changes.
+#[derive(Clone, Debug)]
+pub struct AmbientBrightnessController {
+    filtered_lux: Option<f32>,
+    last_output: Option<f32>,
+}
+
+impl Default for AmbientBrightnessController {
+    fn default() -> Self {
+        Self {
+            filtered_lux: None,
+            last_output: None,
+        }
+    }
+}
+
+impl AmbientBrightnessController {
+    pub fn update(&mut self, lux: f32) -> Option<f32> {
+        if !lux.is_finite() || lux < 0.0 {
+            return None;
+        }
+        let filtered = self.filtered_lux.map_or(lux, |old| old * 0.78 + lux * 0.22);
+        self.filtered_lux = Some(filtered);
+        // 0 lux → 12%; ~10 lux → 26%; ~100 lux → 49%; ~1000 lux → 73%;
+        // 10k lux → 96%.  Clamp leaves headroom at both ends.
+        let target = (12.0 + 21.0 * (filtered + 1.0).log10()).clamp(12.0, 100.0);
+        if self
+            .last_output
+            .is_some_and(|old| (old - target).abs() < 4.0)
+        {
+            return None;
+        }
+        self.last_output = Some(target);
+        Some(target)
+    }
+
+    pub fn reset(&mut self) {
+        self.filtered_lux = None;
+        self.last_output = None;
+    }
 }
 
 fn get_brightness_in(root: &Path) -> Result<f32, String> {
@@ -273,5 +356,34 @@ mod tests {
         if let Err(e) = result {
             assert!(!e.is_empty(), "a failure must say why");
         }
+    }
+
+    #[test]
+    fn ambient_sensor_accepts_processed_and_scaled_iio_forms() {
+        let root = tempfile::tempdir().unwrap();
+        let d = root.path().join("iio:device0");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("in_illuminance_raw"), "200\n").unwrap();
+        fs::write(d.join("in_illuminance_scale"), "0.5\n").unwrap();
+        assert_eq!(ambient_lux_from(root.path()), Some(100.0));
+        fs::write(d.join("in_illuminance_input"), "42.5\n").unwrap();
+        assert_eq!(ambient_lux_from(root.path()), Some(42.5));
+    }
+
+    #[test]
+    fn ambient_controller_smooths_and_ignores_small_changes() {
+        let mut c = AmbientBrightnessController::default();
+        let first = c.update(100.0).unwrap();
+        assert!((40.0..60.0).contains(&first));
+        assert_eq!(
+            c.update(102.0),
+            None,
+            "sensor noise stays inside the deadband"
+        );
+        let mut changed = None;
+        for _ in 0..12 {
+            changed = c.update(10_000.0).or(changed);
+        }
+        assert!(changed.is_some(), "a sustained daylight change is applied");
     }
 }

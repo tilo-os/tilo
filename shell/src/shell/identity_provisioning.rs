@@ -2,56 +2,47 @@
 //! (`~/.config/qos/identity/primary.json`, `0600`), the first-run
 //! trigger, invite-URL parsing, and the in-memory pairing-channel shim.
 //!
-//! The on-disk format is plaintext-JSON matching
-//! [`ui::widget::identity_flow::IdentityRecord`] — pending work wraps
-//! the blob with libsecret or keyutils; for now the file mode is the
-//! only mitigation.
+//! New ceremonies emit schema-1 JSON matching
+//! [`ui::widget::identity_flow::IdentityRecord`] in memory, then the runtime
+//! lifecycle store atomically imports it as public schema-2 metadata backed by
+//! Secret Service or a host-only broker file before the ceremony returns.
 //!
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use std::fs;
-use std::io;
+use std::fs::OpenOptions;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(test)]
+use std::fs;
+
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PairingHandshake,
 };
 
-/// Writes to `$XDG_CONFIG_HOME/qos/identity/primary.json` (falling
-/// back to `$HOME/.config/...`), `0600` mode.
-///
-/// TODO: the blob is currently plaintext JSON. Replace with a
-/// libsecret-encrypted envelope so a hostile process reading
-/// `/proc/<pid>/maps` of the compositor can't trivially exfiltrate the
-/// secret share.
+/// Writes public metadata to `$XDG_CONFIG_HOME/qos/identity/primary.json`
+/// (falling back to `$HOME/.config/...`) and imports its private share into
+/// the runtime identity provider before returning.
 pub struct DiskIdentityStore {
     path: PathBuf,
 }
 
 impl DiskIdentityStore {
-    /// Resolves the config dir the same way `firstboot::run` does, so
-    /// the boot chain is self-consistent.
+    /// Uses the canonical runtime resolver shared by Settings, first boot,
+    /// and the launcher, so the boot chain cannot disagree because of a
+    /// relative XDG path.
     ///
     /// # Errors
     ///
     /// Returns an error if the identity directory can't be resolved or
     /// created.
     pub fn from_env() -> Result<Self, io::Error> {
-        let base = resolve_identity_dir()?;
-        fs::create_dir_all(&base)?;
-        // The contents will be 0600, but a world-listable directory
-        // still leaks "identity exists" / atime.
-        #[cfg(unix)]
-        {
-            let mut perm = fs::metadata(&base)?.permissions();
-            perm.set_mode(0o700);
-            let _ = fs::set_permissions(&base, perm);
-        }
+        let base = runtime_identity::identity_dir_from_env()?;
         let path = base.join("primary.json");
         Ok(Self { path })
     }
@@ -72,43 +63,73 @@ impl DiskIdentityStore {
 
 impl IdentityStore for DiskIdentityStore {
     fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
-        if !self.path.exists() {
-            return Ok(None);
+        let mut file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&self.path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(IdentityFlowError::Io(error)),
+        };
+        let metadata = file.metadata().map_err(IdentityFlowError::Io)?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+            || metadata.len() > 1024 * 1024
+        {
+            return Err(IdentityFlowError::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity record must be a private user-owned regular file",
+            )));
         }
-        let bytes = fs::read(&self.path).map_err(IdentityFlowError::Io)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        (&mut file)
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(IdentityFlowError::Io)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(IdentityFlowError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity record exceeds the size limit",
+            )));
+        }
         Ok(Some(IdentityRecord::from_json_bytes(&bytes)?))
     }
 
     fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
         let bytes = record.to_json_bytes()?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(IdentityFlowError::Io)?;
-        }
-        // 0600 lands on the temp file, so the record is never readable by
-        // anyone else at its final path.
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
+        let parent = self.path.parent().ok_or_else(|| {
+            IdentityFlowError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity path has no parent",
+            ))
+        })?;
+        let id = self
+            .path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                IdentityFlowError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "identity path has no valid id",
+                ))
+            })?;
+        import_identity_record(parent, id, &bytes).map_err(IdentityFlowError::Io)?;
         Ok(())
     }
 }
 
-fn resolve_identity_dir() -> Result<PathBuf, io::Error> {
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME")
-        && !x.is_empty()
+fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    #[cfg(test)]
     {
-        return Ok(PathBuf::from(x).join("qos").join("identity"));
+        let provider = runtime_identity::BrokerFileProvider::new(parent);
+        runtime_identity::import_identity_with_provider(parent, id, bytes, &provider)
     }
-    if let Some(h) = std::env::var_os("HOME")
-        && !h.is_empty()
+    #[cfg(not(test))]
     {
-        return Ok(PathBuf::from(h)
-            .join(".config")
-            .join("qos")
-            .join("identity"));
+        runtime_identity::import_identity(parent, id, bytes)
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "neither XDG_CONFIG_HOME nor HOME set",
-    ))
 }
 
 /// A free function, not a method on the store, so the boot path can
@@ -195,7 +216,11 @@ mod tests {
         store.save(&rec).unwrap();
         assert!(store.identity_present());
         let back = store.load().unwrap().unwrap();
-        assert_eq!(back, rec);
+        assert_eq!(back.display_name, rec.display_name);
+        assert_eq!(back.public_key(), rec.public_key());
+        assert_eq!(back.schema_version, 2);
+        assert!(back.threshold_identity.secret_bytes.is_empty());
+        assert!(back.secret_ref.is_some());
     }
 
     #[test]
@@ -209,6 +234,23 @@ mod tests {
             let mode = meta.permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_an_identity_path_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TmpDir::new("symlink");
+        let target = tmp.0.join("elsewhere.json");
+        let bytes = fixture_record().to_json_bytes().unwrap();
+        fs::write(&target, bytes).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let path = tmp.0.join("primary.json");
+        symlink(&target, &path).unwrap();
+
+        let store = DiskIdentityStore::at(path);
+        assert!(store.load().is_err());
     }
 
     #[test]

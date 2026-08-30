@@ -896,6 +896,10 @@ impl Widget for ColorPicker {
         Widget::ime_cursor_rect(&self.hex_input)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.hex_input)
+    }
+
     /// The colour picker reports [`Role::ComboBox`] — a selector whose
     /// value is the chosen colour as its canonical `#RRGGBB` hex string.
     /// The SV square, hue strip and channel sliders render inline (there is

@@ -34,16 +34,19 @@ impl Stack {
         }
     }
 
+    #[must_use]
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
     }
 
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self

@@ -698,6 +698,13 @@ impl Widget for NumberInput {
         self.is_focused || self.field.is_focused()
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        // Winit has no numeric purpose yet. Normal still activates the
+        // standard text-input-v3 lifecycle; the field continues to validate
+        // and clamp committed text itself.
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     /// Reports [`Role::SpinButton`] with the formatted value; an assistive
     /// technology can nudge it with Increment / Decrement or jump it with
     /// `SetValue`, all through the same commit path as pointer/keyboard input.

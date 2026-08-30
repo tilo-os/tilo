@@ -10,6 +10,7 @@ pub mod portal;
 // The `org.freedesktop.Notifications` D-Bus service — the compositor
 // owns the daemon so sandboxed apps' toasts render as OS-drawn chrome.
 pub mod notifications;
+pub mod priority_contacts;
 // First-boot setup invoked by `quick-desktop-firstboot.service` via `quick-desktop --firstboot`.
 pub mod bluetooth;
 pub mod bluetooth_prompt;

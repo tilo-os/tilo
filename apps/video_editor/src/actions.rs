@@ -40,8 +40,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::VideoDoc;
@@ -115,7 +115,7 @@ impl ClipData {
             out_point: self.out_point,
             opacity: self.opacity,
             volume: self.volume,
-            transition: Transition::from_str(&self.transition),
+            transition: Transition::from_key(&self.transition),
             palette: self.palette,
             filters: Filters {
                 brightness: self.brightness,
@@ -156,7 +156,7 @@ impl TrackData {
         Some(Track {
             id: self.id.parse::<Uuid>().ok()?,
             name: self.name.clone(),
-            kind: TrackKind::from_str(&self.kind),
+            kind: TrackKind::from_key(&self.kind),
             index: self.index,
             muted: self.muted,
             locked: self.locked,
@@ -201,14 +201,14 @@ impl MediaData {
         Some(MediaItem {
             id: self.id.parse::<Uuid>().ok()?,
             name: self.name.clone(),
-            kind: MediaKind::from_str(&self.kind),
+            kind: MediaKind::from_key(&self.kind),
             duration: self.duration,
             width: self.width,
             height: self.height,
             fps: self.fps,
             palette: self.palette,
             path: self.path.clone(),
-            hydration: crate::media::Hydration::from_str(&self.hydration),
+            hydration: crate::media::Hydration::from_key(&self.hydration),
         })
     }
 }
@@ -262,7 +262,10 @@ pub enum VideoEditorAction {
     /// Split a clip in two: `left` is the shortened original, `right` the fresh
     /// tail (its id minted at authoring). Both halves carried so the split is a
     /// pure two-clip write with no RNG in `apply`.
-    SplitClip { left: ClipData, right: ClipData },
+    SplitClip {
+        left: Box<ClipData>,
+        right: Box<ClipData>,
+    },
     /// Create or replace a track's fields: covers add, rename, mute/lock and a
     /// reorder (a new `index`).
     UpsertTrack(TrackData),
@@ -363,9 +366,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`VideoEditorAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns the
 /// editor's actions into replayable envelopes.
+///
+/// # Panics
+///
+/// Never panics: a `VideoEditorAction` that fails to serialize (it never
+/// should — every field is a plain string, number or nested plain struct)
+/// falls back to an empty-payload envelope rather than crashing the caller.
 pub fn encode(action: &VideoEditorAction) -> EncodedAction {
-    EncodedAction::encode(VIDEO_EDITOR_ACTION_TYPE, action)
-        .expect("VideoEditorAction is always serializable")
+    EncodedAction::encode(VIDEO_EDITOR_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: VIDEO_EDITOR_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -390,8 +401,8 @@ pub fn ripple_delete_action(id: &Uuid, moved: &[Clip]) -> VideoEditorAction {
 
 pub fn split_clip_action(left: &Clip, right: &Clip) -> VideoEditorAction {
     VideoEditorAction::SplitClip {
-        left: ClipData::from_clip(left),
-        right: ClipData::from_clip(right),
+        left: Box::new(ClipData::from_clip(left)),
+        right: Box::new(ClipData::from_clip(right)),
     }
 }
 
@@ -436,8 +447,15 @@ pub struct VideoResourceCtx {
 }
 
 fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, VIDEO_EDITOR_ACTION_TYPE, action)
-        .expect("encode video-editor action")
+    ActionSpec::immediate(id, label, VIDEO_EDITOR_ACTION_TYPE, action).unwrap_or_else(|_| {
+        ActionSpec {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: None,
+            locus: action.locus(),
+            input: ActionInput::Immediate(encode(action)),
+        }
+    })
 }
 
 /// Parse a slider value (`0..1`) from a palette argument, else the neutral
@@ -449,6 +467,11 @@ fn parse_unit(s: &str) -> f64 {
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
 /// document-mutating operation exported as an action.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one nested loop per resource level (project -> tracks -> clips, plus the bin); \
+              the length is the depth of the tree published, not accidental complexity"
+)]
 pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let p = &ctx.project;
     let mut root = Resource::new(
@@ -650,7 +673,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ExecutionLocus::ClientLocal,
                 move |arg: &str| {
                     let mut next = add_base.clone();
-                    if let Some(k) = EffectKind::from_str(arg) {
+                    if let Some(k) = EffectKind::from_key(arg) {
                         next.add_effect(k);
                     }
                     encode(&upsert_clip_action(&next))
@@ -740,7 +763,7 @@ fn parse_transition(s: &str) -> Transition {
         "fade" | "fadein" | "fade in" => Transition::FadeIn,
         "dip" | "diptoblack" | "dip to black" => Transition::DipToBlack,
         "wipe" => Transition::Wipe,
-        other => Transition::from_str(other),
+        other => Transition::from_key(other),
     }
 }
 
@@ -779,14 +802,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
@@ -795,8 +818,8 @@ mod tests {
     /// Drives the real resource hook.
     #[test]
     fn ctrl_k_publishes_the_project_track_clip_tree() {
-        let (app, _doc) = seeded();
-        let resources = Widget::resources(&app, &_doc);
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
         assert_eq!(resources.len(), 1, "one open project");
         let project = &resources[0];
         assert_eq!(project.kind, "video.project");

@@ -1,17 +1,41 @@
 name: Build qOS image (publish on tags + dispatch)
 
 # Builds the bootc OS container image (multi-stage, see os/Containerfile).
-# CADENCE: pushes to main and PRs BUILD ONLY (verify it builds + is
-# reproducible — no registry churn, no queue flooding). The signed image is
+# CADENCE: relevant image-input changes and a weekly backstop BUILD ONLY
+# (verify it builds + is reproducible — no registry churn or queue flooding).
+# Cargo changes are already compiled by check.yml and nightly.yml; rebuilding
+# the complete bootc image for every source-only commit duplicates that work.
+# The signed image is
 # pushed to code.sandbox.example/qos/qos:latest ONLY on a version tag (v*) or a
 # manual run, so `bootc upgrade` tracks deliberate releases, not every commit.
 
 on:
+  schedule:
+    # Keep the heavyweight image build away from Sunday's static-quality run.
+    - cron: "0 5 * * 6"
   push:
     branches: ["main"]
     tags: ["v*"]
+    paths:
+      - "os/**"
+      - "keys/**"
+      - "docs/recovery.md"
+      - "docs/security/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".forgejo/workflows/build-image.yml"
   pull_request:
     branches: ["main"]
+    paths:
+      - "os/**"
+      - "keys/**"
+      - "docs/recovery.md"
+      - "docs/security/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".forgejo/workflows/build-image.yml"
   workflow_dispatch:
     inputs:
       with_browser:

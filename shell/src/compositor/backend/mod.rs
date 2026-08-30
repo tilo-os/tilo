@@ -33,6 +33,12 @@ pub struct Output {
     pub position: (i32, i32),
     pub size: (u32, u32),
     pub scale: f32,
+    /// Compositor-space orientation. `size` is the post-transform logical
+    /// extent; the DRM mode remains available via [`Self::physical_size`].
+    pub transform: settings_store::hardware::OutputTransform,
+    /// Canonical ICC path selected from the compositor-discovered profile
+    /// set. Presenter re-validates/parses it with qcms before use.
+    pub color_profile: Option<String>,
 }
 
 impl Output {
@@ -46,6 +52,17 @@ impl Output {
             position: (0, 0),
             size,
             scale,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
+        }
+    }
+
+    pub fn physical_size(&self) -> (u32, u32) {
+        use settings_store::hardware::OutputTransform::{Rotate90, Rotate270};
+        if matches!(self.transform, Rotate90 | Rotate270) {
+            (self.size.1, self.size.0)
+        } else {
+            self.size
         }
     }
 }
@@ -253,12 +270,16 @@ mod tests {
                 position: (0, 0),
                 size: (1920, 1080),
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
             },
             Output {
                 id: OutputId(1),
                 position: (1920, 0),
                 size: (1280, 1024),
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).

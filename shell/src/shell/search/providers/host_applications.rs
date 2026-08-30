@@ -301,6 +301,8 @@ mod tests {
                 payload_root: std::path::PathBuf::from("/x"),
                 has_gui: true,
                 opens_extensions: Vec::new(),
+                opens_mime_types: Vec::new(),
+                opens_uri_schemes: Vec::new(),
             }],
             crate::shell::chrome_state::OpenTarget::Beside,
         );
@@ -403,6 +405,8 @@ mod tests {
             payload_root: std::path::PathBuf::from("/x"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         }];
         // Same trailing id segment.
         assert!(shadowed_by_a_qos_package(

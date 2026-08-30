@@ -486,7 +486,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     pipewire \
     pipewire-pulseaudio \
+    pipewire-utils \
     wireplumber \
+    libcanberra-gtk3 \
+    sound-theme-freedesktop \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
 # GStreamer — the Music app plays audio through a `playbin` whose sink chain
@@ -549,10 +552,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     distrobox \
     git \
     cups \
+    cups-ipptool \
     podman \
     foot \
     wl-clipboard \
     NetworkManager \
+    NetworkManager-openvpn \
+    ModemManager \
+    fwupd \
     fuse3 \
     cage \
     && dnf clean all && ${DROP_RPMDB_WAL}
@@ -579,7 +586,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
-# C9 printing (cups). `cups` only — deliberately NOT `cups-browsed`, which is
+# C9 printing (CUPS plus its standard IPP query tool). Deliberately NOT
+# `cups-browsed`, which is
 # the daemon that turns *remote* DNS-SD advertisements into local print
 # queues and was the 2024 RCE chain (CVE-2024-47076/47175/47176/47177). Its
 # absence is why nothing on the network can make a print queue appear here.
@@ -587,6 +595,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # os/etc/cups/cupsd.conf; see docs/printing-threat-model.md.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     cups \
+    cups-ipptool \
     && dnf clean all
 
 # Ensure system groups exist in /etc/group and add greetd to them
@@ -604,6 +613,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     google-noto-color-emoji-fonts \
     google-noto-sans-symbols-fonts \
     google-noto-sans-symbols-2-fonts \
+    google-noto-sans-math-fonts \
     google-noto-sans-cjk-fonts \
     google-noto-sans-arabic-fonts \
     google-noto-sans-hebrew-fonts \
@@ -1176,6 +1186,10 @@ COPY os/usr/lib/systemd/system/qos-repair@.service /usr/lib/systemd/system/qos-r
 COPY os/usr/lib/systemd/system/qos-deployment-rollback.service /usr/lib/systemd/system/qos-deployment-rollback.service
 COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/system/qos-deployment-update.service
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf
+COPY os/usr/lib/systemd/system/qos-update-policy@.service /usr/lib/systemd/system/qos-update-policy@.service
+COPY os/usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-set
+COPY os/usr/libexec/qos-update-policy-check /usr/libexec/qos-update-policy-check
 # The narrow polkit grant that makes Settings' rollback control and its automatic
 # -updates switch able to do what they say. See the rule for how narrow.
 COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
@@ -1186,6 +1200,7 @@ COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
 RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
         /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
+        /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
         /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
         /usr/lib/systemd/system-generators/qos-boot-mode-generator
 
@@ -1278,6 +1293,7 @@ RUN systemctl enable cups.socket
 RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
+    systemctl enable ModemManager.service && \
     systemctl enable power-profiles-daemon.service && \
     systemctl enable systemd-homed.service && \
     systemctl enable qos-power.service

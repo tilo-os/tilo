@@ -7,6 +7,7 @@
 //! descended into so their text is not lost.
 
 use roxmltree::{Document, Node};
+use ui::math::{MathExpr, Node as MathNode, Row};
 
 use crate::model::{Block, Span};
 
@@ -79,6 +80,10 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
             }
         }
         "p" => {
+            if let Some(math) = sole_math_child(node) {
+                push_math_block(math, out);
+                return;
+            }
             let spans = collect_inline(node);
             if !spans_empty(&spans) {
                 out.push(Block::Paragraph { spans });
@@ -120,6 +125,7 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
                 }
             }
         }
+        "math" => push_math_block(node, out),
         "hr" => out.push(Block::Separator),
         // Structural wrappers we descend into (div/section/article/main/etc.).
         _ => {
@@ -127,6 +133,180 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
                 lower_block(child, out);
             }
         }
+    }
+}
+
+fn sole_math_child<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
+    let meaningful: Vec<_> = node
+        .children()
+        .filter(|child| {
+            child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty())
+        })
+        .collect();
+    if meaningful.len() == 1
+        && meaningful[0].is_element()
+        && meaningful[0].tag_name().name().eq_ignore_ascii_case("math")
+    {
+        Some(meaningful[0])
+    } else {
+        None
+    }
+}
+
+fn push_math_block(node: Node, out: &mut Vec<Block>) {
+    let root = mathml_row(node);
+    if root.is_empty() {
+        return;
+    }
+    let expr = MathExpr { root };
+    let source = ui::math::to_linear(&expr);
+    let display = node
+        .attribute("display")
+        .is_some_and(|value| value.eq_ignore_ascii_case("block"));
+    out.push(Block::Math {
+        expr,
+        source,
+        display,
+    });
+}
+
+/// Lower the presentation subset used by EPUB MathML into the same semantic
+/// tree the calculator edits. Unsupported wrappers remain transparent, so an
+/// unfamiliar styling element never makes its mathematical children vanish.
+fn mathml_row(node: Node) -> Row {
+    if node.is_text() {
+        return node
+            .text()
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            .map(MathNode::Char)
+            .collect();
+    }
+    if !node.is_element() {
+        return Vec::new();
+    }
+    let tag = node.tag_name().name().to_ascii_lowercase();
+    let element_children: Vec<_> = node.children().filter(|child| child.is_element()).collect();
+    let child_row = |index: usize| {
+        element_children
+            .get(index)
+            .map(|child| mathml_row(*child))
+            .unwrap_or_default()
+    };
+    match tag.as_str() {
+        "mi" | "mn" | "mo" => {
+            let text: String = node
+                .descendants()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .collect();
+            let text = text.trim();
+            if tag == "mi"
+                && (text.chars().count() > 1 || node.attribute("mathvariant") == Some("normal"))
+            {
+                vec![MathNode::Text(text.to_string())]
+            } else {
+                text.chars().map(MathNode::Char).collect()
+            }
+        }
+        "mtext" => {
+            let text: String = node
+                .descendants()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .collect();
+            vec![MathNode::Text(text.trim().to_string())]
+        }
+        "mfrac" => vec![MathNode::Frac {
+            num: child_row(0),
+            den: child_row(1),
+        }],
+        "msqrt" => vec![MathNode::Sqrt {
+            index: None,
+            radicand: mathml_children(node),
+        }],
+        "mroot" => vec![MathNode::Sqrt {
+            radicand: child_row(0),
+            index: Some(child_row(1)),
+        }],
+        "msup" => {
+            let mut row = child_row(0);
+            row.push(MathNode::Sup { exp: child_row(1) });
+            row
+        }
+        "msub" => {
+            let mut row = child_row(0);
+            row.push(MathNode::Sub { sub: child_row(1) });
+            row
+        }
+        "msubsup" => {
+            let mut row = child_row(0);
+            row.push(MathNode::SubSup {
+                sub: child_row(1),
+                sup: child_row(2),
+            });
+            row
+        }
+        "mover" => vec![MathNode::UnderOver {
+            base: child_row(0),
+            under: None,
+            over: Some(child_row(1)),
+        }],
+        "munder" => vec![MathNode::UnderOver {
+            base: child_row(0),
+            under: Some(child_row(1)),
+            over: None,
+        }],
+        "munderover" => vec![MathNode::UnderOver {
+            base: child_row(0),
+            under: Some(child_row(1)),
+            over: Some(child_row(2)),
+        }],
+        "mtable" => {
+            let rows = element_children
+                .iter()
+                .filter(|row| row.tag_name().name().eq_ignore_ascii_case("mtr"))
+                .map(|row| {
+                    row.children()
+                        .filter(|cell| {
+                            cell.is_element() && cell.tag_name().name().eq_ignore_ascii_case("mtd")
+                        })
+                        .map(mathml_children)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            vec![MathNode::Table { rows }]
+        }
+        "mfenced" => vec![MathNode::Delimited {
+            open: mathml_delimiter(node.attribute("open"), '('),
+            close: mathml_delimiter(node.attribute("close"), ')'),
+            body: mathml_children(node),
+        }],
+        "semantics" => element_children
+            .into_iter()
+            .find(|child| {
+                !matches!(
+                    child.tag_name().name().to_ascii_lowercase().as_str(),
+                    "annotation" | "annotation-xml"
+                )
+            })
+            .map(mathml_row)
+            .unwrap_or_default(),
+        "annotation" | "annotation-xml" => Vec::new(),
+        _ => mathml_children(node),
+    }
+}
+
+fn mathml_children(node: Node) -> Row {
+    node.children().flat_map(mathml_row).collect()
+}
+
+fn mathml_delimiter(value: Option<&str>, default: char) -> Option<char> {
+    match value {
+        Some("") | Some(".") => None,
+        Some(value) => value.chars().next(),
+        None => Some(default),
     }
 }
 
@@ -157,6 +337,16 @@ fn walk_inline(node: Node, style: Style, b: &mut SpanBuilder) {
             }
         } else if child.is_element() {
             let tag = child.tag_name().name().to_ascii_lowercase();
+            if tag == "math" {
+                let expr = MathExpr {
+                    root: mathml_row(child),
+                };
+                if !expr.is_empty() {
+                    let source = ui::math::to_linear(&expr);
+                    b.push_math(expr, source, style);
+                }
+                continue;
+            }
             let mut s = style;
             match tag.as_str() {
                 "strong" | "b" => s.bold = true,
@@ -189,6 +379,20 @@ struct SpanBuilder {
 }
 
 impl SpanBuilder {
+    fn push_math(&mut self, expr: MathExpr, source: String, style: Style) {
+        let space_before = self.pending_space && self.started;
+        self.pending_space = false;
+        self.spans.push(Span {
+            text: source,
+            math: Some(expr),
+            bold: style.bold,
+            italic: style.italic,
+            code: false,
+            space_before,
+        });
+        self.started = true;
+    }
+
     fn push_text(&mut self, raw: &str, style: Style) {
         for ch in raw.chars() {
             if ch.is_whitespace() {
@@ -198,7 +402,10 @@ impl SpanBuilder {
                 continue;
             }
             let same_style = self.spans.last().is_some_and(|l| {
-                l.bold == style.bold && l.italic == style.italic && l.code == style.code
+                l.math.is_none()
+                    && l.bold == style.bold
+                    && l.italic == style.italic
+                    && l.code == style.code
             });
             if same_style {
                 // Continuation of the current run: a pending break is an
@@ -215,6 +422,7 @@ impl SpanBuilder {
                 self.pending_space = false;
                 self.spans.push(Span {
                     text: ch.to_string(),
+                    math: None,
                     bold: style.bold,
                     italic: style.italic,
                     code: style.code,
@@ -282,6 +490,85 @@ mod tests {
         assert_eq!(li, 2);
         assert!(blocks.iter().any(|b| matches!(b, Block::Quote { .. })));
         assert!(blocks.iter().any(super::super::model::Block::is_separator));
+    }
+
+    #[test]
+    fn presentation_mathml_lowers_to_shared_structured_math() {
+        let src = r#"<body xmlns="http://www.w3.org/1999/xhtml">
+          <math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
+            <mfrac>
+              <mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mn>1</mn></mrow>
+              <msqrt><mrow><mi>y</mi><mo>-</mo><mn>3</mn></mrow></msqrt>
+            </mfrac>
+          </math>
+        </body>"#;
+        let blocks = parse_xhtml(src);
+        let Block::Math {
+            expr,
+            source,
+            display,
+        } = &blocks[0]
+        else {
+            panic!("expected a mathematical block");
+        };
+        assert!(*display);
+        assert!(matches!(expr.root.first(), Some(MathNode::Frac { .. })));
+        assert_eq!(source, "(x^(2)+1)/(sqrt(y-3))");
+    }
+
+    #[test]
+    fn mathml_subscripts_and_superscripts_share_one_script_node() {
+        let src =
+            r#"<body><p><math><msubsup><mo>∑</mo><mi>i</mi><mi>n</mi></msubsup></math></p></body>"#;
+        let blocks = parse_xhtml(src);
+        let Block::Math { expr, .. } = &blocks[0] else {
+            panic!("expected wrapped MathML to remain mathematical");
+        };
+        assert!(matches!(expr.root.get(1), Some(MathNode::SubSup { .. })));
+    }
+
+    #[test]
+    fn inline_mathml_remains_structured_inside_prose() {
+        let src = r#"<body><p>Einstein wrote <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math> in 1905.</p></body>"#;
+        let blocks = parse_xhtml(src);
+        let Block::Paragraph { spans } = &blocks[0] else {
+            panic!("expected prose paragraph");
+        };
+        let math = spans
+            .iter()
+            .find(|span| span.math.is_some())
+            .expect("inline formula remains a structured span");
+        assert_eq!(math.text, "E=mc^(2)");
+        assert!(math.space_before);
+        assert_eq!(blocks[0].plain_text(), "Einstein wrote E=mc^(2) in 1905.");
+    }
+
+    #[test]
+    fn mathml_limits_and_matrices_remain_two_dimensional() {
+        let src = r#"<body><math display="block"><mrow>
+          <munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>
+          <mfenced><mtable>
+            <mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr>
+            <mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr>
+          </mtable></mfenced>
+        </mrow></math></body>"#;
+        let blocks = parse_xhtml(src);
+        let Block::Math { expr, .. } = &blocks[0] else {
+            panic!("expected display math");
+        };
+        assert!(matches!(expr.root[0], MathNode::UnderOver { .. }));
+        let MathNode::Delimited { open, close, body } = &expr.root[1] else {
+            panic!("matrix fence retained");
+        };
+        assert_eq!((*open, *close), (Some('('), Some(')')));
+        let MathNode::Table { rows } = &body[0] else {
+            panic!("matrix remains a table");
+        };
+        assert_eq!((rows.len(), rows[0].len()), (2, 2));
+        assert_eq!(rows[0][0], vec![MathNode::Char('a')]);
+        assert_eq!(rows[0][1], vec![MathNode::Char('b')]);
+        assert_eq!(rows[1][0], vec![MathNode::Char('c')]);
+        assert_eq!(rows[1][1], vec![MathNode::Char('d')]);
     }
 
     #[test]

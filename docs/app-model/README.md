@@ -48,7 +48,7 @@ You give qOS a manifest and a payload. In return:
   │Cargo.lock   │  │   │manifest.toml   │─╮  │payloads/              │    │ + Landlock ruleset   │
   │manifest.toml│  │   │collection.qcl  │ │  │  <pkg-id>/            │──▶ │  cwd=payload/        │
   └─────────────┘  ╰─▶ │blobs/<hex>...  │─╯  │    manifest.toml       │    │  QOS_SVC_*_FD=<fd>   │
-                       └────────────────┘    │    bin/<entrypoint>    │    │  QOS_USER_IDENTITY   │
+                       └────────────────┘    │    bin/<entrypoint>    │    │ identity broker fd   │
       cargo build       qos-pkg pack          └───────────────────────┘    └──────────────────────┘
       (release)         (BLAKE3 + sign)       qos-install install          qos-install run
                                               (verify + unpack + register) (fork + exec bwrap)
