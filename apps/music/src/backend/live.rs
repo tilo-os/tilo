@@ -22,7 +22,6 @@
 #![cfg(feature = "live")]
 
 use rustypipe::client::RustyPipe;
-use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{
     AlbumItem, AlbumType, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, MusicItem,
     MusicPlaylistItem, Thumbnail, TrackItem,

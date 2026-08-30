@@ -606,7 +606,6 @@ impl ServerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::test_default(WorkspaceId(id), "t")

@@ -28,9 +28,11 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use crate::shell::state::{Capability, GRANT_ONCE};
 
 #[cfg(test)]
+use super::PortalCaller;
+#[cfg(test)]
 use super::PromptOutcome;
 use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
-use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
+use super::{CapabilityKind, PortalContext, file_chooser::FileChooserBackend, flow};
 
 /// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
 pub mod source_type {
