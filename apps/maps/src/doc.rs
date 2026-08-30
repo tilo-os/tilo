@@ -30,13 +30,13 @@ impl MapsDoc {
     pub fn save(doc: &mut AutoCommit, model: &MapModel) {
         let id = match doc.get(&ROOT, "maps") {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "maps", ObjType::Text)
-                .expect("put_object maps text"),
+            _ => match doc.put_object(&ROOT, "maps", ObjType::Text) {
+                Ok(id) => id,
+                Err(_) => return,
+            },
         };
-        let json = match serde_json::to_string(model) {
-            Ok(j) => j,
-            Err(_) => return,
+        let Ok(json) = serde_json::to_string(model) else {
+            return;
         };
         ui::doc::splice_text_diffed(doc, &id, &json);
     }
