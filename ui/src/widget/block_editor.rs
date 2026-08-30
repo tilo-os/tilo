@@ -3478,6 +3478,10 @@ impl Widget for BlockEditor {
         Widget::ime_cursor_rect(&block.line)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

@@ -1816,6 +1816,10 @@ impl Widget for CommandPalette {
         )
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     /// Only traps focus as a modal command launcher; the default Search
     /// palette leaves this `false` so the shell's overlay host drives focus.
     fn traps_focus(&self) -> bool {
