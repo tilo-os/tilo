@@ -109,7 +109,9 @@ impl FsBlobStore {
         if hash.len() < 4 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
-        Some(self.root.join(&hash[..2]).join(hash))
+        // Every byte was just checked ASCII-hex above, so byte offset 2 is a char boundary.
+        let prefix = hash.get(..2)?;
+        Some(self.root.join(prefix).join(hash))
     }
 }
 
@@ -218,9 +220,9 @@ fn pending_offers() -> &'static RwLock<Vec<PendingOffer>> {
 
 /// Install the process-wide transport, and hand it anything stored before it
 /// existed.
-pub fn set_transport(t: Arc<dyn BlobTransport>) {
+pub fn set_transport(t: &Arc<dyn BlobTransport>) {
     if let Ok(mut s) = transport_cell().write() {
-        *s = Some(Arc::clone(&t));
+        *s = Some(Arc::clone(t));
     }
     let queued = match pending_offers().write() {
         Ok(mut q) => std::mem::take(&mut *q),
@@ -403,42 +405,67 @@ pub fn sniff(bytes: &[u8]) -> BlobMeta {
     m
 }
 
-fn be32(b: &[u8]) -> u32 {
-    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+/// Reads a big-endian `u32` at byte offset `at`, or `None` if `b` is too short.
+fn read_u32be(b: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    Some(u32::from_be_bytes(b.get(at..end)?.try_into().ok()?))
+}
+
+/// Reads a little-endian `u16` at byte offset `at`, or `None` if `b` is too short.
+fn read_u16le(b: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(2)?;
+    Some(u16::from_le_bytes(b.get(at..end)?.try_into().ok()?))
+}
+
+/// Reads a big-endian `u16` at byte offset `at`, or `None` if `b` is too short.
+fn read_u16be(b: &[u8], at: usize) -> Option<u16> {
+    let end = at.checked_add(2)?;
+    Some(u16::from_be_bytes(b.get(at..end)?.try_into().ok()?))
 }
 
 fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
     // PNG: 8-byte signature, then an IHDR chunk whose width/height are the two
     // big-endian u32s at offset 16.
     if b.len() >= 24 && b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        return Some(("image/png", be32(&b[16..20]), be32(&b[20..24])));
+        return Some(("image/png", read_u32be(b, 16)?, read_u32be(b, 20)?));
     }
     // GIF: logical screen descriptor at offset 6, little-endian u16s.
     if b.len() >= 10 && (b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a")) {
-        let w = u32::from(u16::from_le_bytes([b[6], b[7]]));
-        let h = u32::from(u16::from_le_bytes([b[8], b[9]]));
+        let w = u32::from(read_u16le(b, 6)?);
+        let h = u32::from(read_u16le(b, 8)?);
         return Some(("image/gif", w, h));
     }
     // WebP: a RIFF container whose lossy/lossless/extended chunks each state the
     // canvas size in a different place.
-    if b.len() >= 30 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" {
-        match &b[12..16] {
-            b"VP8X" => {
-                let w = 1 + (u32::from(b[24]) | u32::from(b[25]) << 8 | u32::from(b[26]) << 16);
-                let h = 1 + (u32::from(b[27]) | u32::from(b[28]) << 8 | u32::from(b[29]) << 16);
+    if b.len() >= 30 && b.starts_with(b"RIFF") && b.get(8..12).is_some_and(|s| s == b"WEBP") {
+        match b.get(12..16) {
+            Some(b"VP8X") => {
+                let (b24, b25, b26) = (
+                    u32::from(*b.get(24)?),
+                    u32::from(*b.get(25)?),
+                    u32::from(*b.get(26)?),
+                );
+                let (b27, b28, b29) = (
+                    u32::from(*b.get(27)?),
+                    u32::from(*b.get(28)?),
+                    u32::from(*b.get(29)?),
+                );
+                let w = (b24 | (b25 << 8) | (b26 << 16)).saturating_add(1);
+                let h = (b27 | (b28 << 8) | (b29 << 16)).saturating_add(1);
                 return Some(("image/webp", w, h));
             }
-            b"VP8 " => {
-                let w = u32::from(u16::from_le_bytes([b[26], b[27]]) & 0x3FFF);
-                let h = u32::from(u16::from_le_bytes([b[28], b[29]]) & 0x3FFF);
+            Some(b"VP8 ") => {
+                let w = u32::from(read_u16le(b, 26)? & 0x3FFF);
+                let h = u32::from(read_u16le(b, 28)? & 0x3FFF);
                 return Some(("image/webp", w, h));
             }
-            b"VP8L" => {
-                let bits = u32::from_le_bytes([b[21], b[22], b[23], b[24]]);
+            Some(b"VP8L") => {
+                let end = 21usize.checked_add(4)?;
+                let bits = u32::from_le_bytes(b.get(21..end)?.try_into().ok()?);
                 return Some((
                     "image/webp",
-                    (bits & 0x3FFF) + 1,
-                    ((bits >> 14) & 0x3FFF) + 1,
+                    (bits & 0x3FFF).saturating_add(1),
+                    ((bits >> 14) & 0x3FFF).saturating_add(1),
                 ));
             }
             _ => return Some(("image/webp", 0, 0)),
@@ -446,36 +473,43 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
     }
     // JPEG: walk the marker segments to the start-of-frame, honouring each segment's declared length
     // to skip the entropy-coded scan (which a scan for the next 0xFF would not).
-    if b.len() >= 4 && b[0] == 0xFF && b[1] == 0xD8 {
+    if b.len() >= 4 && b.first() == Some(&0xFF) && b.get(1) == Some(&0xD8) {
         let mut i = 2usize;
-        while i + 3 < b.len() {
-            if b[i] != 0xFF {
-                i += 1;
+        while i.checked_add(3).is_some_and(|end| end < b.len()) {
+            let Some(&byte_at_i) = b.get(i) else {
+                break;
+            };
+            if byte_at_i != 0xFF {
+                i = i.saturating_add(1);
                 continue;
             }
-            let marker = b[i + 1];
+            let Some(&marker) = b.get(i.saturating_add(1)) else {
+                break;
+            };
             // Standalone markers carry no payload.
             if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
-                i += 2;
+                i = i.saturating_add(2);
                 continue;
             }
             if marker == 0xD9 || marker == 0xDA {
                 break; // end of image, or the start of the scan data
             }
-            if i + 3 >= b.len() {
+            if i.saturating_add(3) >= b.len() {
                 break;
             }
-            let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
+            let Some(len) = read_u16be(b, i.saturating_add(2)).map(usize::from) else {
+                break;
+            };
             let is_sof = matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
-            if is_sof && i + 9 < b.len() {
-                let h = u32::from(u16::from_be_bytes([b[i + 5], b[i + 6]]));
-                let w = u32::from(u16::from_be_bytes([b[i + 7], b[i + 8]]));
+            if is_sof && i.saturating_add(9) < b.len() {
+                let h = u32::from(read_u16be(b, i.saturating_add(5))?);
+                let w = u32::from(read_u16be(b, i.saturating_add(7))?);
                 return Some(("image/jpeg", w, h));
             }
             if len < 2 {
                 break;
             }
-            i += 2 + len;
+            i = i.saturating_add(2).saturating_add(len);
         }
         return Some(("image/jpeg", 0, 0));
     }
