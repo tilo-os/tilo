@@ -37,6 +37,71 @@ fn manifest_roundtrip() {
     assert_eq!(svc.protocol, "collab");
 }
 
+#[test]
+fn provider_claims_normalize_and_roundtrip_canonically() {
+    let src = render_with_dummy_key().replace(
+        "ext  = [\"odt\"]",
+        "ext = [\".ODT\", \" odt \"]\nschemes = [\"HTTPS:\", \"https\"]",
+    );
+    let manifest = Manifest::from_toml_str(&src).expect("decode claims");
+    assert_eq!(manifest.providers.ext, vec!["odt"]);
+    assert_eq!(manifest.providers.schemes, vec!["https"]);
+    validate_manifest(&manifest).expect("normalized claims validate");
+
+    let canonical = manifest.to_toml_string().expect("canonical TOML");
+    assert!(canonical.contains("schemes = ["));
+    assert!(!canonical.contains("uri-schemes"));
+    assert_eq!(
+        Manifest::from_toml_str(&canonical).unwrap().providers,
+        manifest.providers
+    );
+}
+
+#[test]
+fn legacy_extension_only_provider_remains_valid() {
+    let manifest = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
+    assert!(manifest.providers.schemes.is_empty());
+    validate_manifest(&manifest).expect("legacy manifest remains valid");
+}
+
+#[test]
+fn transitional_uri_scheme_key_migrates_to_canonical_schemes() {
+    let src = render_with_dummy_key().replace(
+        "ext  = [\"odt\"]",
+        "ext = [\"odt\"]\nuri-schemes = [\"WEBCAL:\"]",
+    );
+    let manifest = Manifest::from_toml_str(&src).unwrap();
+    assert_eq!(manifest.providers.schemes, vec!["webcal"]);
+    let encoded = manifest.to_toml_string().unwrap();
+    assert!(encoded.contains("schemes = ["));
+    assert!(!encoded.contains("uri-schemes"));
+}
+
+#[test]
+fn malformed_and_active_content_claims_are_rejected() {
+    let cases = [
+        ("mime", "text/html; charset=utf-8"),
+        ("mime", "*/json"),
+        ("ext", "../../sh"),
+        ("scheme", "javascript"),
+        ("scheme", "file"),
+        ("scheme", "https --flag"),
+    ];
+    for (kind, value) in cases {
+        let mut manifest = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
+        match kind {
+            "mime" => manifest.providers.mime = vec![value.into()],
+            "ext" => manifest.providers.ext = vec![value.into()],
+            "scheme" => manifest.providers.schemes = vec![value.into()],
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_manifest(&manifest).is_err(),
+            "{kind} claim {value:?} must fail"
+        );
+    }
+}
+
 /// The install-time half of the filesystem policy.
 ///
 /// `validate_manifest` is what `qos-install install` and `qos-pkg pack`

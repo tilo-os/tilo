@@ -1,8 +1,8 @@
 //! Opening a document in the application that owns it.
 //!
-//! Two registries answer half of "who owns `.odt`" each: [`qdoc`] knows
-//! which extensions are editable documents, app manifests
-//! (`[providers].ext`) name the installed owner. [`resolve`] reports
+//! Two registries answer half of "who owns this file" each: [`qdoc`] knows
+//! which extensions are editable documents, while app manifests declare
+//! normalized MIME and extension claims. [`resolve`] reports
 //! both, since they fail differently — no app at all vs. no editor.
 //!
 //! A path handed to an app as a launch argument is not in its sandbox
@@ -128,16 +128,27 @@ pub fn resolve_for(
     if path.is_dir() {
         return DocumentTarget::Directory;
     }
-    let Some(ext) = extension_of(path) else {
-        return DocumentTarget::Unclaimed;
-    };
-    let editable_document = qdoc::is_supported_ext(&ext);
-    match launcher::app_for_extension_with_policy(&ext, user_id, workspace_defaults) {
+    let ext = extension_of(path);
+    let editable_document = ext.as_deref().is_some_and(qdoc::is_supported_ext);
+    let mime = mime_guess::from_path(path).first_raw();
+    let app = mime
+        .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
+        .and_then(|resource| {
+            launcher::app_for_resource_with_policy(&resource, user_id, workspace_defaults)
+        })
+        .or_else(|| {
+            ext.as_deref().and_then(|ext| {
+                launcher::app_for_extension_with_policy(ext, user_id, workspace_defaults)
+            })
+        });
+    match app {
         Some(app) => DocumentTarget::App {
             app,
             editable_document,
         },
-        None if editable_document => DocumentTarget::NoAppForDocument { ext },
+        None if editable_document => DocumentTarget::NoAppForDocument {
+            ext: ext.unwrap_or_default(),
+        },
         None => DocumentTarget::Unclaimed,
     }
 }
@@ -182,6 +193,22 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
             });
         }
     };
+
+    let claim_is_current = mime_guess::from_path(path)
+        .first_raw()
+        .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
+        .is_some_and(|resource| launcher::revalidate_resource_claim(&app.package_id, &resource))
+        || extension_of(path)
+            .and_then(|ext| desktop_policy::ResourceKind::extension(&ext).ok())
+            .is_some_and(|resource| {
+                launcher::revalidate_resource_claim(&app.package_id, &resource)
+            });
+    if !claim_is_current {
+        return Err(OpenError::NoHandler {
+            path: path.to_path_buf(),
+            ext: extension_of(path),
+        });
+    }
 
     // Asked before anything is granted or launched: a second activation
     // of an open document must change nothing but which window is in front.
