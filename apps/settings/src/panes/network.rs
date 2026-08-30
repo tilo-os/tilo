@@ -62,6 +62,13 @@ pub const ENTERPRISE_ANONYMOUS_KEY: &str = "network.enterprise.anonymous";
 pub const ENTERPRISE_CA_KEY: &str = "network.enterprise.ca";
 pub const ENTERPRISE_CONNECT_KEY: &str = "network.enterprise.connect";
 pub const ENTERPRISE_CA_CHOOSE_KEY: &str = "network.enterprise.ca.choose";
+pub const ENTERPRISE_METHOD_KEY: &str = "network.enterprise.method";
+pub const ENTERPRISE_PHASE2_KEY: &str = "network.enterprise.phase2";
+pub const ENTERPRISE_CLIENT_CERT_KEY: &str = "network.enterprise.client_cert";
+pub const ENTERPRISE_PRIVATE_KEY: &str = "network.enterprise.private_key";
+pub const MOBILE_SIM_KEY: &str = "network.mobile.sim";
+pub const DIAGNOSTICS_KEY: &str = "network.diagnostics.run";
+pub const ADVANCED_KEY: &str = "network.advanced";
 pub const CAPTIVE_PORTAL_KEY: &str = "network.captive_portal.open";
 const MOBILE_PIN_BUFFER: &str = "__mobile_pin";
 const ENTERPRISE_PASSWORD_BUFFER: &str = "__enterprise_password";
@@ -219,6 +226,9 @@ pub struct NetworkPane {
     radios: os_actions::RadioState,
     connectivity: ConnectivityState,
     profiles: Vec<SavedNetworkProfile>,
+    sims: Vec<os_actions::SimInfo>,
+    diagnostics: Option<os_actions::ConnectionDiagnostics>,
+    advanced_open: bool,
     /// Configured VPN connections (read-only status), sampled at
     /// construction and on refresh.
     vpns: Vec<VpnInfo>,
@@ -293,6 +303,9 @@ impl NetworkPane {
             radios,
             connectivity,
             profiles,
+            sims: os_actions::list_mobile_sims().unwrap_or_default(),
+            diagnostics: None,
+            advanced_open: false,
             vpns,
             vpn_lister,
             tool_opener: Arc::new(os_actions::open_tool),
@@ -336,6 +349,9 @@ impl NetworkPane {
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Unknown,
             profiles: Vec::new(),
+            sims: Vec::new(),
+            diagnostics: None,
+            advanced_open: false,
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             tool_opener: Arc::new(os_actions::open_tool),
@@ -374,6 +390,9 @@ impl NetworkPane {
             radios: os_actions::RadioState::default(),
             connectivity: ConnectivityState::Full,
             profiles: Vec::new(),
+            sims: Vec::new(),
+            diagnostics: None,
+            advanced_open: false,
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             tool_opener: Arc::new(os_actions::open_tool),
@@ -655,7 +674,19 @@ impl NetworkPane {
             Box::new(Toggle::new("settings.network.hotspot", HOTSPOT_KEY)),
             rows(hotspot_rows),
         );
-        let profile_card = card("Connection profiles", rows(self.profile_rows()));
+        let profile_card = card_with_action(
+            "Connection profiles",
+            Box::new(Button::new(
+                "settings.network.advanced",
+                if self.advanced_open {
+                    "Hide advanced"
+                } else {
+                    "Advanced…"
+                },
+                Some(ADVANCED_KEY),
+            )),
+            rows(self.profile_rows()),
+        );
         let mut cards = vec![
             card(
                 "Internet access",
@@ -686,6 +717,7 @@ impl NetworkPane {
             card("Enterprise Wi-Fi", rows(self.enterprise_rows())),
             wired_card,
             profile_card,
+            card("Connection diagnostics", rows(self.diagnostic_rows())),
             vpn_card,
             airplane,
             hotspot,
@@ -710,7 +742,7 @@ impl NetworkPane {
             return vec![caption("No saved Wi-Fi networks.")];
         }
         let mut rows_out: Vec<El> = Vec::new();
-        for profile in wifi_profiles {
+        for profile in &wifi_profiles {
             rows_out.push(Box::new(
                 Row::new()
                     .push(Box::new(Text::new(&profile.name).with_size(13.0)))
@@ -732,7 +764,93 @@ impl NetworkPane {
         rows_out.push(caption(
             "Auto-connect and Forget modify the NetworkManager profile itself; Settings keeps no duplicate profile database.",
         ));
+        if self.advanced_open
+            && let Some(profile) = wifi_profiles.first()
+        {
+            rows_out.push(caption(&format!(
+                "Advanced policy for {}. NetworkManager remains the source of truth.",
+                profile.name
+            )));
+            rows_out.push(choice_row(
+                "Metered",
+                Box::new(
+                    Dropdown::new(
+                        vec!["Automatic".into(), "Metered".into(), "Unmetered".into()],
+                        &format!("network.profile.metered.{}", profile.uuid),
+                    )
+                    .with_placeholder("Automatic"),
+                ),
+            ));
+            rows_out.push(choice_row(
+                "Wi-Fi address",
+                Box::new(
+                    Dropdown::new(
+                        vec![
+                            "Stable per network".into(),
+                            "Random each connection".into(),
+                            "Permanent hardware address".into(),
+                        ],
+                        &format!("network.profile.mac.{}", profile.uuid),
+                    )
+                    .with_placeholder("Stable per network"),
+                ),
+            ));
+            rows_out.push(setting_row(
+                "Automatic proxy URL",
+                Box::new(
+                    TextInput::new(Vec::new())
+                        .with_on_change_path(&format!("network.profile.proxy.{}", profile.uuid))
+                        .with_placeholder("https://example.org/proxy.pac"),
+                ),
+            ));
+            rows_out.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        &format!("settings.network.profile.policy.{}", profile.uuid),
+                        "Apply policy",
+                        Some(&format!("network.profile.policy.{}", profile.uuid)),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
+        }
         rows_out
+    }
+
+    fn diagnostic_rows(&self) -> Vec<El> {
+        let mut out: Vec<El> = vec![Box::new(
+            Row::new()
+                .push(Box::new(Button::new(
+                    "settings.network.diagnostics",
+                    "Run diagnostics",
+                    Some(DIAGNOSTICS_KEY),
+                )))
+                .push(Box::new(Spacer::new())),
+        )];
+        if let Some(d) = &self.diagnostics {
+            out.push(value_row("NetworkManager", &d.network_manager_state));
+            out.push(value_row("Internet", d.connectivity.label()));
+            if let Some(v) = &d.device {
+                out.push(value_row("Device", v));
+            }
+            if let Some(v) = &d.address {
+                out.push(value_row("Address", v));
+            }
+            if let Some(v) = &d.gateway {
+                out.push(value_row("Gateway", v));
+            }
+            let dns = if d.dns.is_empty() {
+                "Not provided".to_string()
+            } else {
+                d.dns.join(", ")
+            };
+            out.push(value_row("DNS", &dns));
+            for recommendation in &d.recommendations {
+                out.push(caption(recommendation));
+            }
+        } else {
+            out.push(caption("Checks NetworkManager state, address, gateway and DNS without sending traffic to a qOS service."));
+        }
+        out
     }
 
     fn secret_field(&self, key: &str, id: &str, placeholder: &str) -> El {
@@ -753,7 +871,7 @@ impl NetworkPane {
     }
 
     fn mobile_rows(&self) -> Vec<El> {
-        vec![
+        let mut rows = vec![
             caption(
                 "Create the carrier profile through NetworkManager. The APN is supplied by your carrier.",
             ),
@@ -781,6 +899,20 @@ impl NetworkPane {
             caption(
                 "If the SIM is locked, enter its PIN. It is sent directly to ModemManager over the system bus and is never saved.",
             ),
+        ];
+        if !self.sims.is_empty() {
+            rows.push(choice_row(
+                "SIM",
+                Box::new(
+                    Dropdown::new(
+                        self.sims.iter().map(|s| s.label.clone()).collect(),
+                        MOBILE_SIM_KEY,
+                    )
+                    .with_placeholder(&self.sims[0].label),
+                ),
+            ));
+        }
+        rows.extend([
             self.secret_field(MOBILE_PIN_BUFFER, "network.mobile.pin", "SIM PIN"),
             Box::new(
                 Row::new()
@@ -790,20 +922,53 @@ impl NetworkPane {
                         Some(MOBILE_UNLOCK_KEY),
                     )))
                     .push(Box::new(Spacer::new())),
-            ),
-        ]
+            ) as El,
+        ]);
+        rows
     }
 
     fn enterprise_rows(&self) -> Vec<El> {
         vec![
             caption(
-                "PEAP with MSCHAPv2. Certificate validation is mandatory; ask your organization for its CA certificate.",
+                "PEAP, TTLS and EAP-TLS use NetworkManager's 802.1X support. Server certificate validation is mandatory.",
+            ),
+            choice_row(
+                "Method",
+                Box::new(
+                    Dropdown::new(
+                        vec!["PEAP".into(), "TTLS".into(), "TLS".into()],
+                        ENTERPRISE_METHOD_KEY,
+                    )
+                    .with_placeholder("PEAP"),
+                ),
+            ),
+            choice_row(
+                "Inner authentication",
+                Box::new(
+                    Dropdown::new(
+                        vec!["MSCHAPv2".into(), "PAP".into(), "CHAP".into()],
+                        ENTERPRISE_PHASE2_KEY,
+                    )
+                    .with_placeholder("MSCHAPv2"),
+                ),
             ),
             Box::new(
                 TextInput::new(Vec::new())
                     .with_id("network.enterprise.profile")
                     .with_on_change_path(ENTERPRISE_PROFILE_KEY)
                     .with_placeholder("Profile name"),
+            ),
+            Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("network.enterprise.client_cert")
+                    .with_on_change_path(ENTERPRISE_CLIENT_CERT_KEY)
+                    .with_placeholder("Client certificate path (TLS)"),
+            ),
+            Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("network.enterprise.private_key")
+                    .with_on_change_path(ENTERPRISE_PRIVATE_KEY)
+                    .with_placeholder("Private key path (TLS)"),
             ),
             Box::new(
                 TextInput::new(Vec::new())
@@ -1155,6 +1320,8 @@ impl Widget for NetworkPane {
                 ENTERPRISE_IDENTITY_KEY,
                 ENTERPRISE_ANONYMOUS_KEY,
                 ENTERPRISE_CA_KEY,
+                ENTERPRISE_CLIENT_CERT_KEY,
+                ENTERPRISE_PRIVATE_KEY,
             ] {
                 let _ = crate::ensure_text_object(state, root, key);
             }
@@ -1164,8 +1331,15 @@ impl Widget for NetworkPane {
                 ENTERPRISE_CONNECT_KEY,
                 ENTERPRISE_CA_CHOOSE_KEY,
                 CAPTIVE_PORTAL_KEY,
+                DIAGNOSTICS_KEY,
+                ADVANCED_KEY,
             ] {
                 let _ = state.put(root, key, false);
+            }
+            let _ = state.put(root, ENTERPRISE_METHOD_KEY, "PEAP");
+            let _ = state.put(root, ENTERPRISE_PHASE2_KEY, "MSCHAPv2");
+            if let Some(sim) = self.sims.first() {
+                let _ = state.put(root, MOBILE_SIM_KEY, sim.label.as_str());
             }
             for profile in &self.profiles {
                 let _ = state.put(
@@ -1414,6 +1588,81 @@ impl Widget for NetworkPane {
                 let _ = tx.send((NetworkJob::MobileProfile, result));
             });
         }
+        if read_bool(state, root, ADVANCED_KEY) {
+            let _ = state.put(root, ADVANCED_KEY, false);
+            self.advanced_open = !self.advanced_open;
+            if self.advanced_open {
+                for profile in &self.profiles {
+                    if profile.kind == "802-11-wireless" {
+                        let _ = crate::ensure_text_object(
+                            state,
+                            root,
+                            &format!("network.profile.proxy.{}", profile.uuid),
+                        );
+                    }
+                }
+            }
+            self.structure_dirty = true;
+        }
+        if read_bool(state, root, DIAGNOSTICS_KEY) {
+            let _ = state.put(root, DIAGNOSTICS_KEY, false);
+            match os_actions::connection_diagnostics() {
+                Ok(d) => self.diagnostics = Some(d),
+                Err(e) => self.connection_notice = Some(format!("Diagnostics unavailable: {e}")),
+            }
+            self.structure_dirty = true;
+        }
+        for profile in self.profiles.clone() {
+            let apply = format!("network.profile.policy.{}", profile.uuid);
+            if read_bool(state, root, &apply) {
+                let _ = state.put(root, &apply, false);
+                let metered = match read_str(
+                    state,
+                    root,
+                    &format!("network.profile.metered.{}", profile.uuid),
+                )
+                .as_deref()
+                {
+                    Some("Metered") => os_actions::MeteredPolicy::Metered,
+                    Some("Unmetered") => os_actions::MeteredPolicy::Unmetered,
+                    _ => os_actions::MeteredPolicy::Automatic,
+                };
+                let mac = match read_str(
+                    state,
+                    root,
+                    &format!("network.profile.mac.{}", profile.uuid),
+                )
+                .as_deref()
+                {
+                    Some("Random each connection") => Some(os_actions::MacPolicy::Random),
+                    Some("Permanent hardware address") => Some(os_actions::MacPolicy::Permanent),
+                    _ if profile.kind == "802-11-wireless" => Some(os_actions::MacPolicy::Stable),
+                    _ => None,
+                };
+                let proxy = read_str(
+                    state,
+                    root,
+                    &format!("network.profile.proxy.{}", profile.uuid),
+                )
+                .filter(|s| !s.trim().is_empty());
+                let policy = os_actions::ConnectionPolicy {
+                    metered,
+                    mac,
+                    proxy: os_actions::ProxyConfiguration {
+                        automatic_url: proxy,
+                        browser_only: false,
+                    },
+                };
+                match os_actions::configure_connection_policy(&profile.uuid, &policy) {
+                    Ok(()) => {
+                        self.connection_notice =
+                            Some(format!("Applied advanced policy to {}.", profile.name))
+                    }
+                    Err(e) => self.connection_notice = Some(format!("Policy was not applied: {e}")),
+                }
+                self.structure_dirty = true;
+            }
+        }
         if read_bool(state, root, MOBILE_UNLOCK_KEY) {
             let _ = state.put(root, MOBILE_UNLOCK_KEY, false);
             let mut pin = self
@@ -1428,9 +1677,19 @@ impl Widget for NetworkPane {
             }
             let pin = Zeroizing::new(std::mem::take(&mut pin));
             let tx = self.connection_tx.clone();
+            let selected = read_str(state, root, MOBILE_SIM_KEY)
+                .and_then(|label| {
+                    self.sims
+                        .iter()
+                        .find(|s| s.label == label)
+                        .map(|s| s.path.clone())
+                })
+                .or_else(|| self.sims.first().map(|s| s.path.clone()));
             self.connection_notice = Some("Unlocking SIM…".into());
             std::thread::spawn(move || {
-                let result = os_actions::unlock_mobile_sim(&pin);
+                let result = selected
+                    .ok_or_else(|| "No SIM is available".to_string())
+                    .and_then(|sim| os_actions::unlock_mobile_sim_on(&sim, &pin));
                 let _ = tx.send((NetworkJob::SimUnlock, result));
             });
             self.structure_dirty = true;
@@ -1444,6 +1703,17 @@ impl Widget for NetworkPane {
                 anonymous_identity: read_str(state, root, ENTERPRISE_ANONYMOUS_KEY)
                     .filter(|value| !value.trim().is_empty()),
                 ca_certificate: read_str(state, root, ENTERPRISE_CA_KEY).unwrap_or_default(),
+                method: match read_str(state, root, ENTERPRISE_METHOD_KEY).as_deref() {
+                    Some("TTLS") => os_actions::EnterpriseEapMethod::Ttls,
+                    Some("TLS") => os_actions::EnterpriseEapMethod::Tls,
+                    _ => os_actions::EnterpriseEapMethod::Peap,
+                },
+                phase2_auth: read_str(state, root, ENTERPRISE_PHASE2_KEY)
+                    .map(|v| v.to_ascii_lowercase()),
+                client_certificate: read_str(state, root, ENTERPRISE_CLIENT_CERT_KEY)
+                    .filter(|v| !v.trim().is_empty()),
+                private_key: read_str(state, root, ENTERPRISE_PRIVATE_KEY)
+                    .filter(|v| !v.trim().is_empty()),
             };
             let mut password = self
                 .secret_buffers
