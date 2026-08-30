@@ -99,6 +99,10 @@ pub enum Intent {
 
 /// The whole app's mutable state, minus the transient overlays (composer,
 /// context menu, setup sheet) which the app owns directly.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the bools split across unrelated concerns (shell-derived layout flags the app writes, focus/seed bookkeeping, and the repaint flag); grouping them would need a real design pass, left for a follow-up rather than forced here"
+)]
 pub struct MailState {
     pub mailbox: Mailbox,
     pub accounts: AccountStore,
@@ -511,7 +515,12 @@ impl MailState {
             })
             .unwrap_or(0) as i32;
         let next = (cur + delta).clamp(0, rows.len() as i32 - 1) as usize;
-        let id = rows[next].0;
+        // `next` is clamped into range above, but the emptiness guard that
+        // makes that clamp valid is 20 lines up — keep the lookup total here.
+        let Some(row) = rows.get(next) else {
+            return;
+        };
+        let id = row.0;
         // Browsing the list with the arrows updates the reader but does not
         // push the narrow detail (that's a tap).
         let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
@@ -542,15 +551,15 @@ mod tests {
         MailState::new_sample(crate::app::avatar_store_offline())
     }
 
-    fn first_inbox_id(st: &MailState) -> MessageId {
-        st.mailbox.messages_in(Folder::Inbox)[0].id
+    fn first_inbox_id(st: &MailState) -> Option<MessageId> {
+        st.mailbox.messages_in(Folder::Inbox).first().map(|m| m.id)
     }
 
     #[test]
     fn star_action_emits_server_store_flag() {
         let mut st = state();
         let mut doc = AutoCommit::new();
-        let id = first_inbox_id(&st);
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
         let intents = st.take_intents();
         assert!(
@@ -565,7 +574,7 @@ mod tests {
     fn archive_action_emits_server_move_to_archive() {
         let mut st = state();
         let mut doc = AutoCommit::new();
-        let id = first_inbox_id(&st);
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         st.apply_message_action(&mut doc, id, CtxAction::Archive);
         let intents = st.take_intents();
         assert!(
@@ -584,7 +593,7 @@ mod tests {
     fn junk_action_emits_server_move_to_junk() {
         let mut st = state();
         let mut doc = AutoCommit::new();
-        let id = first_inbox_id(&st);
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         st.apply_message_action(&mut doc, id, CtxAction::Junk);
         let intents = st.take_intents();
         assert!(intents.iter().any(|i| matches!(
@@ -600,7 +609,7 @@ mod tests {
     fn reply_all_action_raises_distinct_reply_all_intent() {
         let mut st = state();
         let mut doc = AutoCommit::new();
-        let id = first_inbox_id(&st);
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         st.apply_message_action(&mut doc, id, CtxAction::ReplyAll);
         let intents = st.take_intents();
         assert!(
