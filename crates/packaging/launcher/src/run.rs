@@ -211,37 +211,13 @@ fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<Path
 }
 
 /// Priority: explicit override (no existence check) >
-/// `$XDG_CONFIG_HOME/qos/identity/primary.json` >
-/// `$HOME/.config/qos/identity/primary.json` > `None`.
+/// the active identity selected in the per-user identity store > `None`.
 pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
     if let Some(p) = &opts.identity_host_path {
         return Some(p.clone());
     }
-    let file_name = "primary.json";
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        let p = PathBuf::from(xdg)
-            .join("qos")
-            .join("identity")
-            .join(file_name);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty()
-    {
-        let p = PathBuf::from(home)
-            .join(".config")
-            .join("qos")
-            .join("identity")
-            .join(file_name);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
+    let dir = runtime_identity::identity_dir_from_env().ok()?;
+    runtime_identity::resolve_active_identity(&dir)
 }
 
 /// Derive GPU pinning, or `None` when nothing to pin. Every decline is
