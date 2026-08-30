@@ -18,7 +18,7 @@ The compositor draws the window title/app-name/logo; an app must not paint its o
 app-name/logo strip (and video must be immersive, §1e). Swept this pass — each
 verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Dropped the app-drawn name/logo header from calculator, monitor,
-      software_store, themes, video_editor, tube, disks, firewall, logs, totp —
+      themes, video_editor, tube, disks, firewall, logs, totp —
       keeping functional toolbars and promoting any real status line (drive
       summary / firewall state / account count) to primary.
 - [x] video-player: edge-to-edge immersive; the persistent 48px bar is replaced by
@@ -26,9 +26,9 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [ ] Follow-up: route each app's title into OS chrome via `AppWidget::app_title`
       (blocked: the standalone `ui::App` runner doesn't consume it yet; only the
       compositor does, and these apps don't implement `AppWidget`).
-- [ ] Follow-up: software_store still shows an app tile+"Software" wordmark inside
-      its overlay nav drawer; tube keeps a small play-glyph brand at the nav-rail
-      head. Minor, drawer/rail-local — revisit if tightening further.
+- [ ] Follow-up: tube keeps a small play-glyph brand at the nav-rail head. Minor,
+      rail-local — revisit if tightening further. The redundant `software_store`
+      app was consolidated into `store`, whose chrome uses shared widgets.
 
 ## calculator
 - [x] OS owns window chrome: dropped the "=" logo + "Calculator" wordmark from the
@@ -727,7 +727,7 @@ shot-inspected (empty state and demo).
       select / highlight / annotate / comments already existed; continuous-scroll
       and two-up spread remain — a large refactor of the single-page reader draw,
       deferred.)
-- [x] software_store — the constructor always loaded `sample_catalog()`
+- [x] software_store (retired into `store`) — the constructor always loaded `sample_catalog()`
       (GIMP/Blender with fabricated star ratings), shown live, while the real
       popular-collection fetch landed unused in `live_apps`. A live worker now
       starts with an empty catalog and Browse renders the real Flathub popular

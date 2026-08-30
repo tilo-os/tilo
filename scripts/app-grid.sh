@@ -75,8 +75,8 @@ declare -A NAME=(
 [git_client]="Git" [hex_editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
 [mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
 [osk]="On-Screen Keyboard" [pdf_viewer]="PDF Viewer" [remote]="Remote Desktop" [settings]="Settings"
-[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [software_store]="Software"
-[store]="App Store" [terminal]="Terminal" [themes]="Themes" [totp]="TOTP" [tube]="Tube"
+[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [store]="App Store"
+[terminal]="Terminal" [themes]="Themes" [totp]="TOTP" [tube]="Tube"
 [typst_editor]="Typst Editor" [video_editor]="Video Editor" [video-player]="Video Player"
 [vpn]="VPN" [weather]="Weather" [word-processor]="Word Processor")
 

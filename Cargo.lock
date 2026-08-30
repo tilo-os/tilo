@@ -13015,19 +13015,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "software_store"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "serde_json",
- "taffy",
- "tracing-subscriber",
- "ui",
- "vello",
- "winit",
-]
-
-[[package]]
 name = "sorted-index-buffer"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
