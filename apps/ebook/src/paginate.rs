@@ -10,6 +10,7 @@
 //! recomputes when the chapter, content width, or a typography setting changes.
 
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
+use ui::{ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks};
 
 use crate::model::{Block, FontKind, Settings};
 
@@ -30,7 +31,11 @@ pub fn font_choice(kind: &FontKind) -> FontChoice {
 #[derive(Clone, Debug)]
 pub struct LineRun {
     pub x: f32,
+    /// Canonical source text covered by this run.
     pub text: String,
+    /// Painted text; differs only when an exercised discretionary break adds
+    /// a terminal hyphen that is absent from the source document.
+    pub display_text: String,
     pub bold: bool,
     pub italic: bool,
     pub mono: bool,
@@ -211,6 +216,10 @@ struct Word {
     /// Char offset of this word's first char within the block's canonical text.
     char_start: usize,
     char_len: usize,
+    /// This fragment continues the preceding source word and may begin a line
+    /// only by exercising a discretionary hyphen.
+    hyphen_break_before: bool,
+    hyphen_width_before: f32,
 }
 
 fn weight(bold: bool) -> TextWeight {
@@ -235,6 +244,7 @@ pub fn layout_chapter(
     content_h: f32,
     settings: &Settings,
     chapter: usize,
+    language: &str,
     base_family: &FontChoice,
     font_mult: f32,
     font_sig: u64,
@@ -289,7 +299,6 @@ pub fn layout_chapter(
                 base_family
             };
             for (wi, w) in span.text.split_whitespace().enumerate() {
-                let (ww, _h) = tr.measure_font(w, st.size, None, weight(bold), italic, word_family);
                 let space_before = if wi == 0 { span.space_before } else { true };
                 // A separating space is one canonical char between words.
                 if !canon.is_empty() && space_before {
@@ -300,58 +309,123 @@ pub fn layout_chapter(
                 let char_len = w.chars().count();
                 canon.push_str(w);
                 char_pos += char_len;
-                words.push(Word {
-                    text: w.to_string(),
-                    bold,
-                    italic,
-                    mono,
-                    w: ww,
-                    space_before,
-                    char_start,
-                    char_len,
-                });
+                let mut boundaries = discretionary_hyphen_breaks(w, language);
+                boundaries.push(w.len());
+                let hyphen_width = tr
+                    .measure_font("-", st.size, None, weight(bold), italic, word_family)
+                    .0;
+                let mut byte_start = 0;
+                let mut chars_before = 0;
+                for (fragment_index, byte_end) in boundaries.into_iter().enumerate() {
+                    let fragment = &w[byte_start..byte_end];
+                    let fragment_chars = fragment.chars().count();
+                    let fragment_width = tr
+                        .measure_font(fragment, st.size, None, weight(bold), italic, word_family)
+                        .0;
+                    words.push(Word {
+                        text: fragment.to_string(),
+                        bold,
+                        italic,
+                        mono,
+                        w: fragment_width,
+                        space_before: fragment_index == 0 && space_before,
+                        char_start: char_start + chars_before,
+                        char_len: fragment_chars,
+                        hyphen_break_before: fragment_index != 0,
+                        hyphen_width_before: if fragment_index == 0 {
+                            0.0
+                        } else {
+                            hyphen_width
+                        },
+                    });
+                    byte_start = byte_end;
+                    chars_before += fragment_chars;
+                }
             }
         }
 
-        // Greedy word wrap. A word joins with a leading space only when
-        // `space_before` says so — otherwise it abuts the previous run.
+        // Compose the complete paragraph rather than accepting the first local
+        // break that fits. Body prose and quotations use adjustable inter-word
+        // glue; headings and lists retain natural ragged spacing while still
+        // benefiting from paragraph-wide break selection.
         let mut lines: Vec<LaidLine> = Vec::new();
-        let mut cur: Vec<LineRun> = Vec::new();
-        let mut cur_w = 0.0f32;
         let block_top = y;
-        let mut line_idx = 0usize;
-        for word in &words {
-            let gap = if !cur.is_empty() && word.space_before {
-                space_w
-            } else {
-                0.0
-            };
-            if !cur.is_empty() && cur_w + gap + word.w > text_width {
-                lines.push(LaidLine {
-                    y: block_top + line_idx as f32 * line_height,
-                    runs: std::mem::take(&mut cur),
+        let boxes: Vec<_> = words
+            .iter()
+            .map(|word| ParagraphBox {
+                width: word.w,
+                glue_before: if word.space_before { space_w } else { 0.0 },
+                break_before: word.space_before || word.hyphen_break_before,
+                break_penalty: if word.hyphen_break_before { 50 } else { 0 },
+                flagged_break: word.hyphen_break_before,
+                break_width: word.hyphen_width_before,
+            })
+            .collect();
+        let mut options = ParagraphOptions::new(text_width);
+        options.justify = matches!(st.kind, LayoutKind::Paragraph | LayoutKind::Quote);
+        let composed = compose_paragraph(&boxes, options);
+        for (line_idx, line) in composed.iter().enumerate() {
+            let mut runs: Vec<LineRun> = Vec::with_capacity(line.end - line.start);
+            let mut x = 0.0;
+            for (offset, word) in words[line.start..line.end].iter().enumerate() {
+                if offset != 0 && word.space_before {
+                    x += space_w * line.glue_scale;
+                }
+                if word.hyphen_break_before
+                    && let Some(previous) = runs.last_mut()
+                    && previous.bold == word.bold
+                    && previous.italic == word.italic
+                    && previous.mono == word.mono
+                    && previous.char_start + previous.char_len == word.char_start
+                {
+                    previous.text.push_str(&word.text);
+                    previous.display_text.push_str(&word.text);
+                    previous.char_len += word.char_len;
+                    let family = if word.mono {
+                        &FontChoice::Monospace
+                    } else {
+                        base_family
+                    };
+                    x = previous.x
+                        + tr.measure_font(
+                            &previous.text,
+                            st.size,
+                            None,
+                            weight(word.bold),
+                            word.italic,
+                            family,
+                        )
+                        .0;
+                    continue;
+                }
+                runs.push(LineRun {
+                    x,
+                    text: word.text.clone(),
+                    display_text: word.text.clone(),
+                    bold: word.bold,
+                    italic: word.italic,
+                    mono: word.mono,
+                    char_start: word.char_start,
+                    char_len: word.char_len,
                 });
-                line_idx += 1;
-                cur_w = 0.0;
+                x += word.w;
             }
-            let x = if cur.is_empty() { 0.0 } else { cur_w + gap };
-            cur.push(LineRun {
-                x,
-                text: word.text.clone(),
-                bold: word.bold,
-                italic: word.italic,
-                mono: word.mono,
-                char_start: word.char_start,
-                char_len: word.char_len,
-            });
-            cur_w = x + word.w;
-        }
-        if !cur.is_empty() || lines.is_empty() {
+            if line.end < words.len()
+                && words[line.end].hyphen_break_before
+                && let Some(last) = runs.last_mut()
+            {
+                last.display_text.push('-');
+            }
             lines.push(LaidLine {
                 y: block_top + line_idx as f32 * line_height,
-                runs: cur,
+                runs,
             });
-            line_idx += 1;
+        }
+        if lines.is_empty() {
+            lines.push(LaidLine {
+                y: block_top,
+                runs: Vec::new(),
+            });
         }
 
         let bullet = match block {
@@ -364,7 +438,7 @@ pub fn layout_chapter(
             _ => None,
         };
 
-        let height = line_idx as f32 * line_height;
+        let height = lines.len() as f32 * line_height;
         laid.push(LaidBlock {
             index,
             kind: st.kind,
@@ -397,26 +471,92 @@ fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
     if blocks.is_empty() || page_h <= 1.0 {
         return vec![0.0];
     }
-    // Flatten to row boxes (absolute y, height) in order.
-    let mut rows: Vec<(f32, f32)> = Vec::new();
-    for b in blocks {
+    #[derive(Clone, Copy)]
+    struct Row {
+        y: f32,
+        height: f32,
+        block: usize,
+        line: usize,
+        line_count: usize,
+        kind: LayoutKind,
+    }
+
+    // Flatten to row boxes while retaining enough paragraph structure to
+    // enforce TeX-like page-break constraints.
+    let mut rows = Vec::new();
+    for (block_index, b) in blocks.iter().enumerate() {
         if b.kind == LayoutKind::Separator {
-            rows.push((b.top, b.bottom - b.top));
+            rows.push(Row {
+                y: b.top,
+                height: b.bottom - b.top,
+                block: block_index,
+                line: 0,
+                line_count: 1,
+                kind: b.kind,
+            });
         } else {
-            for l in &b.lines {
-                rows.push((l.y, b.line_height));
+            for (line, l) in b.lines.iter().enumerate() {
+                rows.push(Row {
+                    y: l.y,
+                    height: b.line_height,
+                    block: block_index,
+                    line,
+                    line_count: b.lines.len(),
+                    kind: b.kind,
+                });
             }
         }
     }
-    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut pages = vec![rows[0].0];
-    let mut page_start = rows[0].0;
-    for (y, h) in &rows {
-        if y + h - page_start > page_h + 0.5 {
-            page_start = *y;
-            pages.push(page_start);
+    let mut pages = vec![rows[0].y];
+    let mut page_row = 0;
+    while page_row < rows.len() {
+        let page_start = rows[page_row].y;
+        let Some(overflow) = (page_row..rows.len())
+            .find(|&index| rows[index].y + rows[index].height - page_start > page_h + 0.5)
+        else {
+            break;
+        };
+        let mut break_at = overflow;
+        let row = rows[break_at];
+
+        // Keep at least two lines of an ordinary text block on either side of
+        // a page boundary whenever that can be achieved on this page.
+        if matches!(
+            row.kind,
+            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::List
+        ) && row.line_count >= 4
+        {
+            if row.line == 1 {
+                break_at -= 1;
+            } else if row.line_count - row.line == 1 {
+                break_at -= 1;
+            }
         }
+
+        // A heading is semantically attached to the text following it. If it
+        // would become the final item on a page, carry the complete heading to
+        // the next page as long as it did not itself begin this page.
+        if break_at > page_row
+            && rows[break_at - 1].kind == LayoutKind::Heading
+            && rows[break_at - 1].block != rows[break_at].block
+        {
+            let heading_block = rows[break_at - 1].block;
+            let heading_start = (page_row..break_at)
+                .find(|&index| rows[index].block == heading_block)
+                .unwrap_or(break_at - 1);
+            if heading_start > page_row {
+                break_at = heading_start;
+            }
+        }
+
+        // An indivisible item taller than a page has no legal alternative.
+        if break_at <= page_row {
+            break_at = overflow.max(page_row + 1);
+        }
+        pages.push(rows[break_at].y);
+        page_row = break_at;
     }
     pages
 }
@@ -469,6 +609,7 @@ mod tests {
             220.0,
             &Settings::default(),
             0,
+            "en-US",
             &FontChoice::SansSerif,
             1.0,
             0,
@@ -495,6 +636,7 @@ mod tests {
             160.0,
             &Settings::default(),
             0,
+            "en-US",
             &FontChoice::SansSerif,
             1.0,
             0,
@@ -529,6 +671,7 @@ mod tests {
             400.0,
             &Settings::default(),
             0,
+            "en-US",
             &FontChoice::SansSerif,
             1.0,
             0,
@@ -545,5 +688,85 @@ mod tests {
             let slice: String = b.text.chars().skip(r.char_start).take(r.char_len).collect();
             assert_eq!(slice, r.text, "run char range slices back to its text");
         }
+    }
+
+    #[test]
+    fn language_aware_hyphenation_paints_only_the_exercised_break() {
+        let mut tr = TextRenderer::new();
+        let blocks = vec![para("characteristically")];
+        let layout = layout_chapter(
+            &mut tr,
+            &blocks,
+            105.0,
+            400.0,
+            &Settings::default(),
+            0,
+            "en-US",
+            &FontChoice::Serif,
+            1.0,
+            0,
+        );
+        let block = &layout.blocks[0];
+        assert!(block.lines.len() >= 2, "the long word should hyphenate");
+        assert!(
+            block.lines[..block.lines.len() - 1]
+                .iter()
+                .filter_map(|line| line.runs.last())
+                .any(|run| run.display_text.ends_with('-')),
+            "a selected discretionary break paints its hyphen"
+        );
+        let source: String = block
+            .lines
+            .iter()
+            .flat_map(|line| line.runs.iter())
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(
+            source, block.text,
+            "virtual hyphens never enter source text"
+        );
+    }
+
+    fn block_with_lines(kind: LayoutKind, top: f32, line_count: usize) -> LaidBlock {
+        let line_height = 20.0;
+        LaidBlock {
+            index: 0,
+            kind,
+            top,
+            bottom: top + line_count as f32 * line_height,
+            size: 16.0,
+            line_height,
+            indent: 0.0,
+            lines: (0..line_count)
+                .map(|line| LaidLine {
+                    y: top + line as f32 * line_height,
+                    runs: Vec::new(),
+                })
+                .collect(),
+            bullet: None,
+            text: String::new(),
+            char_len: 0,
+        }
+    }
+
+    #[test]
+    fn pagination_avoids_single_line_widows_and_orphans() {
+        let widow = block_with_lines(LayoutKind::Paragraph, 0.0, 5);
+        assert_eq!(paginate(&[widow], 85.0), vec![0.0, 60.0]);
+
+        let before = block_with_lines(LayoutKind::Separator, 0.0, 1);
+        let paragraph = block_with_lines(LayoutKind::Paragraph, 40.0, 5);
+        assert_eq!(paginate(&[before, paragraph], 65.0), vec![0.0, 40.0, 100.0]);
+    }
+
+    #[test]
+    fn pagination_keeps_a_heading_with_following_text() {
+        let intro = block_with_lines(LayoutKind::Paragraph, 0.0, 1);
+        let heading = block_with_lines(LayoutKind::Heading, 25.0, 1);
+        let body = block_with_lines(LayoutKind::Paragraph, 45.0, 3);
+        assert_eq!(
+            paginate(&[intro, heading, body], 55.0),
+            vec![0.0, 25.0, 65.0]
+        );
     }
 }
