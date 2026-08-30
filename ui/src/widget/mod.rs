@@ -478,7 +478,7 @@ pub use column::Column;
 mod row;
 pub use row::Row;
 mod toggle;
-pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_face_colors};
+pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors};
 mod stack;
 pub use stack::Stack;
 mod container;

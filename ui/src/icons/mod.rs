@@ -70,6 +70,16 @@ pub enum Icon {
     Star,
     HardDrive,
     Check,
+    // --- Video / media-navigation set ---
+    Flame,
+    GalleryVerticalEnd,
+    History,
+    ThumbsUp,
+    ThumbsDown,
+    ListVideo,
+    Sparkles,
+    Eye,
+    Menu,
     Info,
     CloudDownload,
     ArrowUpDown,
@@ -400,6 +410,59 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             rect_path(6.0, 4.0, 4.0, 16.0, 1.0),
         ],
         Icon::Check => vec![path_from_d("M20 6 9 17l-5-5")],
+        // --- Video / media-navigation set — lucide v0.546.0 ---
+        Icon::Flame => vec![path_from_d(
+            "M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4",
+        )],
+        Icon::GalleryVerticalEnd => vec![
+            path_from_d("M7 2h10"),
+            path_from_d("M5 6h14"),
+            rect_path(3.0, 10.0, 18.0, 12.0, 2.0),
+        ],
+        Icon::History => vec![
+            path_from_d("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"),
+            path_from_d("M3 3v5h5"),
+            path_from_d("M12 7v5l4 2"),
+        ],
+        Icon::ThumbsUp => vec![
+            path_from_d("M7 10v12"),
+            path_from_d(
+                "M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z",
+            ),
+        ],
+        Icon::ThumbsDown => vec![
+            path_from_d("M17 14V2"),
+            path_from_d(
+                "M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z",
+            ),
+        ],
+        Icon::ListVideo => vec![
+            path_from_d("M21 5H3"),
+            path_from_d("M10 12H3"),
+            path_from_d("M10 19H3"),
+            path_from_d(
+                "M15 12.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997a1 1 0 0 1-1.517-.86z",
+            ),
+        ],
+        Icon::Sparkles => vec![
+            path_from_d(
+                "M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z",
+            ),
+            path_from_d("M20 2v4"),
+            path_from_d("M22 4h-4"),
+            circle_path(4.0, 20.0, 2.0),
+        ],
+        Icon::Eye => vec![
+            path_from_d(
+                "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
+            ),
+            circle_path(12.0, 12.0, 3.0),
+        ],
+        Icon::Menu => vec![
+            path_from_d("M4 5h16"),
+            path_from_d("M4 12h16"),
+            path_from_d("M4 19h16"),
+        ],
         Icon::Refresh => vec![
             path_from_d("M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"),
             path_from_d("M21 3v5h-5"),
@@ -1109,6 +1172,28 @@ mod tests {
             for p in icon_subpaths(icon) {
                 assert!(element_count(&p) > 0, "{icon:?} subpath empty");
             }
+        }
+    }
+
+    #[test]
+    fn video_navigation_icons_match_lucide_subpath_counts() {
+        for (icon, expected) in [
+            (Icon::Flame, 1),
+            (Icon::GalleryVerticalEnd, 3),
+            (Icon::History, 3),
+            (Icon::ThumbsUp, 2),
+            (Icon::ThumbsDown, 2),
+            (Icon::ListVideo, 4),
+            (Icon::Sparkles, 4),
+            (Icon::Eye, 2),
+            (Icon::Menu, 3),
+        ] {
+            let subpaths = icon_subpaths(icon);
+            assert_eq!(subpaths.len(), expected, "{icon:?} subpath count");
+            assert!(
+                subpaths.iter().all(|path| element_count(path) > 0),
+                "{icon:?} emitted an empty subpath"
+            );
         }
     }
 

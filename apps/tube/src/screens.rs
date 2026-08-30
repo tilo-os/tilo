@@ -4,8 +4,9 @@
 //! no per-screen state: navigation rebuilds the whole tree from the model,
 //! so these functions are pure views.
 
+use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::{ScrollAxis, Scrollable, TextInput};
+use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
@@ -13,9 +14,9 @@ use crate::images::Imgs;
 use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
-    Align, ChannelAvatar, Flex, Icon, IconKind, ImageBox, IntoElement, Justify, Len, PlayerHost,
-    SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap,
-    hover_fill, hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
+    Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, Len, PlayerHost, SharedPlayer,
+    Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap, hover_fill,
+    hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
 };
 
 use crate::contrast::SelectedStyle;
@@ -117,8 +118,8 @@ fn channel_avatar(
     ChannelAvatar::new(imgs.store_handle(), &url, name, size)
 }
 
-fn icon(kind: IconKind, size: f32, color: Color) -> Icon {
-    Icon::new(kind, size, color)
+fn icon(kind: Icon, size: f32, color: Color) -> IconWidget {
+    IconWidget::new(kind, size).with_color(color)
 }
 
 /// A pill button: optional leading icon + label, filled (accent) or
@@ -127,7 +128,7 @@ fn pill(
     theme: &Theme,
     bus: &ActionBus,
     label: &str,
-    leading: Option<IconKind>,
+    leading: Option<Icon>,
     action: Action,
     filled: bool,
 ) -> Flex {
@@ -166,7 +167,7 @@ fn pill(
 
 /// A non-interactive stat pill (leading icon + label) — the outlined-pill look
 /// without a click handler. Used for the read-only dislike count.
-fn stat_pill(theme: &Theme, label: &str, leading: IconKind) -> Flex {
+fn stat_pill(theme: &Theme, label: &str, leading: Icon) -> Flex {
     Flex::row()
         .gap(8.0)
         .pad_xy(16.0, 9.0)
@@ -181,7 +182,7 @@ fn stat_pill(theme: &Theme, label: &str, leading: IconKind) -> Flex {
 }
 
 /// A small icon-only round button.
-fn icon_button(theme: &Theme, bus: &ActionBus, kind: IconKind, action: Action) -> Flex {
+fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Flex {
     Flex::row()
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
@@ -202,7 +203,7 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
         .align(Align::Center)
-        .push(icon(IconKind::Menu, 20.0, theme.text_primary))
+        .push(icon(Icon::Menu, 20.0, theme.text_primary))
         .surface(Surface {
             fill: None,
             radius: f64::from(theme.tokens.radii.full),
@@ -212,7 +213,7 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .on_click(bus, Action::ToggleSidebar)
 }
 
-fn section_header(theme: &Theme, kind: IconKind, title: &str, subtitle: &str) -> Flex {
+fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
     Flex::row()
         .fill_w()
         .gap(10.0)
@@ -249,7 +250,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
             .push(dim(theme, &v.channel_name, 12.5))
             .push_if(
                 model.channel(&v.channel_id).is_some_and(|c| c.verified),
-                icon(IconKind::Check, 12.0, theme.text_dim),
+                icon(Icon::Check, 12.0, theme.text_dim),
             ),
     );
     meta = meta.push(dim(
@@ -269,7 +270,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
                     border: None,
                 })
                 .push(icon(
-                    IconKind::Sparkle,
+                    Icon::Sparkles,
                     11.0,
                     Color::from_rgb8(0xc8, 0x8e, 0xe0),
                 ))
@@ -444,7 +445,7 @@ fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
 fn nav_item(
     theme: &Theme,
     bus: &ActionBus,
-    kind: IconKind,
+    kind: Icon,
     label: &str,
     route: Route,
     active: bool,
@@ -524,13 +525,13 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                     radius: f64::from(theme.tokens.radii.lg),
                     border: None,
                 })
-                .push(icon(IconKind::Play, 22.0, Color::WHITE)),
+                .push(icon(Icon::Play, 22.0, Color::WHITE)),
         )
         .push(gap(1.0, 6.0))
         .push(nav_item(
             theme,
             bus,
-            IconKind::Home,
+            Icon::Home,
             "Home",
             Route::Home,
             sec == "home",
@@ -538,7 +539,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .push(nav_item(
             theme,
             bus,
-            IconKind::Fire,
+            Icon::Flame,
             "Trending",
             Route::Trending,
             sec == "trending",
@@ -546,7 +547,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .push(nav_item(
             theme,
             bus,
-            IconKind::Subscriptions,
+            Icon::GalleryVerticalEnd,
             "Subs",
             Route::Subscriptions,
             sec == "subs",
@@ -554,7 +555,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .push(nav_item(
             theme,
             bus,
-            IconKind::History,
+            Icon::History,
             "History",
             Route::History,
             sec == "history",
@@ -563,7 +564,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .push(nav_item(
             theme,
             bus,
-            IconKind::Settings,
+            Icon::Settings,
             "Settings",
             Route::Settings,
             sec == "settings",
@@ -579,7 +580,7 @@ fn back_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
         .align(Align::Center)
-        .push(icon(IconKind::Back, 20.0, theme.text_primary))
+        .push(icon(Icon::ArrowLeft, 20.0, theme.text_primary))
         .surface(Surface {
             fill: None,
             radius: f64::from(theme.tokens.radii.full),
@@ -618,7 +619,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool
             radius: f64::from(theme.tokens.radii.full),
             border: Some((1.0, theme.border_standard)),
         })
-        .push(icon(IconKind::Search, 18.0, theme.text_dim))
+        .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
 
     // Only surface the data-source indicator when we're NOT on live data
@@ -765,7 +766,7 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, IconKind::Fire, "Trending", ""))
+            .push(section_header(theme, Icon::Flame, "Trending", ""))
             .push(body),
     )
 }
@@ -784,7 +785,7 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -
             .gap(18.0)
             .push(section_header(
                 theme,
-                IconKind::Fire,
+                Icon::Flame,
                 "Trending",
                 "Most-watched right now",
             ))
@@ -836,7 +837,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
             .gap(18.0)
             .push(section_header(
                 theme,
-                IconKind::Subscriptions,
+                Icon::GalleryVerticalEnd,
                 "Subscriptions",
                 &format!("{} channels", model.subscriptions.len()),
             ))
@@ -868,7 +869,7 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
             .max_w(820.0)
             .push(section_header(
                 theme,
-                IconKind::History,
+                Icon::History,
                 "Watch history",
                 "Stored locally — never uploaded",
             ))
@@ -915,7 +916,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
                     radius: 6.0,
                     border: None,
                 })
-                .push(icon(IconKind::Playlist, 12.0, Color::WHITE))
+                .push(icon(Icon::ListVideo, 12.0, Color::WHITE))
                 .push(text_c(
                     format!("{} videos", human_count(p.video_count)),
                     11.0,
@@ -960,7 +961,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
                 .gap(10.0)
                 .fill_w()
                 .align(Align::Start)
-                .push(icon(IconKind::Playlist, 22.0, theme.accent_primary))
+                .push(icon(Icon::ListVideo, 22.0, theme.accent_primary))
                 .push(meta),
         )
 }
@@ -1004,7 +1005,7 @@ fn creator_card(
                         .gap(6.0)
                         .align(Align::Center)
                         .push(text(&c.name, 16.0))
-                        .push_if(c.verified, icon(IconKind::Check, 14.0, theme.text_dim)),
+                        .push_if(c.verified, icon(Icon::Check, 14.0, theme.text_dim)),
                 )
                 .push_if(!handle_subs.is_empty(), dim(theme, &handle_subs, 12.5)),
         )
@@ -1140,7 +1141,7 @@ pub fn playlist(
                 theme,
                 bus,
                 "Play all",
-                Some(IconKind::Play),
+                Some(Icon::Play),
                 Action::OpenVideo(fid),
                 true,
             )
@@ -1220,7 +1221,7 @@ pub fn channel(
                         .gap(8.0)
                         .align(Align::Center)
                         .push(text(&ch.name, 26.0))
-                        .push_if(ch.verified, icon(IconKind::Check, 18.0, theme.text_dim)),
+                        .push_if(ch.verified, icon(Icon::Check, 18.0, theme.text_dim)),
                 )
                 .push(dim(
                     theme,
@@ -1237,7 +1238,7 @@ pub fn channel(
                 theme,
                 bus,
                 "Subscribed",
-                Some(IconKind::Bell),
+                Some(Icon::Bell),
                 Action::ToggleSubscribe(ch.id.clone()),
                 false,
             )
@@ -1278,7 +1279,7 @@ fn empty_state(theme: &Theme, title: &str, body: &str) -> Flex {
         .pad(48.0)
         .align(Align::Center)
         .justify(Justify::Center)
-        .push(icon(IconKind::Eye, 40.0, theme.text_dim))
+        .push(icon(Icon::Eye, 40.0, theme.text_dim))
         .push(text(title, 18.0))
         .push(dim(theme, body, 13.0))
 }
@@ -1424,7 +1425,7 @@ pub fn watch(
                             13.0,
                             Color::WHITE,
                         ))
-                        .push(icon(IconKind::Skip, 14.0, Color::WHITE)),
+                        .push(icon(Icon::SkipForward, 14.0, Color::WHITE)),
                 ),
         );
     }
@@ -1457,7 +1458,7 @@ pub fn watch(
             icon_button(
                 theme,
                 bus,
-                IconKind::Settings,
+                Icon::Settings,
                 Action::Navigate(Route::Settings),
             )
             .id("watch_settings"),
@@ -1480,7 +1481,7 @@ pub fn watch(
                 theme,
                 bus,
                 &human_count(model.display_likes(v)),
-                Some(IconKind::Like),
+                Some(Icon::ThumbsUp),
                 Action::ToggleLike(v.id.clone()),
                 liked,
             )
@@ -1493,14 +1494,14 @@ pub fn watch(
         let label = model
             .dislikes_of(&v.id)
             .map_or_else(|| "—".to_string(), human_count);
-        meta = meta.push(stat_pill(theme, &label, IconKind::Dislike).id("dislike_pill"));
+        meta = meta.push(stat_pill(theme, &label, Icon::ThumbsDown).id("dislike_pill"));
     }
     let meta = meta.push(
         pill(
             theme,
             bus,
             "Share",
-            Some(IconKind::Chevron),
+            Some(Icon::ChevronRight),
             Action::Share(v.id.clone()),
             false,
         )
@@ -1546,7 +1547,7 @@ pub fn watch(
                     theme,
                     bus,
                     "Subscribed",
-                    Some(IconKind::Bell),
+                    Some(Icon::Bell),
                     Action::ToggleSubscribe(v.channel_id.clone()),
                     false,
                 )
@@ -1659,7 +1660,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             12.5,
             theme.text_primary,
         ))
-        .push(icon(IconKind::Chevron, 12.0, theme.text_dim))
+        .push(icon(Icon::ChevronRight, 12.0, theme.text_dim))
 }
 
 fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
@@ -1667,11 +1668,14 @@ fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .gap(8.0)
         .align(Align::Center)
         .push(dim(theme, "Autoplay", 12.5))
-        .push(Switch::new(
-            model.settings.autoplay,
-            bus,
-            Action::ToggleSetting(SettingFlag::Autoplay),
-        ))
+        .push(
+            Switch::new(
+                model.settings.autoplay,
+                bus,
+                Action::ToggleSetting(SettingFlag::Autoplay),
+            )
+            .accessible_name("Autoplay"),
+        )
 }
 
 /// The toast stack of transient notices (auto-skip confirmations, "link
@@ -1688,7 +1692,7 @@ fn notices_view(theme: &Theme, model: &TubeModel) -> Flex {
                 .pad_xy(12.0, 8.0)
                 .align(Align::Center)
                 .surface(subtle_surface(theme))
-                .push(icon(IconKind::Skip, 14.0, theme.accent_primary))
+                .push(icon(Icon::SkipForward, 14.0, theme.accent_primary))
                 .push(text_c(n, 12.5, theme.text_primary)),
         );
     }
@@ -1714,7 +1718,7 @@ fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
         .push(dim(theme, &c.time_ago, 11.5));
     if c.hearted {
         head = head.push(icon(
-            IconKind::Like,
+            Icon::ThumbsUp,
             12.0,
             theme.tokens.colors.semantic.danger,
         ));
@@ -1723,7 +1727,7 @@ fn comment_row(theme: &Theme, c: &crate::model::Comment) -> Flex {
     let actions = Flex::row()
         .gap(6.0)
         .align(Align::Center)
-        .push(icon(IconKind::Like, 13.0, theme.text_dim))
+        .push(icon(Icon::ThumbsUp, 13.0, theme.text_dim))
         .push(dim(theme, human_count(c.likes), 11.5))
         .push(gap(8.0, 1.0))
         .push_if(
@@ -1860,7 +1864,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     bus,
                     Action::ToggleSetting(SettingFlag::Autoplay),
                 )
-                .id("switch_autoplay"),
+                .id("switch_autoplay")
+                .accessible_name("Autoplay next video"),
             ),
             setting_row(
                 theme,
@@ -1871,7 +1876,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     bus,
                     Action::ToggleSetting(SettingFlag::ShowComments),
                 )
-                .id("switch_comments"),
+                .id("switch_comments")
+                .accessible_name("Show comments"),
             ),
             setting_row(
                 theme,
@@ -1882,7 +1888,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     bus,
                     Action::ToggleSetting(SettingFlag::ReturnDislike),
                 )
-                .id("switch_dislikes"),
+                .id("switch_dislikes")
+                .accessible_name("Show dislikes"),
             ),
             setting_row(
                 theme,
@@ -1903,7 +1910,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                 bus,
                 Action::ToggleSetting(SettingFlag::SponsorBlock),
             )
-            .id("switch_sponsorblock"),
+            .id("switch_sponsorblock")
+            .accessible_name("Enable SponsorBlock"),
         )];
         for cat in Category::ALL {
             let (r, g, b) = cat.rgb();
@@ -1956,7 +1964,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     bus,
                     Action::ToggleSetting(SettingFlag::DeArrow),
                 )
-                .id("switch_dearrow"),
+                .id("switch_dearrow")
+                .accessible_name("Enable DeArrow"),
             ),
             // The two sub-toggles are gated by the master switch: they dim while
             // DeArrow is off (their stored choice is still shown + editable), and
@@ -1971,7 +1980,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     bus,
                     Action::ToggleSetting(SettingFlag::DeArrowTitles),
                 )
-                .id("switch_dearrow_titles"),
+                .id("switch_dearrow_titles")
+                .accessible_name("Replace clickbait titles"),
                 s.dearrow_enabled,
             ),
             setting_row_gated(
@@ -1983,7 +1993,8 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
                     bus,
                     Action::ToggleSetting(SettingFlag::DeArrowThumbnails),
                 )
-                .id("switch_dearrow_thumbs"),
+                .id("switch_dearrow_thumbs")
+                .accessible_name("Replace thumbnails"),
                 s.dearrow_enabled,
             ),
         ],
@@ -1996,7 +2007,7 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
             .fill_w()
             .max_w(820.0)
             .pad(24.0)
-            .push(section_header(theme, IconKind::Settings, "Settings", ""))
+            .push(section_header(theme, Icon::Settings, "Settings", ""))
             .push(vspace(18.0))
             .push(playback)
             .push(vspace(16.0))
@@ -2021,9 +2032,9 @@ fn palette_row(
     use crate::search_type::CHANNEL_TYPE_ID;
     let is_channel = hit.type_id == CHANNEL_TYPE_ID;
     let kind = if is_channel {
-        IconKind::Subscriptions
+        Icon::GalleryVerticalEnd
     } else {
-        IconKind::Play
+        Icon::Play
     };
     let meta = if is_channel {
         format!("Channel · {}", hit.creator)
@@ -2057,7 +2068,7 @@ fn palette_row(
                 .push(text(&hit.title, 14.0))
                 .push(dim(theme, &meta, 12.0)),
         )
-        .push(icon(IconKind::Chevron, 14.0, theme.text_dim))
+        .push(icon(Icon::ChevronRight, 14.0, theme.text_dim))
 }
 
 /// The Ctrl+K global command palette overlay. Renders a dimming scrim (click to
@@ -2096,7 +2107,7 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
             radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, theme.border_focus)),
         })
-        .push(icon(IconKind::Search, 18.0, theme.accent_primary))
+        .push(icon(Icon::Search, 18.0, theme.accent_primary))
         .push(Flex::row().grow(1.0).push(input))
         .push(
             Flex::row()
