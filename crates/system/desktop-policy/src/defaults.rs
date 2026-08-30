@@ -176,12 +176,12 @@ impl<'a> DefaultAppResolver<'a> {
         let personal_id = || personal.handlers.get(resource).filter(|id| valid(id));
 
         if let Some(ws) = workspace {
-            match ws
+            let choice = ws
                 .user_choices
                 .get(user_id)
                 .and_then(|m| m.get(resource))
-                .unwrap_or(&UserWorkspaceChoice::FollowWorkspace)
-            {
+                .unwrap_or(&UserWorkspaceChoice::FollowWorkspace);
+            match choice {
                 UserWorkspaceChoice::App(id) if valid(id) => {
                     return Some(DefaultAppSelection {
                         package_id: id.clone(),
@@ -195,16 +195,23 @@ impl<'a> DefaultAppResolver<'a> {
                             source: SelectionSource::PersonalOverride,
                         });
                     }
+                    // An explicit escape from workspace policy remains an
+                    // escape when the personal app has since been removed.
+                    // Use the safe installed fallback below instead.
                 }
                 _ => {}
             }
-            if let Some(WorkspaceDefaultPolicy::App(id)) = ws.policy.get(resource)
-                && valid(id)
-            {
-                return Some(DefaultAppSelection {
-                    package_id: id.clone(),
-                    source: SelectionSource::WorkspacePolicy,
-                });
+            if matches!(choice, UserWorkspaceChoice::FollowWorkspace) {
+                if let Some(WorkspaceDefaultPolicy::App(id)) = ws.policy.get(resource)
+                    && valid(id)
+                {
+                    return Some(DefaultAppSelection {
+                        package_id: id.clone(),
+                        source: SelectionSource::WorkspacePolicy,
+                    });
+                }
+            } else {
+                return self.fallback(resource);
             }
         }
         if let Some(id) = personal_id() {
@@ -213,6 +220,10 @@ impl<'a> DefaultAppResolver<'a> {
                 source: SelectionSource::PersonalDefault,
             });
         }
+        self.fallback(resource)
+    }
+
+    fn fallback(&self, resource: &ResourceKind) -> Option<DefaultAppSelection> {
         let mut candidates: Vec<&AppCandidate> = self
             .candidates
             .iter()
@@ -387,6 +398,29 @@ mod tests {
         };
         let selected = resolver.resolve(&pdf, "ada", &personal, None).unwrap();
         assert_eq!(selected.package_id, "dev.qos.viewer");
+        assert_eq!(selected.source, SelectionSource::DeterministicFallback);
+    }
+
+    #[test]
+    fn explicit_personal_escape_never_falls_back_to_workspace_policy() {
+        let pdf = r("pdf");
+        let apps = [
+            app("dev.qos.a", "A", "pdf"),
+            app("dev.qos.workspace", "Workspace", "pdf"),
+        ];
+        let resolver = DefaultAppResolver::new(&apps);
+        let personal = PersonalDefaults::default();
+        let mut ws = WorkspaceDefaults::default();
+        ws.policy.insert(
+            pdf.clone(),
+            WorkspaceDefaultPolicy::App("dev.qos.workspace".into()),
+        );
+        ws.user_choices
+            .entry("ada".into())
+            .or_default()
+            .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
+        let selected = resolver.resolve(&pdf, "ada", &personal, Some(&ws)).unwrap();
+        assert_eq!(selected.package_id, "dev.qos.a");
         assert_eq!(selected.source, SelectionSource::DeterministicFallback);
     }
 
