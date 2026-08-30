@@ -502,6 +502,8 @@ mod tests {
             payload_root: PathBuf::from("/apps/x"),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         }
     }
 

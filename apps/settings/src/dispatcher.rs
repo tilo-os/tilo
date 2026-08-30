@@ -24,7 +24,10 @@ pub fn dispatcher_or_real(
 pub mod testing {
     //! Recording dispatcher used by every pane's tests.
 
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use os_actions::{Dispatcher, PowerProfile};
 
@@ -36,6 +39,7 @@ pub mod testing {
     #[derive(Default)]
     pub struct RecordingDispatcher {
         calls: Mutex<Vec<String>>,
+        fail_power_profile: AtomicBool,
     }
 
     impl RecordingDispatcher {
@@ -43,6 +47,10 @@ pub mod testing {
         /// caller can iterate / index without holding a borrow.
         pub fn calls(&self) -> Vec<String> {
             self.calls.lock().expect("recorder lock poisoned").clone()
+        }
+
+        pub fn set_fail_power_profile(&self, fail: bool) {
+            self.fail_power_profile.store(fail, Ordering::Relaxed);
         }
 
         fn push(&self, s: String) {
@@ -67,16 +75,28 @@ pub mod testing {
             self.push(format!("set_bluetooth({enabled})"));
             Ok(())
         }
+        fn set_wired(&self, enabled: bool) -> Result<(), String> {
+            self.push(format!("set_wired({enabled})"));
+            Ok(())
+        }
         fn connect_wifi(&self, ssid: &str, _password: Option<&str>) -> Result<(), String> {
             self.push(format!("connect_wifi({ssid})"));
             Ok(())
         }
         fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String> {
             self.push(format!("set_power_profile({})", profile.cli_arg()));
-            Ok(())
+            if self.fail_power_profile.load(Ordering::Relaxed) {
+                Err("simulated power-profile failure".into())
+            } else {
+                Ok(())
+            }
         }
         fn toggle_mute(&self) -> Result<(), String> {
             self.push("toggle_mute()".to_string());
+            Ok(())
+        }
+        fn set_mute(&self, muted: bool) -> Result<(), String> {
+            self.push(format!("set_mute({muted})"));
             Ok(())
         }
     }

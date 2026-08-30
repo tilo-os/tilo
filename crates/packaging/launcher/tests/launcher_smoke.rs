@@ -82,6 +82,8 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
         },
         cli_commands: Vec::new(),
         opens_ext: Vec::new(),
+        opens_mime: Vec::new(),
+        opens_schemes: Vec::new(),
     }
 }
 
@@ -371,6 +373,8 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         },
         cli_commands: Vec::new(),
         opens_ext: Vec::new(),
+        opens_mime: Vec::new(),
+        opens_schemes: Vec::new(),
     };
     // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
     // for a manually-supplied runtime tuple (the pure-function surface).
@@ -498,6 +502,8 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         },
         cli_commands: vec!["thin".to_string()],
         opens_ext: Vec::new(),
+        opens_mime: Vec::new(),
+        opens_schemes: Vec::new(),
     };
 
     // The manifest's `runtime` field resolves to the signed bundle

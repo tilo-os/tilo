@@ -1041,6 +1041,8 @@ mod tests {
             payload_root: std::path::PathBuf::new(),
             has_gui: true,
             opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
         });
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();

@@ -47,6 +47,16 @@ let pull_quote = Text::new("Make the important thing unmistakable.")
 `Text::with_size` and `TextRenderer::draw_text` remain available for existing
 code. New code should prefer complete styles.
 
+Every application crate is kept behind this public boundary by
+`tools/check_app_text_contract.py`, which runs in the fast lint workflow and
+the pre-commit hook. Applications may compose `Text`, the shared input/editor
+widgets, `RichTextLayout`, or `TextRenderer` for a genuinely custom-painted
+surface. They may not depend on the private shaping crates, instantiate a
+second font system, emit raw Vello glyphs, or repeat the product font-family
+names. This keeps fallback, OpenType features, variable axes, wrapping and
+interaction geometry in the one implementation even when an application needs
+canvas-like chrome instead of a widget tree.
+
 ## OpenType and paragraph controls
 
 `TextStyle` carries advanced typography through the same measurement, shaping,

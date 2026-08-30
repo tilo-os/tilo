@@ -128,7 +128,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let widget = BrowserWidget::new();
+    let widget = launch_target(&args)
+        .map(|uri| BrowserWidget::new().with_initial_uri(uri))
+        .unwrap_or_else(BrowserWidget::new);
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
@@ -246,6 +248,50 @@ fn parse_arg_value(args: &[String], flag: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The resource dispatcher forwards a claimed URI as one opaque positional
+/// argument. Browser deliberately accepts only the schemes it declares.
+fn launch_target(args: &[String]) -> Option<String> {
+    if let Some(uri) = args
+        .iter()
+        .skip(1)
+        .find(|arg| {
+            arg.split_once(':').is_some_and(|(scheme, rest)| {
+                (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http"))
+                    && rest.starts_with("//")
+            }) && arg.len() <= 8 * 1024
+                && !arg.chars().any(char::is_control)
+        })
+        .cloned()
+    {
+        return Some(uri);
+    }
+    // File dispatch uses the launcher's existing single positional argument.
+    // Convert only an absolute path; relative names and flag values never turn
+    // into a WebView navigation by accident.
+    let path = args
+        .get(1)
+        .map(std::path::Path::new)
+        .filter(|path| path.is_absolute())?;
+    url::Url::from_file_path(path).ok().map(Into::into)
+}
+
+#[cfg(test)]
+mod resource_claim_tests {
+    use super::launch_target;
+
+    #[test]
+    fn startup_accepts_only_declared_web_schemes_as_one_value() {
+        let uri = "HTTPS://example.test/a --still-data";
+        assert_eq!(
+            launch_target(&["browser".into(), uri.into()]).as_deref(),
+            Some(uri)
+        );
+        for value in ["javascript:alert(1)", "data:text/plain,x", "mailto:a@b"] {
+            assert_eq!(launch_target(&["browser".into(), value.into()]), None);
+        }
+    }
 }
 
 /// `--shots-live`: real engine, real network. Boot WPE, navigate, wait
