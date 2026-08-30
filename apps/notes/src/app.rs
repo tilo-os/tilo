@@ -230,8 +230,9 @@ impl NotesApp {
             }
         }
 
-        let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE);
-        let page_saver = PageSaver::spawn(root.clone(), SAVE_DEBOUNCE);
+        let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
+        let page_saver =
+            PageSaver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
 
         let mut app = Self {
             workspace,
