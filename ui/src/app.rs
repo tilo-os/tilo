@@ -391,7 +391,7 @@ impl App {
             screen_reader: if Self::screen_reader_env_enabled()
                 || Self::persisted_accessibility_bool("screen_reader")
             {
-                Some(crate::screen_reader::ScreenReader::new())
+                Some(Self::configured_screen_reader())
             } else {
                 None
             },
@@ -541,6 +541,37 @@ impl App {
             .unwrap_or(false)
     }
 
+    fn configure_screen_reader(reader: &mut crate::screen_reader::ScreenReader) {
+        let section = settings_store::load_section("accessibility");
+        let rate = section
+            .get("screen_reader_rate")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(100)
+            .clamp(50, 200) as f32
+            / 100.0;
+        reader.set_rate(rate);
+        let voice = section
+            .get("screen_reader_voice")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|voice| match voice {
+                "english_us" => Some("en-us"),
+                "english_gb" => Some("en-gb"),
+                "german" => Some("de"),
+                "french" => Some("fr"),
+                "spanish" => Some("es"),
+                _ => None,
+            });
+        if let Some(voice) = voice {
+            reader.set_voice(voice);
+        }
+    }
+
+    fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
+        let mut reader = crate::screen_reader::ScreenReader::new();
+        Self::configure_screen_reader(&mut reader);
+        reader
+    }
+
     /// Shared truthy-env-var gate for the low-vision flags: non-empty, not
     /// `"0"`/`"false"` (case-insensitive).
     fn bool_env(keys: &[&str]) -> bool {
@@ -669,7 +700,7 @@ impl App {
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         match (enabled, self.screen_reader.is_some()) {
             (true, false) => {
-                self.screen_reader = Some(crate::screen_reader::ScreenReader::new());
+                self.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
             (false, true) => {
@@ -925,6 +956,9 @@ impl App {
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
         self.set_screen_reader_enabled(configured_reader);
+        if let Some(reader) = self.screen_reader.as_mut() {
+            Self::configure_screen_reader(reader);
+        }
         self.a11y.screen_reader = self.screen_reader.is_some();
         self.rebuild_theme();
         self.layout_dirty = true;

@@ -72,6 +72,7 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
@@ -748,6 +749,16 @@ fn keyboard_input_event(key: Key, pressed: bool) -> WindowEvent {
         event: ev,
         is_synthetic: false,
     }
+}
+
+fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
+    keyboard_input_event(
+        Key::Named(match action {
+            SwitchAction::Next => NamedKey::Tab,
+            SwitchAction::Activate => NamedKey::Enter,
+        }),
+        pressed,
+    )
 }
 
 /// Apply a [`SetModifiers`] action by overwriting `ctx.modifiers` — the
@@ -2223,6 +2234,7 @@ pub fn run() -> ! {
     // Pointer/keyboard preferences are read once at startup; this notices a
     // new Settings write so changes take effect this session, not the next.
     let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
+    let mut switch_control = SwitchControlRuntime::new(Instant::now());
     // Redraw gating: painting every tick regardless of change would pin a CPU
     // core at 100%. Repaint only when: a backend event arrived
     // (input/resize/focus/redraw); the widget tree is animating; the chrome
@@ -2298,6 +2310,14 @@ pub fn run() -> ! {
                     }
                 }
                 BackendEvent::Input(wev) => {
+                    // A physical switch still enters through the same trusted
+                    // libinput/winit funnel. Only the configured pair is
+                    // translated, and disabled mode returns `None`, preserving
+                    // the original key exactly.
+                    let translated_switch = switch_control
+                        .translate(&wev, Instant::now())
+                        .map(|(action, pressed)| switch_action_event(action, pressed));
+                    let wev = translated_switch.as_ref().unwrap_or(&wev);
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
@@ -2312,11 +2332,11 @@ pub fn run() -> ! {
                     if session.is_locked() {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
-                        let key = winit_event_to_lock_key(&wev);
+                        let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
-                    } else if is_power_key(&wev) {
+                    } else if is_power_key(wev) {
                         // Hardware power key resolves per the power policy (logind delegates via
                         // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
                         match power_policy.on_power_key() {
@@ -2335,21 +2355,21 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
                         }
-                    } else if let Some(vt) = vt_switch_chord(&wev, &test_control_ctx.modifiers) {
+                    } else if let Some(vt) = vt_switch_chord(wev, &test_control_ctx.modifiers) {
                         // Ahead of every other chord, never offered to a client: leaving the
                         // terminal must work even with a grabbed keyboard, or a client can strand the user.
                         backend.switch_vt(vt);
-                    } else if is_remote_input_kill_switch(&wev, &test_control_ctx.modifiers) {
+                    } else if is_remote_input_kill_switch(wev, &test_control_ctx.modifiers) {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
                         session_changed = true;
-                    } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
+                    } else if is_lock_chord(wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
-                    } else if let Some(mk) = crate::shell::media_keys::classify(&wev) {
+                    } else if let Some(mk) = crate::shell::media_keys::classify(wev) {
                         // Hardware media/brightness keys belong to the machine, not whichever
                         // client holds focus — handled before client routing for that reason.
                         if let Some(osd) = crate::shell::media_keys::apply(
@@ -2363,7 +2383,7 @@ pub fn run() -> ! {
                     } else {
                         // Backends that don't pair a `ModifiersChanged` with every modifier
                         // keystroke would leave the mask stale, which decides chord ownership.
-                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = &wev {
+                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
                             client_input::apply_modifier_key(
                                 &mut test_control_ctx.modifiers,
                                 key_ev,
@@ -2374,13 +2394,13 @@ pub fn run() -> ! {
                         let to_client = client_input::route_input(
                             &mut state,
                             &mut frame_builder,
-                            &wev,
+                            wev,
                             &test_control_ctx.modifiers,
                         );
                         if !to_client {
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             frame_builder.dispatch_event(
-                                &wev,
+                                wev,
                                 &test_control_ctx.modifiers,
                                 &mut test_control_ctx.doc,
                                 &test_control_ctx.root_obj,
@@ -2429,6 +2449,33 @@ pub fn run() -> ! {
                     // Redraw is implicit (we re-paint every tick); focus changes don't gate input dispatch here.
                 }
             }
+        }
+
+        // Automatic scanning is generated by the same session owner, then
+        // offered to the focused Wayland client or shell through the exact
+        // normal Tab press/release route. It never runs on the lock screen.
+        if !session.is_locked()
+            && let Some(action) = switch_control.tick(Instant::now())
+        {
+            for pressed in [true, false] {
+                let event = switch_action_event(action, pressed);
+                let to_client = client_input::route_input(
+                    &mut state,
+                    &mut frame_builder,
+                    &event,
+                    &test_control_ctx.modifiers,
+                );
+                if !to_client {
+                    frame_builder.dispatch_event(
+                        &event,
+                        &test_control_ctx.modifiers,
+                        &mut test_control_ctx.doc,
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
+            }
+            session_changed = true;
         }
 
         // The Settings app writes to a file with no notification, so poll cheaply

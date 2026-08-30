@@ -21,7 +21,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[cfg(all(unix, test))]
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
