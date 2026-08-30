@@ -28,6 +28,7 @@
 
 pub mod account;
 pub mod actions;
+mod agenda;
 pub mod app;
 pub mod caldav;
 pub mod date;

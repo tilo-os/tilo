@@ -27,7 +27,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{Button, FlapState, SplitLayout, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -41,7 +41,6 @@ use crate::gallery::Gallery;
 use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
 use crate::preview::PreviewPane;
 use crate::store;
-use crate::widgets::{Btn, BtnVariant};
 
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
@@ -65,7 +64,7 @@ const TOGGLE_SIZE: f64 = 34.0;
 
 pub struct ThemesApp {
     catalog: Vec<ThemeSpec>,
-    topbar_buttons: Vec<Btn>,
+    topbar_buttons: Vec<Button>,
     gallery: Gallery,
     preview: PreviewPane,
     customizer: Customizer,
@@ -142,9 +141,16 @@ impl ThemesApp {
         Self {
             catalog: default_catalog(),
             topbar_buttons: vec![
-                Btn::new("new", "New", BtnVariant::Ghost),
-                Btn::new("export", "Export JSON", BtnVariant::Ghost),
-                Btn::new("apply", "Apply theme", BtnVariant::Primary),
+                Button::new("themes.new", "New", Some(doc::KEY_COMMAND))
+                    .with_click_value("new")
+                    .fit_content(34.0),
+                Button::new("themes.export", "Export JSON", Some(doc::KEY_COMMAND))
+                    .with_click_value("export")
+                    .fit_content(34.0),
+                Button::new("themes.apply", "Apply theme", Some(doc::KEY_COMMAND))
+                    .with_click_value("apply")
+                    .fit_content(34.0)
+                    .primary(),
             ],
             gallery: Gallery::new(),
             preview: PreviewPane::new(),

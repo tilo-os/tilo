@@ -16,7 +16,7 @@ FROM registry.fedoraproject.org/fedora:42
 RUN dnf install -y \
       nodejs \
       capnproto \
-      gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+      gcc gcc-c++ make cmake perl perl-FindBin python3 git time \
       clang clang-devel pkgconf-pkg-config \
       libxkbcommon-devel wayland-devel \
       libseat-devel libinput-devel systemd-devel libdrm-devel \

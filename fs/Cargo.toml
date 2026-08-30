@@ -2,6 +2,8 @@
 name = "fs"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).

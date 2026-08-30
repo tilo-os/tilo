@@ -2,6 +2,8 @@
 name = "store"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "qOS app store — surfaces qOS registry entries and legacy Flatpak apps in one list."
 
 [lib]

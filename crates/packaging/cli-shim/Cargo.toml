@@ -2,6 +2,8 @@
 name = "cli-shim"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Tiny PATH shim binary — resolves its sidecar, execvs qos-launcher run-installed."
 
 # A single tiny binary installed once per PATH command a package

@@ -23,7 +23,7 @@ first — see [ui gaps](#ui-gaps)).
 
 | Category | Canonical widget | Apps affected | Worst offenders |
 |---|---|---|---|
-| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **19** | db_client, imager, pdf_viewer, chat, maps, mail |
+| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **18** | db_client, imager, pdf_viewer, chat, maps, mail |
 | 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test; 6 converted via `Button::paint`) | ebook, software_store, slides, camera |
 | 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, software_store, music, feeds) | disks, db_client, snippets |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`ToggleGroup`/`ContextMenu`/`Popover`/`Chart` | **~22** (6 toggle/segmented/tab converts via `Toggle::paint` + `ToggleGroup::paint`) | tube, music, monitor, logs, camera |
@@ -80,7 +80,16 @@ offset parsing, while the fields gain caret navigation, selection, clipboard,
 context menu and IME. **logs** now embeds a CRDT-bound shared `TextInput` in its
 existing filter-bar chrome. Its collaborative `search` text remains the source
 of truth and type-to-filter still transfers focus into the field; the copied
-append/pop editor and its document helpers were deleted.
+append/pop editor and its document helpers were deleted. **monitor** now
+composes its responsive process-filter toolbar around a shared local
+`TextInput`; process matching, `/` focus, and host-owned global-search chords
+remain app policy, while selection, clipboard, caret navigation, IME and a11y
+come from the toolkit. **snippets** now embeds the same local editor core in
+both its search box and each dynamic expansion-variable row. Its compact
+rectangular chrome, search grammar, clear button, live preview and
+Tab/Enter/Escape modal flow remain app policy; the transient values still
+create no CRDT changes, while selection, clipboard, Unicode-safe editing,
+context menus and IME come from the toolkit.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
@@ -90,8 +99,8 @@ append/pop editor and its document helpers were deleted.
 | `apps/maps/src/app.rs:3491` search + `:3461` route endpoints | maps | `query.push_str(s)`, `endpoint_query_mut(o).push_str(s)`; `draw_search` fake blinking caret (`:1918`); zero `TextInput` | `SearchField`/`TextInput` | M | HIGH |
 | `apps/weather/src/core.rs` city search | weather ✅ | **DONE (prior)** — shared `Autocomplete`, including selection/clipboard/IME and async geocode suggestions | `Autocomplete` | S | HIGH |
 | `apps/logs/src/app.rs` search box | logs ✅ | **DONE** — embedded CRDT-bound `TextInput`; shared editor with collaborative live-filter state | `TextInput` | M | HIGH |
-| `apps/monitor/src/app.rs:257` `filter` + `:2582` | monitor | `filter.push(ch)`/`.pop()`, own `search_focused` | `SearchField` | M | HIGH |
-| `apps/snippets/src/app.rs:990` search + `expand.rs:337` var fields | snippets | `search.push_str`/`pop`; `f.value.pop()/push_str` per variable | `SearchField`/`TextInput` | M | HIGH |
+| `apps/monitor/src/app.rs` process filter | monitor ✅ | **DONE** — shared local `TextInput` embedded in the responsive toolbar | `TextInput` | M | HIGH |
+| `apps/snippets/src/app.rs` search + `expand.rs` var fields | snippets ✅ | **DONE** — shared local `TextInput`s embedded in the existing search and dynamic modal chrome; view state remains outside the CRDT | `TextInput` | M | HIGH |
 | `apps/hex_editor/src/view.rs` search + goto | hex_editor ✅ | **DONE** — two embedded local `TextInput`s; byte-search and mixed-radix goto policy preserved | `TextInput` | S | HIGH |
 | `apps/word-processor/src/widget.rs:2533` `find_query`/`replace_query` | word-processor | `buf.pop()`/`push_str`, drawn via `draw_field_box` | `SearchField` | M | HIGH |
 | `apps/sheets/src/app.rs:136` `NameBoxEdit`, `:125` `TabRename` | sheets | `nb.chars.insert/remove`, `r.chars.insert/remove` (go-to + tab rename) | `TextInput`/`EditableLabel` | M | HIGH |
@@ -527,11 +536,11 @@ require extending a `ui` widget *before* the app migrations.
 
 ### Wave 1 — Text inputs, pure non-adoption (HIGH, no ui changes needed)
 Route existing single-line fields to `TextInput`/`SearchField`/`NumberInput`/
-`EditableLabel`. **Done:** feeds, weather, logs, hex_editor. **Remaining apps:**
-maps, monitor, snippets, word-processor (find), sheets (name box + tab rename), music
+`EditableLabel`. **Done:** feeds, weather, logs, hex_editor, monitor, snippets. **Remaining apps:**
+maps, word-processor (find), sheets (name box + tab rename), music
 (name_input), ebook (num_edit + note), disks (confirm), vpn (add), containers
 (prompt), remote (fields), software_store (search), chat (inline rename),
-pdf_viewer (find query). *Continue with monitor, then maps' search and route fields.*
+pdf_viewer (find query). *Continue with maps' search and route fields.*
 
 ### Wave 2 — Extend `TextInput`, then migrate the blocked text inputs (HIGH)
 Land ui gaps **1** (multiline), **5** (secret mode), then migrate: mail
@@ -543,11 +552,12 @@ them (`ui/HIG.md` §6).
 ### Wave 3 — Modals (MED)
 Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Done:**
 monitor, containers (confirm + prompt), vpn (confirm), software_store (ref
-sheet), music (name prompt); feeds landed earlier. The widget was extended
+sheet), music (name prompt); feeds landed earlier. Snippets' dynamic expansion
+form now uses shared `TextInput`s without changing its custom preview layout.
+The widget was extended
 additively — `with_destructive` (danger primary) and a shared `PromptBody`
 text-entry body. **Remaining:** imager (config info sheet), notes (shortcuts
-overlay); **deferred to other waves:** db_client +
-snippets (text-input wave: dynamic/secret fields, per-variable fields), disks
+overlay); **deferred to other waves:** db_client, disks
 (needs a gated-primary capability), video_editor (controls wave — segmented
 controls inside), git_client (arm-twice → dialog is a behaviour change), sheets
 (scrim-only behind the shared palette). The multi-field forms left hand-rolled

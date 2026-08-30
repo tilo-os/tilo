@@ -2,6 +2,8 @@
 name = "pdf_viewer"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "pdf_viewer"
@@ -28,7 +30,7 @@ anyhow.workspace = true
 # Real PDF page rasterisation via a dynamically-loaded pdfium; falls back to
 # pure-Rust text extraction when the native library is not present.
 pdfium-render = "0.8.37"
-pdf-extract = "0.7.12"
+pdf-extract = "0.12.0"
 # Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
 # the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
 image = { workspace = true, features = ["png", "jpeg"] }
