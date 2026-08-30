@@ -136,6 +136,7 @@ impl SkipMode {
     }
 
     /// Cycle order for the settings selector: Auto-skip → Show → Off → …
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             SkipMode::Skip => SkipMode::Show,
@@ -233,6 +234,11 @@ impl SearchType {
 /// by default; the *first* click on any chip narrows to just that type
 /// (deselecting the others), and subsequent clicks toggle individual chips.
 /// Toggling everything off is treated as "show all" so the results never dead-end.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal filter chip toggle (video/playlist/ \
+              creator), not a state machine"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchTypeFilter {
     pub video: bool,
@@ -369,6 +375,10 @@ impl Video {
 }
 
 /// User-controlled settings. Lives in the CRDT.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, user-facing setting toggle, not a state machine"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub sponsorblock_enabled: bool,
@@ -525,6 +535,10 @@ impl Route {
 }
 
 /// The complete application state.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent piece of application state, not a state machine"
+)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TubeModel {
     pub videos: Vec<Video>,
@@ -866,11 +880,11 @@ impl TubeModel {
         if url.is_empty() {
             return false;
         }
-        let nname = norm_channel_name(name);
+        let norm_name = norm_channel_name(name);
         let mut changed = false;
         for ch in &mut self.channels {
             let matches = (!id.is_empty() && ch.id == id)
-                || (!nname.is_empty() && norm_channel_name(&ch.name) == nname);
+                || (!norm_name.is_empty() && norm_channel_name(&ch.name) == norm_name);
             if matches && ch.avatar_url.is_empty() {
                 ch.avatar_url = url.to_string();
                 changed = true;
@@ -899,7 +913,7 @@ impl TubeModel {
             if ch.avatar_url.is_empty()
                 && let Some(url) = by_name.get(&norm_channel_name(&ch.name))
             {
-                ch.avatar_url = url.clone();
+                url.clone_into(&mut ch.avatar_url);
             }
         }
     }

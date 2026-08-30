@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
@@ -69,6 +69,7 @@ impl PromptBody {
         }
     }
 
+    #[must_use]
     pub fn with_caption(mut self, caption: &str) -> Self {
         self.caption = caption.to_string();
         self
@@ -76,6 +77,7 @@ impl PromptBody {
 
     /// Selects the seeded value so the first keystroke replaces it (the
     /// rename idiom).
+    #[must_use]
     pub fn with_initial(mut self, initial: &str) -> Self {
         if !initial.is_empty() {
             self.input = self.input.with_initial_value(initial);
@@ -86,12 +88,14 @@ impl PromptBody {
 
     /// The field then fills the body's remaining height rather than a fixed
     /// single-line box.
+    #[must_use]
     pub fn multiline(mut self, on: bool) -> Self {
         self.multiline = on;
         self.input = self.input.multiline(on);
         self
     }
 
+    #[must_use]
     pub fn secret(mut self, on: bool) -> Self {
         self.input = self.input.with_secret(on);
         self
@@ -127,6 +131,18 @@ impl PromptBody {
         self.field_rect = field;
         self.input.apply_layout_external(field);
     }
+}
+
+/// Narrows a bounded on-screen dimension (a modal body's width, capped by
+/// [`crate::widget::ModalDialog::with_max_size`]) to `f32` for the text
+/// renderer's wrap width. Never approaches `f32::MAX`.
+fn px(v: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "v is a modal body width, bounded well below f32::MAX"
+    )]
+    let out = v as f32;
+    out
 }
 
 impl Widget for PromptBody {
@@ -171,7 +187,7 @@ impl Widget for PromptBody {
         presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        let width = (self.rect.width()).max(1.0) as f32;
+        let width = px(self.rect.width().max(1.0));
         let mut y = self.rect.y0 + TOP_PAD;
         if !self.caption.is_empty() {
             tr.draw_text(
@@ -179,7 +195,7 @@ impl Widget for PromptBody {
                 &self.caption,
                 CAPTION_SIZE,
                 c.text_dim,
-                transform * Affine::translate((self.rect.x0, y)),
+                transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 Some(width),
             );
             y += CAPTION_BLOCK;
@@ -190,7 +206,7 @@ impl Widget for PromptBody {
                 &self.label,
                 LABEL_SIZE,
                 c.text_primary,
-                transform * Affine::translate((self.rect.x0, y)),
+                transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 None,
                 TextWeight::Semibold,
             );
@@ -273,8 +289,8 @@ mod tests {
             .compute_layout(
                 node,
                 taffy::Size {
-                    width: taffy::AvailableSpace::Definite(viewport.width() as f32),
-                    height: taffy::AvailableSpace::Definite(viewport.height() as f32),
+                    width: taffy::AvailableSpace::Definite(px(viewport.width())),
+                    height: taffy::AvailableSpace::Definite(px(viewport.height())),
                 },
             )
             .unwrap();
