@@ -39,6 +39,7 @@ use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
+use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
@@ -149,11 +150,9 @@ pub struct ShellOverlayHost {
     /// The `os_action` shell-out fires only on Released so a drag doesn't
     /// spawn a subprocess per pixel of motion.
     qs_slider_drag: Option<usize>,
-    /// Session actions live in their own modal so restart/shutdown require
-    /// a second, explicit click and never share a hit target with QS.
-    power_menu_open: bool,
-    power_menu_transition: ui::Transition,
-    power_menu_armed: Option<usize>,
+    /// Session action modal, including destructive-action arming and its
+    /// own open/close transition.
+    power_menu: PowerMenu,
     /// When the workspace invite link was last copied, to confirm it.
     ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
@@ -788,7 +787,7 @@ const QS_OPEN_ANIM_MS: u64 = 180;
 /// Duration of the modal-style entry animation for workspace-settings
 /// and global-search. Slightly longer than the dropdown variant since
 /// the travel distance is larger.
-const MODAL_OPEN_ANIM_MS: u64 = 220;
+pub(crate) const MODAL_OPEN_ANIM_MS: u64 = 220;
 
 // Surface and scrim alphas. The pinned Vello has no backdrop filter, so
 // chrome surfaces are opaque and scrims carry the depth instead.
@@ -926,9 +925,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
-            power_menu_open: false,
-            power_menu_transition: ui::Transition::closed(),
-            power_menu_armed: None,
+            power_menu: PowerMenu::default(),
             ws_invite_copied_at: None,
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -5502,34 +5499,8 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        self.power_menu_transition.set_open(
-            self.power_menu_open,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
-        );
-        let power_now = Instant::now();
-        if self.power_menu_transition.is_visible(power_now) {
-            let openness = self.power_menu_transition.value(power_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            let (alpha, dy, scale) =
-                modal_transition_curve(&self.power_menu_transition, power_now, 0.94);
-            let rect = self.power_menu_rect();
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                alpha,
-                transform,
-                &self.rect,
-            );
-            let cx = rect.center().x;
-            let cy = rect.center().y;
-            let modal_xform = transform
-                * Affine::translate((cx, cy + dy))
-                * Affine::scale(scale)
-                * Affine::translate((-cx, -cy));
-            self.draw_power_menu(scene, modal_xform, text_renderer, theme);
-            scene.pop_layer();
-        }
+        self.power_menu
+            .draw(self.rect, scene, transform, text_renderer, theme);
 
         if flags.collaborators {
             self.draw_collaborators(scene, transform, text_renderer, theme);
@@ -6316,9 +6287,7 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
-                if self.power_menu_open {
-                    self.power_menu_open = false;
-                    self.power_menu_armed = None;
+                if self.power_menu.close() {
                     *handled = true;
                     return;
                 }
@@ -6587,34 +6556,13 @@ impl Widget for ShellOverlayHost {
                 }
             }
             let flags = self.overlay_flags();
-            if self.power_menu_open {
-                let panel = self.power_menu_rect();
-                if !panel.contains(p) {
-                    self.power_menu_open = false;
-                    self.power_menu_armed = None;
+            match self.power_menu.click(self.rect, p) {
+                PowerMenuClick::Ignored => {}
+                PowerMenuClick::Consumed => {
                     *handled = true;
                     return;
                 }
-                for i in 0..5 {
-                    if !self.power_menu_action_rect(i).contains(p) {
-                        continue;
-                    }
-                    // Restart and shutdown are destructive: first click
-                    // arms the row, the second performs it.
-                    if i >= 3 && self.power_menu_armed != Some(i) {
-                        self.power_menu_armed = Some(i);
-                        *handled = true;
-                        return;
-                    }
-                    let action = match i {
-                        0 => os_actions::SessionAction::Lock,
-                        1 => os_actions::SessionAction::Logout,
-                        2 => os_actions::SessionAction::Suspend,
-                        3 => os_actions::SessionAction::Restart,
-                        _ => os_actions::SessionAction::ShutDown,
-                    };
-                    self.power_menu_open = false;
-                    self.power_menu_armed = None;
+                PowerMenuClick::Execute(action) => {
                     std::thread::spawn(move || {
                         os_actions::log_result(
                             "session_action",
@@ -6624,8 +6572,6 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
-                *handled = true;
-                return;
             }
             if flags.room_activity && !self.room_activity.rect().contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
@@ -6925,8 +6871,7 @@ impl Widget for ShellOverlayHost {
                                 return;
                             }
                             _ => {
-                                self.power_menu_open = true;
-                                self.power_menu_armed = None;
+                                self.power_menu.open();
                             }
                         }
                         st.overlays.quick_settings = false;
@@ -7583,6 +7528,7 @@ impl Widget for ShellOverlayHost {
         let qs_in_flight = self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
+        let power_menu_in_flight = self.power_menu.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
         let projection_in_flight = self.projection_transition.is_animating(now);
         let projection_working = matches!(
@@ -7598,6 +7544,7 @@ impl Widget for ShellOverlayHost {
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
+            || power_menu_in_flight
             || room_activity_in_flight
             || projection_in_flight
             // The worker cannot call winit directly. Keep a bounded frame pump
@@ -8054,7 +8001,11 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
 /// The panel starts 20 px low at `start_scale` and rises to rest on the
 /// enter; the exit plays the same curve in reverse instead of the panel
 /// vanishing.
-fn modal_transition_curve(t: &ui::Transition, now: Instant, start_scale: f64) -> (f32, f64, f64) {
+pub(crate) fn modal_transition_curve(
+    t: &ui::Transition,
+    now: Instant,
+    start_scale: f64,
+) -> (f32, f64, f64) {
     let o = t.value(now);
     let scale = start_scale + (1.0 - start_scale) * f64::from(o);
     (o, 20.0 * f64::from(1.0 - o), scale)
@@ -9671,101 +9622,6 @@ impl ShellOverlayHost {
             if self.palette.set_host_filter_strip_rows(strip.rows_needed) {
                 self.palette_layout_dirty = true;
             }
-        }
-    }
-
-    fn power_menu_rect(&self) -> Rect {
-        let w = 420.0_f64.min(self.rect.width() - 48.0);
-        let h = 388.0_f64.min(self.rect.height() - 48.0);
-        let c = self.rect.center();
-        Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0)
-    }
-
-    fn power_menu_action_rect(&self, index: usize) -> Rect {
-        let panel = self.power_menu_rect();
-        let y0 = panel.y0 + 62.0 + index as f64 * 58.0;
-        Rect::new(panel.x0 + 18.0, y0, panel.x1 - 18.0, y0 + 50.0)
-    }
-
-    fn draw_power_menu(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let panel = self.power_menu_rect();
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[1],
-            None,
-            &RoundedRect::from_rect(panel, 24.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Session",
-            theme.tokens.typography.scale.lg,
-            colors.text_primary,
-            transform * Affine::translate((panel.x0 + 22.0, panel.y0 + 20.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let rows = [
-            ("Lock", "Keep apps running", ui::icons::Icon::Shield),
-            ("Log out", "End this session", ui::icons::Icon::ArrowRight),
-            ("Suspend", "Resume where you left off", ui::icons::Icon::Sun),
-            ("Restart", "Restart the computer", ui::icons::Icon::RotateCw),
-            ("Shut down", "Turn off the computer", ui::icons::Icon::Power),
-        ];
-        for (i, (label, detail, icon)) in rows.iter().enumerate() {
-            let row = self.power_menu_action_rect(i);
-            let armed = self.power_menu_armed == Some(i);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if armed {
-                    colors.semantic.danger.with_alpha_factor(0.18)
-                } else {
-                    colors.neutral[2]
-                },
-                None,
-                &RoundedRect::from_rect(row, 14.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 14.0, row.y0 + 14.0, row.x0 + 36.0, row.y0 + 36.0),
-                *icon,
-                if armed {
-                    colors.semantic.danger
-                } else {
-                    colors.text_primary
-                },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                if armed {
-                    "Click again to confirm"
-                } else {
-                    label
-                },
-                theme.tokens.typography.scale.sm,
-                colors.text_primary,
-                transform * Affine::translate((row.x0 + 50.0, row.y0 + 8.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text(
-                scene,
-                detail,
-                theme.tokens.typography.scale.xs,
-                colors.text_dim,
-                transform * Affine::translate((row.x0 + 50.0, row.y0 + 28.0)),
-                None,
-            );
         }
     }
 
