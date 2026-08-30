@@ -36,10 +36,10 @@ impl Autoconfig {
     /// Fold the discovered settings into a config, filling only the connection
     /// fields (leaving identity fields the user typed untouched).
     pub fn apply_to(&self, cfg: &mut AccountConfig) {
-        cfg.imap_host = self.imap_host.clone();
+        cfg.imap_host.clone_from(&self.imap_host);
         cfg.imap_port = self.imap_port;
         cfg.imap_tls = self.imap_tls;
-        cfg.smtp_host = self.smtp_host.clone();
+        cfg.smtp_host.clone_from(&self.smtp_host);
         cfg.smtp_port = self.smtp_port;
         cfg.smtp_tls = self.smtp_tls;
         if self.oauth {
@@ -48,7 +48,7 @@ impl Autoconfig {
         if cfg.display_name.trim().is_empty()
             && let Some(name) = &self.display_name
         {
-            cfg.display_name = name.clone();
+            cfg.display_name.clone_from(name);
         }
     }
 }
@@ -65,8 +65,8 @@ struct Server {
 /// **both** an IMAP incoming server and an SMTP outgoing server are present
 /// with a hostname.
 pub fn parse_autoconfig(xml: &str) -> Option<Autoconfig> {
-    let incoming = extract_block(xml, "incomingServer", "imap").and_then(parse_server)?;
-    let outgoing = extract_block(xml, "outgoingServer", "smtp").and_then(parse_server)?;
+    let incoming = extract_block(xml, "incomingServer", "imap").map(parse_server)?;
+    let outgoing = extract_block(xml, "outgoingServer", "smtp").map(parse_server)?;
     if incoming.host.is_empty() || outgoing.host.is_empty() {
         return None;
     }
@@ -85,7 +85,7 @@ pub fn parse_autoconfig(xml: &str) -> Option<Autoconfig> {
     })
 }
 
-fn parse_server(block: &str) -> Option<Server> {
+fn parse_server(block: &str) -> Server {
     let host = inner_text(block, "hostname").unwrap_or_default();
     let port = inner_text(block, "port")
         .and_then(|p| p.parse().ok())
@@ -99,12 +99,12 @@ fn parse_server(block: &str) -> Option<Server> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let oauth = auth.contains("oauth");
-    Some(Server {
+    Server {
         host,
         port,
         tls,
         oauth,
-    })
+    }
 }
 
 /// Return the inner text of the first `<tag ...>` element in `xml`, or `None`.
@@ -113,8 +113,8 @@ fn inner_text(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let start = xml.find(&open)? + open.len();
     let close = format!("</{tag}>");
-    let end = xml[start..].find(&close)? + start;
-    Some(xml[start..end].trim().to_string())
+    let end = xml.get(start..)?.find(&close)? + start;
+    Some(xml.get(start..end)?.trim().to_string())
 }
 
 /// Return the inner content of the first `<tag ...>` element whose opening tag
@@ -124,24 +124,24 @@ fn extract_block<'a>(xml: &'a str, tag: &str, attr_value: &str) -> Option<&'a st
     let open_prefix = format!("<{tag}");
     let close = format!("</{tag}>");
     let mut from = 0usize;
-    while let Some(rel) = xml[from..].find(&open_prefix) {
+    while let Some(rel) = xml.get(from..)?.find(&open_prefix) {
         let open_start = from + rel;
         // The byte right after the prefix must be a delimiter, so `<incoming>`
         // doesn't match the prefix of `<incomingServer`.
-        let after = xml[open_start + open_prefix.len()..].chars().next();
+        let after = xml.get(open_start + open_prefix.len()..)?.chars().next();
         let is_boundary =
             matches!(after, Some(c) if c == ' ' || c == '>' || c == '\t' || c == '\n' || c == '/');
         let gt = {
-            let g = xml[open_start..].find('>')?;
+            let g = xml.get(open_start..)?.find('>')?;
             open_start + g
         };
-        let opening = &xml[open_start..gt];
+        let opening = xml.get(open_start..gt)?;
         let attr_ok = attr_value.is_empty()
             || opening.contains(&format!("\"{attr_value}\""))
             || opening.contains(&format!("'{attr_value}'"));
         if is_boundary && attr_ok {
-            let close_rel = xml[gt..].find(&close)? + gt;
-            return Some(&xml[gt + 1..close_rel]);
+            let close_rel = xml.get(gt..)?.find(&close)? + gt;
+            return xml.get(gt + 1..close_rel);
         }
         from = gt + 1;
     }
