@@ -90,6 +90,7 @@ impl Badge {
     }
 
     /// Pairs with [`Badge::count`] / [`Badge::text`] without switching to [`Badge::pill`].
+    #[must_use]
     pub fn with_tint(mut self, tint: Color) -> Self {
         self.tint = Some(tint);
         self
@@ -105,13 +106,25 @@ impl Badge {
     /// logic here lets tests pin the contract without rendering.
     pub fn display_text(&self) -> Option<String> {
         match &self.content {
-            BadgeContent::Dot => None,
-            BadgeContent::Count(0) => None,
+            BadgeContent::Dot | BadgeContent::Count(0) => None,
             BadgeContent::Count(n) if *n >= 100 => Some("99+".to_string()),
             BadgeContent::Count(n) => Some(n.to_string()),
             BadgeContent::Text(s) => Some(s.clone()),
         }
     }
+}
+
+/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
+/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
+/// but composing two f64-based affine transforms cannot meaningfully
+/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
+/// for.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
 }
 
 impl Widget for Badge {
@@ -135,9 +148,23 @@ impl Widget for Badge {
             _ => {
                 let s = self.display_text().unwrap_or_default();
                 let approx_char_w = 7.0_f64;
-                (s.chars().count() as f64 * approx_char_w + pad_x * 2.0).max(height)
+                // A badge label is a handful of characters ("99+", a short
+                // word), so the char count is well within f64 precision.
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "badge label length is a tiny UI count, well within f64 precision"
+                )]
+                let char_count = s.chars().count() as f64;
+                (char_count * approx_char_w + pad_x * 2.0).max(height)
             }
         };
+        // Layout dimensions are bounded logical-pixel measurements; the
+        // f64->f32 narrowing for taffy's `Dimension` cannot lose meaningful
+        // precision at UI scale.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel layout size; f32 precision is sufficient"
+        )]
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(width as f32),
@@ -157,6 +184,12 @@ impl Widget for Badge {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        // Exact equality is the point — this is change detection for the
+        // paint cache, not a numerical comparison that needs a tolerance.
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact-change detection for the paint cache, not numerical comparison"
+        )]
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         if size_changed {
@@ -179,10 +212,7 @@ impl Widget for Badge {
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(
-                &self.cached,
-                Some(out_transform * Affine::translate((dx, dy))),
-            );
+            out_scene.append(&self.cached, Some(translated(out_transform, dx, dy)));
             return;
         }
         // mem::take dance — `display_text` borrows &self while `cached` needs &mut self.
@@ -216,7 +246,7 @@ impl Widget for Badge {
                             Color::WHITE,
                             crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
                         ),
-                        transform * Affine::translate((tx, ty)),
+                        translated(transform, tx, ty),
                         None,
                     );
                 }
