@@ -264,7 +264,7 @@ The normal component gallery includes a `Typography & Scripts` card in both
 light and dark offscreen renders. It is the visual review corpus for semantic
 hierarchy, Latin ligatures/diacritics, Arabic, Hebrew, Devanagari, Bengali,
 Thai, CJK, mixed BiDi, and multi-codepoint emoji. Run
-`cargo run -p ui --example gallery_shots` through the repository build wrapper
+`cargo run -p ui --example ui-shots -- gallery_shots` through the repository build wrapper
 to regenerate it.
 
 That same card is also a committed visual regression corpus. The integration

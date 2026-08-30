@@ -1,7 +1,7 @@
 //! Renders the history surfaces over real documents, one PNG per case.
 //!
 //! ```bash
-//! cargo run -p ui --example history_cases -- target/shots-history
+//! cargo run -p ui --example ui-shots -- history_cases target/shots-history
 //! ```
 //!
 //! Every case here builds an **automerge document**, edits it through `qdoc` (or
@@ -257,9 +257,10 @@ fn segments(entries: &[HistoryEntry], named: &[ui::NamedRange]) -> Vec<ScrubberG
         .collect()
 }
 
-fn main() {
-    let dir = std::env::args()
-        .nth(1)
+pub fn run(args: &[String]) {
+    let dir = args
+        .first()
+        .cloned()
         .unwrap_or_else(|| "target/shots-history".to_string());
     let mut shot = Shot {
         dir: PathBuf::from(&dir),

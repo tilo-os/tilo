@@ -13,7 +13,7 @@
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --release --example dashboard
+//! cargo run -p ui --release --example ui-lab -- dashboard
 //! ```
 //!
 //! Set `QUICK_UI_PERF=1` to see per-frame phase timings printed
@@ -80,7 +80,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     Box::new(col)
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     I18nManager::init("en-US");
     let mut ftl = String::new();
     ftl.push_str("dash_title = QuickDesktop Dashboard\n");

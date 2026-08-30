@@ -19,17 +19,17 @@
 //! ```sh
 //! export PKG_CONFIG_PATH=$HOME/.cache/qos-wpe/prefix/lib64/pkgconfig \
 //!        LD_LIBRARY_PATH=$HOME/.cache/qos-wpe/prefix/lib64
-//! cargo run -p ui --features webview-wpe --example wpe_latency_bench [URL]
+//! cargo run -p ui --features webview-wpe --example ui-wpe -- wpe_latency_bench [URL]
 //! ```
 
 #[cfg(not(feature = "webview-wpe"))]
-fn main() {
+pub fn run(_args: &[String]) {
     eprintln!("wpe_latency_bench: build with --features webview-wpe");
 }
 
 #[cfg(feature = "webview-wpe")]
-fn main() {
-    bench::run();
+pub fn run(args: &[String]) {
+    bench::run(args);
 }
 
 #[cfg(feature = "webview-wpe")]
@@ -110,15 +110,13 @@ mod bench {
         sorted[rank.clamp(1, n) - 1]
     }
 
-    pub fn run() {
+    pub fn run(args: &[String]) {
         // WebKit's bubblewrap sandbox can't nest inside the dev
         // container; on qOS the workspace sandbox is the outer boundary
         // anyway. Must be set before the engine boots.
         unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
 
-        let url = std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| DEFAULT_URL.into());
+        let url = args.first().cloned().unwrap_or_else(|| DEFAULT_URL.into());
 
         let boot_start = Instant::now();
         let engine = match WpeEngine::new() {
