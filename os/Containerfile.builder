@@ -8,9 +8,11 @@ FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
 # vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# bubblewrap + rust-analyzer are test *subjects*, not tools — the launcher's
-# confinement suites and the code editor's language-server suite drive the real
-# thing and refuse to skip when it is absent.
+# bubblewrap is a test *subject*, not a tool — the launcher's confinement
+# suites drive the real thing and refuse to skip when it is absent. So is
+# rust-analyzer, for the code editor's language-server suite, but it comes from
+# rustup below: the shims in /usr/local/cargo/bin precede /usr/bin, so a Fedora
+# package here would be shadowed by a shim that reports the component missing.
 RUN dnf install -y \
       nodejs \
       capnproto \
@@ -27,7 +29,7 @@ RUN dnf install -y \
       fuse3-devel dbus-devel \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
-      bubblewrap rust-analyzer \
+      bubblewrap \
     && dnf clean all
 
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -42,7 +44,8 @@ RUN curl -fsSL https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal \
           --default-toolchain "${RUST_CHANNEL}" \
           --component rustfmt --component clippy \
-    && cargo --version && rustc --version
+          --component rust-analyzer \
+    && cargo --version && rustc --version && rust-analyzer --version
 
 RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
     && cargo nextest --version && cargo deny --version && cargo machete --version
