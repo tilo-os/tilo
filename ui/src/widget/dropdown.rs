@@ -51,6 +51,39 @@ const CHEVRON_W: f64 = 30.0;
 const FONT: f32 = 15.0;
 const LINE_PX: f32 = 60.0;
 
+/// Widens a row/option count to `f64` for layout math, through `u32` (exact
+/// in `f64`) with a saturating fallback rather than an `as` cast — a
+/// dropdown never approaches `u32::MAX` options.
+fn count_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Narrows a bounded screen-space `f64` (row/pixel geometry) to `f32` for
+/// vello/taffy; dropdown content stays far below `f32::MAX`.
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space pixel values in this widget never approach f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
+/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
+/// operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (open/hover/focus/enabled/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
+)]
 pub struct Dropdown {
     id: String,
     options: Vec<String>,
@@ -109,18 +142,21 @@ impl Dropdown {
     }
 
     /// Stable identifier for the e2e harness (`Widget::test_id`).
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
     }
 
     /// Text shown (dimmed) when no value is selected yet.
+    #[must_use]
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = placeholder.to_string();
         self
     }
 
     /// Set the enabled state at build time; see the `enabled` field.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -137,6 +173,7 @@ impl Dropdown {
 
     /// Start opened. Used for headless `--shots` of the open state; the
     /// highlight is aligned to the selected option on the first `sync`.
+    #[must_use]
     pub fn open(mut self) -> Self {
         self.open = true;
         self.align_highlight_on_sync = true;
@@ -145,6 +182,7 @@ impl Dropdown {
 
     /// Conditionally start opened — convenience for callers that decide
     /// at build time (e.g. a shot seed).
+    #[must_use]
     pub fn open_if(self, cond: bool) -> Self {
         if cond { self.open() } else { self }
     }
@@ -208,14 +246,14 @@ impl Dropdown {
     fn selected_pos(&self, filtered: &[usize]) -> usize {
         filtered
             .iter()
-            .position(|&i| self.options[i] == self.selected)
+            .position(|&i| self.options.get(i).is_some_and(|o| *o == self.selected))
             .unwrap_or(0)
     }
 
     /// Height of the open list box for `n` filtered rows (>=1 so the
     /// "no matches" row has a box to live in).
     fn list_box_height(n: usize) -> f64 {
-        (n.max(1) as f64 * ITEM_HEIGHT).min(MAX_LIST_HEIGHT)
+        (count_f64(n.max(1)) * ITEM_HEIGHT).min(MAX_LIST_HEIGHT)
     }
 
     /// Absolute rect of the open list (drawn below the control).
@@ -226,15 +264,34 @@ impl Dropdown {
     }
 
     fn max_scroll(n: usize) -> f32 {
-        let content = n as f64 * ITEM_HEIGHT;
-        (content - Self::list_box_height(n)).max(0.0) as f32
+        let content = count_f64(n) * ITEM_HEIGHT;
+        px((content - Self::list_box_height(n)).max(0.0))
+    }
+
+    /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
+    fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
+        if !list.contains(pos) {
+            return None;
+        }
+        let rel = pos.y - list.y0 + f64::from(self.scroll);
+        if rel < 0.0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rel >= 0.0 is checked above; this cast is the intended \
+                      floor-to-row-index conversion"
+        )]
+        let vi = (rel / ITEM_HEIGHT) as usize;
+        (vi < n).then_some(vi)
     }
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = Self::list_box_height(n) as f32;
-        let top = (vi as f64 * ITEM_HEIGHT) as f32;
-        let bottom = top + ITEM_HEIGHT as f32;
+        let box_h = px(Self::list_box_height(n));
+        let top = px(count_f64(vi) * ITEM_HEIGHT);
+        let bottom = top + px(ITEM_HEIGHT);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + box_h {
@@ -284,11 +341,150 @@ impl Dropdown {
     /// Select the highlighted option (if any) and close.
     fn select_highlighted(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let filtered = self.filtered();
-        if let Some(&opt_idx) = filtered.get(self.highlight) {
-            let value = self.options[opt_idx].clone();
+        if let Some(&opt_idx) = filtered.get(self.highlight)
+            && let Some(value) = self.options.get(opt_idx).cloned()
+        {
             self.commit_value(&value, state, root);
         }
         self.close();
+    }
+
+    /// `WindowEvent::CursorMoved` — hover tracking, plus (while open)
+    /// following the highlight to the row under the pointer.
+    fn on_cursor_moved(&mut self, pos: Point, handled: &mut bool) {
+        self.last_cursor = pos;
+        let hover = self.rect.contains(pos);
+        if hover != self.is_hovered {
+            self.is_hovered = hover;
+            *handled = true;
+        }
+        // While open, hovering a row moves the highlight.
+        if self.open {
+            let filtered = self.filtered();
+            let list = self.list_rect(filtered.len());
+            if let Some(vi) = self.row_at(pos, list, filtered.len())
+                && vi != self.highlight
+            {
+                self.highlight = vi;
+                *handled = true;
+            }
+        }
+    }
+
+    /// `WindowEvent::MouseInput { state: Pressed, button: Left }` — select a
+    /// clicked row, close on a click outside the list, or open when closed.
+    fn on_left_press(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        let pos = self.last_cursor;
+        if self.open {
+            let filtered = self.filtered();
+            let list = self.list_rect(filtered.len());
+            if list.contains(pos) {
+                if let Some(vi) = self.row_at(pos, list, filtered.len()) {
+                    self.highlight = vi;
+                    self.select_highlighted(state, root);
+                }
+                *handled = true;
+            } else if self.rect.contains(pos) {
+                // Click the control again → close.
+                self.close();
+                *handled = true;
+            } else {
+                // Click-outside dismissal.
+                self.close();
+                *handled = true;
+            }
+        } else if self.rect.contains(pos) {
+            *focus_target = Some(node_id);
+            self.do_open();
+            *handled = true;
+        }
+    }
+
+    /// `WindowEvent::MouseWheel`, only routed here while open.
+    fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
+            MouseScrollDelta::PixelDelta(p) => px(-p.y),
+        };
+        let n = self.filtered().len();
+        self.scroll = (self.scroll + dy).clamp(0.0, Self::max_scroll(n));
+        *handled = true;
+    }
+
+    /// `WindowEvent::KeyboardInput`, guarded by the caller to only fire
+    /// while focused and on key-down: open/closed navigation, select,
+    /// dismiss, and the filter-query fallback.
+    fn on_key(
+        &mut self,
+        event: &WindowEvent,
+        ke: &KeyEvent,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        let logical_key = &ke.logical_key;
+        if self.open {
+            let mods = modifiers.state();
+            let shift = mods.shift_key();
+            let ctrl = mods.control_key() || mods.super_key();
+            match logical_key {
+                Key::Named(NamedKey::ArrowDown) => {
+                    let n = self.filtered().len();
+                    if n > 0 {
+                        self.highlight = self.highlight.saturating_add(1).min(n.saturating_sub(1));
+                        self.ensure_visible(self.highlight, n);
+                    }
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    let n = self.filtered().len();
+                    self.highlight = self.highlight.saturating_sub(1);
+                    self.ensure_visible(self.highlight, n);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.select_highlighted(state, root);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.close();
+                    *handled = true;
+                }
+                _ => {
+                    let change = self.filter_composition.handle_event(
+                        event,
+                        &mut self.filter,
+                        &mut self.filter_selection,
+                        shift,
+                        ctrl,
+                    );
+                    if change == QueryEventChange::Edited {
+                        self.highlight = 0;
+                        self.scroll = 0.0;
+                    }
+                    if change != QueryEventChange::Ignored {
+                        *handled = true;
+                    }
+                }
+            }
+        } else {
+            // Closed: Enter / Space / Down (or Up) open the list.
+            if let Key::Named(
+                NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown | NamedKey::ArrowUp,
+            ) = logical_key
+            {
+                self.do_open();
+                *handled = true;
+            }
+        }
     }
 }
 
@@ -316,7 +512,7 @@ impl Widget for Dropdown {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(CONTROL_HEIGHT as f32),
+                height: Dimension::length(px(CONTROL_HEIGHT)),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -405,8 +601,8 @@ impl Widget for Dropdown {
                     label,
                     FONT,
                     color,
-                    transform * Affine::translate((self.rect.x0 + PAD_X, ty)),
-                    Some((self.rect.width() - PAD_X - CHEVRON_W) as f32),
+                    translated(transform, self.rect.x0 + PAD_X, ty),
+                    Some(px(self.rect.width() - PAD_X - CHEVRON_W)),
                 );
                 scene.pop_layer();
             }
@@ -473,19 +669,22 @@ impl Widget for Dropdown {
                 "No matches",
                 FONT,
                 theme.text_dim,
-                transform * Affine::translate((list.x0 + PAD_X, ty)),
+                translated(transform, list.x0 + PAD_X, ty),
                 None,
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = list.y0 + (vi as f64 * ITEM_HEIGHT) - f64::from(self.scroll);
+                let row_top = list.y0 + (count_f64(vi) * ITEM_HEIGHT) - f64::from(self.scroll);
                 let row_bottom = row_top + ITEM_HEIGHT;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < list.y0 || row_top > list.y1 {
                     continue;
                 }
+                let Some(opt) = self.options.get(opt_idx) else {
+                    continue;
+                };
                 let row = Rect::new(list.x0, row_top, list.x1, row_bottom);
-                let is_selected = self.options[opt_idx] == self.selected;
+                let is_selected = *opt == self.selected;
                 if vi == self.highlight {
                     scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &row);
                 } else if is_selected {
@@ -508,11 +707,11 @@ impl Widget for Dropdown {
                 let ty = row_top + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
                 text_renderer.draw_text(
                     scene,
-                    &self.options[opt_idx],
+                    opt,
                     FONT,
                     color,
-                    transform * Affine::translate((list.x0 + PAD_X, ty)),
-                    Some((list.width() - PAD_X * 2.0) as f32),
+                    translated(transform, list.x0 + PAD_X, ty),
+                    Some(px(list.width() - PAD_X * 2.0)),
                 );
             }
         }
@@ -556,134 +755,27 @@ impl Widget for Dropdown {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = pos;
-                let hover = self.rect.contains(pos);
-                if hover != self.is_hovered {
-                    self.is_hovered = hover;
-                    *handled = true;
-                }
-                // While open, hovering a row moves the highlight.
-                if self.open {
-                    let filtered = self.filtered();
-                    let list = self.list_rect(filtered.len());
-                    if list.contains(pos) {
-                        let vi = ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor()
-                            as isize;
-                        if vi >= 0 && (vi as usize) < filtered.len() {
-                            let vi = vi as usize;
-                            if vi != self.highlight {
-                                self.highlight = vi;
-                                *handled = true;
-                            }
-                        }
-                    }
-                }
+                self.on_cursor_moved(pos, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let pos = self.last_cursor;
-                if self.open {
-                    let filtered = self.filtered();
-                    let list = self.list_rect(filtered.len());
-                    if list.contains(pos) {
-                        let vi = ((pos.y - list.y0 + f64::from(self.scroll)) / ITEM_HEIGHT).floor()
-                            as isize;
-                        if vi >= 0 && (vi as usize) < filtered.len() {
-                            self.highlight = vi as usize;
-                            self.select_highlighted(state, root);
-                        }
-                        *handled = true;
-                    } else if self.rect.contains(pos) {
-                        // Click the control again → close.
-                        self.close();
-                        *handled = true;
-                    } else {
-                        // Click-outside dismissal.
-                        self.close();
-                        *handled = true;
-                    }
-                } else if self.rect.contains(pos) {
-                    *focus_target = Some(node_id);
-                    self.do_open();
-                    *handled = true;
-                }
+                self.on_left_press(state, root, handled, focus_target, node_id);
             }
             WindowEvent::MouseWheel { delta, .. } if self.open => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
-                    MouseScrollDelta::PixelDelta(p) => -p.y as f32,
-                };
-                let n = self.filtered().len();
-                self.scroll = (self.scroll + dy).clamp(0.0, Self::max_scroll(n));
-                *handled = true;
+                self.on_wheel(delta, handled);
             }
             WindowEvent::KeyboardInput {
                 event:
-                    KeyEvent {
-                        logical_key,
-                        text: _,
+                    ke @ KeyEvent {
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
             } if self.is_focused => {
-                if self.open {
-                    let mods = modifiers.state();
-                    let shift = mods.shift_key();
-                    let ctrl = mods.control_key() || mods.super_key();
-                    match logical_key {
-                        Key::Named(NamedKey::ArrowDown) => {
-                            let n = self.filtered().len();
-                            if n > 0 {
-                                self.highlight = (self.highlight + 1).min(n - 1);
-                                self.ensure_visible(self.highlight, n);
-                            }
-                            *handled = true;
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            let n = self.filtered().len();
-                            self.highlight = self.highlight.saturating_sub(1);
-                            self.ensure_visible(self.highlight, n);
-                            *handled = true;
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            self.select_highlighted(state, root);
-                            *handled = true;
-                        }
-                        Key::Named(NamedKey::Escape) => {
-                            self.close();
-                            *handled = true;
-                        }
-                        _ => {
-                            let change = self.filter_composition.handle_event(
-                                event,
-                                &mut self.filter,
-                                &mut self.filter_selection,
-                                shift,
-                                ctrl,
-                            );
-                            if change == QueryEventChange::Edited {
-                                self.highlight = 0;
-                                self.scroll = 0.0;
-                            }
-                            if change != QueryEventChange::Ignored {
-                                *handled = true;
-                            }
-                        }
-                    }
-                } else {
-                    // Closed: Enter / Space / Down (or Up) open the list.
-                    if let Key::Named(
-                        NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown | NamedKey::ArrowUp,
-                    ) = logical_key
-                    {
-                        self.do_open();
-                        *handled = true;
-                    }
-                }
+                self.on_key(event, ke, modifiers, state, root, handled);
             }
             _ => {}
         }
@@ -755,7 +847,7 @@ impl Widget for Dropdown {
             });
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.options.iter().position(|o| *o == self.selected) {
-            node = node.with_position(idx + 1, self.options.len());
+            node = node.with_position(idx.saturating_add(1), self.options.len());
         }
         Some(node)
     }
@@ -775,7 +867,7 @@ mod tests {
     fn opts() -> Vec<String> {
         ["UTC", "Europe/Amsterdam", "America/New_York", "Asia/Tokyo"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect()
     }
 
