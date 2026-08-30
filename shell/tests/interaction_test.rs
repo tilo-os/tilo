@@ -71,12 +71,24 @@ fn test_click_interaction_in_sandbox() {
     let socket_name = started_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("Server failed to start");
-    let container = Container::new(std::env::current_dir().unwrap().to_str().unwrap());
+    // cargo runs an integration test with the *package* root as its cwd, not
+    // the workspace root, so a relative "target/debug/..." resolved to
+    // shell/target and the sandbox reported the client missing — as "did not
+    // become ready", with the real cause in a log under /tmp. This is the path
+    // cargo hands us for its own binary, so it survives any layout change.
+    let client = std::path::Path::new(env!("CARGO_BIN_EXE_click_test_client"));
+    let container = Container::new(
+        client
+            .parent()
+            .expect("the built binary has a directory")
+            .to_str()
+            .expect("a UTF-8 target path"),
+    );
     let tab_id = Uuid::new_v4();
 
     // 3. Spawn Client
     let _child = container
-        .spawn("target/debug/click_test_client", &socket_name, tab_id)
+        .spawn("./click_test_client", &socket_name, tab_id)
         .expect("Failed to spawn client");
 
     // 4. Wait for Window/Frame
