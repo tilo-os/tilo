@@ -335,13 +335,11 @@ mod tests {
 
     /// Read `root["tube"]["<map>"]["<key>"]` as a bool.
     fn read_bool(doc: &AutoCommit, map: &str, key: &str) -> Option<bool> {
-        let tube = match doc.get(&ROOT, "tube").ok()?? {
-            (Value::Object(ObjType::Map), id) => id,
-            _ => return None,
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").ok()?? else {
+            return None;
         };
-        let sub = match doc.get(&tube, map).ok()?? {
-            (Value::Object(ObjType::Map), id) => id,
-            _ => return None,
+        let (Value::Object(ObjType::Map), sub) = doc.get(&tube, map).ok()?? else {
+            return None;
         };
         let (v, _) = doc.get(&sub, key).ok()??;
         v.to_bool()
@@ -410,13 +408,12 @@ mod tests {
             "ServerPreferred fell back to local without a host"
         );
         // The queue list carries the video id.
-        let tube = match doc.get(&ROOT, "tube").unwrap().unwrap() {
-            (Value::Object(ObjType::Map), id) => id,
-            _ => panic!("tube map"),
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
+            panic!("tube map");
         };
-        let queue = match doc.get(&tube, "queue").unwrap().unwrap() {
-            (Value::Object(ObjType::List), id) => id,
-            _ => panic!("queue list"),
+        let (Value::Object(ObjType::List), queue) = doc.get(&tube, "queue").unwrap().unwrap()
+        else {
+            panic!("queue list");
         };
         assert_eq!(doc.length(&queue), 1);
         assert_eq!(
