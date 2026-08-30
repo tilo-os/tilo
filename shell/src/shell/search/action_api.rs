@@ -171,6 +171,13 @@ impl ActionArgs {
     /// Check `supplied` against `params` and bind it. Fails on the first
     /// problem rather than accumulating — a partial bind must never reach
     /// an action.
+    ///
+    /// # Errors
+    ///
+    /// [`ArgError::Missing`] for a required param `supplied` never sets,
+    /// [`ArgError::Unknown`] for a supplied name `params` doesn't
+    /// declare, [`ArgError::WrongType`] when a supplied value's type
+    /// doesn't match the declared one.
     pub fn bind(
         params: &[ActionParam],
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -337,16 +344,14 @@ impl ActionCatalog {
     pub fn enumerate(&self) -> Vec<ExportedAction> {
         self.visible
             .iter()
-            .map(|&i| {
-                let r = &self.results[i];
-                ExportedAction {
-                    resource: ResourceRef::new(&r.provider_id, &r.id),
-                    kind: r.kind.clone(),
-                    title: r.title.clone(),
-                    subtitle: r.subtitle.clone(),
-                    score: r.score,
-                    params: r.params.clone(),
-                }
+            .filter_map(|&i| self.results.get(i))
+            .map(|r| ExportedAction {
+                resource: ResourceRef::new(&r.provider_id, &r.id),
+                kind: r.kind.clone(),
+                title: r.title.clone(),
+                subtitle: r.subtitle.clone(),
+                score: r.score,
+                params: r.params.clone(),
             })
             .collect()
     }
@@ -370,11 +375,21 @@ impl ActionCatalog {
     /// Resolve a [`ResourceRef`] to the live action. `None` when the id
     /// isn't in this snapshot or the visibility gate hid it.
     pub fn select(&self, resource: &ResourceRef) -> Option<SelectedAction<'_>> {
-        self.visible
+        // Two independent identity checks (provider, then id) — matching
+        // field names would be a coincidence, not a bug:
+        // `SearchResult::provider_id` and `ResourceRef::provider` name
+        // the same concept differently by design.
+        #[allow(
+            clippy::suspicious_operation_groupings,
+            reason = "provider_id/provider and id/id are two independent equality checks, not a \
+                      swapped field pair"
+        )]
+        let found = self
+            .visible
             .iter()
-            .map(|&i| &self.results[i])
-            .find(|r| r.provider_id == resource.provider && r.id == resource.id)
-            .map(|result| SelectedAction { result })
+            .filter_map(|&i| self.results.get(i))
+            .find(|r| r.provider_id == resource.provider && r.id == resource.id);
+        found.map(|result| SelectedAction { result })
     }
 }
 
@@ -407,6 +422,13 @@ impl SelectedAction<'_> {
 
     /// Run the provider's side-effect, the same callback the palette fires
     /// on Enter. A failed bind is refused with the document untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::Arguments`] when `args` doesn't satisfy this
+    /// action's declared params (see [`ActionArgs::bind`]);
+    /// [`ActionError::Refused`] when the bind succeeded but the
+    /// provider's own callback found nothing to act on.
     pub fn invoke(
         &self,
         doc: &mut AutoCommit,
@@ -420,6 +442,12 @@ impl SelectedAction<'_> {
 
     /// Sugar over [`Self::invoke`] with an empty argument set — a shorter
     /// way to pass nothing, not a way to skip the check.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::invoke`] — most commonly
+    /// [`ActionError::Arguments`] when this action actually requires
+    /// parameters.
     pub fn invoke_nullary(
         &self,
         doc: &mut AutoCommit,
