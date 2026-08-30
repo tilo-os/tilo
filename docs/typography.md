@@ -241,6 +241,31 @@ UPDATE_EBOOK_TYPOGRAPHY_BASELINE=1 cargo test -p ebook \
   serif_reader_matches_typography_baseline -- --nocapture
 ```
 
+## Mathematical composition
+
+Structured formulas use the single compositor in `ui::math`. Its semantic tree,
+recursive 2D box layout, insertion-gap geometry, and painter are shared by the
+calculator's live editor and the ebook reader's immutable MathML content. The
+calculator alone owns mutation, caret-navigation, clipboard, and collaborative
+state; these policies are not duplicated in read-only document rendering.
+
+The compositor uses the shipped Noto Sans Math face and mathematical italic
+alphabet, with math-class spacing for binary and relation operators. It lays
+out fractions, superscripts, subscripts, paired scripts, radicals and indexed
+roots, scalable fences, stacked under/over limits, and rectangular tables.
+EPUB presentation MathML lowers directly into that tree for both inline and
+display formulas. A linear fallback remains attached to each formula for
+search, selection, and accessibility.
+
+The real ebook integration is pinned by
+`apps/ebook/tests/fixtures/typography/math-reader.png`. Regenerate it only after
+visual approval:
+
+```sh
+UPDATE_EBOOK_MATH_BASELINE=1 cargo test -p ebook \
+  mathematical_reader_matches_shared_typesetting_baseline -- --nocapture
+```
+
 Editable shaped text retains caret affinity as well as its UTF-8 document
 offset. `TextPosition { byte, affinity }` represents the two legitimate visual
 positions that can share one logical byte at a mixed-BiDi run boundary (and at
