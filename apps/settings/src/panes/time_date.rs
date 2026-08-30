@@ -705,7 +705,7 @@ impl TimeDatePane {
     /// clock format starts at 24-hour and persists through a no-op sink, so the
     /// hermetic unit tests neither read the host's locale nor write to disk.
     pub fn with_ntp(ntp: Arc<dyn NtpControl>, initial_auto: bool) -> Self {
-        let timezone = timezone();
+        let timezone = "Europe/Amsterdam".to_string();
         Self {
             ntp,
             persist_format: Arc::new(|_| {}),
