@@ -67,7 +67,7 @@ fn split_and_save_round_trip_through_disk() {
     // appear in the saved body alongside the test's edits.
     {
         let panel = app.main_panel_mut();
-        panel.load_page(welcome_id, "Welcome".into(), String::new());
+        panel.load_page(welcome_id, "Welcome", String::new());
     }
 
     // Seed: type "First", press Enter, type "Second" — via the
@@ -110,7 +110,7 @@ fn heading_promotion_survives_save_reload() {
     // empty Paragraphs.
     {
         let panel = app.main_panel_mut();
-        panel.load_page(welcome_id, "Welcome".into(), String::new());
+        panel.load_page(welcome_id, "Welcome", String::new());
     }
 
     {
