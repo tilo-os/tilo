@@ -739,12 +739,25 @@ impl Widget for Autocomplete {
         self.input.is_focused()
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.input.is_dragging()
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.input.accessibility()
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        Widget::perform_action(&mut self.input, action, state, path)
     }
 }
 

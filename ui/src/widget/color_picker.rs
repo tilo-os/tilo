@@ -802,6 +802,10 @@ impl Widget for ColorPicker {
         self.is_focused
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.hex_input)
+    }
+
     /// The colour picker reports [`Role::ComboBox`] — a selector whose
     /// value is the chosen colour as its canonical `#RRGGBB` hex string.
     /// The SV square, hue strip and channel sliders render inline (there is
