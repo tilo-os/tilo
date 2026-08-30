@@ -409,6 +409,10 @@ impl Widget for EditableLabel {
         Widget::ime_cursor_rect(&self.input)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.input)
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.editing && self.input.is_dragging()
     }

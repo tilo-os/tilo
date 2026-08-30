@@ -220,14 +220,62 @@ impl Measurement {
     }
 }
 
+/// Decimal/grouping convention used by locale-aware consumers. Keeping this
+/// separate from currency lets someone use EUR with either continental or
+/// English-language formatting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NumberStyle {
+    #[default]
+    DecimalPoint,
+    DecimalComma,
+}
+
+impl NumberStyle {
+    pub const ALL: [Self; 2] = [Self::DecimalPoint, Self::DecimalComma];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DecimalPoint => "1,234,567.89",
+            Self::DecimalComma => "1.234.567,89",
+        }
+    }
+
+    pub fn amount(self, symbol: &str) -> String {
+        format!("{symbol}{}", self.label())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FirstDayOfWeek {
+    #[default]
+    Monday,
+    Sunday,
+    Saturday,
+}
+
+impl FirstDayOfWeek {
+    pub const ALL: [Self; 3] = [Self::Monday, Self::Sunday, Self::Saturday];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Monday => "Monday",
+            Self::Sunday => "Sunday",
+            Self::Saturday => "Saturday",
+        }
+    }
+}
+
 /// The `locale` section of the shared store. Every field has a sensible
 /// default so a brand-new install needs no file at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Locale {
     pub currency: Currency,
     pub date_format: DateStyle,
     pub time_format: TimeStyle,
     pub measurement: Measurement,
+    pub number_style: NumberStyle,
+    pub first_day_of_week: FirstDayOfWeek,
 }
 
 impl Default for Locale {
@@ -237,6 +285,8 @@ impl Default for Locale {
             date_format: DateStyle::Iso,
             time_format: TimeStyle::H24,
             measurement: Measurement::Metric,
+            number_style: NumberStyle::DecimalPoint,
+            first_day_of_week: FirstDayOfWeek::Monday,
         }
     }
 }
@@ -330,6 +380,7 @@ mod tests {
                 date_format: DateStyle::Eu,
                 time_format: TimeStyle::H12,
                 measurement: Measurement::Imperial,
+                ..Default::default()
             },
         };
         let json = r.to_json_merged("");
@@ -350,6 +401,7 @@ mod tests {
                 date_format: DateStyle::Long,
                 time_format: TimeStyle::H24,
                 measurement: Measurement::Metric,
+                ..Default::default()
             },
         };
         let json = r.to_json_merged("");

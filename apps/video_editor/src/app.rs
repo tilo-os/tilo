@@ -29,7 +29,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout, Widget,
+    Button, ButtonFace, ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout,
+    Widget,
 };
 
 use crate::actions::{
@@ -176,6 +177,11 @@ impl ShotScenario {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent render/interaction cache (--shots staging, drag/ \
+              hover/selection state), not a state machine"
+)]
 pub struct VideoEditorApp {
     project: Project,
     /// Deterministic capture scenario applied once during the first `sync`.
@@ -562,7 +568,7 @@ impl VideoEditorApp {
     }
 
     /// The mute pill rect on a track header (shared by draw + hit-test).
-    fn mute_pill_rect(&self, header: Rect) -> Rect {
+    fn mute_pill_rect(header: Rect) -> Rect {
         Rect::new(
             header.x1 - 26.0,
             header.center().y - 9.0,
@@ -588,7 +594,7 @@ impl VideoEditorApp {
         vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
-    fn transport_buttons(&self, r: &Regions) -> [(TransportAction, Rect); 5] {
+    fn transport_buttons(r: &Regions) -> [(TransportAction, Rect); 5] {
         let cy = r.transport.y0 + 20.0;
         let cx0 = r.transport.x0 + 30.0;
         let gap = 40.0;
@@ -605,7 +611,7 @@ impl VideoEditorApp {
         ]
     }
 
-    fn scrubber_rect(&self, r: &Regions) -> Rect {
+    fn scrubber_rect(r: &Regions) -> Rect {
         Rect::new(
             r.transport.x0 + 220.0,
             r.transport.y0 + 38.0,
@@ -1053,7 +1059,7 @@ impl VideoEditorApp {
     /// The sub-rect of a bin row where the media *name* is drawn — clicking it
     /// (on an already-selected item) begins an inline rename, and it's where the
     /// rename field is placed.
-    fn bin_name_rect(&self, row: Rect) -> Rect {
+    fn bin_name_rect(row: Rect) -> Rect {
         // Mirrors draw_bin: a 64px thumbnail at the left, then the name text.
         let x0 = row.x0 + 8.0 + 64.0 + 12.0;
         Rect::new(x0, row.y0 + 4.0, row.x1 - 8.0, row.y0 + 30.0)
@@ -1327,9 +1333,8 @@ impl VideoEditorApp {
     /// stored path is workspace-relative for a file under the FUSE mount (so it
     /// replicates to peers) or absolute for an imported local file.
     fn import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> bool {
-        let probed = match probe::probe_file(path) {
-            Ok(p) => p,
-            Err(_) => return false,
+        let Ok(probed) = probe::probe_file(path) else {
+            return false;
         };
         let resolved = crate::media::resolve(&path.to_string_lossy());
         let stored = crate::media::stored_path_for_import(&resolved.abs_path);
@@ -1540,15 +1545,21 @@ impl VideoEditorApp {
             .into_iter()
             .enumerate()
         {
-            l.resolution.push((Resolution::ALL[i], rect));
+            if let Some(&res) = Resolution::ALL.get(i) {
+                l.resolution.push((res, rect));
+            }
         }
         y += 64.0;
         for (i, rect) in seg(x0, x1, Container::ALL.len(), y).into_iter().enumerate() {
-            l.container.push((Container::ALL[i], rect));
+            if let Some(&cont) = Container::ALL.get(i) {
+                l.container.push((cont, rect));
+            }
         }
         y += 64.0;
         for (i, rect) in seg(x0, x1, FrameRate::ALL.len(), y).into_iter().enumerate() {
-            l.fps.push((FrameRate::ALL[i], rect));
+            if let Some(&fps) = FrameRate::ALL.get(i) {
+                l.fps.push((fps, rect));
+            }
         }
         l.cancel = Rect::new(
             x0,
@@ -1568,6 +1579,12 @@ impl VideoEditorApp {
     /// Deterministically arrange editor state for a `--shots` scenario. Real
     /// production edit paths are used (split/grade through the CRDT) so the
     /// captured frame reflects genuine behaviour, not a mock.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "Live's empty arm means \"no scenario, nothing to arrange\"; the trailing \
+                  group's empty arm means \"rect-dependent, arranged later in \
+                  apply_shot_interaction\" — merging them would blur that distinction"
+    )]
     fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
@@ -1838,6 +1855,11 @@ impl Widget for VideoEditorApp {
             || self.bin_rename.is_some() // a live rename blinks its caret
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
+                  `Widget::build_layout` returns `NodeId` directly with no fallible path"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1858,7 +1880,9 @@ impl Widget for VideoEditorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1924,6 +1948,11 @@ impl Widget for VideoEditorApp {
         self.bin_menu.draw(scene, transform, tr, theme, presence);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
+                  branch is a short, independent dispatch to an already-extracted helper"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1946,9 +1975,11 @@ impl Widget for VideoEditorApp {
                 .bin_item_rects(&r)
                 .into_iter()
                 .find(|(m, _)| Some(*m) == self.bin_rename.as_ref().map(|(id, _)| *id))
-                .map(|(_, row)| self.bin_name_rect(row));
+                .map(|(_, row)| Self::bin_name_rect(row));
             let (mid, outcome) = {
-                let (mid, label) = self.bin_rename.as_mut().unwrap();
+                let Some((mid, label)) = self.bin_rename.as_mut() else {
+                    return;
+                };
                 if let Some(rect) = name_rect {
                     label.apply_layout_external(rect);
                 }
@@ -2012,7 +2043,7 @@ impl Widget for VideoEditorApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                if self.handle_key(&key_event.logical_key, modifiers, state, &r) {
+                if self.handle_key(&key_event.logical_key, *modifiers, state, &r) {
                     *handled = true;
                 }
             }
@@ -2130,10 +2161,16 @@ impl Widget for VideoEditorApp {
 // Event handling helpers
 // ==========================================================================
 impl VideoEditorApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one guard per keyboard shortcut in priority order (modal escape, ctrl \
+                  combos, per-tool keys); the length is the number of shortcuts, not \
+                  accidental complexity in any one branch"
+    )]
     fn handle_key(
         &mut self,
         key: &Key,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         r: &Regions,
     ) -> bool {
@@ -2280,6 +2317,11 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one guard per hit-testable affordance in priority order; the length is \
+              the number of affordances, not accidental complexity in any one branch"
+    )]
     fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions) {
         let p = self.last_mouse;
 
@@ -2335,7 +2377,7 @@ impl VideoEditorApp {
                     if dbl {
                         self.add_media_to_timeline(state, mid);
                         self.last_click_media = None;
-                    } else if clicked_before && self.bin_name_rect(rect).contains(p) {
+                    } else if clicked_before && Self::bin_name_rect(rect).contains(p) {
                         // A deliberate second, slower click on the name of an item
                         // we already clicked begins an inline rename (Finder /
                         // Files pattern).
@@ -2360,13 +2402,13 @@ impl VideoEditorApp {
             return;
         }
         // Transport controls.
-        for (action, rect) in self.transport_buttons(r) {
+        for (action, rect) in Self::transport_buttons(r) {
             if rect.contains(p) {
                 self.transport_action(action);
                 return;
             }
         }
-        let scrub = self.scrubber_rect(r);
+        let scrub = Self::scrubber_rect(r);
         if scrub.contains(p)
             || (p.x >= scrub.x0 && p.x <= scrub.x1 && (p.y - scrub.center().y).abs() < 14.0)
         {
@@ -2392,7 +2434,7 @@ impl VideoEditorApp {
             for (tid, _kind, lane) in self.lane_rects(r) {
                 let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
                 if header.contains(p) {
-                    if self.mute_pill_rect(header).contains(p) {
+                    if Self::mute_pill_rect(header).contains(p) {
                         self.toggle_track_mute(state, tid);
                     }
                     return;
@@ -2441,6 +2483,11 @@ impl VideoEditorApp {
             .clamp(0.0, self.project.duration());
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one guard per hit-testable affordance in priority order; the length is \
+              the number of affordances, not accidental complexity in any one branch"
+    )]
     fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
         let l = self.inspector_layout(r);
         if !l.valid {
@@ -2556,7 +2603,7 @@ impl VideoEditorApp {
         }
     }
 
-    fn press_export(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
+    fn press_export(&mut self, state: &AutoCommit, r: &Regions, p: Point) {
         let l = self.export_layout(r);
         if !l.card.contains(p) {
             // Click outside the card dismisses.
@@ -2767,7 +2814,7 @@ impl VideoEditorApp {
     }
 
     fn apply_scrubber(&mut self, p: Point, r: &Regions) {
-        let scrub = self.scrubber_rect(r);
+        let scrub = Self::scrubber_rect(r);
         let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
         self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
         self.playing = false;
@@ -2885,6 +2932,11 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it \
+              would only relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_bin(
         &self,
         scene: &mut Scene,
@@ -3090,6 +3142,12 @@ impl VideoEditorApp {
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
     /// the insertion point at the drop time, and float a ghost chip at the cursor.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (tf: transform, \
+              r: layout regions, c: theme colours) used consistently across every draw_* \
+              method in this file"
+    )]
     fn draw_bin_drag(
         &self,
         scene: &mut Scene,
@@ -3168,13 +3226,18 @@ impl VideoEditorApp {
         else {
             return;
         };
-        let rect = self.bin_name_rect(row);
+        let rect = Self::bin_name_rect(row);
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
             label.draw(scene, tf, tr, theme, presence);
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it \
+              would only relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_preview(
         &self,
         scene: &mut Scene,
@@ -3359,7 +3422,7 @@ impl VideoEditorApp {
             r.transport.y0,
             1.0,
         );
-        for (action, rect) in self.transport_buttons(r) {
+        for (action, rect) in Self::transport_buttons(r) {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
             let bg = if is_play {
@@ -3409,7 +3472,7 @@ impl VideoEditorApp {
             r.transport.y0 + 13.0,
         );
         // Scrubber.
-        let scrub = self.scrubber_rect(r);
+        let scrub = Self::scrubber_rect(r);
         fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
         let filled = Rect::new(
@@ -3576,6 +3639,17 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it \
+              would only relocate the line count, not the amount a reader must hold in mind"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (tf: transform, \
+              r: layout regions, c: theme colours) used consistently across every draw_* \
+              method in this file"
+    )]
     fn draw_inspector_body(
         &self,
         scene: &mut Scene,
@@ -3990,6 +4064,11 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it \
+              would only relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_timeline(
         &self,
         scene: &mut Scene,
@@ -4017,7 +4096,17 @@ impl VideoEditorApp {
         let start_t = self.scroll.max(0.0);
         let end_t = self.x_to_time(r.lanes.x1, &r.lanes);
         let mut t = (start_t / tick_step).floor() * tick_step;
-        while t <= end_t {
+        // Bounded by the visible span / step (+1 margin) rather than a float
+        // `while`, so a degenerate zoom/step can't spin forever on rounding.
+        let tick_budget = if tick_step > 0.0 {
+            (((end_t - t) / tick_step).max(0.0)).ceil() as u32 + 1
+        } else {
+            0
+        };
+        for _ in 0..tick_budget {
+            if t > end_t {
+                break;
+            }
             let x = self.time_to_x(t, &r.lanes);
             if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
                 stroke_line(
@@ -4104,7 +4193,7 @@ impl VideoEditorApp {
             );
             // mute pill (clickable toggle)
             let muted = track.is_some_and(|t| t.muted);
-            let pill = self.mute_pill_rect(header);
+            let pill = Self::mute_pill_rect(header);
             let pill_hover = pill.contains(self.last_mouse);
             let pill_bg = if muted {
                 c.semantic.danger
@@ -4222,6 +4311,18 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the standard (scene, tf, tr, theme) drawing-context params with \
+                  every other draw helper in this file; bundling them into a context struct \
+                  is a file-wide refactor out of scope here"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over one clip's fixed chrome (body, fades, \
+                  waveform/thumbnail, label, effects badge); splitting it would only \
+                  relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_clip(
         &self,
         scene: &mut Scene,
@@ -4358,6 +4459,17 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this panel's fixed regions; splitting it \
+              would only relocate the line count, not the amount a reader must hold in mind"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the shared drawing context (tf: transform, \
+              r: layout regions, c: theme colours) used consistently across every draw_* \
+              method in this file"
+    )]
     fn draw_export_modal(
         &self,
         scene: &mut Scene,
@@ -4635,6 +4747,12 @@ fn stroke_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius:
         &RoundedRect::from_rect(rect, radius),
     );
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tf, color) drawing-context params with every \
+              other draw helper in this file; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 fn stroke_line(
     scene: &mut Scene,
     tf: Affine,
@@ -4653,6 +4771,12 @@ fn stroke_line(
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, tr, tf, color) drawing-context params with every \
+              other draw helper in this file; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -4697,29 +4821,9 @@ fn draw_button(
     label: &str,
     primary: bool,
 ) {
-    let c = &theme.tokens.colors;
-    let bg = if primary { c.accent[5] } else { c.neutral[3] };
-    fill_rrect(scene, tf, bg, rect, 7.0);
-    if !primary {
-        stroke_rrect(scene, tf, c.border_standard, rect, 7.0, 1.0);
-    }
-    let col = if primary {
-        Color::WHITE
-    } else {
-        c.text_primary
-    };
-    let (lw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
-    text_w(
-        scene,
-        tr,
-        tf,
-        label,
-        13.0,
-        col,
-        rect.center().x - f64::from(lw) / 2.0,
-        rect.center().y - 8.0,
-        TextWeight::Medium,
-    );
+    let face = ButtonFace::new(rect, label).radius(7.0).text_size(13.0);
+    let face = if primary { face.primary() } else { face };
+    Button::paint(scene, tf, tr, theme, &face);
 }
 
 /// Draw an inspector slider track + fill + knob for a 0..1 value.
@@ -4844,7 +4948,7 @@ fn draw_waveform(
         let t = in_p + fx * (out_p - in_p);
         let frac = (t / dur).clamp(0.0, 1.0);
         let idx = ((frac * peaks.len() as f64) as usize).min(peaks.len() - 1);
-        let amp = (f64::from(peaks[idx]) * half * vscale).max(0.5);
+        let amp = (f64::from(peaks.get(idx).copied().unwrap_or(0.0)) * half * vscale).max(0.5);
         fill_rect(
             scene,
             tf,
@@ -5265,7 +5369,7 @@ mod tests {
         } else {
             winit::event::Modifiers::default()
         };
-        app.handle_key(&WKey::Character(ch.into()), &mods, doc, &r)
+        app.handle_key(&WKey::Character(ch.into()), mods, doc, &r)
     }
 
     #[test]
@@ -5377,7 +5481,7 @@ mod tests {
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
         // Shift+Delete ripples.
-        app.handle_key(&WKey::Named(NamedKey::Delete), &mods, &mut doc, &r);
+        app.handle_key(&WKey::Named(NamedKey::Delete), mods, &mut doc, &r);
         let reloaded = VideoDoc::load_project(&doc);
         assert!(
             reloaded.clip(first).is_none(),
@@ -5400,7 +5504,7 @@ mod tests {
         let r = app.regions();
         // Shift = one-second nudge right.
         let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
-        app.handle_key(&WKey::Named(NamedKey::ArrowRight), &shift, &mut doc, &r);
+        app.handle_key(&WKey::Named(NamedKey::ArrowRight), shift, &mut doc, &r);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().start;
         assert!(
             (after - before - 1.0).abs() < 1e-6,
@@ -5419,13 +5523,13 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
-    fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
+    fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: &WindowEvent) {
         let mut handled = false;
         let mut focus = None;
         let taffy = TaffyTree::<()>::new();
         let node = NodeId::new(0);
         app.handle_event(
-            &ev,
+            ev,
             1.0,
             &winit::event::Modifiers::default(),
             doc,
@@ -5565,10 +5669,10 @@ mod tests {
         assert!(app.bin_rename.is_some(), "rename began");
         // begin_edit select-all: the first keystroke replaces the whole name.
         for ch in ["R", "e", "e", "l"] {
-            dispatch(&mut app, &mut doc, char_ev(ch));
+            dispatch(&mut app, &mut doc, &char_ev(ch));
         }
         // Enter commits → dispatches an UpsertMedia carrying the new name.
-        dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
+        dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
         assert!(app.bin_rename.is_none(), "Enter ends the rename");
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(
@@ -5864,7 +5968,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project.media.is_empty(), "blank project starts empty");
-        dispatch(&mut app, &mut doc, WindowEvent::DroppedFile(f.clone()));
+        dispatch(&mut app, &mut doc, &WindowEvent::DroppedFile(f.clone()));
         assert_eq!(
             app.project.media.len(),
             1,
@@ -6036,7 +6140,7 @@ mod tests {
         app.selected = Some(id);
         let before = match preview::composite(&app.project, 23.0) {
             CompositedFrame::Clip { base, .. } => base.luma(),
-            _ => panic!("expected clip"),
+            CompositedFrame::Empty => panic!("expected clip"),
         };
         app.set_filter(&mut doc, FilterField::Brightness, 0.95);
         // Reload from the CRDT so we're reading the persisted grade, not the
@@ -6044,7 +6148,7 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         let after = match preview::composite(&app.project, 23.0) {
             CompositedFrame::Clip { base, .. } => base.luma(),
-            _ => panic!("expected clip"),
+            CompositedFrame::Empty => panic!("expected clip"),
         };
         assert!(
             after > before,

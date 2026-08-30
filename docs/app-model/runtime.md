@@ -140,10 +140,12 @@ impl SigningIdentity {
 }
 ```
 
-This is your app-level identity — the user's Ed25519 key. `load()` reads
-the launcher-provided identity path (`QOS_USER_IDENTITY`) and never talks
-to a service. `is_single_device()` distinguishes single-device signing
-from threshold (multi-device) identities.
+This is your app-level identity — an app-scoped capability for the user's
+Ed25519 identity. `load()` consumes the launcher-provided broker descriptor
+(`QOS_IDENTITY_BROKER_FD`); public metadata and signatures cross that
+connection, but the key does not. `is_single_device()` distinguishes
+single-device signing from threshold (multi-device) identities. The legacy
+`QOS_USER_IDENTITY` file path remains only for unsandboxed development.
 
 ## `runtime::portal_xdg` — XDG desktop portals
 
@@ -226,7 +228,7 @@ qos-hello: a qOS-native app, running.
 == environment ==
   is_qos_native      : false
   QOS_WORKSPACE_ID   : (unset)
-  QOS_USER_IDENTITY  : (unset)
+  QOS identity broker: (unset)
 
 == services ==
   collab   : unavailable (no fd — graceful)

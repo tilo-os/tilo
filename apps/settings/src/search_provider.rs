@@ -18,7 +18,7 @@ use ui::search::{SearchProvider, SearchResult};
 use crate::categories::Category;
 
 /// The kind label (and result-group header) Settings produces.
-pub const SETTINGS_KIND: &str = "Settings";
+pub const SETTINGS_KIND: &str = "Personal Settings";
 
 /// The `action_id` prefix. A chosen row's `action_id` is
 /// `settings.pane:<slug>`; [`parse_action_id`] turns it back into a

@@ -134,6 +134,7 @@ dependencies = [
  "chacha20poly1305",
  "dirs 6.0.0",
  "getrandom 0.2.17",
+ "libc",
  "serde",
  "serde_json",
  "tracing",
@@ -266,6 +267,7 @@ dependencies = [
  "qos-reference",
  "reqwest 0.12.28",
  "serde_json",
+ "shell",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -1499,6 +1501,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ui",
+ "url",
  "vello",
  "winit",
  "zip 4.6.1",
@@ -2390,6 +2393,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "zbus 4.4.0",
 ]
 
 [[package]]
@@ -3106,6 +3110,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
 dependencies = [
  "cipher",
+]
+
+[[package]]
+name = "desktop-policy"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4311,6 +4327,7 @@ dependencies = [
  "postcard",
  "qdoc",
  "qos-user-identity",
+ "runtime-fs",
  "serde",
  "serde_json",
  "tempfile",
@@ -7046,11 +7063,13 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "collab-types",
+ "ed25519-dalek 2.2.0",
  "landlock",
  "libc",
  "pkg",
  "qos-desktop-entry",
  "runtime-bundle",
+ "runtime-identity",
  "seccompiler",
  "serde",
  "serde_json",
@@ -9318,10 +9337,14 @@ name = "os-actions"
 version = "0.1.0"
 dependencies = [
  "qos-bluez",
+ "qos-power-mgmt",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "zbus 4.4.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -10631,6 +10654,7 @@ dependencies = [
 name = "qos-power-mgmt"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "futures-util",
  "serde",
  "serde_json",
@@ -11645,7 +11669,9 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "capnpc",
+ "postcard",
  "runtime-portal",
+ "serde",
  "tokio",
  "tokio-util",
 ]
@@ -11655,12 +11681,16 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
+ "hex",
+ "libc",
  "runtime-portal",
  "serde",
  "serde_bytes",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "tempfile",
+ "zeroize",
 ]
 
 [[package]]
@@ -12452,20 +12482,29 @@ dependencies = [
  "accounts",
  "automerge",
  "collab-types",
+ "desktop-policy",
+ "launcher",
  "mail",
  "media",
  "os-actions",
  "qos-actions",
+ "qos-bluez",
+ "quick-xml 0.38.4",
+ "runtime-fs",
+ "runtime-identity",
+ "runtime-portal-xdg",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ui",
  "uuid",
  "vello",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -12474,6 +12513,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "dirs 6.0.0",
+ "serde",
  "serde_json",
  "serial_test",
 ]
@@ -12575,6 +12615,7 @@ dependencies = [
  "cli",
  "collab-fixtures",
  "collab-types",
+ "desktop-policy",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "ffmpeg-next",
@@ -12583,6 +12624,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "greeter",
+ "hex",
  "iroh",
  "iroh-base",
  "iroh-gossip",
@@ -12590,6 +12632,8 @@ dependencies = [
  "landlock",
  "launcher",
  "libc",
+ "media",
+ "mime_guess",
  "naga",
  "openh264",
  "os-actions",
@@ -12597,6 +12641,7 @@ dependencies = [
  "png 0.18.1",
  "pollster",
  "postcard",
+ "qcms",
  "qdoc",
  "qos-bluez",
  "qos-callstream",
@@ -14217,7 +14262,6 @@ dependencies = [
  "sha2 0.10.9",
  "taffy",
  "tracing",
- "tracing-subscriber",
  "ui",
  "uuid",
  "vello",
@@ -14880,6 +14924,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "serial_test",
+ "settings-store",
  "sha2 0.10.9",
  "skrifa 0.40.0",
  "smithay-clipboard",
@@ -15321,6 +15366,7 @@ version = "0.1.0"
 dependencies = [
  "ashpd",
  "automerge",
+ "os-actions",
  "qos-actions",
  "serde",
  "serial_test",

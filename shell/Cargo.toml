@@ -60,6 +60,7 @@ dev-session = []
 atomic-file = { path = "../crates/system/atomic-file" }
 # One owner for ~/.config/qos/settings.json.
 settings-store = { path = "../crates/system/settings-store" }
+desktop-policy = { path = "../crates/system/desktop-policy" }
 tokio = { workspace = true, features = ["full"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -71,6 +72,7 @@ uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
 dirs.workspace = true
+qcms.workspace = true
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
 wayland-protocols = "0.32.12"
@@ -118,11 +120,16 @@ word-processor = { path = "../apps/word-processor" }
 # editable document; which installed app opens it comes from the app
 # manifests, not from here.
 qdoc = { path = "../crates/doc/qdoc" }
+mime_guess = "2.0.5"
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
 # powerprofilesctl). Lifted out of `shell::shell::qs_actions` so the
 # Settings app can call the same bindings without depending on the
 # compositor. The module at the old path now re-exports from this crate.
 os-actions = { path = "../crates/system/os-actions" }
+# Session-owned balance/mono policy and PipeWire graph enumeration. Settings
+# persists intent; the compositor is the single long-lived actuator.
+media = { path = "../crates/media" }
+hex.workspace = true
 # Power management: suspend-on-idle, lid / power-key policy, suspend
 # inhibitors, and battery thresholds over systemd-logind + UPower. The pure
 # policy core is unit-testable without a bus; the service actuates via zbus.
@@ -224,6 +231,9 @@ qos-callstream = { path = "../crates/collab/qos-callstream" }
 # which yields the raw dalek-compatible seed + pubkey that the
 # on-disk identity record (loaded by `runtime-identity`) needs.
 threshold-identity = { path = "../crates/collab/threshold-identity" }
+# Host-side identity lifecycle: new records are moved into Secret Service (or
+# the explicitly reported private-file fallback) before the ceremony returns.
+runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # `firstboot` calls `rand_core::OsRng` for identity key generation.
 # Version matched to `threshold-identity`'s direct dep (rand_core 0.6,
 # which frost-ed25519 consumes) so the workspace collapses to one copy.
@@ -300,11 +310,6 @@ collab-fixtures = { path = "../crates/collab/collab-fixtures" }
 # `rand` 0.8 the rest of the workspace signs with.
 rand_08 = { package = "rand", version = "0.8" }
 rand_chacha.workspace = true
-# Test-only: exercise a round-trip through the on-disk identity
-# schema `runtime-identity::load` reads. Not a runtime dep — the
-# firstboot provisioning path writes JSON directly to avoid pulling
-# in an SDK-layer crate that reads back the file it just wrote.
-runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
 # mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster.workspace = true

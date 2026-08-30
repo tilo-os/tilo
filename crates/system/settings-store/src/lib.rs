@@ -31,6 +31,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod hardware;
+pub mod notification_policy;
+
 /// The file name under the qOS config root.
 const FILE: &str = "settings.json";
 
@@ -174,15 +177,19 @@ pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<boo
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "qos-settings-store-{}-{:?}",
+            "qos-settings-store-{}-{:?}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            TMPDIR_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();
         p

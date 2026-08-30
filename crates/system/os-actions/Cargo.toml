@@ -15,10 +15,14 @@ path = "src/lib.rs"
 
 [dependencies]
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.
 qos-bluez = { path = "../qos-bluez" }
+qos-power-mgmt = { path = "../power" }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "time"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 

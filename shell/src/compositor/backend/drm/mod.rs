@@ -26,7 +26,7 @@ use std::sync::mpsc::Receiver;
 
 use vello::Scene;
 
-use paint::swizzle_subrect_rgba_to_xrgb8888;
+use paint::{copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888_transformed};
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 use crate::compositor::present::Presenter;
@@ -157,7 +157,10 @@ impl DrmPresenter {
             }
         }
 
-        if self.scanouts.len() == 1 {
+        if self.scanouts.len() == 1
+            && self.scanouts[0].transform == settings_store::hardware::OutputTransform::Normal
+            && self.scanouts[0].color_transform.is_none()
+        {
             let bridge = self.paint.as_mut().expect("paint allocated above");
             let cursor = Some(self.pointer);
             self.scanouts[0].scanout.present_into(cursor, |dst, pitch| {
@@ -187,29 +190,70 @@ impl DrmPresenter {
         let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
         for e in &mut self.scanouts {
             let (px, py) = e.position;
-            let (ow, oh) = e.scanout.size();
+            let (physical_w, physical_h) = e.scanout.size();
+            let logical_size = self
+                .outputs
+                .iter()
+                .find(|output| output.id == e.id)
+                .map_or((physical_w, physical_h), |output| output.size);
             let local_cursor = if pointer.0 >= f64::from(px)
-                && pointer.0 < f64::from(px + ow as i32)
+                && pointer.0 < f64::from(px + logical_size.0 as i32)
                 && pointer.1 >= f64::from(py)
-                && pointer.1 < f64::from(py + oh as i32)
+                && pointer.1 < f64::from(py + logical_size.1 as i32)
             {
-                Some((pointer.0 - f64::from(px), pointer.1 - f64::from(py)))
+                let (x, y) = scanout::logical_to_physical_point(
+                    (pointer.0 - f64::from(px)) as i32,
+                    (pointer.1 - f64::from(py)) as i32,
+                    logical_size.0,
+                    logical_size.1,
+                    e.transform,
+                );
+                Some((f64::from(x), f64::from(y)))
             } else {
                 None
             };
             let sx = px.max(0) as usize;
             let sy = py.max(0) as usize;
-            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
-                swizzle_subrect_rgba_to_xrgb8888(
+            let (source, source_w, source_h, source_x, source_y): (
+                &[u8],
+                usize,
+                usize,
+                usize,
+                usize,
+            ) = if let Some(transform) = &e.color_transform {
+                copy_rgba_subrect(
                     rgba,
                     cw,
                     ch,
                     sx,
                     sy,
+                    logical_size.0 as usize,
+                    logical_size.1 as usize,
+                    &mut e.color_buffer,
+                );
+                transform.apply(&mut e.color_buffer);
+                (
+                    &e.color_buffer,
+                    logical_size.0 as usize,
+                    logical_size.1 as usize,
+                    0,
+                    0,
+                )
+            } else {
+                (rgba, cw, ch, sx, sy)
+            };
+            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+                swizzle_subrect_rgba_to_xrgb8888_transformed(
+                    source,
+                    source_w,
+                    source_h,
+                    source_x,
+                    source_y,
                     dst,
                     pitch,
-                    ow as usize,
-                    oh as usize,
+                    physical_w as usize,
+                    physical_h as usize,
+                    e.transform,
                 );
             });
         }
@@ -258,6 +302,8 @@ fn apply_scanout_command(
             for entry in scanouts.iter_mut() {
                 if let Some(o) = table.iter().find(|o| o.id == entry.id) {
                     entry.position = o.position;
+                    entry.transform = o.transform;
+                    entry.set_color_profile(o.color_profile.clone());
                 }
             }
             scanouts.sort_by_key(|e| e.id.0);
@@ -283,6 +329,11 @@ fn apply_scanout_command(
                 dpms_on,
                 "DRM present: resumed after re-modesetting every output"
             );
+        }
+        ScanoutCommand::SetCursorSize(size) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.set_cursor_size(size);
+            }
         }
     }
 }
@@ -348,7 +399,10 @@ impl Backend for DrmBackend {
         // Single-output fast path: render the scene and swizzle it straight into the one scanout's
         // back dumb buffer (XRGB8888) in a single fused pass — no intermediate RGBA copy — then
         // page-flip (or dirty_framebuffer fallback). The cursor is only consulted by the software-cursor fallback.
-        if self.inner.scanouts.len() == 1 {
+        if self.inner.scanouts.len() == 1
+            && self.inner.scanouts[0].transform == settings_store::hardware::OutputTransform::Normal
+            && self.inner.scanouts[0].color_transform.is_none()
+        {
             let bridge = self.paint.as_mut().expect("paint allocated above");
             let cursor = Some(self.inner.dispatch.pointer);
             self.inner.scanouts[0]
@@ -384,31 +438,72 @@ impl Backend for DrmBackend {
         let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
         for e in &mut self.inner.scanouts {
             let (px, py) = e.position;
-            let (ow, oh) = e.scanout.size();
+            let (physical_w, physical_h) = e.scanout.size();
+            let logical_size = self
+                .outputs
+                .iter()
+                .find(|output| output.id == e.id)
+                .map_or((physical_w, physical_h), |output| output.size);
             // Software-cursor fallback only: draw the cursor (output-local coords) on the output it's over.
             // The hardware cursor plane, when active, ignores this and is driven from the input path via `CursorPlanes`.
             let local_cursor = if pointer.0 >= f64::from(px)
-                && pointer.0 < f64::from(px + ow as i32)
+                && pointer.0 < f64::from(px + logical_size.0 as i32)
                 && pointer.1 >= f64::from(py)
-                && pointer.1 < f64::from(py + oh as i32)
+                && pointer.1 < f64::from(py + logical_size.1 as i32)
             {
-                Some((pointer.0 - f64::from(px), pointer.1 - f64::from(py)))
+                let (x, y) = scanout::logical_to_physical_point(
+                    (pointer.0 - f64::from(px)) as i32,
+                    (pointer.1 - f64::from(py)) as i32,
+                    logical_size.0,
+                    logical_size.1,
+                    e.transform,
+                );
+                Some((f64::from(x), f64::from(y)))
             } else {
                 None
             };
             let sx = px.max(0) as usize;
             let sy = py.max(0) as usize;
-            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
-                swizzle_subrect_rgba_to_xrgb8888(
+            let (source, source_w, source_h, source_x, source_y): (
+                &[u8],
+                usize,
+                usize,
+                usize,
+                usize,
+            ) = if let Some(transform) = &e.color_transform {
+                copy_rgba_subrect(
                     rgba,
                     cw,
                     ch,
                     sx,
                     sy,
+                    logical_size.0 as usize,
+                    logical_size.1 as usize,
+                    &mut e.color_buffer,
+                );
+                transform.apply(&mut e.color_buffer);
+                (
+                    &e.color_buffer,
+                    logical_size.0 as usize,
+                    logical_size.1 as usize,
+                    0,
+                    0,
+                )
+            } else {
+                (rgba, cw, ch, sx, sy)
+            };
+            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+                swizzle_subrect_rgba_to_xrgb8888_transformed(
+                    source,
+                    source_w,
+                    source_h,
+                    source_x,
+                    source_y,
                     dst,
                     pitch,
-                    ow as usize,
-                    oh as usize,
+                    physical_w as usize,
+                    physical_h as usize,
+                    e.transform,
                 );
             });
         }
@@ -416,6 +511,7 @@ impl Backend for DrmBackend {
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
         self.inner.dispatch_pending();
+        self.inner.poll_display_transaction();
         // Before the presenter splits off, the scanouts are still here, so reconfigurations addressed to "whoever owns them" apply here too; after the split the presenter drains the same channel.
         if self.commands.is_some() {
             let pending: Vec<ScanoutCommand> = self
@@ -570,6 +666,8 @@ mod tests {
                 position: (1920, 0),
                 size: (2560, 1440),
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
             },
         ];
         let (mut paused, mut blanked) = (false, false);

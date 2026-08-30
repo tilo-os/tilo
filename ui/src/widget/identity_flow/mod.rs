@@ -46,9 +46,9 @@ pub mod recovery_verify;
 
 /// Disk-format record for a persisted identity.
 ///
-/// Plaintext-on-disk with `0600` mode for now — a real secret-store
-/// backend (libsecret / keyutils) should replace this before it's
-/// trusted with more than a local dev identity.
+/// Schema 1 contains a legacy plaintext share. Schema 2 contains public
+/// metadata plus an opaque secret-store reference; its `secret_bytes` is
+/// empty, so ceremonies that need signing must use the runtime broker.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct IdentityRecord {
     pub display_name: String,
@@ -62,6 +62,16 @@ pub struct IdentityRecord {
     pub created_at: String,
     /// Loader rejects unknown versions.
     pub schema_version: u32,
+    /// Present in secured schema 2 records. This is an opaque lookup token,
+    /// never a host path or key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<IdentitySecretReference>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct IdentitySecretReference {
+    pub backend: String,
+    pub locator: String,
 }
 
 /// Wire view of a `ThresholdIdentity`. `ThresholdIdentity` withholds
@@ -82,7 +92,7 @@ pub struct SerializableIdentity {
     pub share_index: u16,
     /// The 32-byte Ed25519 seed `SigningKey::from_bytes` expands from;
     /// anything else here signs for the wrong key.
-    #[serde(with = "serde_bytes")]
+    #[serde(default, with = "serde_bytes")]
     pub secret_bytes: Vec<u8>,
 }
 
@@ -130,6 +140,7 @@ impl IdentityRecord {
             threshold_identity: serialisable,
             created_at: ts,
             schema_version: 1,
+            secret_ref: None,
         })
     }
 
@@ -142,17 +153,18 @@ impl IdentityRecord {
         serde_json::to_vec_pretty(self).map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))
     }
 
-    /// Rejects records with an unknown `schema_version`.
+    /// Accepts legacy schema 1 and secured metadata schema 2; rejects future
+    /// layouts so a ceremony cannot reinterpret key material.
     ///
     /// # Errors
     ///
     /// Returns [`IdentityFlowError::DecodeFailed`] if `bytes` isn't valid
     /// JSON for this type, or [`IdentityFlowError::UnknownSchemaVersion`]
-    /// if the record's `schema_version` isn't `1`.
+    /// if the record's `schema_version` is neither `1` nor `2`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, IdentityFlowError> {
         let rec: Self = serde_json::from_slice(bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(e.to_string()))?;
-        if rec.schema_version != 1 {
+        if !matches!(rec.schema_version, 1 | 2) {
             return Err(IdentityFlowError::UnknownSchemaVersion(rec.schema_version));
         }
         Ok(rec)

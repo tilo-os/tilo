@@ -635,6 +635,11 @@ impl Widget for RichTextLine {
         Widget::ime_cursor_rect(&self.inner)
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
+    /// `multiline` is cleared — a block editor stacks many of these to form a document.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Widget::accessibility(&self.inner)
     }

@@ -667,6 +667,12 @@ impl CalendarApp {
             .iter()
             .map(|a| (a.config.clone(), a.calendars.clone()))
             .collect();
+        let sync_account_ids: Vec<String> = self
+            .accounts
+            .accounts
+            .iter()
+            .map(|account| account.id.clone())
+            .collect();
 
         if self.demo {
             let (result, outcome) = caldav::sample_pull_all(&inputs, self.today);
@@ -690,10 +696,69 @@ impl CalendarApp {
         let push_jobs = self.gather_push_jobs(doc);
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
+        for id in &sync_account_ids {
+            if let Err(error) = accounts::AccountSyncReporter::new(id.clone()).started() {
+                tracing::warn!(%error, account = id, "calendar: could not persist sync start");
+            }
+        }
         std::thread::spawn(move || {
             let deleted = caldav::delete_all(&delete_jobs);
             let pushed = caldav::push_all(&push_jobs);
-            let (result, outcome) = caldav::sync_all(&inputs, today);
+            let mut result = caldav::SyncResult::default();
+            let mut synced_calendars = 0;
+            let mut first_failure = None;
+            for (id, input) in sync_account_ids.iter().zip(inputs.iter()) {
+                let (mut account_result, account_outcome) =
+                    caldav::sync_all(std::slice::from_ref(input), today);
+                let reporter = accounts::AccountSyncReporter::new(id.clone());
+                let upload_failed = push_jobs
+                    .iter()
+                    .any(|(config, _, event)| config == &input.0 && !pushed.contains(&event.id));
+                let delete_failed = delete_jobs
+                    .iter()
+                    .any(|(config, _, uid)| config == &input.0 && !deleted.contains(uid));
+                let persisted = if matches!(&account_outcome, caldav::SyncOutcome::Synced { .. })
+                    && (upload_failed || delete_failed)
+                {
+                    first_failure.get_or_insert_with(|| "Some changes remain queued".to_string());
+                    reporter.failed()
+                } else {
+                    match &account_outcome {
+                        caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
+                        caldav::SyncOutcome::Offline => reporter.offline(),
+                        caldav::SyncOutcome::Failed(reason)
+                            if reason.contains("401") || reason.contains("403") =>
+                        {
+                            reporter.needs_authentication()
+                        }
+                        caldav::SyncOutcome::Failed(_) => reporter.failed(),
+                    }
+                };
+                if let Err(error) = persisted {
+                    tracing::warn!(%error, account = id, "calendar: could not persist sync result");
+                }
+                result.events.append(&mut account_result.events);
+                result.tasks.append(&mut account_result.tasks);
+                match account_outcome {
+                    caldav::SyncOutcome::Synced { calendars, .. } => {
+                        synced_calendars += calendars;
+                    }
+                    caldav::SyncOutcome::Offline => {}
+                    caldav::SyncOutcome::Failed(reason) => {
+                        first_failure.get_or_insert(reason);
+                    }
+                }
+            }
+            let outcome = if let Some(reason) = first_failure {
+                caldav::SyncOutcome::Failed(reason)
+            } else if synced_calendars > 0 {
+                caldav::SyncOutcome::Synced {
+                    calendars: synced_calendars,
+                    events: result.events.len(),
+                }
+            } else {
+                caldav::SyncOutcome::Offline
+            };
             let _ = tx.send((result, outcome, pushed, deleted));
         });
         self.sync_rx = Some(rx);

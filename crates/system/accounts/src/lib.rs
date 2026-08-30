@@ -25,7 +25,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod vault;
-pub use vault::{Secret, SecretVault};
+pub use vault::{Secret, SecretCustody, SecretVault};
+pub mod status;
+pub use status::{
+    AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
+};
 
 /// The kind of an account — `"email"`, `"caldav"`, … Owned by the type that contributes it;
 /// the store treats it as an opaque tag it can group by.

@@ -32,7 +32,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, TextInput};
+use ui::widget::{Button, ButtonFace, FlapState, SplitLayout, TextInput};
 
 use crate::doc::RemoteDoc;
 use crate::model::{
@@ -2245,7 +2245,8 @@ impl RemoteApp {
         w
     }
 
-    /// Generic button: filled accent when `primary`, otherwise outlined.
+    /// Generic button using the shared immediate-mode face while this canvas
+    /// retains ownership of pointer routing.
     #[allow(clippy::too_many_arguments)]
     fn draw_button(
         &self,
@@ -2257,49 +2258,13 @@ impl RemoteApp {
         label: &str,
         primary: bool,
     ) {
-        let tokens = &theme.tokens;
         let hovered = rect.contains(self.pointer);
-        let rr = RoundedRect::from_rect(rect, 8.0);
-        if primary {
-            let bg = if hovered {
-                tokens.colors.accent[4]
-            } else {
-                tokens.colors.accent[5]
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        } else {
-            let bg = if hovered {
-                tokens.colors.surface_white_10
-            } else {
-                Color::TRANSPARENT
-            };
-            if bg != Color::TRANSPARENT {
-                scene.fill(Fill::NonZero, transform, bg, None, &rr);
-            }
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &rr,
-            );
-        }
-        let color = if primary {
-            Color::WHITE
-        } else {
-            tokens.colors.text_primary
-        };
-        let (tw, _) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            13.0,
-            color,
-            transform
-                * Affine::translate((rect.center().x - f64::from(tw) / 2.0, rect.center().y - 8.0)),
-            None,
-            TextWeight::Semibold,
-        );
+        let face = ButtonFace::new(rect, label)
+            .hovered(hovered)
+            .text_size(13.0)
+            .weight(TextWeight::Semibold);
+        let face = if primary { face.primary() } else { face };
+        Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
     /// The text band inside a field box — where the shared input lives, and

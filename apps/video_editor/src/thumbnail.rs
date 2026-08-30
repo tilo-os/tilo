@@ -40,6 +40,11 @@ pub struct Thumb {
 /// Generate a representative thumbnail frame for a `palette` slot: a soft
 /// vertical gradient with a horizon band and a gentle corner vignette, in the
 /// palette's colour family — reads as a frame, not a flat swatch.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "w/h/r/g/b/x/y are the conventional names for pixel dimensions, colour channels \
+              and coordinates in this per-pixel gradient math"
+)]
 pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     let w = w.max(1);
     let h = h.max(1);
@@ -71,10 +76,14 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
             let dy = (yf - 0.5) * 2.0;
             let v = (1.0 - 0.28 * (dx * dx + dy * dy)).clamp(0.0, 1.0);
             let i = ((y * w + x) * 4) as usize;
-            rgba[i] = ((r * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 1] = ((g * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 2] = ((b * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 3] = 255;
+            if let Some(px) = rgba.get_mut(i..).and_then(<[u8]>::first_chunk_mut::<4>) {
+                *px = [
+                    ((r * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                    ((g * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                    ((b * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                    255,
+                ];
+            }
         }
     }
     Thumb {

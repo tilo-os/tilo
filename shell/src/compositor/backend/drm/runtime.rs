@@ -7,9 +7,9 @@
 //! [`super::gestures`]), which is what keeps them testable — none of this
 //! runs under `cargo test`. `DrmRuntime::new` fails cleanly with `Err` rather than panicking when there is no seat.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
@@ -40,10 +40,14 @@ use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
-use super::input_config::{DeviceCaps, InputSettings};
+use super::input_config::{
+    AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
+};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
-use super::scanout::{CardHandle, CursorPlanes, DrmScanout, ScanoutBuild, open_all_scanouts};
+use super::scanout::{
+    CardHandle, CursorPlanes, DrmScanout, ScanoutBuild, discover_icc_profiles, open_all_scanouts,
+};
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, TouchEvent as QosTouchEvent,
@@ -80,12 +84,22 @@ pub struct DrmDispatchState {
     /// The primary card, held open on the loop thread for the whole
     /// session — libseat refuses a second `open` of an already-open node, so this is the only way a later-plugged display can be enumerated; `None` when headless.
     pub card: Option<CardHandle>,
+    /// Profiles already parsed by the ICC worker and proven capable of
+    /// producing an RGBA8 output transform. Capability publication reads only
+    /// this cache, so directory/profile I/O never stalls the compositor loop.
+    pub color_profiles: BTreeMap<String, String>,
     /// Every output currently being driven, in `OutputId` order — mirrors what the presenter owns (scanouts live on the render thread).
     pub live: Vec<LiveEntry>,
     /// Channel to whoever owns the scanouts — the presenter once split off, the backend itself before that.
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
     pub input: InputSettings,
+    pub accessibility: AccessibilityInputSettings,
+    /// Slow-keys presses are accepted only after being held for the delay.
+    pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
+    /// Sticky modifiers stay logically down through the next non-modifier.
+    pub sticky_latched: ModifiersState,
+    pub physical_modifiers: ModifiersState,
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
@@ -107,9 +121,11 @@ pub struct DrmDispatchState {
     /// the plane of the output the pointer is over (hiding the one it left),
     /// all at input rate with no framebuffer redraw. Empty → software cursor from `pointer`.
     pub hw_cursor: CursorPlanes,
-    /// xkb keymap + state translating libinput keycodes into winit
+    /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
-    /// when the keymap couldn't compile, running pointer-only. Built from `XKB_DEFAULT_*` so the installer-seeded layout reaches the session.
+    /// when the keymap couldn't compile, running pointer-only. The persisted
+    /// source list owns the session; installer-seeded XKB environment remains
+    /// only the default before a preference exists.
     pub keyboard: Option<KeyboardXkb>,
 }
 
@@ -117,11 +133,13 @@ pub struct DrmDispatchState {
 pub struct LiveEntry {
     pub key: DrmOutputKey,
     pub id: OutputId,
+    pub connector_name: String,
     pub size: (u32, u32),
     pub physical_mm: Option<(u32, u32)>,
     pub crtc: smithay::reexports::drm::control::crtc::Handle,
     pub position: (i32, i32),
     pub scale: f64,
+    pub transform: settings_store::hardware::OutputTransform,
     /// This output's presentation interval, captured when brought up — kept here rather than read from the scanout, since scanouts move to the render thread and would start returning `None`.
     pub refresh: Option<std::time::Duration>,
 }
@@ -143,12 +161,36 @@ pub enum ScanoutCommand {
     /// The session lost the hardware: stop presenting entirely.
     Pause,
     /// The session has it back: re-modeset every output, restore the panels' power state, and resume presenting.
-    Resume { dpms_on: bool },
+    Resume {
+        dpms_on: bool,
+    },
+    SetCursorSize(u32),
 }
 
 impl DrmDispatchState {
     pub fn push(&mut self, ev: BackendEvent) {
         self.events.push(ev);
+    }
+
+    /// Publish the live hardware contract for Settings. Failure is benign in
+    /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
+    /// the output plan itself.
+    fn publish_display_snapshot(&self) {
+        let Some(card) = self.card.as_ref() else {
+            return;
+        };
+        let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
+            generated_unix_ms: settings_store::hardware::unix_ms(),
+            backend: "drm-kms-xrgb8888".into(),
+            publisher_pid: std::process::id(),
+            publisher_start_ticks:
+                settings_store::hardware::process_start_ticks(std::process::id())
+                    .unwrap_or_default(),
+            outputs: card.display_capabilities(&self.color_profiles),
+        };
+        if let Err(error) = snapshot.save() {
+            tracing::debug!(%error, "DRM display: could not publish capability snapshot");
+        }
     }
 
     /// Send a command to whoever owns the scanouts — silently dropped when there's no channel (headless) or the far end is gone (render thread died, reported separately).
@@ -245,6 +287,7 @@ impl DrmDispatchState {
         // A changed output set changes the scene size and the pointer's extent — both must reach the compositor before it paints again.
         self.push(BackendEvent::OutputsChanged);
         self.push(BackendEvent::Redraw);
+        self.publish_display_snapshot();
     }
 
     /// Fold freshly-modeset scanouts into the live set, minting (or
@@ -267,16 +310,22 @@ impl DrmDispatchState {
             self.live.push(LiveEntry {
                 key,
                 id,
+                connector_name: build.connector_name,
                 size: build.scanout.size(),
                 physical_mm: build.physical_mm,
                 crtc: build.crtc,
                 position: (0, 0),
                 scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
                 refresh: build.scanout.refresh_interval(),
             });
             entries.push(ScanoutEntry {
                 id,
                 position: (0, 0),
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                color_transform: None,
+                color_buffer: Vec::new(),
                 scanout: build.scanout,
             });
         }
@@ -288,12 +337,70 @@ impl DrmDispatchState {
     ///
     /// Called after any change to the live set — re-packing (not leaving survivors in place) closes the hole an unplugged middle monitor would leave.
     fn relayout_outputs(&mut self) {
-        self.live.sort_by_key(|l| l.id.0);
-        let sizes: Vec<(u32, u32)> = self.live.iter().map(|l| l.size).collect();
-        let positions = hotplug::layout(&sizes);
+        let config = settings_store::hardware::DisplayConfig::load_effective();
+        self.live.sort_by_key(|l| {
+            (
+                !config
+                    .outputs
+                    .get(&l.connector_name)
+                    .is_some_and(|c| c.primary),
+                l.id.0,
+            )
+        });
+        for entry in &mut self.live {
+            entry.transform = config
+                .outputs
+                .get(&entry.connector_name)
+                .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
+                    c.transform
+                });
+        }
+        let sizes: Vec<(u32, u32)> = self
+            .live
+            .iter()
+            .map(|entry| logical_output_size(entry.size, entry.transform))
+            .collect();
+        let fallback = hotplug::layout(&sizes);
+        let mut positions: Vec<(i32, i32)> = self
+            .live
+            .iter()
+            .zip(&fallback)
+            .map(|(entry, fallback)| {
+                config
+                    .outputs
+                    .get(&entry.connector_name)
+                    .map_or(*fallback, |c| (c.x, c.y))
+            })
+            .collect();
+        for index in 0..self.live.len() {
+            if let Some(target) = config
+                .outputs
+                .get(&self.live[index].connector_name)
+                .and_then(|c| c.mirror_of.as_deref())
+                && let Some(target_index) =
+                    self.live.iter().position(|l| l.connector_name == target)
+            {
+                positions[index] = positions[target_index];
+            }
+        }
+        // KMS accepts negative logical coordinates, but the renderer's
+        // combined texture starts at zero. Preserve relative arrangement and
+        // translate the whole monitor island into that texture.
+        let min_x = positions.iter().map(|p| p.0).min().unwrap_or(0);
+        let min_y = positions.iter().map(|p| p.1).min().unwrap_or(0);
+        for p in &mut positions {
+            p.0 -= min_x;
+            p.1 -= min_y;
+        }
         for (entry, position) in self.live.iter_mut().zip(&positions) {
             entry.position = *position;
-            entry.scale = resolve_scale(entry.size, entry.physical_mm, self.scale_override);
+            entry.scale = config
+                .outputs
+                .get(&entry.connector_name)
+                .map(|c| c.scale)
+                .unwrap_or_else(|| {
+                    resolve_scale(entry.size, entry.physical_mm, self.scale_override)
+                });
         }
         let extent = hotplug::combined_extent(&positions, &sizes);
         self.output_size = extent;
@@ -308,8 +415,15 @@ impl DrmDispatchState {
                     Output {
                         id: l.id,
                         position: l.position,
-                        size: l.size,
+                        size: logical_output_size(l.size, l.transform),
                         scale: l.scale as f32,
+                        transform: l.transform,
+                        color_profile: config
+                            .outputs
+                            .get(&l.connector_name)
+                            .and_then(|output| output.color_profile.as_ref())
+                            .filter(|profile| self.color_profiles.contains_key(*profile))
+                            .cloned(),
                     },
                 )
             })
@@ -321,15 +435,12 @@ impl DrmDispatchState {
     /// Point every cursor plane at its output's rectangle in the *new* layout — a stale rect routes the pointer onto the wrong monitor.
     fn rebuild_cursor_routing(&mut self) {
         for entry in &self.live {
+            let logical = logical_output_size(entry.size, entry.transform);
             self.hw_cursor.set_rect(
                 entry.id,
-                (
-                    entry.position.0,
-                    entry.position.1,
-                    entry.size.0,
-                    entry.size.1,
-                ),
+                (entry.position.0, entry.position.1, logical.0, logical.1),
             );
+            self.hw_cursor.set_transform(entry.id, entry.transform);
         }
         self.hw_cursor.move_to(self.pointer.0, self.pointer.1);
     }
@@ -404,6 +515,17 @@ impl DrmDispatchState {
         if let Some(speed) = plan.accel_speed() {
             let _ = device.config_accel_set_speed(speed);
         }
+        if let Some(on) = plan.left_handed {
+            let _ = device.config_left_handed_set(on);
+        }
+        if let Some(flat) = plan.flat_acceleration {
+            use smithay::reexports::input::AccelProfile;
+            let _ = device.config_accel_set_profile(if flat {
+                AccelProfile::Flat
+            } else {
+                AccelProfile::Adaptive
+            });
+        }
         tracing::info!(
             device = device.name(),
             touchpad = caps.is_touchpad(),
@@ -421,12 +543,13 @@ impl DrmDispatchState {
         // carries a finger count, so every later event asks what the
         // gesture in flight belongs to — and `end` clears that, which
         // would leave a shell-owned gesture's closing event looking unowned, sending a client a `swipe_end` for a swipe it never saw begin.
-        let shell_owns = match ev {
-            GestureEvent::SwipeBegin { fingers }
-            | GestureEvent::PinchBegin { fingers }
-            | GestureEvent::HoldBegin { fingers } => super::gestures::claims(fingers),
-            _ => self.gestures.shell_owns_current(),
-        };
+        let shell_owns = self.input.touchpad_gestures
+            && match ev {
+                GestureEvent::SwipeBegin { fingers }
+                | GestureEvent::PinchBegin { fingers }
+                | GestureEvent::HoldBegin { fingers } => super::gestures::claims(fingers),
+                _ => self.gestures.shell_owns_current(),
+            };
         let action = match ev {
             GestureEvent::SwipeBegin { fingers } => {
                 self.gestures.swipe_begin(fingers);
@@ -473,6 +596,23 @@ impl DrmDispatchState {
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
     fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        if self.accessibility.slow_keys {
+            if pressed {
+                self.slow_pending.insert(keycode, std::time::Instant::now());
+                return;
+            }
+            let Some(started) = self.slow_pending.remove(&keycode) else {
+                return;
+            };
+            if started.elapsed() < std::time::Duration::from_millis(300) {
+                return;
+            }
+            self.process_keyboard_key(keycode, true);
+        }
+        self.process_keyboard_key(keycode, pressed);
+    }
+
+    fn process_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
         // Scope the `&mut self.keyboard` borrow so we can push onto `self.events` afterwards without aliasing.
         let outcome = {
             let Some(kbd) = self.keyboard.as_mut() else {
@@ -481,15 +621,78 @@ impl DrmDispatchState {
             kbd.process(keycode, pressed)
         };
         if let Some(mods) = outcome.modifiers_changed {
-            self.events.push(BackendEvent::ModifiersChanged(mods));
+            let actual = mods.state();
+            if self.accessibility.sticky_keys {
+                if actual.is_empty() && !self.physical_modifiers.is_empty() {
+                    self.sticky_latched |= self.physical_modifiers;
+                    self.physical_modifiers = ModifiersState::empty();
+                    self.events
+                        .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                            self.sticky_latched,
+                        )));
+                } else {
+                    self.physical_modifiers = actual;
+                    self.events
+                        .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                            actual | self.sticky_latched,
+                        )));
+                }
+            } else {
+                self.events.push(BackendEvent::ModifiersChanged(mods));
+            }
         }
         if let Some(input) = outcome.input {
+            let consumes_sticky =
+                self.accessibility.sticky_keys && pressed && !self.sticky_latched.is_empty();
             self.events.push(BackendEvent::Input(input));
+            if consumes_sticky {
+                self.sticky_latched = ModifiersState::empty();
+                self.events
+                    .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                        self.physical_modifiers,
+                    )));
+            }
         }
     }
 }
 
 /// Owning handle for everything the DRM backend keeps alive between frames — dropping it tears down the session in libseat-correct order (libinput first, then udev, then the seat).
+/// Keeps ICC filesystem walks and profile parsing away from both Settings and
+/// the compositor loop. Requests are coalesced by a one-slot channel; results
+/// are immutable maps swapped into [`DrmDispatchState`] at poll boundaries.
+struct IccProfileWorker {
+    requests: SyncSender<()>,
+    results: Receiver<BTreeMap<String, String>>,
+}
+
+impl IccProfileWorker {
+    fn new() -> Result<Self, DrmBackendError> {
+        let (requests, request_rx) = sync_channel(1);
+        let (result_tx, results) = channel();
+        std::thread::Builder::new()
+            .name("qos-icc-profile-probe".into())
+            .spawn(move || {
+                while request_rx.recv().is_ok() {
+                    if result_tx.send(discover_icc_profiles()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| {
+                DrmBackendError::Calloop(format!("failed to start ICC profile worker: {error}"))
+            })?;
+        Ok(Self { requests, results })
+    }
+
+    fn request_refresh(&self) {
+        let _ = self.requests.try_send(());
+    }
+
+    fn take_latest(&self) -> Option<BTreeMap<String, String>> {
+        self.results.try_iter().last()
+    }
+}
+
 pub struct DrmRuntime {
     /// calloop loop this backend ticks; we own it so `submit_frame`/`poll_events` can dispatch without a parent loop's help.
     pub event_loop: EventLoop<'static, DrmDispatchState>,
@@ -503,19 +706,64 @@ pub struct DrmRuntime {
     pub scanouts: Vec<ScanoutEntry>,
     /// Receiving end of the reconfiguration channel — held here while the backend owns the scanouts inline; moved into the presenter along with them by [`super::Backend::take_presenter`].
     pub commands: Option<Receiver<ScanoutCommand>>,
+    /// Bounded watchdog for unconfirmed display changes. It lives in the
+    /// compositor rather than Settings so closing/crashing the app cannot
+    /// strand the session on a blank mode.
+    last_display_transaction_check: std::time::Instant,
+    last_display_snapshot_publish: std::time::Instant,
+    last_icc_profile_refresh: std::time::Instant,
+    icc_profiles: IccProfileWorker,
 }
 
 /// One live output: its public [`OutputId`], top-left position in the combined coordinate space (laid out side-by-side), and the [`DrmScanout`] driving its crtc.
 pub struct ScanoutEntry {
     pub id: OutputId,
     pub position: (i32, i32),
+    pub transform: settings_store::hardware::OutputTransform,
+    pub color_profile: Option<String>,
+    pub color_transform: Option<qcms::Transform>,
+    pub color_buffer: Vec<u8>,
     pub scanout: DrmScanout,
+}
+
+impl ScanoutEntry {
+    pub fn set_color_profile(&mut self, profile: Option<String>) {
+        if self.color_profile == profile {
+            return;
+        }
+        self.color_profile = profile;
+        self.color_transform = self.color_profile.as_deref().and_then(|path| {
+            let input = qcms::Profile::new_sRGB();
+            let output = qcms::Profile::new_from_path(path)?;
+            qcms::Transform::new(
+                &input,
+                &output,
+                qcms::DataType::RGBA8,
+                qcms::Intent::Perceptual,
+            )
+        });
+        if self.color_profile.is_some() && self.color_transform.is_none() {
+            tracing::warn!(profile = ?self.color_profile, "DRM display: rejected invalid ICC profile");
+        }
+    }
 }
 
 /// Lay output sizes out left-to-right at `y = 0` — a thin alias for
 /// [`hotplug::layout`] so startup and hotplug pack outputs through one implementation, or drift shows a monitor in the wrong place after a re-plug.
 #[cfg(test)]
 use hotplug::layout as side_by_side_layout;
+
+pub(crate) fn logical_output_size(
+    physical: (u32, u32),
+    transform: settings_store::hardware::OutputTransform,
+) -> (u32, u32) {
+    use settings_store::hardware::OutputTransform::{Rotate90, Rotate270};
+    if matches!(transform, Rotate90 | Rotate270) {
+        (physical.1, physical.0)
+    } else {
+        physical
+    }
+}
 
 impl DrmRuntime {
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
@@ -830,6 +1078,7 @@ impl DrmRuntime {
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();
+        let accessibility = AccessibilityInputSettings::load();
         let scale_override = load_display_scale_override();
         tracing::info!(
             tap_to_click = input.tap_to_click,
@@ -840,15 +1089,22 @@ impl DrmRuntime {
 
         // The scanout side and the loop side talk over one channel, so a reconfiguration is ordered against the frames around it.
         let (tx, rx) = channel::<ScanoutCommand>();
+        let icc_profiles = IccProfileWorker::new()?;
+        icc_profiles.request_refresh();
 
         let mut dispatch = DrmDispatchState {
             session: Some(session_state),
             outputs: OutputRegistry::new(),
             events: Vec::new(),
             card,
+            color_profiles: BTreeMap::new(),
             live: Vec::new(),
             commands: Some(tx),
             input,
+            accessibility,
+            slow_pending: HashMap::new(),
+            sticky_latched: ModifiersState::empty(),
+            physical_modifiers: ModifiersState::empty(),
             devices: Vec::new(),
             scale_override,
             gestures: GestureTracker::new(GestureConfig {
@@ -873,7 +1129,13 @@ impl DrmRuntime {
         for entry in &mut scanouts {
             if let Some(live) = dispatch.live.iter().find(|l| l.id == entry.id) {
                 entry.position = live.position;
+                entry.transform = live.transform;
             }
+            let profile = dispatch
+                .output_meta
+                .get(&entry.id)
+                .and_then(|output| output.color_profile.clone());
+            entry.set_color_profile(profile);
         }
         scanouts.sort_by_key(|e| e.id.0);
         // Start the pointer in the middle of the combined space.
@@ -882,6 +1144,7 @@ impl DrmRuntime {
         dispatch
             .hw_cursor
             .move_to(dispatch.pointer.0, dispatch.pointer.1);
+        dispatch.publish_display_snapshot();
 
         Ok(Self {
             event_loop,
@@ -890,6 +1153,10 @@ impl DrmRuntime {
             primary_gpu,
             scanouts,
             commands: Some(rx),
+            last_display_transaction_check: std::time::Instant::now(),
+            last_display_snapshot_publish: std::time::Instant::now(),
+            last_icc_profile_refresh: std::time::Instant::now(),
+            icc_profiles,
         })
     }
 
@@ -927,7 +1194,42 @@ impl DrmRuntime {
     /// `DeviceAdded`; already-attached ones are re-configured here from the dispatch state's handles, so a pointer-speed change is felt on the touchpad the user is holding, not the next one plugged in.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
+        let keyboard_settings = KeyboardSettings::load();
+        let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
+        let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
+        if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
+            self.dispatch.keyboard = Some(keyboard);
+            self.dispatch.slow_pending.clear();
+            self.dispatch.physical_modifiers = ModifiersState::empty();
+            self.dispatch.sticky_latched = ModifiersState::empty();
+            self.dispatch
+                .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                    ModifiersState::empty(),
+                )));
+            tracing::info!(
+                sources = ?keyboard_settings.source_ids,
+                active = keyboard_settings.active_index,
+                "DRM input: applied per-user XKB sources"
+            );
+        } else {
+            tracing::warn!(
+                sources = ?keyboard_settings.source_ids,
+                "DRM input: requested XKB keymap did not compile; preserving the working keymap"
+            );
+        }
+        self.dispatch.accessibility = accessibility;
+        if accessibility.effective_cursor_size() != previous_cursor_size {
+            self.dispatch.command(ScanoutCommand::SetCursorSize(
+                accessibility.effective_cursor_size(),
+            ));
+        }
+        if !accessibility.sticky_keys {
+            self.dispatch.sticky_latched = ModifiersState::empty();
+        }
+        if !accessibility.slow_keys {
+            self.dispatch.slow_pending.clear();
+        }
         self.dispatch.gestures.set_config(GestureConfig {
             natural_scroll: input.natural_scroll,
             ..GestureConfig::default()
@@ -943,6 +1245,144 @@ impl DrmRuntime {
             self.dispatch.relayout_outputs();
             self.dispatch.outputs_changed = true;
             self.dispatch.push(BackendEvent::OutputsChanged);
+        }
+        self.reconcile_display_transaction();
+        // The same atomic settings write may carry a topology/mode change.
+        // Re-probe first so a requested advertised mode is genuinely
+        // modeset; then publish arrangement/scale even when the connector
+        // set itself did not change.
+        self.dispatch.rescan_outputs("display settings changed");
+        self.dispatch.relayout_outputs();
+        let outputs = self.dispatch.output_table();
+        self.dispatch.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs,
+        });
+        self.dispatch.outputs_changed = true;
+        self.dispatch.push(BackendEvent::OutputsChanged);
+        self.dispatch.push(BackendEvent::Redraw);
+        self.dispatch.publish_display_snapshot();
+    }
+
+    /// Check the timed display confirmation independently of settings-file
+    /// changes. The compositor loop calls this continuously, but filesystem
+    /// work is bounded to four times a second.
+    pub fn poll_display_transaction(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_display_transaction_check)
+            < std::time::Duration::from_millis(250)
+        {
+            return;
+        }
+        self.last_display_transaction_check = now;
+        if let Some(profiles) = self.icc_profiles.take_latest() {
+            if profiles != self.dispatch.color_profiles {
+                self.dispatch.color_profiles = profiles;
+                self.dispatch.relayout_outputs();
+                self.dispatch.command(ScanoutCommand::Reconfigure {
+                    remove: Vec::new(),
+                    add: Vec::new(),
+                    outputs: self.dispatch.output_table(),
+                });
+                self.dispatch.outputs_changed = true;
+                self.dispatch.push(BackendEvent::OutputsChanged);
+                self.dispatch.push(BackendEvent::Redraw);
+                self.dispatch.publish_display_snapshot();
+            }
+        }
+        if now.duration_since(self.last_icc_profile_refresh) >= std::time::Duration::from_secs(30) {
+            self.last_icc_profile_refresh = now;
+            self.icc_profiles.request_refresh();
+        }
+        if now.duration_since(self.last_display_snapshot_publish)
+            >= std::time::Duration::from_secs(5)
+        {
+            self.last_display_snapshot_publish = now;
+            self.dispatch.publish_display_snapshot();
+        }
+        let Some(transaction) = settings_store::hardware::DisplayTransaction::load() else {
+            return;
+        };
+        if transaction.expired(settings_store::hardware::unix_ms()) {
+            self.reload_input_settings();
+        }
+    }
+
+    /// Advance one display request before the KMS re-probe consumes its
+    /// effective configuration. Validation uses the compositor-published
+    /// descriptor set, never values supplied by Settings.
+    fn reconcile_display_transaction(&mut self) {
+        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+
+        let Some(mut transaction) = DisplayTransaction::load() else {
+            return;
+        };
+        let now = settings_store::hardware::unix_ms();
+        if transaction.expired(now) {
+            transaction.state = DisplayTransactionState::RevertRequested;
+            transaction.message = Some("Display change timed out and was restored".into());
+        }
+        match transaction.state {
+            DisplayTransactionState::Requested => {
+                let descriptors: Vec<_> = self
+                    .dispatch
+                    .card
+                    .as_ref()
+                    .map(|card| card.display_capabilities(&self.dispatch.color_profiles))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|output| output.descriptor)
+                    .collect();
+                if descriptors.is_empty() {
+                    transaction.state = DisplayTransactionState::Rejected;
+                    transaction.message =
+                        Some("No compositor-owned DRM capability snapshot is available".into());
+                } else if let Err(error) = transaction.candidate.validate_for(&descriptors) {
+                    transaction.state = DisplayTransactionState::Rejected;
+                    transaction.message =
+                        Some(format!("Rejected unsupported display plan: {error:?}"));
+                } else {
+                    transaction.state = DisplayTransactionState::AwaitingConfirmation;
+                    transaction.deadline_unix_ms =
+                        Some(now.saturating_add(DisplayTransaction::CONFIRM_TIMEOUT_MS));
+                    transaction.message = Some(
+                        "Applied temporarily; confirm within 15 seconds or it will be restored"
+                            .into(),
+                    );
+                }
+                if let Err(error) = transaction.save() {
+                    tracing::warn!(%error, "DRM display: failed to update transaction");
+                }
+            }
+            DisplayTransactionState::ConfirmRequested => {
+                if let Err(error) = transaction.candidate.save() {
+                    transaction.state = DisplayTransactionState::Rejected;
+                    transaction.message = Some(format!("Could not commit display plan: {error}"));
+                } else {
+                    transaction.state = DisplayTransactionState::Confirmed;
+                    transaction.deadline_unix_ms = None;
+                    transaction.message = Some("Display configuration kept".into());
+                }
+                let _ = transaction.save();
+            }
+            DisplayTransactionState::RevertRequested => {
+                if let Err(error) = transaction.previous.save() {
+                    transaction.state = DisplayTransactionState::Rejected;
+                    transaction.message = Some(format!("Could not restore display plan: {error}"));
+                } else {
+                    transaction.state = DisplayTransactionState::Reverted;
+                    transaction.deadline_unix_ms = None;
+                    transaction
+                        .message
+                        .get_or_insert_with(|| "Previous display configuration restored".into());
+                }
+                let _ = transaction.save();
+            }
+            DisplayTransactionState::AwaitingConfirmation
+            | DisplayTransactionState::Confirmed
+            | DisplayTransactionState::Reverted
+            | DisplayTransactionState::Rejected => {}
         }
     }
 
@@ -981,6 +1421,10 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_dwt: device.config_dwt_is_available(),
         supports_middle_emulation: device.config_middle_emulation_is_available(),
         is_pointer: device.has_capability(smithay::reexports::input::DeviceCapability::Pointer),
+        supports_left_handed: device.config_left_handed_is_available(),
+        supports_flat_acceleration: device
+            .config_accel_profiles()
+            .contains(&smithay::reexports::input::AccelProfile::Flat),
     }
 }
 
@@ -1062,25 +1506,34 @@ struct KeyOutcome {
 }
 
 impl KeyboardXkb {
-    /// Compile a keymap from the `XKB_DEFAULT_*` environment. Empty rule
-    /// names make xkbcommon consult `XKB_DEFAULT_RULES/_MODEL/_LAYOUT/
-    /// _VARIANT/_OPTIONS` — byte-for-byte what
-    /// `smithay::input::keyboard::XkbConfig::default()` does; the installer
-    /// writes these into `/etc/environment`, PAM-exported into the greetd session.
-    ///
-    /// Returns `None` (caller logs) if the keymap can't build, degrading to pointer-only rather than aborting.
+    /// Compile the validated source list from the per-user settings file.
+    /// Returns `None` (caller logs) if the keymap can't build, degrading to
+    /// pointer-only at boot and preserving the old working map on hot reload.
     pub fn new() -> Option<Self> {
+        let requested = KeyboardSettings::load();
+        Self::from_settings(&requested).or_else(|| {
+            tracing::warn!(
+                sources = ?requested.source_ids,
+                "DRM input: saved XKB sources failed at session start; falling back to US"
+            );
+            Self::from_settings(&KeyboardSettings::default())
+        })
+    }
+
+    pub fn from_settings(settings: &KeyboardSettings) -> Option<Self> {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "",   // rules  -> XKB_DEFAULT_RULES
-            "",   // model  -> XKB_DEFAULT_MODEL
-            "",   // layout -> XKB_DEFAULT_LAYOUT
-            "",   // variant-> XKB_DEFAULT_VARIANT
-            None, // options -> XKB_DEFAULT_OPTIONS
+            "", // rules -> XKB_DEFAULT_RULES (normally evdev)
+            "", // model -> XKB_DEFAULT_MODEL
+            &settings.layouts,
+            &settings.variants,
+            settings.options.clone(),
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )?;
-        let state = xkb::State::new(&keymap);
+        let mut state = xkb::State::new(&keymap);
+        let active = u32::try_from(settings.active_index).ok()?;
+        let _ = state.update_mask(0, 0, 0, 0, 0, active);
         Some(Self {
             _context: context,
             _keymap: keymap,
@@ -1318,6 +1771,10 @@ where
 mod tests {
     use super::*;
     use crate::compositor::backend::drm::devices::ModeInfo;
+
+    fn test_keyboard_settings() -> KeyboardSettings {
+        KeyboardSettings::default()
+    }
 
     // These tests build a `DrmDispatchState` directly; they avoid calling `DrmRuntime::new` which would try to open a real seat.
 
@@ -1568,7 +2025,7 @@ mod tests {
     /// End-to-end through a real keymap: pressing/releasing Left Shift flips the modifier mask — layout-independent; soft-skips if no xkb data installed.
     #[test]
     fn xkb_left_shift_toggles_modifier_mask() {
-        let Some(mut kbd) = KeyboardXkb::new() else {
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
             eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
             return;
         };
@@ -1595,7 +2052,7 @@ mod tests {
     /// End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
     #[test]
     fn xkb_alpha_key_produces_character_input() {
-        let Some(mut kbd) = KeyboardXkb::new() else {
+        let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
             eprintln!("xkb keymap unavailable; skipping");
             return;
         };
@@ -1617,6 +2074,51 @@ mod tests {
             }
             other => panic!("expected KeyboardInput, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["us".into(), "de".into()],
+            layouts: "us,de".into(),
+            variants: ",".into(),
+            options: Some("grp:alt_shift_toggle".into()),
+            active_index: 1,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // AD06 is Y in US and Z in German.
+        let output = keyboard.process(xkb::Keycode::new(29), true);
+        let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("z".into()));
+    }
+
+    #[test]
+    fn xkb_alt_shift_cycles_configured_sources() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["us".into(), "de".into()],
+            layouts: "us,de".into(),
+            variants: ",".into(),
+            options: Some("grp:alt_shift_toggle".into()),
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // evdev Left Alt 56 / Left Shift 42, each plus the XKB offset 8.
+        for (keycode, pressed) in [(64, true), (50, true), (50, false), (64, false)] {
+            let _ = keyboard.process(xkb::Keycode::new(keycode), pressed);
+        }
+        let output = keyboard.process(xkb::Keycode::new(29), true);
+        let WindowEvent::KeyboardInput { event, .. } = output.input.expect("key input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("z".into()));
     }
 
     #[test]
@@ -1656,11 +2158,13 @@ mod tests {
                 connector,
             },
             id: OutputId(id),
+            connector_name: format!("TEST-{connector}"),
             size,
             physical_mm: mm,
             crtc: crtc(id + 1),
             position: (0, 0),
             scale: 1.0,
+            transform: settings_store::hardware::OutputTransform::Normal,
             refresh: None,
         }
     }
@@ -2013,6 +2517,8 @@ mod tests {
             supports_dwt: true,
             supports_middle_emulation: true,
             is_pointer: true,
+            supports_left_handed: true,
+            supports_flat_acceleration: true,
         };
         let plan = input_config::plan_for(&state.input, &caps);
         assert_eq!(plan.tap, Some(true));

@@ -451,7 +451,7 @@ fn engine_linear(s: &str) -> String {
 #[test]
 fn click_at_measured_glyph_boundary_places_caret_there() {
     use super::MathField;
-    use ui::text_render::{TextRenderer, TextWeight};
+    use ui::text_render::TextRenderer;
     use vello::kurbo::{Point, Rect};
 
     let mut tr = TextRenderer::new();
@@ -464,7 +464,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
     let origin = f.content_origin();
     let py = origin.y + 10.0; // anywhere inside the single row's band
     let mut cum = 0.0f64;
-    for (k, ch) in chars.iter().enumerate() {
+    for k in 0..chars.len() {
         let px = origin.x + cum + 0.5; // just right of boundary k
         f.on_press_cached(Point::new(px, py), false);
         assert!(
@@ -475,10 +475,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
             f.editor.caret.offset, k,
             "click at measured boundary {k} (x={px:.1}) must land at offset {k}",
         );
-        let mut buf = [0u8; 4];
-        let s = ch.encode_utf8(&mut buf);
-        let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-        cum += f64::from(w);
+        cum += ui::math::measure_atom(&mut tr, chars[k], size);
     }
     // Clicking past the last glyph lands at the row end.
     f.on_press_cached(Point::new(origin.x + cum + 0.5, py), false);
@@ -495,7 +492,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
 #[test]
 fn caret_gap_x_matches_summed_glyph_advances() {
     use super::MathField;
-    use ui::text_render::{TextRenderer, TextWeight};
+    use ui::text_render::TextRenderer;
     use vello::kurbo::Rect;
 
     let mut tr = TextRenderer::new();
@@ -518,10 +515,7 @@ fn caret_gap_x_matches_summed_glyph_advances() {
             "gap {k} x={} should equal summed advance {cum}",
             gap.x,
         );
-        let mut buf = [0u8; 4];
-        let s = ch.encode_utf8(&mut buf);
-        let (w, _) = tr.measure_weighted(s, size, None, TextWeight::Medium);
-        cum += f64::from(w);
+        cum += ui::math::measure_atom(&mut tr, *ch, size);
     }
 }
 
@@ -607,11 +601,7 @@ fn long_formula_scrolls_horizontally_to_keep_caret_visible() {
     // Jumping home scrolls back so the start is visible again.
     f.handle_key(&WKey::Named(NamedKey::Home), &mods);
     f.set_rect(rect, &mut tr);
-    assert!(
-        f.scroll.x.abs() < 1e-9,
-        "Home must reveal the start of the formula (scroll.x={})",
-        f.scroll.x
-    );
+    assert_eq!(f.scroll.x, 0.0, "Home must reveal the start of the formula");
     let gap0 = super::render::caret_gap(f.layout.as_ref().unwrap(), &[], 0).unwrap();
     let caret_x0 = f.content_origin().x + gap0.x;
     assert!(
@@ -646,11 +636,7 @@ fn tall_formula_is_bounded_not_resized() {
         "a taller-than-field formula must scroll, not grow the field"
     );
     // The field rect the caller gave is never mutated by content.
-    assert!(
-        (f.rect.height() - 30.0).abs() < 1e-9,
-        "the field height must stay fixed (got {})",
-        f.rect.height()
-    );
+    assert_eq!(f.rect.height(), 30.0, "the field height must stay fixed");
 
     // The caret band is kept within the field vertically.
     let steps = f.editor.caret.steps.clone();
@@ -681,8 +667,8 @@ fn short_formula_does_not_scroll() {
     let rect = Rect::new(10.0, 5.0, 310.0, 45.0);
     f.set_rect(rect, &mut tr);
     assert!(!f.overflows(), "a short formula must not overflow");
-    assert!(f.scroll.x.abs() < 1e-9, "scroll.x={}", f.scroll.x);
-    assert!(f.scroll.y.abs() < 1e-9, "scroll.y={}", f.scroll.y);
+    assert_eq!(f.scroll.x, 0.0);
+    assert_eq!(f.scroll.y, 0.0);
     // Left-padded origin, unchanged from the original centered behaviour.
     assert!((f.content_origin().x - (rect.x0 + 4.0)).abs() < 1e-9);
 }
@@ -708,11 +694,7 @@ fn wheel_scrolls_within_bounds() {
     );
     // Over-scroll left: clamps to 0.
     f.scroll_by(-10_000.0, 0.0);
-    assert!(
-        f.scroll.x.abs() < 1e-9,
-        "over-scroll left must clamp to 0 (scroll.x={})",
-        f.scroll.x
-    );
+    assert_eq!(f.scroll.x, 0.0);
 }
 
 // -- expandable card: grow to fit, then scroll (HIG §2) ----------------------

@@ -26,7 +26,6 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_TERM_COLOR: never
-      RUSTC_WRAPPER: sccache
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
       WGPU_BACKEND: vulkan
@@ -53,7 +52,7 @@ jobs:
         run: |
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          sccache --zero-stats || true
+          bash tools/ci-sccache.sh prepare
 
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
@@ -86,7 +85,7 @@ jobs:
         run: |
           echo "### nightly sccache" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          sccache --show-stats 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          bash tools/ci-sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save Cargo downloads

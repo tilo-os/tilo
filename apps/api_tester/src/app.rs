@@ -54,12 +54,16 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
-use ui::widget::{Button, Dropdown, SidebarDrawer, SplitLayout, TextInput, ToggleGroup, Widget};
+use ui::widget::{
+    Button, Checkbox, CheckboxFace, Dropdown, SidebarDrawer, SplitLayout, TextInput, ToggleGroup,
+    Widget,
+};
 
 use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
 use crate::doc::ApiDoc;
@@ -1133,13 +1137,12 @@ impl ApiTesterApp {
                 break;
             }
             let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-            let cb_shape = RoundedRect::from_rect(cb, 4.0);
-            if row.enabled {
-                scene.fill(Fill::NonZero, t, theme.accent_primary, None, &cb_shape);
-                draw_check(scene, t, cb, Color::WHITE);
-            } else {
-                scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &cb_shape);
-            }
+            Checkbox::paint(
+                scene,
+                t,
+                theme,
+                &CheckboxFace::new(cb, row.enabled).transparent_unchecked(),
+            );
             let row_col = if row.enabled {
                 c.text_primary
             } else {
@@ -1883,27 +1886,7 @@ impl ApiTesterApp {
 
 /// Three stacked bars — the hamburger toggle that summons the overlay rail.
 fn draw_hamburger(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    let cx = rect.center().x;
-    let cy = rect.center().y;
-    let half = 8.0;
-    for dy in [-6.0, 0.0, 6.0] {
-        let bar = Rect::new(cx - half, cy + dy - 1.0, cx + half, cy + dy + 1.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            color,
-            None,
-            &RoundedRect::from_rect(bar, 1.0),
-        );
-    }
-}
-
-fn draw_check(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    let mut p = BezPath::new();
-    p.move_to((rect.x0 + 3.5, rect.center().y));
-    p.line_to((rect.x0 + 6.5, rect.y1 - 4.0));
-    p.line_to((rect.x1 - 3.5, rect.y0 + 4.0));
-    scene.stroke(&Stroke::new(1.8), t, color, None, &p);
+    Icon::Menu.draw(scene, t, rect, color);
 }
 
 /// A triangle fold caret: pointing down when `expanded`, right when not.

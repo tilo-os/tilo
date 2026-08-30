@@ -57,3 +57,25 @@ Without `MAPS_LIVE`, the lane self-skips and `qos-build test -p maps` stays gree
 offline. The pre-existing `tiles::tests::live_tile_fetch_real_network` (an
 `#[ignore]`d raw-fetch smoke test) still exists; the `live_maps` lane supersedes
 it by driving the whole app, not just `load_tile`.
+
+## Display configuration live lane
+
+Display unit tests cannot prove that a monitor accepted a KMS mode or that its
+ICC calibration is visually correct. Before release, run the compositor on a
+TTY and record this matrix:
+
+- internal Intel and AMD panels plus HDMI and DisplayPort sinks;
+- mixed refresh (59.94/60/120/144 Hz) and mixed scale;
+- all four rotations, including a touchscreen on a 90-degree output;
+- extend, mirror, primary switch, disable one output, and dock unplug/replug;
+- close/kill Settings during the 15-second confirmation and verify automatic
+  restoration; repeat with a deliberately unusable sink/mode;
+- select a known test ICC profile and compare a measured color target, then
+  enable Night Light and verify calibration remains applied beneath it.
+
+Capture `$XDG_RUNTIME_DIR/qos/display-state.json`, compositor DRM logs, and a
+photo/video of the Keep/Revert path with the report. Do not mark HDR or VRR
+available from EDID/kernel capability alone: the lane must also verify HDR DRM
+metadata/colorspace plus 10-bit encoding, or VRR CRTC activation plus measured
+variable presentation. The XRGB8888 presenter currently leaves both controls
+unavailable by design.

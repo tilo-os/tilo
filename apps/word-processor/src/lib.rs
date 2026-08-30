@@ -25,9 +25,10 @@
 )]
 
 pub mod actions;
+mod find_bar;
 pub mod history_panel;
 pub mod i18n;
-pub mod num;
+pub use ui::num;
 pub mod styles;
 pub mod widget;
 pub mod word_processor;
