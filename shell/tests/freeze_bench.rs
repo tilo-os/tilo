@@ -45,7 +45,7 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
 fn terminal_first_sync_crdt_cost() {
     // The actual drop freeze: a terminal's first sync/handle_event lazily
     // populates its grid into the shared Automerge doc (`init_crdt` ->
@@ -79,7 +79,7 @@ fn terminal_first_sync_crdt_cost() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
 fn rematerialize_group_cost() {
     // Records stay in memory: this measures widget construction, not what a
     // session writes to disk.
