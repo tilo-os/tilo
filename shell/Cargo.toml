@@ -124,6 +124,9 @@ qdoc = { path = "../crates/doc/qdoc" }
 # Settings app can call the same bindings without depending on the
 # compositor. The module at the old path now re-exports from this crate.
 os-actions = { path = "../crates/system/os-actions" }
+# Session-owned balance/mono policy and PipeWire graph enumeration. Settings
+# persists intent; the compositor is the single long-lived actuator.
+media = { path = "../crates/media" }
 # Power management: suspend-on-idle, lid / power-key policy, suspend
 # inhibitors, and battery thresholds over systemd-logind + UPower. The pure
 # policy core is unit-testable without a bus; the service actuates via zbus.

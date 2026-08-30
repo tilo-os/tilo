@@ -31,7 +31,7 @@ objects supply `EnumProfile`; only available profiles are shown and changes use
 read-only when the node exposes `api.bluez5.codec`. A separate codec picker is
 not shown unless the backend exposes codecs as selectable profiles.
 
-Short-lived diagnostics and transforms live in `media::audio_runtime`, separate
+Diagnostics and persistent transforms live in `media::audio_runtime`, separate
 from graph enumeration. Controls appear only when the corresponding standard
 host API is reachable:
 
@@ -44,14 +44,18 @@ host API is reachable:
 - microphone test captures raw samples from the selected source with
   `pw-record`, reduces them immediately to a peak meter, and retains no audio.
 
-Every process is killed and waited, every capture reader is joined, and every
-temporary module is unloaded when the control stops, hardware changes, the
-pane is hidden, or Settings exits. The microphone path has no playback node,
-so testing cannot silently become microphone monitoring or create feedback.
-The microphone test is capped at eight seconds in Settings (and the backend
-rejects unbounded durations).
+Every diagnostic process is killed and waited and every capture reader is
+joined when its bounded test ends, the pane is hidden, or Settings exits. The
+microphone path has no playback node, so testing cannot silently become
+microphone monitoring or create feedback. The microphone test is capped at
+eight seconds in Settings (and the backend rejects unbounded durations).
 
-Mono is intentionally session-scoped rather than a misleading persistent
-preference: a durable accessibility route belongs in a compositor/session
-audio service that can survive Settings. Codec selection remains read-only
+Balance and mono are persisted by Settings but actuated by exactly one worker
+owned by the compositor session. That worker observes PipeWire off the render
+thread, reapplies balance after a real volume/default-device change, retains
+the physical master when the virtual mono sink becomes the reported default,
+and migrates cleanly on hot-plug. Dropping the session owner restores the
+physical output and unloads the module. Settings windows therefore never
+create competing virtual sinks, and closing or navigating away from Settings
+does not undo an accessibility choice. Codec selection remains read-only
 unless WirePlumber advertises concrete selectable profiles.

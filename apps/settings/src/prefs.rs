@@ -73,6 +73,18 @@ pub struct AudioPrefs {
     /// Label of the last chosen default source (input device), if any.
     #[serde(default)]
     pub input_device: Option<String>,
+    /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
+    /// `1` right). The compositor session, not this pane, owns actuation.
+    #[serde(default = "default_audio_balance")]
+    pub balance: f32,
+    /// Persistent accessibility mono transform. A compositor-session owner
+    /// keeps the bounded virtual sink alive across Settings navigation.
+    #[serde(default)]
+    pub mono_output: bool,
+}
+
+const fn default_audio_balance() -> f32 {
+    0.5
 }
 
 impl Default for AudioPrefs {
@@ -83,6 +95,8 @@ impl Default for AudioPrefs {
             chat_leave: true,
             output_device: None,
             input_device: None,
+            balance: default_audio_balance(),
+            mono_output: false,
         }
     }
 }
