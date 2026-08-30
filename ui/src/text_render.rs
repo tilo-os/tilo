@@ -20,6 +20,8 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 pub const UI_SANS_FAMILY: &str = "Noto Sans";
 pub const UI_SERIF_FAMILY: &str = "Noto Serif";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
+/// Dedicated OpenType MATH face used by the shared formula compositor.
+pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
 
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the qOS image. cosmic-text's platform fallback
