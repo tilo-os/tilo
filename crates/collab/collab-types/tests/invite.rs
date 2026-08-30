@@ -2,6 +2,12 @@
 //! cap the parent lacks is rejected; an expired token is rejected. All
 //! proven on the real `mint_root` / `attenuate` / `verify_chain` path.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 

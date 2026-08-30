@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ui::permissions::{
     Actor, AppKind, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef,
     Role, Scope, Subject, UserId, Verb,

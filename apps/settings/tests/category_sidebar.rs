@@ -6,6 +6,12 @@
 //! `SidebarRow` addressable by its category's display label via `test_id`,
 //! so the count is exact (the content pane contains no `SidebarRow`s).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use settings::SettingsApp;
 use settings::categories::Category;
 use std::collections::HashMap;

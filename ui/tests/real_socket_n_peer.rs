@@ -10,6 +10,12 @@
 //!      arrives at C tagged with the id each announced — so the two are
 //!      distinct — and A never receives its own presence back.
 //!
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::thread;
 use std::time::Duration;
 

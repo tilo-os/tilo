@@ -6,6 +6,12 @@
 //! Complements the per-widget unit tests in `tests/shell_chrome_test.rs`,
 //! `ui/src/widget/tabs.rs`, and `src/shell/notes_app.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
 use shell::shell::notes_app::{BODY_KEY, NotesApp};
 use shell::shell::sidebar_wheel::SidebarWheel;

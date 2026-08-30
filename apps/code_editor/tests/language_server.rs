@@ -46,6 +46,12 @@
 //! file URI. That is the evidence that a pass here means the diagnostic really
 //! arrived, rather than that nothing was ever looked at.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 

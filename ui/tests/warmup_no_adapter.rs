@@ -19,6 +19,12 @@
 //! it doesn't — so a machine that happens to have a GPU fails the test
 //! loudly instead of passing vacuously.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 

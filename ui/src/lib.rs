@@ -25,6 +25,15 @@
 //! pins every member to one version. The re-exports are what lets new code
 //! get it right by default.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod a11y;
 pub mod a11y_tree;
 pub mod accesskit_bridge;

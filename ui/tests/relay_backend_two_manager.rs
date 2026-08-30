@@ -15,6 +15,12 @@
 //! attribution that rides inside the co-edit payload because the host's
 //! presence envelope carries no author of its own.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;

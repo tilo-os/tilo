@@ -6,6 +6,12 @@
 //! `cargo test -p qos-rollback --test mechanism -- --test-threads 1` (each test gets its own
 //! `swtpm` since several drive dictionary-attack lockout, which a shared instance would leak).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use qos_rollback::{
     Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},

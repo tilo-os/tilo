@@ -9,6 +9,15 @@
 //! qos-registry-server init --owner-pubkey <hex> --name <n> --description <d> --base-url <url>
 //! ```
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 

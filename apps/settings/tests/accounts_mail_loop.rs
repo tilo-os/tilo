@@ -8,6 +8,12 @@
 //! the reader Mail uses at startup. No mocks: the two apps meet at the shared
 //! `accounts` crate on disk.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 

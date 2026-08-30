@@ -17,6 +17,12 @@
 //! put in an `xdg_toplevel.configure`, not intermediate bookkeeping.
 //! Set `QOS_SHOT_DIR` to also drop PNGs of every rendered frame.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::compositor::foreign::{self, store};
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;

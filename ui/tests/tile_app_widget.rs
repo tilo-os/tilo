@@ -1,5 +1,11 @@
 //! Asserts `TileContent::App` holds an `AppWidget`, not a bare `Widget`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::{AutoCommit, ObjId};
 use ui::presence::PresenceCtx;
 use ui::widget::{TileContent, TileHost};

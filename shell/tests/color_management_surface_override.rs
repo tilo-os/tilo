@@ -8,6 +8,12 @@
 //! colorimetry + HEVC Main10 codec even though the session was constructed
 //! with `hdr: None`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };

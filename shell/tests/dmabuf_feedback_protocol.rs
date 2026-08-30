@@ -14,6 +14,12 @@
 //! DRM node; the format table offers only buffers
 //! [`shell::compositor::foreign::validate_importable`] would accept.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

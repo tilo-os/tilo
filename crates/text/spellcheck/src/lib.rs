@@ -24,6 +24,15 @@
 //! assert!(misspellings[0].suggestions.iter().any(|s| s == "the"));
 //! ```
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 mod dictionary;
 mod distance;
 mod suggest;

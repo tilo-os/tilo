@@ -10,6 +10,12 @@
 //! the developer's real installs — and so what is asserted is the
 //! production code path, not a library call that resembles it.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

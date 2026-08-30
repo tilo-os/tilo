@@ -9,6 +9,12 @@
 //! states rather than an `Option`, and this pins them against the real store and
 //! the real transport hook.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::sync::{Arc, Mutex};
 
 use qdoc::Document;

@@ -28,6 +28,12 @@
 //! match — it is the consequence: **an operation invoked on a photograph acts
 //! on that photograph in a session that staged it somewhere else.**
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use automerge::AutoCommit;
 use photos::PhotosApp;
 use photos::actions::{PhotosResources, register};

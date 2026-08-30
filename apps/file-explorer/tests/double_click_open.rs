@@ -8,6 +8,12 @@
 //! preceding `CursorMoved` misses the row and the folder never opens. These
 //! tests drive the real widget through a rebuild between the two clicks and
 //! prove the second click still opens the folder.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::common::{Harness, row_center};
 
 /// A temp dir containing a single folder (row 0) plus a file.

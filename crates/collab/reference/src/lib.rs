@@ -20,6 +20,15 @@
 //! represent is an [`Undeliverable`] error, because a private remark silently
 //! written into a channel row is a disclosure bug.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 mod delivery;
 mod direct;
 mod reference;

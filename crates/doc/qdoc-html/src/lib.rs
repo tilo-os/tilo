@@ -31,6 +31,15 @@
 //! default to PNG. List `start`/`index`: sets `<ol start>`; per-item
 //! custom numbering isn't modeled.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 mod base64;
 
 use qdoc::snapshot::AttrVal;

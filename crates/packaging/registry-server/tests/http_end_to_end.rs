@@ -5,6 +5,12 @@
 //! These tests verify the whole loop: signature construction ↔
 //! JSON round-trip ↔ server-side verify ↔ disk write ↔ GET.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;

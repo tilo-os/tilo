@@ -1,6 +1,12 @@
 //! Tree-shape correctness: create / rename / delete should leave the
 //! workspace with valid parent pointers and contiguous sibling order.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use notes::Workspace;
 
 #[test]

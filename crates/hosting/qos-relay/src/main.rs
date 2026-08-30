@@ -9,6 +9,15 @@
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
 //!              the config file so the next `run` picks it up.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::path::PathBuf;
 
 use anyhow::Context;

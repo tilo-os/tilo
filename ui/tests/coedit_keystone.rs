@@ -14,6 +14,12 @@
 //! through the real `collab_types::validate_inbound_op` pipeline by role
 //! (`signed_edit_is_permission_gated`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::thread;
 use std::time::Duration;
 

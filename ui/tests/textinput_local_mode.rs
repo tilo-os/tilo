@@ -3,6 +3,12 @@
 //! `self.text`, the dirty flag flips, and `take_dirty` returns the
 //! new value exactly once.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;

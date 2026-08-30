@@ -4,6 +4,12 @@
 //! cargo test harness exposes the binary under
 //! `target/debug/qos-pkg`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

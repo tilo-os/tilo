@@ -6,6 +6,12 @@
 //! Skips when no wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR`
 //! to dump PNGs (`file_picker_open.png`, `file_picker_save.png`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 use std::path::PathBuf;
 use vello::Scene;

@@ -6,6 +6,12 @@
 //! blend buffer for everything under a blend layer. Times both shapes at
 //! the compositor's actual run size.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::Instant;
 
 use crate::support::offscreen::OffscreenRenderer;

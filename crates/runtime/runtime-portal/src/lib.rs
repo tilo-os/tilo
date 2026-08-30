@@ -19,6 +19,15 @@
 //! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
 //! expected to fall back to a local-only mode.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use std::env;
 use std::io;
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};

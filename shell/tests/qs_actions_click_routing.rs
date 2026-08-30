@@ -5,6 +5,12 @@
 //! the popover open, drives `handle_event` with a synthetic click at the
 //! slider's bar rect, and reads the dispatcher's call log.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 

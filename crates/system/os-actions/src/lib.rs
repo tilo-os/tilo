@@ -25,6 +25,15 @@
 //! shelling out. The shell crate re-exports the trait as `QsActions` and the impl as
 //! `RealQsActions` for source compatibility.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 pub mod audio;
 pub mod battery;
 pub mod bluetooth;

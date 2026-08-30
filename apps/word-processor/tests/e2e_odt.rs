@@ -3,6 +3,12 @@
 //! This exercises the whole stack — file bytes ↔ ODF codec ↔ canonical CRDT ↔
 //! the editing model — the way the integrated OS app does.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::{Path, PathBuf};
 
 use ui::Widget;

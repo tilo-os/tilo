@@ -4,6 +4,12 @@
 //! model, serialized back, and reopened — proving the model is the source of truth
 //! and that **formulas are preserved, not flattened to their cached value**.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use qdoc::sheet::snapshot::CellType;
 use qdoc::{CellInput, OdsCodec, SheetProvider, Workbook, WorkbookSnapshot, XlsxCodec};
 use std::fmt::Write as _;

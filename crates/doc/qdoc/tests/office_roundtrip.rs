@@ -5,6 +5,12 @@
 //! back, and reopened — proving the model is the source of truth, not
 //! an opaque blob.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use qdoc::diff::{BlockOp, RunOp, diff_snapshots};
 use qdoc::{BlockView, DocSnapshot, Document, DocxCodec, FormatProvider, MarkSpan, OdtCodec};
 use std::fmt::Write as _;

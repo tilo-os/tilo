@@ -11,6 +11,12 @@
 //! iroh secret is `load_or_create_iroh_secret` — same file → same
 //! iroh node id. Its device cert is built by the test.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::path::PathBuf;
 use std::time::Duration;
 

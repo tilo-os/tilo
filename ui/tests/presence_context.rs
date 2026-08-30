@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use ui::permissions::UserId;
 use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 

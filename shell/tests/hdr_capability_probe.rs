@@ -4,6 +4,12 @@
 //! `preferred_hdr_swapchain_format` cross-checks that the SDR default
 //! yields no HDR format, so a caller degrades to `Rgba8UnormSrgb`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::shell::hdr_display::{DisplayCapabilities, preferred_hdr_swapchain_format};
 
 #[test]

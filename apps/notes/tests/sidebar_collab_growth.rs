@@ -5,6 +5,12 @@
 //! `sync → build_layout → compute → apply_layout → draw` cycle headless
 //! (no GPU — `draw_with_presence` just fills a vello Scene).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;

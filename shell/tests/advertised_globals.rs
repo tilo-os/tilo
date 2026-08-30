@@ -9,6 +9,12 @@
 //! error, and qOS's own toolkit never asks for it — so nothing in-tree
 //! noticed it was missing until the wire itself was observed.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 

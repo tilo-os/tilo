@@ -14,6 +14,12 @@
 //! for reference-set provenance + per-DPI bases + tolerance. This is an "am
 //! I wired up correctly" smoke check.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};

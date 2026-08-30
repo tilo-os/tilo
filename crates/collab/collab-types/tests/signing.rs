@@ -6,6 +6,12 @@
 //! Validator-level concerns (replay, role lookup, etc.) live in
 //! `validator.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::time::{Duration, SystemTime};
 
 use collab_types::crypto::VerifyError;

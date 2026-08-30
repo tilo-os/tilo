@@ -1,3 +1,12 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
+
 use runtime::{collab, fs, identity, is_qos_native, portal, portal_xdg};
 
 // Thin build only: pull the shared runtime SDK dylib

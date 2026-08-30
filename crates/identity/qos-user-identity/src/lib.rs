@@ -60,6 +60,14 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a test that unwraps is stating an invariant"
+    )
+)]
 
 pub mod canonical;
 pub mod cert;

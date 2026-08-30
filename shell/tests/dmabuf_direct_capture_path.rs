@@ -8,6 +8,12 @@
 //! through the tracker's test-only deposit hook — the same seam
 //! `State::commit`'s production wiring calls into.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use shell::compositor::surface_readback::{CapturePath, SurfaceTracker};
 
 #[test]

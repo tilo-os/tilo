@@ -8,6 +8,12 @@
 //! `QOS_LAUNCHER_BIN` (the launcher's documented seam) points at a script
 //! that records its argv.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

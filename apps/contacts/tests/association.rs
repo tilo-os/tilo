@@ -8,6 +8,12 @@
 //! MIME→app resolver in the launcher) is not yet built — only the WASM
 //! format-host reads `providers` today. See the crate's report for detail.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
+
 use pkg::validate::validate_manifest;
 use pkg::{Kind, Manifest};
 

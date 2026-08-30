@@ -11,6 +11,11 @@
 //! strips padding on readback; callers see a tight `width * 4` buffer.
 
 #![allow(dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test that unwraps is stating an invariant"
+)]
 
 use std::path::Path;
 
