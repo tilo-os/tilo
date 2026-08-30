@@ -19,7 +19,7 @@
 
 use openh264::Error as OpenH264Error;
 use openh264::Timestamp;
-use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate};
+use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod};
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 
 /// Error variants for the encoder wrapper, wrapping the underlying openh264 error so callers don't depend on that crate directly.
@@ -88,10 +88,23 @@ impl H264Encoder {
         fps: u32,
         target_bitrate_bps: u32,
     ) -> Result<Self, EncodeError> {
+        Self::new_with_bitrate_and_keyframe_interval(width, height, fps, target_bitrate_bps, 0)
+    }
+
+    /// Constructs with explicit bitrate and periodic IDR cadence. A zero
+    /// `keyframe_interval_frames` preserves OpenH264's automatic cadence.
+    pub fn new_with_bitrate_and_keyframe_interval(
+        width: u32,
+        height: u32,
+        fps: u32,
+        target_bitrate_bps: u32,
+        keyframe_interval_frames: u32,
+    ) -> Result<Self, EncodeError> {
         let config = EncoderConfig::new()
             .max_frame_rate(FrameRate::from_hz(fps as f32))
             .num_threads(1)
             .bitrate(BitRate::from_bps(target_bitrate_bps))
+            .intra_frame_period(IntraFramePeriod::from_num_frames(keyframe_interval_frames))
             .skip_frames(false);
         let encoder = Encoder::with_api_config(openh264::OpenH264API::from_source(), config)?;
         Ok(Self {
@@ -217,6 +230,28 @@ mod tests {
         let too_small = vec![0u8; 32 * 32 * 3]; // RGB, not RGBA
         let err = enc.encode(&too_small).unwrap_err();
         assert!(matches!(err, EncodeError::BufferSize { .. }));
+    }
+
+    #[test]
+    fn configured_keyframe_interval_emits_periodic_idr_frames() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        const INTERVAL: u32 = 4;
+        let mut frame = gradient_frame(W, H);
+        let mut enc =
+            H264Encoder::new_with_bitrate_and_keyframe_interval(W, H, 30, 2_000_000, INTERVAL)
+                .expect("encoder");
+        let mut keyframes = Vec::new();
+        for frame_index in 0..=INTERVAL * 2 {
+            // Change the picture so OpenH264 cannot optimise the access unit
+            // away while the test advances through two GOP boundaries.
+            frame[0] = frame_index as u8;
+            let bytes = enc.encode(&frame).expect("encode");
+            if crate::session::is_h264_keyframe(&bytes) {
+                keyframes.push(frame_index);
+            }
+        }
+        assert_eq!(keyframes, [0, INTERVAL, INTERVAL * 2]);
     }
 
     #[test]
