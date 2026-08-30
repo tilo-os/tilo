@@ -3,9 +3,15 @@
 # Run: cargo deny check
 
 [advisories]
-# Fail on any RUSTSEC advisory. Add an id here with a reason when one has no
-# fix available yet; an empty list means nothing is being ignored silently.
-ignore = []
+# Both remaining quick-xml versions are selected by current upstream releases:
+# citationberg (Typst 0.14.2) uses 0.38 and zbus_xml (AccessKit 0.34) uses 0.39.
+# Direct XML parsers in qOS are on fixed 0.41; the bans guard below prevents
+# either advisory exception from permitting another old quick-xml edge.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+# Maintenance notices remain actionable when qOS selects the crate directly.
+# Transitive maintenance changes require their owning upstream to migrate, and
+# are reported as warnings rather than blocking unrelated security upgrades.
+unmaintained = "workspace"
 
 [licenses]
 # AGPL-3.0 for our own code. Dependencies must be compatible with distributing
@@ -23,8 +29,17 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "BSL-1.0",
-    "OpenSSL",
     "Unlicense",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+    # rustypipe 0.11.4 publishes the deprecated spelling; SPDX defines it as
+    # GPL-3.0-only and the crate's license text matches that interpretation.
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "NCSA",
+    "WTFPL",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
 ]
 confidence-threshold = 0.9
 
@@ -34,6 +49,16 @@ confidence-threshold = 0.9
 # then `deny` to keep it clean.
 multiple-versions = "warn"
 wildcards = "deny"
+# Version-less path dependencies are pinned by this repository's commit. They
+# are allowed only for packages explicitly marked `publish = false`; registry
+# wildcard dependencies remain denied.
+allow-wildcard-paths = true
+# Old quick-xml releases remain temporarily permitted only behind the two
+# current upstream crates which have not released a fixed dependency yet.
+deny = [
+    { crate = "quick-xml@0.38.4", wrappers = ["citationberg"], reason = "Typst's current citationberg release has not adopted fixed quick-xml 0.41" },
+    { crate = "quick-xml@0.39.4", wrappers = ["zbus_xml"], reason = "AccessKit's current zbus_xml release has not adopted fixed quick-xml 0.41" },
+]
 
 [sources]
 unknown-registry = "deny"

@@ -4,6 +4,8 @@ autotests = false
 name = "runtime-collab"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 # qOS runtime — broker (collaboration) client. Talks to the in-tree
 # the session's broker over a Unix-socket Cap'n Proto channel passed

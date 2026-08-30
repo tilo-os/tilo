@@ -2,6 +2,8 @@
 name = "runtime"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 # qOS runtime — umbrella crate. Apps link against `runtime` and
 # use the re-exported modules (`collab`, `fs`, `identity`, `portal`).

@@ -4,6 +4,8 @@ autotests = false
 name = "file-explorer"
 version = "0.2.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "file_explorer"

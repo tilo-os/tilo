@@ -2,6 +2,8 @@
 name = "qos-unlock-helper"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Privileged in-session password-verify helper the compositor spawns to unlock a locked session via PAM."
 
 [[bin]]
