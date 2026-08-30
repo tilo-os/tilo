@@ -61,6 +61,7 @@ jobs:
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: |
             code.sandbox.example/qos/qos-builder:${{ env.RUST_CHANNEL }}
+            code.sandbox.example/qos/qos-builder:${{ github.sha }}
             code.sandbox.example/qos/qos-builder:latest
 
   # Two separate, fresh job containers prove that an object written by the
@@ -72,7 +73,10 @@ jobs:
     needs: build
     runs-on: runner
     container:
-      image: code.sandbox.example/qos/qos-builder:latest
+      # Use the immutable image produced by this run. A mutable `latest` tag
+      # can resolve to a runner's stale local image even after the build job
+      # has pushed a replacement.
+      image: code.sandbox.example/qos/qos-builder:${{ github.sha }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -107,7 +111,7 @@ jobs:
     needs: cache-cold
     runs-on: runner
     container:
-      image: code.sandbox.example/qos/qos-builder:latest
+      image: code.sandbox.example/qos/qos-builder:${{ github.sha }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
