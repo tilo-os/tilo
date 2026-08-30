@@ -35,11 +35,7 @@ pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
     let mut author = String::new();
     let mut date = String::new();
     let mut collecting: Option<bool> = None; // Some(true)=dc:creator, Some(false)=dc:date
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"text:changed-region" => {
