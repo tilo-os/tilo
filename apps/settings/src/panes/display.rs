@@ -198,6 +198,7 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
 /// (`card0-Writeback-1`) and any `Virtual`/`None` connectors are not physical
 /// outputs a user plugs a monitor into, so they must not appear in the
 /// arrangement list.
+#[cfg(test)]
 fn is_virtual_connector(conn: &str) -> bool {
     let lower = conn.to_ascii_lowercase();
     lower.contains("writeback") || lower.contains("virtual")
