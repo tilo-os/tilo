@@ -253,9 +253,13 @@ fn service_packages_agree_with_their_entrypoint_about_drawing() {
 /// id (which would give "Api Tester").
 #[test]
 fn apps_declare_a_display_name_and_category() {
+    // Freedesktop main categories, narrowed to the ones qOS actually groups
+    // by. Adding one is deliberate: the palette groups on this string, so a
+    // typo would silently create a category of one.
     const CATEGORIES: &[&str] = &[
         "Accessibility",
         "Development",
+        "Graphics",
         "Multimedia",
         "Network",
         "Office",
