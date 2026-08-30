@@ -336,6 +336,7 @@ impl SidebarWheelDisc {
 
     /// After a snap commits a new `active_idx`, the disc writes it back
     /// to `chrome.tree` via `set_active` (mirrors `SidebarWheelChrome`).
+    #[must_use]
     pub fn with_chrome(mut self, chrome: Rc<RefCell<ChromeState>>) -> Self {
         self.chrome = Some(chrome);
         self
@@ -343,6 +344,7 @@ impl SidebarWheelDisc {
 
     /// Override the disc diameter — tests use this to validate layout
     /// math without depending on the placeholder default.
+    #[must_use]
     pub fn with_diameter(mut self, d: f64) -> Self {
         self.diameter_px = d;
         self
@@ -352,6 +354,7 @@ impl SidebarWheelDisc {
     /// live-shell wiring. Sets the rotation to match, since a disc built
     /// with the index moved but rotation at zero would paint its fan
     /// out of place.
+    #[must_use]
     pub fn with_active_idx(mut self, idx: usize) -> Self {
         self.active_idx = idx.min(self.spokes.len().saturating_sub(1));
         self.rotation_deg = self.rotation_for_idx(self.active_idx);
@@ -365,22 +368,51 @@ impl SidebarWheelDisc {
     /// instead of drawing an unreachable duplicate.
     fn slot_indices(&self, slots: i32) -> Vec<Option<usize>> {
         let n = self.spokes.len();
-        let mut out = vec![None; (slots * 2 + 1).max(0) as usize];
+        let slots = slots.max(0);
+        let width = usize::try_from(slots)
+            .unwrap_or(0)
+            .saturating_mul(2)
+            .saturating_add(1);
+        let mut out = vec![None; width];
         if n == 0 {
             return out;
         }
         let mut claimed = vec![false; n];
         // Nearest the active sector claims first, so surplus empties
         // fall at the outer edges where the band is fading out anyway.
-        let mut order: Vec<i32> = (-slots..=slots).collect();
+        // `checked_neg` rather than `-slots`: `slots` is clamped
+        // non-negative just above, so this never actually saturates —
+        // it just keeps the negation from reading as raw arithmetic.
+        let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
+        let mut order: Vec<i32> = (neg_slots..=slots).collect();
         order.sort_by_key(|k| k.abs());
+        let Ok(n_i32) = i32::try_from(n) else {
+            // Absurd spoke count; nothing sane to index by.
+            return out;
+        };
+        let Ok(active_i32) = i32::try_from(self.active_idx) else {
+            return out;
+        };
         for k in order {
-            let idx = (self.active_idx as i32 + k).rem_euclid(n as i32) as usize;
-            if claimed[idx] {
+            let Some(shifted) = active_i32.checked_add(k) else {
+                continue;
+            };
+            let Ok(idx) = usize::try_from(shifted.rem_euclid(n_i32)) else {
+                continue;
+            };
+            let Some(claim) = claimed.get_mut(idx) else {
+                continue;
+            };
+            if *claim {
                 continue;
             }
-            claimed[idx] = true;
-            out[(k + slots) as usize] = Some(idx);
+            *claim = true;
+            let Some(pos) = k.checked_add(slots).and_then(|p| usize::try_from(p).ok()) else {
+                continue;
+            };
+            if let Some(slot) = out.get_mut(pos) {
+                *slot = Some(idx);
+            }
         }
         out
     }
@@ -401,7 +433,7 @@ impl SidebarWheelDisc {
         let Some(span) = self.band_angular_height_deg() else {
             return SPOKE_ANGLE_STEP_DEG; // No layout yet.
         };
-        let gap = span / n.min(SECTORS_ACROSS_BAND) as f32 * SECTOR_SIZE_BOOST;
+        let gap = span / usize_to_f32_lossy(n.min(SECTORS_ACROSS_BAND)) * SECTOR_SIZE_BOOST;
         if gap.is_finite() {
             gap.clamp(MIN_SPOKE_GAP_DEG, MAX_SPOKE_GAP_DEG)
         } else {
@@ -417,10 +449,19 @@ impl SidebarWheelDisc {
             return None;
         }
         let ratio = (half_h / radius).clamp(-1.0, 1.0);
-        Some((2.0 * ratio.asin().to_degrees()) as f32)
+        // Angles are always tiny compared to f32's range; the mantissa
+        // loss going f64 -> f32 here doesn't move a pixel on screen.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "angle in degrees, bounded well within f32's range"
+        )]
+        let deg = (2.0 * ratio.asin().to_degrees()) as f32;
+        Some(deg)
     }
 
-    fn deg_per_pixel(&self) -> f32 {
+    /// Doesn't read `self` — kept as an associated fn (`Self::deg_per_pixel()`)
+    /// rather than a free fn so it reads next to the geometry it's paired with.
+    fn deg_per_pixel() -> f32 {
         DRAG_FACTOR
     }
 
@@ -428,7 +469,7 @@ impl SidebarWheelDisc {
     /// of the visible arc. Later workspaces sit at more negative
     /// rotations.
     fn rotation_for_idx(&self, idx: usize) -> f32 {
-        -(idx as f32) * self.spoke_gap_deg()
+        -usize_to_f32_lossy(idx) * self.spoke_gap_deg()
     }
 
     /// The rotations the wheel can actually rest at, as `(last, first)`.
@@ -443,11 +484,21 @@ impl SidebarWheelDisc {
     /// workspace you are pulling away from.
     fn idx_at_rotation(&self, rot: f32) -> usize {
         let n = self.spokes.len();
-        if n == 0 {
+        let Some(last) = n.checked_sub(1) else {
             return 0;
-        }
+        };
         let steps = (-rot / self.spoke_gap_deg()).round();
-        (steps.clamp(0.0, (n - 1) as f32) as usize).min(n - 1)
+        let clamped = steps.clamp(0.0, usize_to_f32_lossy(last));
+        // `clamped` is bounded to `[0.0, last]` by the clamp just above,
+        // and `last` is a spoke count — never near `usize::MAX` — so the
+        // truncation this cast performs never actually discards range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to [0, last] above; last is a tiny spoke count"
+        )]
+        let idx = clamped as usize;
+        idx.min(last)
     }
 
     /// How far past an end the wheel may be pulled, asymptotically.
@@ -455,7 +506,10 @@ impl SidebarWheelDisc {
     /// `spoke_gap_deg()` on purpose: the single-workspace disc widens
     /// its gap to a full turn, and scaling the give by that would let
     /// it be dragged most of a revolution.
-    fn overscroll_reach_deg(&self) -> f32 {
+    ///
+    /// Doesn't read `self` — kept as an associated fn for the same
+    /// reason as [`Self::deg_per_pixel`].
+    fn overscroll_reach_deg() -> f32 {
         Gesture::default().overscroll_reach_frac * SPOKE_ANGLE_STEP_DEG
     }
 
@@ -463,7 +517,7 @@ impl SidebarWheelDisc {
     /// resisted equivalent. In-range rotations pass through untouched.
     fn resist_past_ends(&self, rot: f32) -> f32 {
         let (lo, hi) = self.rotation_bounds();
-        let reach = self.overscroll_reach_deg();
+        let reach = Self::overscroll_reach_deg();
         if rot > hi {
             hi + rubber_band(rot - hi, reach)
         } else if rot < lo {
@@ -546,7 +600,10 @@ impl SidebarWheelDisc {
     /// Theming belongs to the user, so this isn't a hardcoded palette —
     /// [`ui::tokens::Colors::categorical`] grows the series from the
     /// theme's own accent, keeping adjacent workspaces 60° of hue apart.
-    fn spoke_color(&self, idx: usize, colors: &ui::tokens::Colors) -> Color {
+    ///
+    /// Doesn't read `self` — kept as an associated fn (`Self::spoke_color(..)`)
+    /// so it reads next to the other per-spoke painting helpers.
+    fn spoke_color(idx: usize, colors: &ui::tokens::Colors) -> Color {
         colors.categorical(idx)
     }
 
@@ -566,13 +623,16 @@ impl SidebarWheelDisc {
         };
         let lead = ChipLead::Glyph(self.spoke_icon(idx));
         let mut chosen = SECTOR_CHIP_H;
-        let mut step = SECTOR_CHIP_H;
-        while step <= SECTOR_CHIP_H_ACTIVE {
+        const STEP: f64 = 2.0;
+        // (SECTOR_CHIP_H_ACTIVE - SECTOR_CHIP_H) / STEP, spelled as a
+        // plain integer bound so the loop counts steps instead of
+        // comparing floats against an accumulating float.
+        for i in 0_u32..=8 {
+            let step = SECTOR_CHIP_H + f64::from(i) * STEP;
             let need = Chip::natural_width_at(&spoke.text, step, lead, theme, text_renderer);
             if need <= chip_w {
                 chosen = step;
             }
-            step += 2.0;
         }
         chosen
     }
@@ -667,6 +727,35 @@ impl SidebarWheelDisc {
         let dy = p.y - c.y;
         dx * dx + dy * dy <= radius * radius
     }
+}
+
+/// Lossy but bounded: the wheel never carries anywhere near 2^24
+/// workspaces/sectors, so this never actually drops a representable
+/// integer — it only silences the generic `usize -> f32` lint.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "workspace/spoke/sector counts stay far below f32's 24-bit exact-integer range"
+)]
+fn usize_to_f32_lossy(n: usize) -> f32 {
+    n as f32
+}
+
+/// Same rationale as [`usize_to_f32_lossy`], for the `f64` call sites.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "workspace/spoke/sector counts stay far below f64's 53-bit exact-integer range"
+)]
+fn usize_to_f64_lossy(n: usize) -> f64 {
+    n as f64
+}
+
+/// Safe lookup into a [`SidebarWheelDisc::slot_indices`] result for
+/// display offset `k` at reach `slots`: `None` for a `k` outside
+/// `[-slots, slots]` or a slot the layout left empty. Shared by both
+/// draw passes that walk the fan, so the bounds check lives in one place.
+fn slot_at(slot_idx: &[Option<usize>], k: i32, slots: i32) -> Option<usize> {
+    let pos = k.checked_add(slots).and_then(|p| usize::try_from(p).ok())?;
+    slot_idx.get(pos).copied().flatten()
 }
 
 /// How many display slots either side of the active one the sector fan
@@ -995,8 +1084,6 @@ impl Widget for SidebarWheelDisc {
         };
 
         if !self.spokes.is_empty() {
-            let n = self.spokes.len();
-            let _n_i = n as i32;
             let gap = f64::from(self.spoke_gap_deg());
             let rot = f64::from(self.visual_residual_deg());
             let slots = slot_reach(sweep, gap);
@@ -1005,7 +1092,11 @@ impl Widget for SidebarWheelDisc {
                 + (ACTIVE_WEDGE_ALPHA_ON_OPAQUE - ACTIVE_WEDGE_ALPHA) * body_opacity;
 
             let slot_idx = self.slot_indices(slots);
-            for k in -slots..=slots {
+            // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
+            // rather than `-slots` just keeps the negation from reading
+            // as raw arithmetic to clippy.
+            let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
+            for k in neg_slots..=slots {
                 let mid_deg = rot + f64::from(k) * gap;
                 let mid = mid_deg.to_radians();
                 let a0 = mid - (gap / 2.0).to_radians();
@@ -1014,11 +1105,11 @@ impl Widget for SidebarWheelDisc {
                 if a0 > sweep || a1 < -sweep {
                     continue;
                 }
-                let Some(idx) = slot_idx[(k + slots) as usize] else {
+                let Some(idx) = slot_at(&slot_idx, k, slots) else {
                     continue;
                 };
                 let is_active = k == 0;
-                let base = self.spoke_color(idx, colors);
+                let base = Self::spoke_color(idx, colors);
 
                 // The wedge itself is lit in the workspace's colour —
                 // the thing that turns is also the thing that shows state.
@@ -1100,20 +1191,22 @@ impl Widget for SidebarWheelDisc {
         // the sector — it stays drawn and hit-tested with just its icon.
         let names_fit = chip_w >= LABEL_MIN_W;
         if !self.spokes.is_empty() {
-            let n = self.spokes.len();
-            let _n_i = n as i32;
             let gap = f64::from(self.spoke_gap_deg());
             let rot = f64::from(self.visual_residual_deg());
             let slots = slot_reach(sweep, gap);
 
             let slot_idx = self.slot_indices(slots);
-            for k in -slots..=slots {
+            // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
+            // rather than `-slots` just keeps the negation from reading
+            // as raw arithmetic to clippy.
+            let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
+            for k in neg_slots..=slots {
                 let mid_deg = rot + f64::from(k) * gap;
                 let mid = mid_deg.to_radians();
                 if mid.abs() > sweep {
                     continue;
                 }
-                let Some(idx) = slot_idx[(k + slots) as usize] else {
+                let Some(idx) = slot_at(&slot_idx, k, slots) else {
                     continue;
                 };
                 let is_active = k == 0;
@@ -1344,7 +1437,7 @@ impl Widget for SidebarWheelDisc {
                 self.last_cursor_pos = Some(p);
                 if let Some(origin) = self.drag_from {
                     let dy = p.y - origin.y;
-                    let delta_deg = (dy as f32) * self.deg_per_pixel();
+                    let delta_deg = (dy as f32) * Self::deg_per_pixel();
                     // Where the pointer asks the wheel to be, before
                     // resistance and detent magnetism have a say.
                     let raw = self.drag_rotation_origin + delta_deg;
@@ -3129,7 +3222,7 @@ mod tests {
         // buys less than the last did".
         let mut last_gain = f32::INFINITY;
         let mut last = 0.0f32;
-        let reach = d.overscroll_reach_deg();
+        let reach = SidebarWheelDisc::overscroll_reach_deg();
         for pull_px in (1..=12).map(|i| f64::from(i) * 100.0) {
             drag_to(&mut d, cx, start_y, pull_px, 30);
             let at = d.rotation_deg;
@@ -3220,7 +3313,7 @@ mod tests {
              answer"
         );
         assert!(
-            pulled < d.overscroll_reach_deg(),
+            pulled < SidebarWheelDisc::overscroll_reach_deg(),
             "scroll overscroll {pulled:.1}° passed its ceiling"
         );
 
