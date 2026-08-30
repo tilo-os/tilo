@@ -507,6 +507,51 @@ impl Widget for TimePicker {
             _ => {}
         }
     }
+
+    fn name(&self) -> &'static str {
+        "TimePicker"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+        if !focused {
+            self.focused_cell = None;
+            self.digit_buffer.clear();
+        } else if self.focused_cell.is_none() {
+            // Keyboard-focus entry without a click — default to hours.
+            self.focused_cell = Some(TimeCell::Hours);
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
+    /// The time picker reports [`Role::ComboBox`] — a selector whose value
+    /// is the chosen time as `HH:MM` (or `HH:MM:SS` when the seconds spinner
+    /// is enabled). The spinners render inline, so `expanded` is left unset.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let value = match self.seconds {
+            Some(s) => format!("{:02}:{:02}:{:02}", self.hours, self.minutes, s),
+            None => format!("{:02}:{:02}", self.hours, self.minutes),
+        };
+        Some(
+            AccessNode::new(Role::ComboBox)
+                .with_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 impl TimePicker {
@@ -703,53 +748,6 @@ impl TimePicker {
                 break;
             }
         }
-    }
-}
-
-impl Widget for TimePicker {
-    fn name(&self) -> &'static str {
-        "TimePicker"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-    fn set_focus(&mut self, focused: bool) {
-        self.is_focused = focused;
-        if !focused {
-            self.focused_cell = None;
-            self.digit_buffer.clear();
-        } else if self.focused_cell.is_none() {
-            // Keyboard-focus entry without a click — default to hours.
-            self.focused_cell = Some(TimeCell::Hours);
-        }
-    }
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-
-    /// The time picker reports [`Role::ComboBox`] — a selector whose value
-    /// is the chosen time as `HH:MM` (or `HH:MM:SS` when the seconds spinner
-    /// is enabled). The spinners render inline, so `expanded` is left unset.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let value = match self.seconds {
-            Some(s) => format!("{:02}:{:02}:{:02}", self.hours, self.minutes, s),
-            None => format!("{:02}:{:02}", self.hours, self.minutes),
-        };
-        Some(
-            AccessNode::new(Role::ComboBox)
-                .with_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                }),
-        )
     }
 }
 
