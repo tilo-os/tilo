@@ -212,7 +212,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = 2.4 + 2.0 * (t * 0.17).sin().max(0.0) + 0.8 * (t * 0.6).sin();
-                (mb.max(0.05) * 1_000_000.0)
+                mb.max(0.05) * 1_000_000.0
             }),
         );
         let net_tx_hist = Ring::from_iter(
@@ -220,7 +220,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = 0.8 + 0.9 * (t * 0.11 + 1.0).sin().max(0.0);
-                (mb.max(0.02) * 1_000_000.0)
+                mb.max(0.02) * 1_000_000.0
             }),
         );
         let disk_read_hist = Ring::from_iter(
@@ -228,7 +228,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = (3.0 * (t * 0.27).sin()).max(0.0) + 0.4 * (t * 0.9).cos().abs();
-                (mb.max(0.0) * 1_000_000.0)
+                mb.max(0.0) * 1_000_000.0
             }),
         );
         let disk_write_hist = Ring::from_iter(
@@ -236,7 +236,7 @@ impl MonitorModel {
             (0..HISTORY).map(|i| {
                 let t = i as f32;
                 let mb = (2.0 * (t * 0.19 + 2.0).sin()).max(0.0);
-                (mb.max(0.0) * 1_000_000.0)
+                mb.max(0.0) * 1_000_000.0
             }),
         );
 
