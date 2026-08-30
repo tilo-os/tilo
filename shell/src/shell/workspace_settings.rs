@@ -382,6 +382,8 @@ fn tab_focus_id(tab: WsTab) -> u64 {
 
 const PANE_PAD_X: f64 = 16.0;
 const PANE_PAD_TOP: f64 = 12.0;
+const PANE_INTRO_HEIGHT: f64 = 64.0;
+const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
 const ROW_GAP: f64 = 8.0;
@@ -423,12 +425,115 @@ fn draw_section_header(
 
 /// Paint a row card — the surface every subject row sits on.
 fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.neutral[3].with_alpha_factor(0.15),
+        theme.tokens.colors.surfaces.raised,
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg)),
+        &card,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &card,
+    );
+}
+
+/// A concise explanation and live status at the top of each policy pane.
+/// It gives normal users orientation without hiding the full controls.
+fn draw_pane_intro(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    status: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let rect = Rect::new(
+        pane.x0 + PANE_PAD_X,
+        pane.y0 + PANE_PAD_TOP,
+        pane.x1 - PANE_PAD_X,
+        pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT,
+    );
+    let surface = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised,
+        None,
+        &surface,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_standard,
+        None,
+        &surface,
+    );
+
+    let icon_rect = Rect::new(
+        rect.x0 + 14.0,
+        rect.y0 + 14.0,
+        rect.x0 + 50.0,
+        rect.y1 - 14.0,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.accent[5].with_alpha_factor(0.16),
+        None,
+        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.md)),
+    );
+    draw_icon(
+        scene,
+        transform,
+        icon_rect.inset(9.0),
+        icon,
+        colors.accent[4],
+        LUCIDE_DEFAULT_STROKE_PX,
+    );
+    text_renderer.draw_text(
+        scene,
+        title,
+        tokens.typography.scale.sm,
+        colors.text_primary,
+        transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0)),
+        None,
+    );
+    let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
+    let shown = elide(
+        detail,
+        tokens.typography.scale.xs,
+        detail_max,
+        text_renderer,
+    );
+    text_renderer.draw_text(
+        scene,
+        &shown,
+        tokens.typography.scale.xs,
+        colors.text_dim,
+        transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0)),
+        None,
+    );
+    draw_pill(
+        scene,
+        transform,
+        Point::new(rect.x1 - 14.0, rect.center().y),
+        status,
+        Tint {
+            color: colors.accent[5],
+            alpha: 1.0,
+        },
+        text_renderer,
+        theme,
     );
 }
 
@@ -1327,7 +1432,8 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return rows;
     }
-    let mut cursor_y = pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT;
+    let mut cursor_y =
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT;
     for (user, role) in ordered_roster(ws) {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
@@ -1397,11 +1503,30 @@ pub fn draw_members_pane(
     }
     let rows = members_pane_rows(ws, pane_rect);
 
+    let roster_count = ordered_roster(ws).len();
+    draw_pane_intro(
+        scene,
+        transform,
+        pane_rect,
+        Icon::Home,
+        &format!("{roster_count} people share this workspace"),
+        "Roles set the baseline; specific exceptions remain visible in Privacy & Security.",
+        if is_owner { "You manage" } else { "View only" },
+        text_renderer,
+        theme,
+    );
+
     if rows.is_empty() {
+        let empty = Rect::new(
+            pane_rect.x0,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+            pane_rect.x1,
+            pane_rect.y1,
+        );
         draw_empty_state(
             scene,
             transform,
-            pane_rect,
+            empty,
             Icon::Shield,
             (
                 "No one else is in this workspace",
@@ -1416,7 +1541,10 @@ pub fn draw_members_pane(
     draw_section_header(
         scene,
         transform,
-        Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
+        Point::new(
+            pane_rect.x0 + PANE_PAD_X,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+        ),
         "MEMBERS",
         Some(ordered_roster(ws).len()),
         text_renderer,
@@ -1638,7 +1766,12 @@ pub fn default_app_rows(
                 clippy::cast_precision_loss,
                 reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
             )]
-            let y0 = pane.y0 + 52.0 + index as f64 * 72.0;
+            let y0 = pane.y0
+                + PANE_PAD_TOP
+                + PANE_INTRO_HEIGHT
+                + PANE_INTRO_GAP
+                + 44.0
+                + index as f64 * 72.0;
             let row_rect = Rect::new(x0, y0, x1, y0 + 64.0);
             (row_rect.y1 <= pane.y1 - 10.0).then(|| DefaultAppRow {
                 resource,
@@ -1685,10 +1818,33 @@ pub fn draw_default_apps_pane(
         local_user,
         candidates,
     } = ctx;
+    let resources = candidates
+        .iter()
+        .flat_map(|candidate| candidate.resources.iter())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let custom_rules = ws.default_apps.policy.len();
+    let status = if custom_rules == 0 {
+        format!("{resources} file types")
+    } else {
+        format!("{custom_rules} custom rules")
+    };
+    draw_pane_intro(
+        scene,
+        transform,
+        pane,
+        Icon::LayoutGrid,
+        "Defaults without lock-in",
+        "The workspace supplies a baseline; each person can explicitly choose something else.",
+        &status,
+        text_renderer,
+        theme,
+    );
+    let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
     draw_section_header(
         scene,
         transform,
-        Point::new(pane.x0 + PANE_PAD_X, pane.y0 + PANE_PAD_TOP),
+        Point::new(pane.x0 + PANE_PAD_X, heading_y),
         "DEFAULT APPLICATIONS",
         None,
         text_renderer,
@@ -1699,7 +1855,7 @@ pub fn draw_default_apps_pane(
         "Workspace choice",
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        at(transform, pane.x1 - 404.0, pane.y0 + 34.0),
+        at(transform, pane.x1 - 404.0, heading_y + 22.0),
         None,
     );
     text_renderer.draw_text(
@@ -1707,7 +1863,7 @@ pub fn draw_default_apps_pane(
         "Your choice",
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        at(transform, pane.x1 - 194.0, pane.y0 + 34.0),
+        at(transform, pane.x1 - 194.0, heading_y + 22.0),
         None,
     );
     let can_admin = ws.may_administer(local_user);
@@ -1947,9 +2103,14 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     // ---- Composer -------------------------------------------------
     let card = Rect::new(
         pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
         pane_rect.x1 - PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
+        pane_rect.y0
+            + PANE_PAD_TOP
+            + PANE_INTRO_HEIGHT
+            + PANE_INTRO_GAP
+            + SECTION_HEADER_HEIGHT
+            + COMPOSER_HEIGHT,
     );
     let inner_x0 = card.x0 + 12.0;
     let inner_x1 = card.x1 - 12.0;
@@ -2064,6 +2225,19 @@ pub fn draw_permissions_pane(
         return;
     }
     let layout = permissions_pane_layout(ws, pane_rect);
+    let active_grants = listed_capabilities(ws).len();
+    draw_pane_intro(
+        scene,
+        transform,
+        pane_rect,
+        Icon::Shield,
+        "Access is explicit and revocable",
+        "Grants are enforced by the app sandbox and stay scoped to this workspace.",
+        &format!("{active_grants} active grants"),
+        text_renderer,
+        theme,
+    );
+
     let card = draw_permission_composer(
         scene,
         transform,
@@ -2225,7 +2399,10 @@ fn draw_permission_composer(
     draw_section_header(
         scene,
         transform,
-        Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
+        Point::new(
+            pane_rect.x0 + PANE_PAD_X,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+        ),
         "GRANT A PERMISSION",
         None,
         text_renderer,
@@ -2233,15 +2410,20 @@ fn draw_permission_composer(
     );
     let card = Rect::new(
         pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
         pane_rect.x1 - PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
+        pane_rect.y0
+            + PANE_PAD_TOP
+            + PANE_INTRO_HEIGHT
+            + PANE_INTRO_GAP
+            + SECTION_HEADER_HEIGHT
+            + COMPOSER_HEIGHT,
     );
     let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.neutral[1].with_alpha_factor(0.55),
+        colors.surfaces.raised,
         None,
         &card_rr,
     );
@@ -2961,7 +3143,10 @@ mod permissions_pane_tests {
             ),
         )
         .expect("owner grants");
-        let layout = permissions_pane_layout(&ws, pane());
+        // This assertion is about grouping every subject kind, so give
+        // the viewport room for every seeded row after the explanatory
+        // header and composer.
+        let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
         let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
         assert!(kinds.contains(&SubjectKind::App));
         assert!(kinds.contains(&SubjectKind::Member));
