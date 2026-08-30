@@ -423,8 +423,7 @@ fn the_disc_takes_its_colours_from_the_theme() {
 
         // Probe the active wedge against an inactive neighbour at the same
         // radius, isolating the wedge's own tint from the (also themed) body
-        // fill underneath. Both probes sit 4° off their sector's centreline,
-        // clear of the label chip and well inside the ±7.5° dividers.
+        // fill underneath.
         let rgba = renderer.render(&scene, ground);
         let (r_in, r_out) = disc.label_band_radii();
         let c = disc.disc_centre();
@@ -436,8 +435,14 @@ fn the_disc_takes_its_colours_from_the_theme() {
             let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
             (r as i32, g as i32, b as i32)
         };
-        let lit = probe(4.0);
-        let unlit = probe(19.0);
+        // Offset as a fraction of the disc's own detent, not a fixed angle: the
+        // step is derived per layout, so 4 deg was inside the active sector
+        // when a sector was 15 deg wide and is two sectors away now. Both
+        // probes sit the same way off their sector's centreline, so the
+        // difference between them is the active wedge's tint and nothing else.
+        let gap = f64::from(disc.spoke_gap_deg());
+        let lit = probe(gap * 0.3);
+        let unlit = probe(gap * 1.3);
         assert_ne!(
             lit, unlit,
             "{name}: the active sector is painted the same as its neighbour — \
