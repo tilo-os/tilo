@@ -5070,6 +5070,7 @@ impl BooksApp {
                 content_h,
                 &self.settings,
                 self.chapter,
+                &book.language,
                 &base_family,
                 font_mult,
                 font_sig,
@@ -5528,7 +5529,8 @@ impl BooksApp {
                     } else {
                         base_family.clone()
                     };
-                    let (w, _) = tr.measure_font(&run.text, b.size, None, weight, run.italic, &fam);
+                    let (w, _) =
+                        tr.measure_font(&run.display_text, b.size, None, weight, run.italic, &fam);
                     let x0 = content_x + indent + f64::from(run.x);
                     let x1 = x0 + f64::from(w);
                     self.sel_runs.push(SelRun {
@@ -5714,8 +5716,14 @@ impl BooksApp {
                         base_family.clone()
                     };
                     if run.mono && !base_mono {
-                        let (cw, _) =
-                            tr.measure_styled(&run.text, b.size, None, weight, run.italic, true);
+                        let (cw, _) = tr.measure_styled(
+                            &run.display_text,
+                            b.size,
+                            None,
+                            weight,
+                            run.italic,
+                            true,
+                        );
                         let chip = Rect::new(
                             x - 3.0,
                             ly - 1.0,
@@ -5726,7 +5734,7 @@ impl BooksApp {
                     }
                     tr.draw_text_font(
                         scene,
-                        &run.text,
+                        &run.display_text,
                         b.size,
                         palette.ink,
                         t * Affine::translate((x, ly)),
@@ -10984,6 +10992,7 @@ mod interaction_tests {
             160.0,
             &Settings::default(),
             0,
+            "en-US",
             &FontChoice::SansSerif,
             1.0,
             0,

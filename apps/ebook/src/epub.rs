@@ -114,6 +114,11 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
         },
         author: pkg.creator,
         publisher: pkg.publisher,
+        language: if pkg.language.is_empty() {
+            "en".into()
+        } else {
+            pkg.language
+        },
         description: pkg.description,
         chapters,
         cover_tint,
@@ -173,6 +178,7 @@ struct OpfPackage {
     title: String,
     creator: String,
     publisher: String,
+    language: String,
     description: String,
     subject: String,
     /// Spine hrefs in reading order (resolved relative to the OPF base).
@@ -201,6 +207,7 @@ impl OpfPackage {
         let title = meta_text("title");
         let creator = meta_text("creator");
         let publisher = meta_text("publisher");
+        let language = meta_text("language");
         let description = meta_text("description");
         let subject = meta_text("subject");
 
@@ -285,6 +292,7 @@ impl OpfPackage {
             title,
             creator,
             publisher,
+            language,
             description,
             subject,
             spine,
