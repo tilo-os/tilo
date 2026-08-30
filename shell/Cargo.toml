@@ -4,6 +4,8 @@ autotests = false
 name = "shell"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [features]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds

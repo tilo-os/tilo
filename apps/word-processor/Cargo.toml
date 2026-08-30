@@ -4,6 +4,8 @@ autotests = false
 name = "word-processor"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
 
 [lib]

@@ -20,7 +20,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{ColorPicker, Dropdown, Slider, Widget};
+use ui::widget::{Button, ColorPicker, Dropdown, Slider, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -29,7 +29,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::doc::{KEY_ED_FONT, KEY_ED_RADIUS, KEY_ED_SPACING};
 use crate::draw;
 use crate::model::{self, FONTS, ThemeSpec, TokenId};
-use crate::widgets::{Btn, BtnVariant};
 
 const PAD: f32 = 16.0;
 const GRID_H: f32 = 152.0;
@@ -54,7 +53,7 @@ pub struct Customizer {
     radius_slider: Slider,
     spacing_slider: Slider,
     font_dropdown: Dropdown,
-    buttons: Vec<Btn>,
+    buttons: Vec<Button>,
 
     // pushed-in view state
     spec: Option<ThemeSpec>,
@@ -95,9 +94,20 @@ impl Customizer {
             )
             .with_id("font_dropdown"),
             buttons: vec![
-                Btn::new("duplicate", "Duplicate", BtnVariant::Ghost),
-                Btn::new("reset", "Reset", BtnVariant::Ghost),
-                Btn::new("delete", "Delete", BtnVariant::Danger),
+                Button::new(
+                    "themes.duplicate",
+                    "Duplicate",
+                    Some(crate::doc::KEY_COMMAND),
+                )
+                .with_click_value("duplicate")
+                .fit_content(ACTIONS_H),
+                Button::new("themes.reset", "Reset", Some(crate::doc::KEY_COMMAND))
+                    .with_click_value("reset")
+                    .fit_content(ACTIONS_H),
+                Button::new("themes.delete", "Delete", Some(crate::doc::KEY_COMMAND))
+                    .with_click_value("delete")
+                    .fit_content(ACTIONS_H)
+                    .danger(),
             ],
             spec: None,
             edit_token: TokenId::Accent,

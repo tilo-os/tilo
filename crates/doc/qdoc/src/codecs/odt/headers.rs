@@ -79,11 +79,8 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
                         .attributes()
                         .flatten()
                         .find(|a| a.key.as_ref() == b"text:c")
-                        .and_then(|a| {
-                            a.unescape_value()
-                                .ok()
-                                .and_then(|v| v.parse::<usize>().ok())
-                        })
+                        .and_then(|a| crate::codecs::unescape_attr(&a))
+                        .and_then(|v| v.parse::<usize>().ok())
                         .unwrap_or(1)
                         .min(256);
                     append(doc, &cur, &mut cur_len, &" ".repeat(n));

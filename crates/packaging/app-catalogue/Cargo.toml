@@ -2,6 +2,8 @@
 name = "app-catalogue"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "What software this machine can open but has not installed yet, and how to get it."
 
 [lib]
