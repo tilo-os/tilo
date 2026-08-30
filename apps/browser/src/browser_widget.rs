@@ -70,7 +70,7 @@ pub struct BrowserWidget {
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
-    initial_url: &'static str,
+    initial_url: String,
 
     // Chrome state mirrored from engine events.
     can_go_back: bool,
@@ -116,8 +116,15 @@ impl BrowserWidget {
         let engine: SharedEngine = TestEngine::new();
         engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
         let mut w = Self::with_engine(engine, true);
-        w.initial_url = SHOTS_URL;
+        w.initial_url = SHOTS_URL.into();
         w
+    }
+
+    /// Set the first URI loaded before the widget bootstraps. The binary uses
+    /// this only after validating the URI against Browser's declared schemes.
+    pub fn with_initial_uri(mut self, uri: String) -> Self {
+        self.initial_url = uri;
+        self
     }
 
     /// Handle to the engine this widget drives — the binary uses it to
@@ -146,7 +153,7 @@ impl BrowserWidget {
             composed: None,
             bootstrap_done: false,
             headless,
-            initial_url: DEFAULT_URL,
+            initial_url: DEFAULT_URL.into(),
             can_go_back: false,
             can_go_forward: false,
             progress: 1.0,
@@ -240,7 +247,7 @@ impl BrowserWidget {
         if state.get(root, URL_PATH).ok().flatten().is_none()
             && let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text)
         {
-            let _ = state.splice_text(&obj_id, 0, 0, self.initial_url);
+            let _ = state.splice_text(&obj_id, 0, 0, &self.initial_url);
         }
         for flag in [BACK_FLAG, FORWARD_FLAG, RELOAD_FLAG, SETTINGS_FLAG] {
             if state.get(root, flag).ok().flatten().is_none() {
@@ -515,7 +522,7 @@ impl Widget for BrowserWidget {
                         )));
                 }
                 self.engine
-                    .send(WebViewCommand::Navigate(self.initial_url.to_string()));
+                    .send(WebViewCommand::Navigate(self.initial_url.clone()));
             }
             self.bootstrap_done = true;
         }

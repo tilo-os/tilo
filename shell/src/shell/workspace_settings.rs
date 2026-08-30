@@ -1582,11 +1582,7 @@ pub fn draw_default_apps_pane(
     let can_admin = ws.may_administer(local_user);
     for row in default_app_rows(pane, candidates) {
         draw_row_card(scene, transform, row.row_rect, theme);
-        let label = row
-            .resource
-            .extension_name()
-            .map(|e| format!(".{} files", e))
-            .unwrap_or_else(|| row.resource.as_str().to_string());
+        let label = row.resource.display_label();
         text_renderer.draw_text(
             scene,
             &label,
