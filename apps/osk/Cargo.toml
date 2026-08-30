@@ -4,6 +4,8 @@ autotests = false
 name = "osk"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "qOS on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
 
 [lib]

@@ -4,6 +4,8 @@ autotests = false
 name = "channel-crypto"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "channel_crypto"
@@ -27,17 +29,17 @@ collab-types = { path = "../collab-types" }
 # (the spec's "0.6" predates the API reshape; verified via
 # `cargo search openmls` at landing time). We pin the minor so a
 # 0.9 / 0.x bump doesn't silently re-shape our public surface.
-openmls = "0.8"
+openmls = "0.9"
 # Rust-Crypto-backed crypto provider for openmls. The provider owns
 # the in-memory key+state storage; we use it for both group state
 # and per-member signing-key persistence (via `SignatureKeyPair::store`).
-openmls_rust_crypto = "0.5"
+openmls_rust_crypto = "0.6"
 # Basic credential (= identity name) implementation; we don't ship
 # X.509 in Phase 7.
-openmls_basic_credential = "0.5"
+openmls_basic_credential = "0.6"
 # Trait crate — pulled in for the `OpenMlsProvider` trait, needed to
 # call `.storage()` on `OpenMlsRustCrypto`.
-openmls_traits = "0.5"
+openmls_traits = "0.6"
 # TLS-codec for serialising MlsMessage{In,Out}: Welcome bytes ride
 # the wire as TLS-serialised opaque blobs.
 tls_codec = "0.4"

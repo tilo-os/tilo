@@ -2,6 +2,8 @@
 name = "tinker"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Unprivileged overlay work layers: a real root shell and a real package manager, scoped to a discardable layer instead of the host."
 
 [lib]

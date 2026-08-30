@@ -28,7 +28,7 @@ pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
+        .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
 pub(super) fn parse_pt(v: &str) -> Option<i64> {
@@ -166,7 +166,7 @@ pub(super) struct TextFields {
 pub(super) fn text_fields(e: &BytesStart) -> TextFields {
     let mut f = TextFields::default();
     for a in e.attributes().flatten() {
-        let val = a.unescape_value().unwrap_or_default();
+        let val = crate::codecs::unescape_attr(&a).unwrap_or_default();
         match a.key.as_ref() {
             b"fo:font-weight" => f.bold = Some(val == "bold"),
             b"fo:font-style" => f.italic = Some(val == "italic"),
@@ -202,7 +202,7 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
     // Per-run language override is split across fo:language/fo:country; collect both, then reassemble one BCP-47 `lang` mark.
     let (mut fo_language, mut fo_country) = (None, None);
     for a in e.attributes().flatten() {
-        let val = a.unescape_value().unwrap_or_default();
+        let val = crate::codecs::unescape_attr(&a).unwrap_or_default();
         match a.key.as_ref() {
             b"fo:font-weight" if val == "bold" => m.push(("strong".into(), MarkValue::Bool(true))),
             b"fo:font-style" if val == "italic" => m.push(("em".into(), MarkValue::Bool(true))),
@@ -232,8 +232,8 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
                 None => {}
             },
             // Per-run language override: fo:language (+ optional fo:country) reassembled into one BCP-47 `lang` mark below.
-            b"fo:language" => fo_language = Some(val.into_owned()),
-            b"fo:country" => fo_country = Some(val.into_owned()),
+            b"fo:language" => fo_language = Some(val),
+            b"fo:country" => fo_country = Some(val),
             _ => {}
         }
     }
