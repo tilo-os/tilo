@@ -21,7 +21,7 @@
 
 [package]
 id       = "dev.qos.settings"
-name     = "Settings"
+name     = "Personal Settings"
 category = "System"
 version  = "0.1.0"
 kind     = "app"
