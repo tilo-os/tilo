@@ -103,7 +103,7 @@ pub use time::{
 };
 pub use tool_intent::{
     BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
-    ToolReply, ToolRequest, VpnRoute, open_tool, tool_intent_from_env,
+    ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute, open_tool, tool_intent_from_env,
 };
 pub use users::AccountRole;
 
