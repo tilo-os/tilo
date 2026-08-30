@@ -138,7 +138,7 @@ pub fn toggle_mark_range(
 /// Remove every same-kind coverage from `range`. Spans that straddle
 /// either edge of `range` get clipped or split.
 pub fn remove_mark_from_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: &Mark) {
-    let mut out: Vec<MarkSpan> = Vec::with_capacity(spans.len() + 2);
+    let mut out: Vec<MarkSpan> = Vec::with_capacity(spans.len().saturating_add(2));
     for s in spans.drain(..) {
         if !s.mark.same_kind(mark) {
             out.push(s);
@@ -164,7 +164,7 @@ pub fn remove_mark_from_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, ma
 pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: Mark) {
     let mut start = range.start;
     let mut end = range.end;
-    let mut out: Vec<MarkSpan> = Vec::with_capacity(spans.len() + 1);
+    let mut out: Vec<MarkSpan> = Vec::with_capacity(spans.len().saturating_add(1));
     for s in spans.drain(..) {
         if !s.mark.same_kind(&mark) {
             out.push(s);
@@ -198,7 +198,7 @@ pub fn shift_after_edit(
         return;
     }
     let mut out: Vec<MarkSpan> = Vec::with_capacity(spans.len());
-    let removed_end = at + removed_len;
+    let removed_end = at.saturating_add(removed_len);
     for s in spans.drain(..) {
         let mut start = s.range.start;
         let mut end = s.range.end;
@@ -206,8 +206,11 @@ pub fn shift_after_edit(
         if removed_len > 0 {
             // Clip the span against [at, removed_end).
             if start >= removed_end {
-                start -= removed_len;
-                end -= removed_len;
+                // `start >= removed_end == at + removed_len >= removed_len`
+                // here, so this can't underflow; `saturating_sub` is a
+                // no-op belt-and-braces rather than the safety net.
+                start = start.saturating_sub(removed_len);
+                end = end.saturating_sub(removed_len);
             } else if end <= at {
                 // entirely before — no change.
             } else {
@@ -228,8 +231,10 @@ pub fn shift_after_edit(
                         // A mark spanning a deletion stays one mark (Notion/
                         // Word/Quill behaviour: deleting glue between two
                         // bold halves yields one bold word, not two).
-                        let a_start = a.start - removed_len;
-                        let a_end = a.end - removed_len;
+                        // `a.start >= removed_end >= removed_len` here, so
+                        // this can't underflow.
+                        let a_start = a.start.saturating_sub(removed_len);
+                        let a_end = a.end.saturating_sub(removed_len);
                         out.push(MarkSpan::new(b.start..a_end.max(b.end), s.mark.clone()));
                         let _ = a_start; // kept for symmetry
                         continue;
@@ -239,8 +244,9 @@ pub fn shift_after_edit(
                         end = b.end;
                     }
                     (None, Some(a)) => {
-                        start = a.start - removed_len;
-                        end = a.end - removed_len;
+                        // Same invariant as `a_start`/`a_end` above.
+                        start = a.start.saturating_sub(removed_len);
+                        end = a.end.saturating_sub(removed_len);
                     }
                     (None, None) => {
                         // entirely within deletion
@@ -252,11 +258,11 @@ pub fn shift_after_edit(
 
         if inserted_len > 0 {
             if start >= at {
-                start += inserted_len;
-                end += inserted_len;
+                start = start.saturating_add(inserted_len);
+                end = end.saturating_add(inserted_len);
             } else if end > at {
                 // straddle — extend right
-                end += inserted_len;
+                end = end.saturating_add(inserted_len);
             }
         }
 
@@ -271,6 +277,10 @@ pub fn shift_after_edit(
 /// A contiguous [start, end) segment tagged with the set of marks active
 /// inside it. One `draw_text` call per segment on the render path.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent mark kind mirroring the Mark enum's variants (a segment can carry any combination), not a state machine; renderers and tests read these by name"
+)]
 pub struct MarkSegment {
     pub range: Range<usize>,
     pub bold: bool,
@@ -302,7 +312,8 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
     if text_len == 0 {
         return Vec::new();
     }
-    let mut boundaries: Vec<usize> = Vec::with_capacity(spans.len() * 2 + 2);
+    let mut boundaries: Vec<usize> =
+        Vec::with_capacity(spans.len().saturating_mul(2).saturating_add(2));
     boundaries.push(0);
     boundaries.push(text_len);
     for s in spans {
@@ -317,8 +328,12 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
     boundaries.dedup();
     let mut out = Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {
-        let start = w[0];
-        let end = w[1];
+        // `.windows(2)` only ever yields length-2 slices, so this always
+        // matches; destructuring keeps the lookup indexing-free instead of
+        // trusting `w[0]`/`w[1]` to stay in bounds.
+        let &[start, end] = w else {
+            continue;
+        };
         if start >= end {
             continue;
         }
