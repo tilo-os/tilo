@@ -5,6 +5,7 @@
 //! differ between drivers, and granting a GUI arbitrary sysfs writes would be
 //! a privilege boundary disguised as a setting.
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// A normalized description of the charge-limit control the kernel or
@@ -28,6 +29,128 @@ pub enum ChargeCapBackend {
     ConservationMode,
     /// Huawei WMI's paired `start end` threshold control.
     HuaweiWmi,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowerSupplyKind {
+    Battery,
+    Ups,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PowerDevice {
+    pub id: String,
+    pub kind: PowerSupplyKind,
+    pub capacity: u32,
+    pub status: String,
+    pub model: Option<String>,
+    pub health_percent: Option<u32>,
+}
+
+/// Enumerate every battery and UPS.  Names and serial numbers are never
+/// persisted; the id is only the kernel's current power-supply basename.
+pub fn power_devices() -> Vec<PowerDevice> {
+    power_devices_from(Path::new("/sys/class/power_supply"))
+}
+
+pub fn power_devices_from(root: &Path) -> Vec<PowerDevice> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let kind = match read_trim(&path.join("type")).as_deref() {
+                Some("Battery") => PowerSupplyKind::Battery,
+                Some("UPS") => PowerSupplyKind::Ups,
+                _ => continue,
+            };
+            let info = BatteryInfo::from_battery_dir(&path, false);
+            let health_percent = info.health_percent();
+            out.push(PowerDevice {
+                id: entry.file_name().to_string_lossy().to_string(),
+                kind,
+                capacity: info.capacity,
+                status: info.status,
+                model: read_trim(&path.join("model_name")),
+                health_percent,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatteryHistoryPoint {
+    pub unix_minute: u64,
+    pub capacity: u32,
+    pub health: Option<u32>,
+    pub on_ac: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatteryHistory {
+    pub points: Vec<BatteryHistoryPoint>,
+}
+
+impl BatteryHistory {
+    const MAX_AGE_MINUTES: u64 = 30 * 24 * 60;
+    const MIN_INTERVAL_MINUTES: u64 = 15;
+    const MAX_POINTS: usize = 30 * 24 * 4;
+
+    pub fn record(&mut self, point: BatteryHistoryPoint) {
+        self.points
+            .retain(|p| point.unix_minute.saturating_sub(p.unix_minute) <= Self::MAX_AGE_MINUTES);
+        if self.points.last().is_some_and(|p| {
+            point.unix_minute.saturating_sub(p.unix_minute) < Self::MIN_INTERVAL_MINUTES
+        }) {
+            if let Some(last) = self.points.last_mut() {
+                *last = point;
+            }
+        } else {
+            self.points.push(point);
+        }
+        if self.points.len() > Self::MAX_POINTS {
+            self.points.drain(..self.points.len() - Self::MAX_POINTS);
+        }
+    }
+}
+
+fn history_path() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(x).join("qos/power-history.json"));
+    }
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(|h| PathBuf::from(h).join(".local/state/qos/power-history.json"))
+}
+
+pub fn load_battery_history() -> BatteryHistory {
+    history_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+pub fn record_battery_history(info: &BatteryInfo) -> Result<BatteryHistory, String> {
+    let path = history_path().ok_or("no per-user state directory is available")?;
+    let mut history = load_battery_history();
+    let unix_minute = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 60;
+    history.record(BatteryHistoryPoint {
+        unix_minute,
+        capacity: info.capacity,
+        health: info.health_percent(),
+        on_ac: info.on_ac,
+    });
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let bytes = serde_json::to_vec(&history).map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    Ok(history)
 }
 
 impl ChargeCapCapability {
@@ -117,6 +240,20 @@ impl BatteryInfo {
     pub fn health_percent(&self) -> Option<u32> {
         let (full, design) = (self.full_capacity?, self.design_capacity?);
         (design > 0).then(|| ((full.saturating_mul(100) / design).min(100)) as u32)
+    }
+
+    pub fn health_explanation(&self) -> &'static str {
+        match self.health_percent() {
+            None => "This battery does not report comparable full and design capacity.",
+            Some(90..=100) => {
+                "Capacity is close to the factory design value; normal variation is expected."
+            }
+            Some(80..=89) => "Some capacity has been lost through normal chemical ageing.",
+            Some(60..=79) => "Capacity is noticeably reduced; shorter runtime is expected.",
+            Some(_) => {
+                "Capacity is severely reduced. Consider service or replacement if runtime is disruptive."
+            }
+        }
     }
 
     pub fn summary(&self) -> String {
@@ -224,6 +361,21 @@ pub fn set_charge_limit(percent: u32) -> Result<(), String> {
     crate::process::run("systemctl", &["start", "--wait", &unit])
 }
 
+/// Apply and then re-read the hardware contract.  A successful systemd start
+/// is not enough: firmware may accept the write while clamping or ignoring it.
+pub fn set_charge_limit_checked(percent: u32) -> Result<ChargeCapCapability, String> {
+    set_charge_limit(percent)?;
+    let actual =
+        charge_capability().ok_or("charge-cap control disappeared after applying the change")?;
+    if actual.current != percent {
+        return Err(format!(
+            "firmware kept the charge cap at {}% instead of accepting {percent}%",
+            actual.current
+        ));
+    }
+    Ok(actual)
+}
+
 fn read_trim(path: &Path) -> Option<String> {
     std::fs::read_to_string(path)
         .ok()
@@ -292,5 +444,41 @@ mod tests {
         assert_eq!(cap.backend, ChargeCapBackend::ConservationMode);
         assert_eq!(cap.current, 60);
         assert_eq!(cap.choices, vec![60, 100]);
+    }
+
+    #[test]
+    fn enumerates_multiple_batteries_and_ups_without_serials() {
+        let root = tempfile::tempdir().unwrap();
+        for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {
+            let p = root.path().join(id);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("type"), kind).unwrap();
+            std::fs::write(p.join("capacity"), cap).unwrap();
+            std::fs::write(p.join("status"), "Discharging").unwrap();
+        }
+        let d = power_devices_from(root.path());
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[1].kind, PowerSupplyKind::Ups);
+    }
+
+    #[test]
+    fn history_is_bounded_coalesced_and_privacy_safe() {
+        let mut h = BatteryHistory::default();
+        h.record(BatteryHistoryPoint {
+            unix_minute: 100,
+            capacity: 50,
+            health: Some(90),
+            on_ac: false,
+        });
+        h.record(BatteryHistoryPoint {
+            unix_minute: 105,
+            capacity: 49,
+            health: Some(90),
+            on_ac: false,
+        });
+        assert_eq!(h.points.len(), 1);
+        assert_eq!(h.points[0].capacity, 49);
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(!json.contains("serial"));
     }
 }
