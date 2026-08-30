@@ -306,7 +306,7 @@ fn read_history(repo: &Repository, model: &mut RepoModel, _diffs: &mut DiffMap) 
         };
         let id = oid.to_string();
         let author = commit.author();
-        let summary = commit.summary().unwrap_or("").to_string();
+        let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
         let full = commit.message().unwrap_or("");
         let body = full
             .split_once('\n')
@@ -416,7 +416,7 @@ fn read_tags(repo: &Repository, model: &mut RepoModel) {
     let Ok(names) = repo.tag_names(None) else {
         return;
     };
-    for name in names.iter().flatten() {
+    for name in names.iter().filter_map(|name| name.ok().flatten()) {
         let full = format!("refs/tags/{name}");
         let target = repo
             .revparse_single(&full)
@@ -428,7 +428,7 @@ fn read_tags(repo: &Repository, model: &mut RepoModel) {
             .revparse_single(&full)
             .ok()
             .and_then(|o| o.into_tag().ok())
-            .and_then(|t| t.message().map(|m| m.trim().to_string()));
+            .and_then(|t| t.message().ok().flatten().map(|m| m.trim().to_string()));
         model.tags.push(Tag {
             name: name.to_string(),
             target,
@@ -461,7 +461,7 @@ fn read_stashes(repo: &Repository, model: &mut RepoModel) {
 
 fn read_remotes(repo: &Repository, model: &mut RepoModel) {
     let Ok(names) = repo.remotes() else { return };
-    for name in names.iter().flatten() {
+    for name in names.iter().filter_map(|name| name.ok().flatten()) {
         if let Ok(remote) = repo.find_remote(name) {
             model.remotes.push(Remote {
                 name: name.to_string(),
@@ -803,7 +803,7 @@ pub fn checkout_branch(path: &Path, name: &str) -> anyhow::Result<()> {
         .with_context(|| format!("checkout tree for {name}"))?;
     match reference {
         Some(r) => {
-            let refname = r.name().ok_or_else(|| anyhow!("branch ref has no name"))?;
+            let refname = r.name().context("branch ref name is not valid UTF-8")?;
             repo.set_head(refname)?;
         }
         None => {
@@ -850,7 +850,7 @@ pub fn create_branch(
 pub fn delete_branch(path: &Path, name: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     if let Ok(head) = repo.head()
-        && head.shorthand() == Some(name)
+        && head.shorthand().is_ok_and(|branch| branch == name)
     {
         bail!("cannot delete the checked-out branch {name}");
     }
@@ -877,7 +877,7 @@ pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
     let refspecs: Vec<String> = remote
         .fetch_refspecs()?
         .iter()
-        .flatten()
+        .filter_map(|refspec| refspec.ok().flatten())
         .map(std::string::ToString::to_string)
         .collect();
     remote
@@ -979,7 +979,7 @@ fn resolve_remote(repo: &Repository, want: Option<&str>) -> anyhow::Result<Strin
     let names = repo.remotes()?;
     let all: Vec<String> = names
         .iter()
-        .flatten()
+        .filter_map(|name| name.ok().flatten())
         .map(std::string::ToString::to_string)
         .collect();
     if let Some(w) = want {
