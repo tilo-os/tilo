@@ -1119,6 +1119,7 @@ impl ShellOverlayHost {
 
     /// Replace the real protocol broker. Headless tests use this to drive
     /// discovery, connection and failure states without receiver hardware.
+    #[must_use]
     pub fn with_projection_backend(
         mut self,
         backend: Box<dyn crate::shell::projection::ProjectionBackend>,
@@ -1157,6 +1158,7 @@ impl ShellOverlayHost {
     /// shelling out to `nmcli` / `brightnessctl` / `bluetoothctl` /
     /// `wpctl` / `powerprofilesctl`. Production builds keep the
     /// default [`crate::shell::qs_actions::RealQsActions`].
+    #[must_use]
     pub fn with_qs_actions(
         mut self,
         actions: Box<dyn crate::shell::qs_actions::QsActions>,
@@ -1172,6 +1174,7 @@ impl ShellOverlayHost {
     /// constructors do this; without it the tray's readings stay `None`
     /// and it draws no indicators, which is what keeps golden renders
     /// identical across machines.
+    #[must_use]
     pub fn with_status_bridge(mut self, bridge: crate::shell::status::StatusBridge) -> Self {
         self.status_bridge = Some(bridge);
         self
@@ -1424,6 +1427,7 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
+    #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         // Mount the notification stack once we have a chrome handle to
         // read from. The widget paints into the viewport's top-right
@@ -1438,6 +1442,7 @@ impl ShellOverlayHost {
     /// Toggle the peer-sync palette commands (`/invite`, `/connect`). Off
     /// by default; flipped on by `--enable-peer-sync`. Idempotent: the
     /// rows are appended once and can't be removed by toggling back off.
+    #[must_use]
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
         // `ActionsProvider` reads the flag off chrome, not this struct.
         self.peer_sync_enabled = enabled;
@@ -1461,6 +1466,7 @@ impl ShellOverlayHost {
 
     /// Install the closure that carries out [`PeerSyncRequest`]s. Without
     /// one, `/invite` and `/connect` push to a queue nothing drains.
+    #[must_use]
     pub fn with_peer_sync_bridge(mut self, bridge: PeerSyncBridge) -> Self {
         self.set_peer_sync_bridge(bridge);
         self
@@ -1814,6 +1820,7 @@ impl ShellOverlayHost {
     /// Register the floating sidebar wheel as an absolutely-positioned
     /// overlay, so it hovers over the wallpaper rather than occupying a
     /// column.
+    #[must_use]
     pub fn with_sidebar(mut self, sidebar: Box<dyn Widget>) -> Self {
         self.sidebar = Some(sidebar);
         self
@@ -1822,6 +1829,7 @@ impl ShellOverlayHost {
     /// Override the sidebar's top y-offset. The 40px default assumes an
     /// unpadded topbar; without this on the real shell's padded topbar,
     /// the sidebar overlaps it and swallows overview-toggle clicks.
+    #[must_use]
     pub fn with_sidebar_top(mut self, y: f32) -> Self {
         self.sidebar_top_y = y;
         self
@@ -1893,6 +1901,7 @@ impl ShellOverlayHost {
     /// `Box::new(strip_row)` and passing the same `Box` into the content
     /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
     /// the heap address stable.
+    #[must_use]
     pub fn with_group_row_ptrs(mut self, ptrs: HashMap<StripId, *mut GroupRow>) -> Self {
         self.group_row_ptrs = ptrs;
         self
@@ -1900,6 +1909,7 @@ impl ShellOverlayHost {
 
     /// Record which workspace the injected content was built for, so
     /// [`Self::resync_workspace_content`] can detect the first switch away.
+    #[must_use]
     pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
         self.content_built_for_ws = Some(ws_raw);
         self
@@ -4898,7 +4908,7 @@ impl ShellOverlayHost {
             }
             let mut input_handled = false;
             let mut input_taffy = TaffyTree::<()>::new();
-            let Ok(input_node) = input_taffy.new_leaf(Default::default()) else {
+            let Ok(input_node) = input_taffy.new_leaf(Style::default()) else {
                 return false;
             };
             self.projection_credential_input.handle_event(
@@ -5931,7 +5941,7 @@ impl Widget for ShellOverlayHost {
             if let Some(active) = self.file_picker.as_mut() {
                 active.widget.set_rect(picker_rect);
                 let mut tmp_taffy = TaffyTree::<()>::new();
-                if let Ok(tmp_node) = tmp_taffy.new_leaf(Default::default()) {
+                if let Ok(tmp_node) = tmp_taffy.new_leaf(Style::default()) {
                     active.widget.handle_event(
                         event,
                         scale_factor,
@@ -6134,7 +6144,7 @@ impl Widget for ShellOverlayHost {
             };
             if forward {
                 let mut tmp_taffy = TaffyTree::<()>::new();
-                if let Ok(tmp_node) = tmp_taffy.new_leaf(Default::default()) {
+                if let Ok(tmp_node) = tmp_taffy.new_leaf(Style::default()) {
                     prompt.handle_event(
                         event,
                         scale_factor,
@@ -8193,10 +8203,10 @@ impl ShellOverlayHost {
                 let tree = state.tree();
                 match tree.workspaces.get(idx) {
                     Some(ws) => crate::shell::state::roster_colors(&ws.collaborators),
-                    None => Default::default(),
+                    None => std::collections::HashMap::default(),
                 }
             }
-            None => Default::default(),
+            None => std::collections::HashMap::default(),
         }
     }
 
