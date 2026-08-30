@@ -1650,3 +1650,17 @@ fn render_shot_to_png(
     println!("tube: wrote shot to {}", out.display());
     Ok(())
 }
+
+/// FNV-1a over every 97th byte of a frame — enough to tell two decoded
+/// frames apart without hashing megabytes per frame. Restored here because
+/// `refactor(tube): use the shared media engine exclusively` removed the
+/// definition and left the call site above, which left `tube`'s binary not
+/// compiling.
+fn checksum(rgba: &[u8]) -> u64 {
+    let mut h: u64 = 1_469_598_103_934_665_603; // FNV-1a offset basis
+    for &b in rgba.iter().step_by(97) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    h
+}
