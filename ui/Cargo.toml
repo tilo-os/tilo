@@ -47,6 +47,8 @@ portal = ["dep:ashpd"]
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
+# Shared appearance path used for startup theme resolution and live reload.
+settings-store = { path = "../crates/system/settings-store" }
 # XDG Desktop Portal client for `portal` (feature `portal`).
 ashpd = { workspace = true, optional = true }
 # Parses the portal's returned file URIs. Non-optional:
