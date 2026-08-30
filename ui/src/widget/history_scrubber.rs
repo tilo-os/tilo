@@ -1383,6 +1383,10 @@ impl Widget for HistoryScrubber {
             .and_then(|(_, field)| field.ime_cursor_rect())
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }

@@ -224,6 +224,20 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
     Ok((socket, socket_name))
 }
 
+/// Bind the private display used only by the compositor-launched OSK. The
+/// random suffix keeps it out of well-known socket-name guesses; unlike the
+/// clipboard socket it is never exported in the session environment.
+fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
+    let name = format!(
+        "qos-osk-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
+    let path = crate::shell::launcher::runtime_dir().join(socket.socket_name());
+    Ok((socket, path))
+}
+
 /// Per-connection state for the test-control protocol: a buffered reader
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
@@ -1960,6 +1974,44 @@ pub fn run() -> ! {
         })
         .expect("insert listening socket source into event loop");
 
+    // A third display is the input-method trust boundary. The OSK package is
+    // sandboxed exactly like any other app, but receives this one socket as
+    // its display; public clients cannot see the input-method/virtual-keyboard
+    // globals at all. The preference controls both accepting connections and
+    // the supervised service process.
+    let mut osk_service = match bind_osk_socket() {
+        Ok((osk_socket, path)) => {
+            let mut service = crate::compositor::osk_service::OskService::new(path.clone());
+            let authorization = service.socket_authorization();
+            if let Err(error) = event_loop.handle().insert_source(
+                osk_socket,
+                move |client_stream, (), state| {
+                    if !authorization.allows(&client_stream) {
+                        tracing::warn!(target: "qos::osk", "rejected connection to private OSK display");
+                        return;
+                    }
+                    if let Err(error) = state
+                        .display_handle
+                        .insert_client(client_stream, ClientState::osk_arc())
+                    {
+                        tracing::warn!(target: "qos::osk", %error, "could not accept OSK Wayland connection");
+                    }
+                },
+            ) {
+                tracing::warn!(target: "qos::osk", %error, "private OSK socket source rejected");
+                None
+            } else {
+                tracing::info!(target: "qos::osk", socket = %path.display(), "private OSK display ready");
+                service.reload_preference();
+                Some(service)
+            }
+        }
+        Err(error) => {
+            tracing::warn!(target: "qos::osk", %error, "private OSK display unavailable");
+            None
+        }
+    };
+
     // A second Wayland socket for clients the session trusts with the
     // clipboard-manager protocols — identical set except
     // `zwlr_data_control_manager_v1`/`ext_data_control_manager_v1` are visible
@@ -2388,6 +2440,12 @@ pub fn run() -> ! {
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
+            if let Some(service) = osk_service.as_mut() {
+                service.reload_preference();
+            }
+        }
+        if let Some(service) = osk_service.as_mut() {
+            service.tick();
         }
 
         // Re-derive everything depending on the output set once, after the whole
@@ -2560,6 +2618,11 @@ pub fn run() -> ! {
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
+        frame_builder.set_osk_surface(
+            state.osk_surface,
+            state.client_input.keyboard_focus(),
+            state.text_input_active(),
+        );
 
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &frame_builder);

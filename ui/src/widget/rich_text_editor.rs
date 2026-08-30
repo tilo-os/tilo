@@ -999,6 +999,10 @@ impl Widget for RichTextEditor {
         ))
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(winit::window::ImePurpose::Normal)
+    }
+
     fn needs_redraw(&self) -> bool {
         self.redraw
     }

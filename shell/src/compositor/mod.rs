@@ -23,6 +23,7 @@ pub mod lock_controller;
 pub mod lock_screen;
 pub mod metrics;
 pub mod native;
+pub mod osk_service;
 pub mod output_globals;
 pub mod pacing;
 pub mod present;

@@ -1,9 +1,9 @@
 # On-Screen Keyboard — qOS application manifest.
 #
 # An input surface, not a document app: it needs the compositor's
-# virtual-keyboard protocol (already on the Wayland socket) and its
-# own keymap + swipe-model files. Nothing else — no documents, no
-# network, no exec.
+# input-method/virtual-keyboard protocols on the compositor's private,
+# process-credential-gated OSK display and its own keymap + swipe-model
+# files. Nothing else — no documents, no network, no exec.
 #
 # `kind = "service"` because of that first sentence. It draws, so its
 # entrypoint stays `gui`, but it is a surface the shell shows when text
