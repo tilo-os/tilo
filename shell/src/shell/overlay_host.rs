@@ -30,8 +30,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget,
-    WindowGroup as UiWindowGroup,
+    CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt, PromptChoice,
+    TextInput, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -278,6 +278,21 @@ pub struct ShellOverlayHost {
     /// isn't painted can't be clicked.
     collab_invite_row_rect: Rect,
     collab_join_row_rect: Rect,
+    /// Wireless display discovery/session controller. Protocol work stays on
+    /// its worker thread; this host only owns the normalized picker state.
+    projection: crate::shell::projection::ProjectionController,
+    projection_transition: ui::Transition,
+    projection_was_open: bool,
+    projection_device_rects: Vec<Rect>,
+    projection_mode_rects: [Rect; 3],
+    projection_refresh_rect: Rect,
+    projection_close_rect: Rect,
+    projection_audio_rect: Rect,
+    projection_adaptive_rect: Rect,
+    projection_resolution_rect: Rect,
+    projection_fps_rect: Rect,
+    projection_credential_input: TextInput,
+    projection_credential_rect: Rect,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -936,7 +951,59 @@ impl ShellOverlayHost {
             collab_activity_row_rect: Rect::ZERO,
             collab_invite_row_rect: Rect::ZERO,
             collab_join_row_rect: Rect::ZERO,
+            projection: crate::shell::projection::ProjectionController::default(),
+            projection_transition: ui::Transition::closed(),
+            projection_was_open: false,
+            projection_device_rects: Vec::new(),
+            projection_mode_rects: [Rect::ZERO; 3],
+            projection_refresh_rect: Rect::ZERO,
+            projection_close_rect: Rect::ZERO,
+            projection_audio_rect: Rect::ZERO,
+            projection_adaptive_rect: Rect::ZERO,
+            projection_resolution_rect: Rect::ZERO,
+            projection_fps_rect: Rect::ZERO,
+            projection_credential_input: TextInput::local()
+                .with_id("projection-airplay-credential")
+                .with_placeholder("PIN or receiver password")
+                .with_secret(true)
+                .with_enter_submits(true),
+            projection_credential_rect: Rect::ZERO,
         }
+    }
+
+    /// Replace the real protocol broker. Headless tests use this to drive
+    /// discovery, connection and failure states without receiver hardware.
+    pub fn with_projection_backend(
+        mut self,
+        backend: Box<dyn crate::shell::projection::ProjectionBackend>,
+    ) -> Self {
+        self.projection = crate::shell::projection::ProjectionController::new(backend);
+        self
+    }
+
+    pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
+        &self.projection
+    }
+
+    /// Whether a receiver session is being established or is live. The
+    /// compositor uses this to turn the frame encoder on only while needed.
+    pub fn projection_capture_requested(&self) -> bool {
+        let device_id = match &self.projection.status {
+            crate::shell::projection::ProjectionStatus::Connecting { device_id }
+            | crate::shell::projection::ProjectionStatus::Connected { device_id } => device_id,
+            _ => return false,
+        };
+        self.projection
+            .devices
+            .iter()
+            .find(|device| &device.id == device_id)
+            .is_some_and(|device| {
+                matches!(
+                    device.protocol,
+                    crate::shell::projection::ProjectionProtocol::Chromecast
+                        | crate::shell::projection::ProjectionProtocol::FCast
+                )
+            })
     }
 
     /// Replace the QS action dispatcher. Tests use this to swap in a
@@ -3920,6 +3987,10 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = true;
                     true
                 }
+                "projection.open" => {
+                    st.overlays.projection = true;
+                    true
+                }
                 // `search.open` is a no-op: the palette is already open
                 // when the user reaches this row. We close it below like
                 // the other commands so behaviour is consistent.
@@ -4638,6 +4709,228 @@ impl ShellOverlayHost {
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
+            || (f.projection && self.projection_rect().contains(p))
+    }
+
+    /// Route the modal projection sheet before application content. Returning
+    /// true means the open sheet consumed the event (including outside clicks).
+    fn handle_projection_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) -> bool {
+        use crate::shell::projection::{ProjectionMode, ProjectionProtocol, ProjectionStatus};
+
+        if !self.overlay_flags().projection {
+            return false;
+        }
+
+        let airplay_selected = self
+            .projection
+            .devices
+            .get(self.projection.selected)
+            .is_some_and(|device| device.protocol == ProjectionProtocol::AirPlay);
+        if airplay_selected {
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } = event
+            {
+                self.projection_credential_input.set_focus(
+                    self.last_cursor
+                        .is_some_and(|p| self.projection_credential_rect.contains(p)),
+                );
+            }
+            let mut input_handled = false;
+            let mut input_taffy = TaffyTree::<()>::new();
+            let input_node = input_taffy.new_leaf(Default::default()).unwrap();
+            self.projection_credential_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut input_handled,
+                focus_target,
+                input_node,
+                &input_taffy,
+            );
+            if let Some(value) = self.projection_credential_input.take_dirty() {
+                self.projection.options.credential = (!value.is_empty()).then_some(value);
+            }
+            if self.projection_credential_input.take_submit() {
+                self.projection.connect_selected();
+                self.projection_credential_input.set_text("");
+                return true;
+            }
+            if input_handled {
+                return true;
+            }
+        }
+        let close = |chrome: &Option<Chrome>| {
+            if let Some(chrome) = chrome {
+                let mut st = chrome.borrow_mut();
+                st.overlays.projection = false;
+                st.bump();
+            }
+        };
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let super_down = modifiers.state().super_key();
+                match logical_key {
+                    Key::Named(NamedKey::Escape) => close(&self.chrome),
+                    Key::Character(s) if super_down && s.eq_ignore_ascii_case("p") => {
+                        close(&self.chrome)
+                    }
+                    Key::Named(NamedKey::ArrowUp) => self.projection.move_selection(-1),
+                    Key::Named(NamedKey::ArrowDown) => self.projection.move_selection(1),
+                    Key::Named(NamedKey::Enter) => {
+                        let selected_id = self
+                            .projection
+                            .devices
+                            .get(self.projection.selected)
+                            .map(|d| d.id.as_str());
+                        if matches!(&self.projection.status, ProjectionStatus::Connected { device_id } if Some(device_id.as_str()) == selected_id)
+                        {
+                            self.projection.disconnect();
+                        } else {
+                            self.projection.connect_selected();
+                        }
+                    }
+                    Key::Named(NamedKey::Space) => {
+                        self.projection.options.audio = !self.projection.options.audio;
+                    }
+                    Key::Character(s) if s.eq_ignore_ascii_case("r") => self.projection.refresh(),
+                    Key::Character(s) if s.eq_ignore_ascii_case("a") => {
+                        self.projection.options.stream_policy.adaptive =
+                            !self.projection.options.stream_policy.adaptive;
+                    }
+                    Key::Character(s) if s.eq_ignore_ascii_case("q") => {
+                        let current = crate::shell::projection::DisplayResolutionLimit::ALL
+                            .iter()
+                            .position(|limit| {
+                                *limit == self.projection.options.stream_policy.resolution_limit
+                            })
+                            .unwrap_or(0);
+                        self.projection.options.stream_policy.resolution_limit =
+                            crate::shell::projection::DisplayResolutionLimit::ALL
+                                [(current + 1) % 5];
+                    }
+                    Key::Character(s) if s.eq_ignore_ascii_case("f") => {
+                        self.projection.options.stream_policy.max_fps =
+                            if self.projection.options.stream_policy.max_fps == 60 {
+                                30
+                            } else {
+                                60
+                            };
+                    }
+                    Key::Character(s) if matches!(s.as_str(), "1" | "2" | "3") => {
+                        let i = s.parse::<usize>().unwrap_or(1) - 1;
+                        if let Some(mode) = ProjectionMode::ALL.get(i) {
+                            if self.projection.selected_device_supports(*mode) {
+                                self.projection.options.mode = *mode;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(p) = self.last_cursor else {
+                    return true;
+                };
+                if self.projection_close_rect.contains(p) || !self.projection_rect().contains(p) {
+                    close(&self.chrome);
+                } else if self.projection_refresh_rect.contains(p) {
+                    self.projection.refresh();
+                } else if self.projection_audio_rect.contains(p) {
+                    self.projection.options.audio = !self.projection.options.audio;
+                } else if self.projection_adaptive_rect.contains(p) {
+                    self.projection.options.stream_policy.adaptive =
+                        !self.projection.options.stream_policy.adaptive;
+                } else if self.projection_resolution_rect.contains(p) {
+                    let limits = crate::shell::projection::DisplayResolutionLimit::ALL;
+                    let current = limits
+                        .iter()
+                        .position(|limit| {
+                            *limit == self.projection.options.stream_policy.resolution_limit
+                        })
+                        .unwrap_or(0);
+                    self.projection.options.stream_policy.resolution_limit =
+                        limits[(current + 1) % limits.len()];
+                } else if self.projection_fps_rect.contains(p) {
+                    self.projection.options.stream_policy.max_fps =
+                        if self.projection.options.stream_policy.max_fps == 60 {
+                            30
+                        } else {
+                            60
+                        };
+                } else if let Some(i) = self
+                    .projection_mode_rects
+                    .iter()
+                    .position(|rect| rect.area() > 0.0 && rect.contains(p))
+                {
+                    let mode = ProjectionMode::ALL[i];
+                    if self.projection.selected_device_supports(mode) {
+                        self.projection.options.mode = mode;
+                    }
+                } else if let Some(i) = self
+                    .projection_device_rects
+                    .iter()
+                    .position(|rect| rect.contains(p))
+                {
+                    let selection_changed = self.projection.selected != i;
+                    self.projection.selected = i;
+                    if selection_changed {
+                        self.projection.options.credential = None;
+                        self.projection_credential_input.set_text("");
+                    }
+                    let device_id = self.projection.devices.get(i).map(|d| d.id.as_str());
+                    if matches!(&self.projection.status, ProjectionStatus::Connected { device_id: connected } if Some(connected.as_str()) == device_id)
+                    {
+                        self.projection.disconnect();
+                    } else if !selection_changed
+                        || self.projection.devices[i].protocol != ProjectionProtocol::AirPlay
+                    {
+                        self.projection.connect_selected();
+                        self.projection_credential_input.set_text("");
+                    } else {
+                        self.projection_credential_input.set_focus(true);
+                    }
+                }
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            // Pointer hover/release and wheel cannot leak through a modal sheet
+            // to the workspace beneath it.
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -5253,6 +5546,55 @@ impl Widget for ShellOverlayHost {
             }
         }
 
+        // Wireless projection is an OS-owned edge sheet. Discovery and
+        // protocol handshakes complete off-thread; polling only moves already
+        // completed state into this frame.
+        if self.projection.poll()
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            chrome.borrow_mut().bump();
+        }
+        if flags.projection && !self.projection_was_open {
+            self.projection.refresh();
+        }
+        self.projection_was_open = flags.projection;
+        self.projection_transition.set_open(
+            flags.projection,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let projection_now = Instant::now();
+        if self.projection_transition.is_visible(projection_now) {
+            let openness = self.projection_transition.value(projection_now);
+            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
+            let sheet = self.projection_rect();
+            let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.22);
+            let xform = transform * Affine::translate((slide, 0.0));
+            if openness < 1.0 {
+                scene.push_layer(
+                    Fill::NonZero,
+                    BlendMode::default(),
+                    openness,
+                    transform,
+                    &self.rect,
+                );
+            }
+            self.draw_projection(scene, xform, text_renderer, theme, presence);
+            if openness < 1.0 {
+                scene.pop_layer();
+            }
+        } else {
+            self.projection_device_rects.clear();
+            self.projection_mode_rects = [Rect::ZERO; 3];
+            self.projection_refresh_rect = Rect::ZERO;
+            self.projection_close_rect = Rect::ZERO;
+            self.projection_audio_rect = Rect::ZERO;
+            self.projection_adaptive_rect = Rect::ZERO;
+            self.projection_resolution_rect = Rect::ZERO;
+            self.projection_fps_rect = Rect::ZERO;
+            self.projection_credential_rect = Rect::ZERO;
+        }
+
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -5400,6 +5742,11 @@ impl Widget for ShellOverlayHost {
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
         if self.peer_sync_card_visible() && self.handle_peer_sync_event(event, modifiers) {
+            *handled = true;
+            return;
+        }
+
+        if self.handle_projection_event(event, scale_factor, modifiers, state, path, focus_target) {
             *handled = true;
             return;
         }
@@ -5740,6 +6087,20 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
+                // Win+P — wireless display picker. Super specifically, so an
+                // application's Ctrl+P remains Print. Handled before the
+                // general Super-letter switch below.
+                if super_down
+                    && let Key::Character(s) = logical_key
+                    && s.eq_ignore_ascii_case("p")
+                    && let Some(chrome) = self.chrome.clone()
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.projection = !st.overlays.projection;
+                    st.bump();
+                    *handled = true;
+                    return;
+                }
                 if matches!(logical_key, Key::Named(NamedKey::Tab))
                     && let Some(chrome) = self.chrome.clone()
                 {
@@ -5951,6 +6312,12 @@ impl Widget for ShellOverlayHost {
                     }
                     if st.overlays.room_activity {
                         st.overlays.room_activity = false;
+                        st.bump();
+                        *handled = true;
+                        return;
+                    }
+                    if st.overlays.projection {
+                        st.overlays.projection = false;
                         st.bump();
                         *handled = true;
                         return;
@@ -6943,6 +7310,12 @@ impl Widget for ShellOverlayHost {
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
+        let projection_in_flight = self.projection_transition.is_animating(now);
+        let projection_working = matches!(
+            self.projection.status,
+            crate::shell::projection::ProjectionStatus::Scanning
+                | crate::shell::projection::ProjectionStatus::Connecting { .. }
+        );
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -6952,6 +7325,11 @@ impl Widget for ShellOverlayHost {
             || ws_settings_in_flight
             || palette_in_flight
             || room_activity_in_flight
+            || projection_in_flight
+            // The worker cannot call winit directly. Keep a bounded frame pump
+            // while it is working so a response that lands after the entrance
+            // animation still becomes visible immediately.
+            || projection_working
             || self.content.needs_animation_frame()
             || sidebar_frame
             // A reading landing after the open animation settles still
@@ -9391,6 +9769,504 @@ impl ShellOverlayHost {
         let chev_cy = f64::midpoint(pp.y0, pp.y1);
         let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_cy), 3.0);
         scene.fill(Fill::NonZero, transform, colors.text_dim, None, &chev);
+    }
+
+    /// Win+P follows the familiar edge-sheet shape: close to the display edge,
+    /// tall enough to scan names, and narrow enough that the current work stays
+    /// recognizable behind it.
+    fn projection_rect(&self) -> Rect {
+        let margin = 20.0;
+        let width = 432.0_f64.min((self.rect.width() - margin * 2.0).max(280.0));
+        let top = self.rect.y0 + 56.0;
+        let bottom = (top + 620.0).min(self.rect.y1 - 24.0);
+        Rect::new(
+            self.rect.x1 - margin - width,
+            top,
+            self.rect.x1 - margin,
+            bottom,
+        )
+    }
+
+    fn projection_row_rect(&self, index: usize) -> Rect {
+        let r = self.projection_rect();
+        let y0 = self.projection_device_rows_top() + index as f64 * 64.0;
+        Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
+    }
+
+    fn projection_airplay_selected(&self) -> bool {
+        self.projection
+            .devices
+            .get(self.projection.selected)
+            .is_some_and(|device| {
+                device.protocol == crate::shell::projection::ProjectionProtocol::AirPlay
+            })
+    }
+
+    fn projection_device_rows_top(&self) -> f64 {
+        self.projection_rect().y0
+            + if self.projection_airplay_selected() {
+                366.0
+            } else {
+                270.0
+            }
+    }
+
+    fn draw_projection(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use crate::shell::projection::{ProjectionMode, ProjectionStatus};
+
+        let r = self.projection_rect();
+        let colors = &theme.tokens.colors;
+        let type_scale = &theme.tokens.typography.scale;
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, r.height());
+        let card = RoundedRect::from_rect(r, radius);
+        ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            panel_surface(theme, POPOVER_SURFACE_ALPHA),
+            None,
+            &card,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &card,
+        );
+
+        text_renderer.draw_text_weighted(
+            scene,
+            "Project",
+            type_scale.xl,
+            colors.text_primary,
+            transform * Affine::translate((r.x0 + 20.0, r.y0 + 18.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Choose how this desktop appears, then pick a display.",
+            type_scale.xs,
+            colors.text_dim,
+            transform * Affine::translate((r.x0 + 20.0, r.y0 + 49.0)),
+            Some((r.width() - 88.0) as f32),
+        );
+
+        self.projection_close_rect = Rect::new(r.x1 - 48.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 48.0);
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            self.projection_close_rect.inset(-9.0),
+            ui::icons::Icon::X,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+
+        // Three familiar Win+P layout choices. A network stream is not itself
+        // a compositor output, so unsupported choices are visibly disabled.
+        let modes_top = r.y0 + 82.0;
+        let gap = 8.0;
+        let cell_w = (r.width() - 40.0 - gap * 2.0) / 3.0;
+        for (i, mode) in ProjectionMode::ALL.iter().enumerate() {
+            let cell = Rect::new(
+                r.x0 + 20.0 + i as f64 * (cell_w + gap),
+                modes_top,
+                r.x0 + 20.0 + i as f64 * (cell_w + gap) + cell_w,
+                modes_top + 66.0,
+            );
+            self.projection_mode_rects[i] = cell;
+            let selected = self.projection.options.mode == *mode;
+            let supported = self.projection.selected_device_supports(*mode);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if selected {
+                    colors.accent[5].with_alpha_factor(0.24)
+                } else {
+                    colors.surface_white_5
+                },
+                None,
+                &RoundedRect::from_rect(cell, 12.0),
+            );
+            if selected {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.5),
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &RoundedRect::from_rect(cell, 12.0),
+                );
+            }
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    cell.x0 + 12.0,
+                    cell.y0 + 10.0,
+                    cell.x0 + 32.0,
+                    cell.y0 + 30.0,
+                ),
+                ui::icons::Icon::Monitor,
+                if selected {
+                    colors.accent[6]
+                } else if !supported {
+                    colors.text_dim.with_alpha_factor(0.42)
+                } else {
+                    colors.text_dim
+                },
+                1.5,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                mode.label(),
+                type_scale.xs,
+                if supported {
+                    colors.text_primary
+                } else {
+                    colors.text_dim.with_alpha_factor(0.52)
+                },
+                transform * Affine::translate((cell.x0 + 12.0, cell.y0 + 39.0)),
+                Some((cell.width() - 18.0) as f32),
+                TextWeight::Medium,
+            );
+        }
+
+        self.projection_audio_rect =
+            Rect::new(r.x0 + 20.0, r.y0 + 164.0, r.x1 - 62.0, r.y0 + 202.0);
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(r.x0 + 22.0, r.y0 + 173.0, r.x0 + 42.0, r.y0 + 193.0),
+            if self.projection.options.audio {
+                ui::icons::Icon::Volume2
+            } else {
+                ui::icons::Icon::VolumeX
+            },
+            colors.text_dim,
+            1.5,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Share audio",
+            type_scale.sm,
+            colors.text_primary,
+            transform * Affine::translate((r.x0 + 52.0, r.y0 + 174.0)),
+            None,
+        );
+        let toggle = Rect::new(r.x1 - 58.0, r.y0 + 170.0, r.x1 - 20.0, r.y0 + 192.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if self.projection.options.audio {
+                colors.accent[5]
+            } else {
+                colors.neutral[3]
+            },
+            None,
+            &RoundedRect::from_rect(toggle, 11.0),
+        );
+        let knob_x = if self.projection.options.audio {
+            toggle.x1 - 11.0
+        } else {
+            toggle.x0 + 11.0
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.text_primary,
+            None,
+            &vello::kurbo::Circle::new(Point::new(knob_x, toggle.center().y), 8.0),
+        );
+
+        text_renderer.draw_text_weighted(
+            scene,
+            "Stream",
+            type_scale.xs,
+            colors.text_dim,
+            transform * Affine::translate((r.x0 + 20.0, r.y0 + 218.0)),
+            None,
+            TextWeight::Medium,
+        );
+        let x0 = r.x0 + 76.0;
+        let labels = [
+            if self.projection.options.stream_policy.adaptive {
+                "Auto".to_owned()
+            } else {
+                "Fixed".to_owned()
+            },
+            self.projection
+                .options
+                .stream_policy
+                .resolution_limit
+                .label()
+                .to_owned(),
+            format!("{} fps", self.projection.options.stream_policy.max_fps),
+        ];
+        let widths = [76.0, 88.0, 76.0];
+        let mut chip_x = x0;
+        for (i, (label, width)) in labels.iter().zip(widths).enumerate() {
+            let chip = Rect::new(chip_x, r.y0 + 208.0, chip_x + width, r.y0 + 238.0);
+            match i {
+                0 => self.projection_adaptive_rect = chip,
+                1 => self.projection_resolution_rect = chip,
+                _ => self.projection_fps_rect = chip,
+            }
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if i == 0 && self.projection.options.stream_policy.adaptive {
+                    colors.accent[5].with_alpha_factor(0.24)
+                } else {
+                    colors.surface_white_5
+                },
+                None,
+                &RoundedRect::from_rect(chip, 9.0),
+            );
+            let (label_w, label_h) = text_renderer.measure(label, type_scale.xs, None);
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                type_scale.xs,
+                colors.text_primary,
+                transform
+                    * Affine::translate((
+                        chip.center().x - f64::from(label_w) / 2.0,
+                        chip.center().y - f64::from(label_h) / 2.0,
+                    )),
+                None,
+                TextWeight::Medium,
+            );
+            chip_x += width + 6.0;
+        }
+
+        let airplay_selected = self.projection_airplay_selected();
+        if airplay_selected {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Receiver PIN or password",
+                type_scale.xs,
+                colors.text_primary,
+                transform * Affine::translate((r.x0 + 20.0, r.y0 + 253.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            self.projection_credential_rect =
+                Rect::new(r.x0 + 20.0, r.y0 + 274.0, r.x1 - 20.0, r.y0 + 316.0);
+            self.projection_credential_input
+                .apply_layout_external(self.projection_credential_rect);
+            self.projection_credential_input
+                .draw(scene, transform, text_renderer, theme, presence);
+            text_renderer.draw_text(
+                scene,
+                "Leave blank unless the receiver asks. Enter connects.",
+                type_scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((r.x0 + 20.0, r.y0 + 324.0)),
+                Some((r.width() - 40.0) as f32),
+            );
+        } else {
+            self.projection_credential_rect = Rect::ZERO;
+            self.projection_credential_input.set_focus(false);
+        }
+
+        let devices_heading_y = self.projection_device_rows_top() - 16.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            "Available displays",
+            type_scale.sm,
+            colors.text_primary,
+            transform * Affine::translate((r.x0 + 20.0, devices_heading_y)),
+            None,
+            TextWeight::Semibold,
+        );
+        self.projection_refresh_rect = Rect::new(
+            r.x1 - 48.0,
+            devices_heading_y - 8.0,
+            r.x1 - 12.0,
+            devices_heading_y + 28.0,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            self.projection_refresh_rect.inset(-9.0),
+            ui::icons::Icon::Refresh,
+            colors.text_dim,
+            1.5,
+        );
+
+        self.projection_device_rects.clear();
+        let rows_top = self.projection_device_rows_top();
+        let max_rows = (((r.y1 - rows_top - 58.0) / 64.0).floor() as usize).max(1);
+        if self.projection.devices.is_empty() {
+            let (message, detail) = match &self.projection.status {
+                ProjectionStatus::Scanning => (
+                    "Looking for displays…",
+                    "Keep the receiver awake and on the same network.",
+                ),
+                ProjectionStatus::Error(error) => ("Couldn't scan", error.as_str()),
+                _ => (
+                    "No displays found",
+                    "Try Refresh, or check Wi-Fi and the receiver's casting mode.",
+                ),
+            };
+            let icon = Rect::new(
+                r.center().x - 22.0,
+                r.y0 + 274.0,
+                r.center().x + 22.0,
+                r.y0 + 318.0,
+            );
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                icon,
+                ui::icons::Icon::Monitor,
+                colors.text_dim,
+                1.5,
+            );
+            let (mw, _) = text_renderer.measure(message, type_scale.sm, None);
+            text_renderer.draw_text_weighted(
+                scene,
+                message,
+                type_scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((r.center().x - f64::from(mw) / 2.0, r.y0 + 330.0)),
+                None,
+                TextWeight::Medium,
+            );
+            let detail =
+                text_renderer.elide_to_width(detail, type_scale.xs, (r.width() - 56.0) as f32);
+            let (dw, _) = text_renderer.measure(&detail, type_scale.xs, None);
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                type_scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((r.center().x - f64::from(dw) / 2.0, r.y0 + 354.0)),
+                None,
+            );
+        } else {
+            for (i, device) in self.projection.devices.iter().take(max_rows).enumerate() {
+                let row = self.projection_row_rect(i);
+                self.projection_device_rects.push(row);
+                let selected = self.projection.selected == i;
+                let connected = matches!(&self.projection.status, ProjectionStatus::Connected { device_id } if device_id == &device.id);
+                let connecting = matches!(&self.projection.status, ProjectionStatus::Connecting { device_id } if device_id == &device.id);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if selected {
+                        colors.accent[5].with_alpha_factor(0.18)
+                    } else {
+                        colors.surface_white_5
+                    },
+                    None,
+                    &RoundedRect::from_rect(row, 12.0),
+                );
+                ui::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(row.x0 + 12.0, row.y0 + 17.0, row.x0 + 34.0, row.y0 + 39.0),
+                    ui::icons::Icon::Monitor,
+                    if connected {
+                        colors.semantic.success
+                    } else {
+                        colors.text_dim
+                    },
+                    1.5,
+                );
+                let name = text_renderer.elide_to_width(
+                    &device.name,
+                    type_scale.sm,
+                    (row.width() - 142.0) as f32,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &name,
+                    type_scale.sm,
+                    colors.text_primary,
+                    transform * Affine::translate((row.x0 + 46.0, row.y0 + 8.0)),
+                    None,
+                    TextWeight::Medium,
+                );
+                let sub = if connected {
+                    "Connected".to_string()
+                } else if connecting {
+                    "Connecting…".to_string()
+                } else if device.detail.is_empty() {
+                    device.protocol.label().to_string()
+                } else {
+                    format!("{} · {}", device.protocol.label(), device.detail)
+                };
+                text_renderer.draw_text(
+                    scene,
+                    &sub,
+                    type_scale.xs,
+                    if connected {
+                        colors.semantic.success
+                    } else {
+                        colors.text_dim
+                    },
+                    transform * Affine::translate((row.x0 + 46.0, row.y0 + 31.0)),
+                    Some((row.width() - 142.0) as f32),
+                );
+                let action = Rect::new(row.x1 - 86.0, row.y0 + 11.0, row.x1 - 10.0, row.y1 - 11.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if connected {
+                        colors.semantic.danger.with_alpha_factor(0.16)
+                    } else {
+                        colors.accent[5].with_alpha_factor(0.24)
+                    },
+                    None,
+                    &RoundedRect::from_rect(action, 10.0),
+                );
+                let label = if connected {
+                    "Stop"
+                } else if connecting {
+                    "Wait"
+                } else {
+                    "Connect"
+                };
+                let (lw, lh) = text_renderer.measure(label, type_scale.xs, None);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    type_scale.xs,
+                    if connected {
+                        colors.semantic.danger
+                    } else {
+                        colors.text_primary
+                    },
+                    transform
+                        * Affine::translate((
+                            action.center().x - f64::from(lw) / 2.0,
+                            action.center().y - f64::from(lh) / 2.0,
+                        )),
+                    None,
+                    TextWeight::Medium,
+                );
+            }
+        }
+
+        let footer = "Miracast · Google Cast · AirPlay · FCast";
+        let (fw, _) = text_renderer.measure(footer, type_scale.xs, None);
+        text_renderer.draw_text(
+            scene,
+            footer,
+            type_scale.xs,
+            colors.text_dim,
+            transform * Affine::translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0)),
+            None,
+        );
     }
 
     /// Draw the `QuickSettings` drill-in header — back-chevron on the left
@@ -12832,6 +13708,47 @@ mod tests {
         assert!(
             h.chrome.borrow().wheel_summon().is_none(),
             "Super+S toggles the summon off"
+        );
+    }
+
+    #[test]
+    fn super_p_opens_and_toggles_the_projection_sheet() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(!h.chrome.borrow().overlays.projection);
+
+        assert!(pump(&mut h, &key_press(Key::Character("p".into())), &sup));
+        assert!(
+            h.chrome.borrow().overlays.projection,
+            "Win+P must open the OS-owned projection sheet"
+        );
+
+        assert!(pump(&mut h, &key_press(Key::Character("p".into())), &sup));
+        assert!(
+            !h.chrome.borrow().overlays.projection,
+            "the same familiar chord closes the sheet again"
+        );
+    }
+
+    #[test]
+    fn airplay_selection_exposes_a_masked_pairing_field_in_the_projection_sheet() {
+        let mut h = build_harness();
+        h.host.projection.devices = vec![crate::shell::projection::ProjectionDevice {
+            id: "airplay:test".to_owned(),
+            name: "Living Room".to_owned(),
+            protocol: crate::shell::projection::ProjectionProtocol::AirPlay,
+            detail: "Apple TV".to_owned(),
+            modes: vec![crate::shell::projection::ProjectionMode::Mirror],
+            addresses: vec!["192.0.2.8".to_owned()],
+            port: 7000,
+        }];
+        h.host.projection.selected = 0;
+        assert!(h.host.projection_airplay_selected());
+        assert!(h.host.projection_credential_input.is_secret());
+        assert_eq!(
+            h.host.projection_device_rows_top(),
+            h.host.projection_rect().y0 + 366.0,
+            "the receiver list must make room for the pairing control instead of overlapping it"
         );
     }
 
