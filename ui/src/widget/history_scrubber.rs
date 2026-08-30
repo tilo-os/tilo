@@ -2305,7 +2305,7 @@ mod version_tests {
             .render(&scene, theme.tokens.colors.surfaces.base);
         let base =
             crate::offscreen::OffscreenRenderer::sample(&rgba, width, px_u32(r.x0), px_u32(r.y0));
-        let mut diff = 0;
+        let mut diff: usize = 0;
         for y in px_u32(r.y0)..px_u32(r.y1).min(height) {
             for x in px_u32(r.x0)..px_u32(r.x1).min(width) {
                 if crate::offscreen::OffscreenRenderer::sample(&rgba, width, x, y) != base {

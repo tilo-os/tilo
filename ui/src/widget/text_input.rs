@@ -2581,6 +2581,494 @@ impl Widget for TextInput {
         taffy::Size { width, height }
     }
 
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        self.last_caret_width = theme.caret_width;
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        if !self.plain {
+            self.draw_field_chrome(scene, transform, theme, &shape);
+        }
+
+        if self.multiline {
+            if self.masked() {
+                self.multiline_shaped = false;
+                self.single_layout = None;
+                self.draw_multiline_body(scene, transform, text_renderer, theme, &shape);
+            } else {
+                self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape);
+            }
+            return;
+        }
+        self.multiline_shaped = false;
+
+        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
+        let padding_x = if self.plain {
+            // The parent already adds whatever gutter the document layout wants.
+            0.0
+        } else {
+            f64::from(theme.padding_standard)
+        };
+        let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
+
+        // `char_x_positions` remains as a compatibility/readback surface, but
+        // normal text now gets every position from the same shaped paragraph
+        // used for paint and hit-testing. Masked fields keep the prefix path
+        // because bullet byte offsets intentionally differ from the secret.
+        let display = self.layout_display_text();
+        let total_w = self.build_single_line_metrics(text_renderer, &display, text_size);
+        self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
+
+        let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
+        self.update_single_line_scroll(cursor_x_offset, padding_x);
+
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &shape,
+        );
+
+        self.draw_single_line_selection(scene, transform, theme);
+
+        let text_color = if self.disabled {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
+        self.draw_single_line_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &display,
+            text_size,
+            padding_x,
+            text_y,
+            text_color,
+        );
+
+        if self.is_focused && !self.disabled {
+            self.draw_single_line_caret(scene, transform, theme);
+        }
+
+        scene.pop_layer();
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        // Single guard that makes both pointer and keyboard input no-ops when disabled.
+        if self.disabled {
+            return;
+        }
+        self.clamp_to_text();
+
+        match event {
+            // Only when hovered, so it never steals the wheel from a surrounding scroll region.
+            WindowEvent::MouseWheel { delta, .. }
+                if self.multiline && self.is_hovered && !self.disabled =>
+            {
+                self.handle_mouse_wheel(delta, handled);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(*position, scale_factor, handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.is_hovered && !self.disabled => {
+                self.handle_right_click(focus_target, node_id, handled);
+            }
+            WindowEvent::MouseInput {
+                state: element_state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_click(
+                    element_state,
+                    modifiers,
+                    state,
+                    root,
+                    focus_target,
+                    node_id,
+                    handled,
+                );
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        text,
+                        state: element_state,
+                        ..
+                    },
+                ..
+            } => {
+                self.handle_keyboard_input(
+                    logical_key,
+                    text.as_deref(),
+                    *element_state,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                );
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
+                self.handle_ime_commit(t, state, root, handled);
+            }
+            WindowEvent::Ime(winit::event::Ime::Preedit(t, cursor)) => {
+                self.handle_ime_preedit(t, *cursor, handled);
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "TextInput"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        if self.id.is_empty() {
+            Some("text_input")
+        } else {
+            Some(self.id.as_str())
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// A single-line field scrolls content horizontally rather than growing,
+    /// so it only needs re-measure before its first layout or right after a
+    /// user edit — never blocking the scroll fast path while idle.
+    fn layout_needs_measure(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty
+    }
+
+    /// A disabled input claims no cursor and defers to the host default.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if !self.disabled && self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Text)
+        } else {
+            None
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        !self.disabled
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+        if !focused {
+            self.preedit.clear();
+            self.preedit_cursor = None;
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.is_focused || self.disabled {
+            return None;
+        }
+        if self.multiline && !self.multiline_shaped {
+            return Some(self.caret_rect_ml(self.cursor_pos, self.last_caret_width));
+        }
+        let (x, top, height) = if (!self.multiline || self.multiline_shaped)
+            && !self.masked()
+            && let Some(layout) = &self.single_layout
+        {
+            let position = if self.preedit.is_empty() {
+                self.text_to_layout_position(self.caret_position())
+            } else {
+                TextPosition::new(self.preedit_layout_caret())
+            };
+            let (x, top, height) = layout.caret_geometry_at(position);
+            (
+                self.single_origin.x + f64::from(x) - self.scroll_x,
+                self.single_origin.y + f64::from(top),
+                f64::from(height),
+            )
+        } else {
+            let offset = self
+                .char_x_positions
+                .get(self.cursor_pos)
+                .copied()
+                .unwrap_or(0.0);
+            (
+                self.single_origin.x + offset - self.scroll_x,
+                self.single_origin.y,
+                self.line_height(),
+            )
+        };
+        Some(Rect::new(x, top, x + self.last_caret_width, top + height))
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(if self.secret {
+            winit::window::ImePurpose::Password
+        } else {
+            winit::window::ImePurpose::Normal
+        })
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A secret (password) input never leaks its value into the a11y tree —
+        // it reports `protected` and a `None` value instead.
+        let value = (!self.secret).then(|| self.text.clone());
+        let role = if self.multiline {
+            Role::MultilineTextInput
+        } else {
+            Role::TextInput
+        };
+        let mut node = AccessNode::new(role)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: self.disabled,
+                protected: self.secret,
+                multiline: self.multiline,
+                ..Default::default()
+            });
+        if !self.secret {
+            node = node.with_text_selection(
+                self.selection_anchor.unwrap_or(self.cursor_pos),
+                self.cursor_pos,
+            );
+        }
+        Some(node)
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        if self.disabled {
+            return false;
+        }
+        match action {
+            Action::SetValue(value) => {
+                let cleaned = if self.multiline {
+                    value
+                        .replace("\r\n", "\n")
+                        .replace('\r', "\n")
+                        .chars()
+                        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+                        .collect::<String>()
+                } else {
+                    value.chars().filter(|c| !c.is_control()).collect()
+                };
+                self.selection_anchor = (!self.text.is_empty()).then_some(0);
+                self.cursor_pos = self.text.len();
+                let obj = self.resolve_text_obj(state, root);
+                self.insert_str(&cleaned, state, obj.as_ref());
+                true
+            }
+            Action::SetSelection { anchor, focus } => {
+                let byte_at = |character_index: usize| {
+                    self.text
+                        .grapheme_indices(true)
+                        .nth(character_index)
+                        .map_or(self.text.len(), |(byte, _)| byte)
+                };
+                let anchor = byte_at(*anchor);
+                let focus = byte_at(*focus);
+                self.selection_anchor = (anchor != focus).then_some(anchor);
+                self.cursor_pos = focus;
+                self.caret_affinity = TextAffinity::Before;
+                self.goal_x = None;
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Keeps receiving cursor events during a drag even if the cursor wanders
+    /// into a sibling widget.
+    fn wants_pointer_capture(&self) -> bool {
+        self.is_dragging
+    }
+
+    fn needs_commit(&self) -> bool {
+        if let Some(t) = self.last_edit_time {
+            t.elapsed() >= Duration::from_secs(1)
+        } else {
+            false
+        }
+    }
+
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+
+    fn get_state(&self) -> Option<String> {
+        Some(match self.caret_affinity {
+            // Keep the historical state shape for the overwhelmingly common
+            // unambiguous/default caret.
+            TextAffinity::Before => self.cursor_pos.to_string(),
+            TextAffinity::After => format!("{}:a", self.cursor_pos),
+        })
+    }
+
+    fn set_state(&mut self, state: &str) {
+        let (byte, affinity) = state.split_once(':').unwrap_or((state, "b"));
+        if let Ok(pos) = byte.parse::<usize>() {
+            self.cursor_pos = pos;
+            self.caret_affinity = if affinity == "a" {
+                TextAffinity::After
+            } else {
+                TextAffinity::Before
+            };
+        }
+    }
+
+    fn text_review(&self) -> Option<(usize, String)> {
+        // A secret field never surfaces its contents.
+        if !self.is_focused || self.secret {
+            return None;
+        }
+        Some((self.cursor_pos, self.text.clone()))
+    }
+
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.path.clone(),
+            })
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(key) = self.presence_key() {
+            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
+            // re-derived approximation. `transform` maps the local rect to the scene.
+
+            // Fading "just typed" highlighter under the caret/selection.
+            let now = std::time::Instant::now();
+            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                let rect = self.selection_rect(theme, range.start, range.end);
+                // `Affine * Point` is a geometric transform over f64 coordinates,
+                // not integer arithmetic that can overflow/wrap.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
+                )]
+                let (p0, p1) = (
+                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
+                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
+                );
+                presence.draw_peer_typing(
+                    scene,
+                    theme,
+                    &user,
+                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+                );
+            }
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list {
+                    let name = presence.display_name(user);
+                    presence.draw_peer_caret_labeled(
+                        scene,
+                        theme,
+                        text_renderer,
+                        transform,
+                        user,
+                        &name,
+                        self.caret_rect(theme, *caret),
+                    );
+                }
+            }
+
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    for r in self.selection_rects(theme, range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, r);
+                    }
+                }
+            }
+        }
+
+        if let Some(scope) = self.permission_scope()
+            && !permissions.check(&scope)
+        {
+            let r = self.rect;
+            let overlay = Self::PERMISSION_DENIED_OVERLAY;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                overlay,
+                None,
+                &r,
+            );
+        }
+    }
+
+    /// Paints the open context menu here so it floats above every sibling
+    /// regardless of tree order.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if self.context_menu.is_open() {
+            Widget::draw(
+                &mut self.context_menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
+    }
+}
+
+impl TextInput {
     fn draw_field_chrome(
         &self,
         scene: &mut Scene,
@@ -2840,87 +3328,6 @@ impl Widget for TextInput {
             None,
             &cursor_rect,
         );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-        self.last_caret_width = theme.caret_width;
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        if !self.plain {
-            self.draw_field_chrome(scene, transform, theme, &shape);
-        }
-
-        if self.multiline {
-            if self.masked() {
-                self.multiline_shaped = false;
-                self.single_layout = None;
-                self.draw_multiline_body(scene, transform, text_renderer, theme, &shape);
-            } else {
-                self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape);
-            }
-            return;
-        }
-        self.multiline_shaped = false;
-
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
-        let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
-        let padding_x = if self.plain {
-            // The parent already adds whatever gutter the document layout wants.
-            0.0
-        } else {
-            f64::from(theme.padding_standard)
-        };
-        let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
-
-        // `char_x_positions` remains as a compatibility/readback surface, but
-        // normal text now gets every position from the same shaped paragraph
-        // used for paint and hit-testing. Masked fields keep the prefix path
-        // because bullet byte offsets intentionally differ from the secret.
-        let display = self.layout_display_text();
-        let total_w = self.build_single_line_metrics(text_renderer, &display, text_size);
-        self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
-
-        let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
-        self.update_single_line_scroll(cursor_x_offset, padding_x);
-
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &shape,
-        );
-
-        self.draw_single_line_selection(scene, transform, theme);
-
-        let text_color = if self.disabled {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
-        self.draw_single_line_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &display,
-            text_size,
-            padding_x,
-            text_y,
-            text_color,
-        );
-
-        if self.is_focused && !self.disabled {
-            self.draw_single_line_caret(scene, transform, theme);
-        }
-
-        scene.pop_layer();
     }
 
     fn handle_mouse_wheel(&mut self, delta: &winit::event::MouseScrollDelta, handled: &mut bool) {
@@ -3430,411 +3837,6 @@ impl Widget for TextInput {
         t.clone_into(&mut self.preedit);
         self.preedit_cursor = cursor;
         *handled = true;
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Single guard that makes both pointer and keyboard input no-ops when disabled.
-        if self.disabled {
-            return;
-        }
-        self.clamp_to_text();
-
-        match event {
-            // Only when hovered, so it never steals the wheel from a surrounding scroll region.
-            WindowEvent::MouseWheel { delta, .. }
-                if self.multiline && self.is_hovered && !self.disabled =>
-            {
-                self.handle_mouse_wheel(delta, handled);
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } if self.is_hovered && !self.disabled => {
-                self.handle_right_click(focus_target, node_id, handled);
-            }
-            WindowEvent::MouseInput {
-                state: element_state,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.handle_left_click(
-                    element_state,
-                    modifiers,
-                    state,
-                    root,
-                    focus_target,
-                    node_id,
-                    handled,
-                );
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        text,
-                        state: element_state,
-                        ..
-                    },
-                ..
-            } => {
-                self.handle_keyboard_input(
-                    logical_key,
-                    text.as_deref(),
-                    *element_state,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                );
-            }
-            WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
-                self.handle_ime_commit(t, state, root, handled);
-            }
-            WindowEvent::Ime(winit::event::Ime::Preedit(t, cursor)) => {
-                self.handle_ime_preedit(t, *cursor, handled);
-            }
-            _ => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "TextInput"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        if self.id.is_empty() {
-            Some("text_input")
-        } else {
-            Some(self.id.as_str())
-        }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// A single-line field scrolls content horizontally rather than growing,
-    /// so it only needs re-measure before its first layout or right after a
-    /// user edit — never blocking the scroll fast path while idle.
-    fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
-    }
-
-    /// A disabled input claims no cursor and defers to the host default.
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.disabled && self.rect.contains(point) {
-            Some(winit::window::CursorIcon::Text)
-        } else {
-            None
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        !self.disabled
-    }
-    fn set_focus(&mut self, focused: bool) {
-        self.is_focused = focused;
-        if !focused {
-            self.preedit.clear();
-            self.preedit_cursor = None;
-        }
-    }
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        if !self.is_focused || self.disabled {
-            return None;
-        }
-        if self.multiline && !self.multiline_shaped {
-            return Some(self.caret_rect_ml(self.cursor_pos, self.last_caret_width));
-        }
-        let (x, top, height) = if (!self.multiline || self.multiline_shaped)
-            && !self.masked()
-            && let Some(layout) = &self.single_layout
-        {
-            let position = if self.preedit.is_empty() {
-                self.text_to_layout_position(self.caret_position())
-            } else {
-                TextPosition::new(self.preedit_layout_caret())
-            };
-            let (x, top, height) = layout.caret_geometry_at(position);
-            (
-                self.single_origin.x + f64::from(x) - self.scroll_x,
-                self.single_origin.y + f64::from(top),
-                f64::from(height),
-            )
-        } else {
-            let offset = self
-                .char_x_positions
-                .get(self.cursor_pos)
-                .copied()
-                .unwrap_or(0.0);
-            (
-                self.single_origin.x + offset - self.scroll_x,
-                self.single_origin.y,
-                self.line_height(),
-            )
-        };
-        Some(Rect::new(x, top, x + self.last_caret_width, top + height))
-    }
-
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(if self.secret {
-            winit::window::ImePurpose::Password
-        } else {
-            winit::window::ImePurpose::Normal
-        })
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        // A secret (password) input never leaks its value into the a11y tree —
-        // it reports `protected` and a `None` value instead.
-        let value = (!self.secret).then(|| self.text.clone());
-        let role = if self.multiline {
-            Role::MultilineTextInput
-        } else {
-            Role::TextInput
-        };
-        let mut node = AccessNode::new(role)
-            .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: self.disabled,
-                protected: self.secret,
-                multiline: self.multiline,
-                ..Default::default()
-            });
-        if !self.secret {
-            node = node.with_text_selection(
-                self.selection_anchor.unwrap_or(self.cursor_pos),
-                self.cursor_pos,
-            );
-        }
-        Some(node)
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> bool {
-        use crate::a11y::Action;
-
-        if self.disabled {
-            return false;
-        }
-        match action {
-            Action::SetValue(value) => {
-                let cleaned = if self.multiline {
-                    value
-                        .replace("\r\n", "\n")
-                        .replace('\r', "\n")
-                        .chars()
-                        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-                        .collect::<String>()
-                } else {
-                    value.chars().filter(|c| !c.is_control()).collect()
-                };
-                self.selection_anchor = (!self.text.is_empty()).then_some(0);
-                self.cursor_pos = self.text.len();
-                let obj = self.resolve_text_obj(state, root);
-                self.insert_str(&cleaned, state, obj.as_ref());
-                true
-            }
-            Action::SetSelection { anchor, focus } => {
-                let byte_at = |character_index: usize| {
-                    self.text
-                        .grapheme_indices(true)
-                        .nth(character_index)
-                        .map_or(self.text.len(), |(byte, _)| byte)
-                };
-                let anchor = byte_at(*anchor);
-                let focus = byte_at(*focus);
-                self.selection_anchor = (anchor != focus).then_some(anchor);
-                self.cursor_pos = focus;
-                self.caret_affinity = TextAffinity::Before;
-                self.goal_x = None;
-                self.dirty = true;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Keeps receiving cursor events during a drag even if the cursor wanders
-    /// into a sibling widget.
-    fn wants_pointer_capture(&self) -> bool {
-        self.is_dragging
-    }
-
-    fn needs_commit(&self) -> bool {
-        if let Some(t) = self.last_edit_time {
-            t.elapsed() >= Duration::from_secs(1)
-        } else {
-            false
-        }
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
-    fn get_state(&self) -> Option<String> {
-        Some(match self.caret_affinity {
-            // Keep the historical state shape for the overwhelmingly common
-            // unambiguous/default caret.
-            TextAffinity::Before => self.cursor_pos.to_string(),
-            TextAffinity::After => format!("{}:a", self.cursor_pos),
-        })
-    }
-
-    fn set_state(&mut self, state: &str) {
-        let (byte, affinity) = state.split_once(':').unwrap_or((state, "b"));
-        if let Ok(pos) = byte.parse::<usize>() {
-            self.cursor_pos = pos;
-            self.caret_affinity = if affinity == "a" {
-                TextAffinity::After
-            } else {
-                TextAffinity::Before
-            };
-        }
-    }
-
-    fn text_review(&self) -> Option<(usize, String)> {
-        // A secret field never surfaces its contents.
-        if !self.is_focused || self.secret {
-            return None;
-        }
-        Some((self.cursor_pos, self.text.clone()))
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.path.clone(),
-            })
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(key) = self.presence_key() {
-            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
-            // re-derived approximation. `transform` maps the local rect to the scene.
-
-            // Fading "just typed" highlighter under the caret/selection.
-            let now = std::time::Instant::now();
-            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
-                let rect = self.selection_rect(theme, range.start, range.end);
-                // `Affine * Point` is a geometric transform over f64 coordinates,
-                // not integer arithmetic that can overflow/wrap.
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
-                )]
-                let (p0, p1) = (
-                    transform * vello::kurbo::Point::new(rect.x0, rect.y0),
-                    transform * vello::kurbo::Point::new(rect.x1, rect.y1),
-                );
-                presence.draw_peer_typing(
-                    scene,
-                    theme,
-                    &user,
-                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-                );
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    let name = presence.display_name(user);
-                    presence.draw_peer_caret_labeled(
-                        scene,
-                        theme,
-                        text_renderer,
-                        transform,
-                        user,
-                        &name,
-                        self.caret_rect(theme, *caret),
-                    );
-                }
-            }
-
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for r in self.selection_rects(theme, range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, r);
-                    }
-                }
-            }
-        }
-
-        if let Some(scope) = self.permission_scope()
-            && !permissions.check(&scope)
-        {
-            let r = self.rect;
-            let overlay = Self::PERMISSION_DENIED_OVERLAY;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                Affine::IDENTITY,
-                overlay,
-                None,
-                &r,
-            );
-        }
-    }
-
-    /// Paints the open context menu here so it floats above every sibling
-    /// regardless of tree order.
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        if self.context_menu.is_open() {
-            Widget::draw(
-                &mut self.context_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
     }
 }
 
