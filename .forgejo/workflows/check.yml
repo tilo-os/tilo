@@ -20,7 +20,6 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
-  RUSTC_WRAPPER: sccache
   # Cache availability changes speed, never correctness or mergeability.
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   RUSTFLAGS: "-D warnings"
@@ -104,7 +103,7 @@ jobs:
         run: |
           mkdir -p /tmp/qos-xdg-runtime
           chmod 700 /tmp/qos-xdg-runtime
-          sccache --zero-stats || true
+          bash tools/ci-sccache.sh prepare
 
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
@@ -130,7 +129,7 @@ jobs:
         run: |
           echo "### sccache shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          sccache --show-stats 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          bash tools/ci-sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       # One writer avoids two shards racing to create the same immutable key.

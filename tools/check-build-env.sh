@@ -17,8 +17,9 @@ MODULES=(
 )
 # Test subjects rather than build tools, but a missing one fails a test instead
 # of naming itself: bwrap runs the launcher's confinement suites and
-# rust-analyzer is the real language server the code editor's suite drives.
-BINARIES=(capnp bwrap rust-analyzer)
+# rust-analyzer is the real language server the code editor's suite drives;
+# sccache is baked into the image so workflows never download or compile it.
+BINARIES=(capnp bwrap rust-analyzer sccache)
 
 missing=0
 command -v pkg-config >/dev/null 2>&1 || { echo "pkg-config not installed — nothing here can be checked" >&2; exit 2; }
