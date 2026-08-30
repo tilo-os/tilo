@@ -357,21 +357,74 @@ pub fn swizzle_subrect_rgba_to_xrgb8888(
     out_w: usize,
     out_h: usize,
 ) {
+    swizzle_subrect_rgba_to_xrgb8888_transformed(
+        src_rgba,
+        src_w,
+        src_h,
+        src_x,
+        src_y,
+        dst,
+        dst_pitch,
+        out_w,
+        out_h,
+        settings_store::hardware::OutputTransform::Normal,
+    );
+}
+
+/// Rotation-aware sibling of [`swizzle_subrect_rgba_to_xrgb8888`]. Source
+/// coordinates are in the post-transform logical plane; destination pixels
+/// are in the physical KMS mode. This makes the scene, cursor, touch mapping,
+/// and `wl_output` transform describe one geometry.
+pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
+    src_rgba: &[u8],
+    src_w: usize,
+    src_h: usize,
+    src_x: usize,
+    src_y: usize,
+    dst: &mut [u8],
+    dst_pitch: usize,
+    physical_w: usize,
+    physical_h: usize,
+    transform: settings_store::hardware::OutputTransform,
+) {
     if dst_pitch == 0 {
         return;
     }
-    let max_rows = (dst.len() / dst_pitch).min(out_h);
-    let cols = (dst_pitch / 4).min(out_w);
+    let max_rows = (dst.len() / dst_pitch).min(physical_h);
+    let cols = (dst_pitch / 4).min(physical_w);
+    let (logical_w, logical_h) = match transform {
+        settings_store::hardware::OutputTransform::Rotate90
+        | settings_store::hardware::OutputTransform::Rotate270 => (physical_h, physical_w),
+        _ => (physical_w, physical_h),
+    };
+    let logical = |col: usize, row: usize| match transform {
+        settings_store::hardware::OutputTransform::Normal => (col, row),
+        settings_store::hardware::OutputTransform::Rotate90 => {
+            (row, logical_h.saturating_sub(1).saturating_sub(col))
+        }
+        settings_store::hardware::OutputTransform::Rotate180 => (
+            logical_w.saturating_sub(1).saturating_sub(col),
+            logical_h.saturating_sub(1).saturating_sub(row),
+        ),
+        settings_store::hardware::OutputTransform::Rotate270 => {
+            (logical_w.saturating_sub(1).saturating_sub(row), col)
+        }
+    };
     for row in 0..max_rows {
-        let sy = src_y + row;
-        if sy >= src_h {
+        let (_, logical_y) = logical(0, row);
+        let sy_base = src_y + logical_y;
+        if sy_base >= src_h
+            && matches!(transform, settings_store::hardware::OutputTransform::Normal)
+        {
             break;
         }
         let d_start = row * dst_pitch;
         let drow = &mut dst[d_start..d_start + cols * 4];
         for col in 0..cols {
-            let sx = src_x + col;
-            if sx >= src_w {
+            let (logical_x, logical_y) = logical(col, row);
+            let sx = src_x + logical_x;
+            let sy = src_y + logical_y;
+            if sx >= src_w || sy >= src_h {
                 continue;
             }
             let s = (sy * src_w + sx) * 4;
@@ -387,10 +440,42 @@ pub fn swizzle_subrect_rgba_to_xrgb8888(
     }
 }
 
+/// Copy one logical output rectangle out of the combined RGBA scene. Used
+/// only when a qcms ICC transform is active; the common unprofiled path keeps
+/// the zero-extra-copy swizzle above.
+pub fn copy_rgba_subrect(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    src_x: usize,
+    src_y: usize,
+    width: usize,
+    height: usize,
+    dst: &mut Vec<u8>,
+) {
+    dst.clear();
+    dst.resize(width.saturating_mul(height).saturating_mul(4), 0);
+    for row in 0..height {
+        if src_y + row >= src_h || src_x >= src_w {
+            break;
+        }
+        let cols = width.min(src_w - src_x);
+        let source = ((src_y + row) * src_w + src_x) * 4;
+        let target = row * width * 4;
+        let bytes = cols * 4;
+        if source + bytes <= src.len() && target + bytes <= dst.len() {
+            dst[target..target + bytes].copy_from_slice(&src[source..source + bytes]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod subrect_tests {
     //! Pure-CPU tests for the sub-rect swizzle — no wgpu/GPU needed, run everywhere `cargo test -p shell --lib` runs.
-    use super::swizzle_subrect_rgba_to_xrgb8888;
+    use super::{
+        copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888,
+        swizzle_subrect_rgba_to_xrgb8888_transformed,
+    };
 
     /// Build a `w×h` tight RGBA buffer where pixel `(x,y)` is `(x, y, 0, 0xFF)`, so the test can identify which source pixel landed where after the swizzle.
     fn ramp_rgba(w: usize, h: usize) -> Vec<u8> {
@@ -470,6 +555,39 @@ mod subrect_tests {
         swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 2, 0, &mut dst, pitch, ow, oh);
         // Column 0 maps to source column 2 (valid); R==2.
         assert_eq!(dst[2], 2);
+    }
+
+    #[test]
+    fn rotate_90_maps_portrait_scene_to_landscape_scanout() {
+        let src = ramp_rgba(2, 3);
+        let mut dst = vec![0u8; 3 * 2 * 4];
+        swizzle_subrect_rgba_to_xrgb8888_transformed(
+            &src,
+            2,
+            3,
+            0,
+            0,
+            &mut dst,
+            3 * 4,
+            3,
+            2,
+            settings_store::hardware::OutputTransform::Rotate90,
+        );
+        let top_right = 2 * 4;
+        assert_eq!((dst[top_right + 2], dst[top_right + 1]), (0, 0));
+        let bottom_left = 3 * 4;
+        assert_eq!((dst[bottom_left + 2], dst[bottom_left + 1]), (1, 2));
+    }
+
+    #[test]
+    fn profiled_path_copies_only_the_output_viewport() {
+        let src = ramp_rgba(5, 2);
+        let mut output = Vec::new();
+        copy_rgba_subrect(&src, 5, 2, 3, 0, 2, 2, &mut output);
+        assert_eq!(output.len(), 16);
+        assert_eq!(output[0], 3);
+        assert_eq!(output[4], 4);
+        assert_eq!(output[9], 1);
     }
 }
 
