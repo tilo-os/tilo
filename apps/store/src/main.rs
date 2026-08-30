@@ -7,6 +7,7 @@
 //!     and package mutations; the app drains its snapshots inside `sync`.
 //!   * `--shots <PATH>` — render one offscreen frame to `<PATH>` and exit.
 
+use store::app::RemoteIntent;
 use store::worker::{Request, StoreWorker};
 use store::{FlatpakRef, StoreApp};
 
@@ -72,7 +73,17 @@ impl ui::widget::Widget for LiveStore {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         // Drain any snapshots the worker produced since last frame.
         while let Some(snap) = self.worker.try_snapshot() {
-            self.inner.set_items(snap.items);
+            let applies_items = match snap.query.as_deref() {
+                Some(query) => query == self.inner.query(),
+                None => snap.detail.is_none(),
+            };
+            if applies_items {
+                self.inner.set_items(snap.items);
+            }
+            if let Some(detail) = snap.detail {
+                self.inner.set_detail(detail);
+            }
+            self.inner.set_remotes(snap.remotes);
             self.inner.set_status_line(snap.status_line);
         }
         // `inner.sync` drains click edges into the pending-action
@@ -86,6 +97,20 @@ impl ui::widget::Widget for LiveStore {
         }
         if self.inner.take_refresh_requested() {
             self.worker.request(Request::Refresh);
+        }
+        if let Some(query) = self.inner.take_search_requested() {
+            self.worker.request(Request::Search(query));
+        }
+        if let Some(id) = self.inner.take_detail_requested() {
+            self.worker.request(Request::Detail(id));
+        }
+        for intent in self.inner.take_remote_intents() {
+            let request = match intent {
+                RemoteIntent::Refresh => Request::RefreshRemotes,
+                RemoteIntent::Add { name, url } => Request::RemoteAdd { name, url },
+                RemoteIntent::Remove(name) => Request::RemoteRemove(name),
+            };
+            self.worker.request(request);
         }
     }
     fn build_layout(
@@ -184,7 +209,7 @@ impl ui::widget::Widget for LiveStore {
         self.inner.take_structure_dirty()
     }
     fn needs_animation_frame(&self) -> bool {
-        self.inner.needs_animation_frame()
+        self.worker.has_pending() || self.inner.needs_animation_frame()
     }
 }
 

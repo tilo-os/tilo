@@ -62,6 +62,22 @@ const ACTION_CLICK_KEY_PREFIX: &str = "store.action_click.";
 const PIN_CLICK_KEY_PREFIX: &str = "store.pin_click.";
 /// Secondary "remove" affordance on a cached qOS card, one per item id.
 const REMOVE_CLICK_KEY_PREFIX: &str = "store.remove_click.";
+const DETAIL_SELECT_KEY_PREFIX: &str = "store.detail_select.";
+const DETAIL_BACK_KEY: &str = "store.detail_back";
+const REMOTES_OPEN_KEY: &str = "store.remotes_open";
+const REMOTES_BACK_KEY: &str = "store.remotes_back";
+const REMOTES_REFRESH_KEY: &str = "store.remotes_refresh";
+const REMOTES_ADD_KEY: &str = "store.remotes_add";
+const REMOTES_REMOVE_KEY_PREFIX: &str = "store.remotes_remove.";
+const REMOTE_NAME_KEY: &str = "store.remote_name";
+const REMOTE_URL_KEY: &str = "store.remote_url";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteIntent {
+    Refresh,
+    Add { name: String, url: String },
+    Remove(String),
+}
 
 /// Root widget.
 pub struct StoreApp {
@@ -88,7 +104,6 @@ pub struct StoreApp {
     /// Keyed by [`StoreItem::id`]. Reserved for the follow-up
     /// slide-in-detail sheet; kept on the widget so the CRDT sync
     /// can restore the open state across window rebuilds.
-    #[allow(dead_code)]
     focused_detail: Option<String>,
     /// Marked dirty when a chip / category selection flips so the
     /// host re-runs `build_layout`.
@@ -104,6 +119,11 @@ pub struct StoreApp {
     /// Drained by the host each frame via [`take_pending_actions`].
     pending_actions: Vec<(String, ActionKind)>,
     pending_refresh: bool,
+    pending_search: Option<String>,
+    pending_detail: Option<String>,
+    remotes: Vec<crate::flathub_client::Remote>,
+    remotes_open: bool,
+    pending_remote_intents: Vec<RemoteIntent>,
     /// Segment index the source-filter `ToggleGroup` last committed.
     /// The `on_change` closure is `'static` and can't borrow `self`,
     /// so it parks the click here; `sync` reads it back and flips
@@ -148,6 +168,11 @@ impl StoreApp {
             root: None,
             pending_actions: Vec::new(),
             pending_refresh: false,
+            pending_search: None,
+            pending_detail: None,
+            remotes: Vec::new(),
+            remotes_open: false,
+            pending_remote_intents: Vec::new(),
             filter_click: Rc::new(Cell::new(None)),
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
@@ -168,6 +193,37 @@ impl StoreApp {
     /// race an install/remove or fan out into duplicate network work.
     pub fn take_refresh_requested(&mut self) -> bool {
         std::mem::take(&mut self.pending_refresh)
+    }
+
+    pub fn take_search_requested(&mut self) -> Option<String> {
+        self.pending_search.take()
+    }
+
+    pub fn take_detail_requested(&mut self) -> Option<String> {
+        self.pending_detail.take()
+    }
+
+    pub fn take_remote_intents(&mut self) -> Vec<RemoteIntent> {
+        std::mem::take(&mut self.pending_remote_intents)
+    }
+
+    pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
+        if self.remotes != remotes {
+            self.remotes = remotes;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Merge an enriched AppStream record into the current list and keep the
+    /// detail view focused on it.
+    pub fn set_detail(&mut self, detail: StoreItem) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
+            *item = detail.clone();
+        } else {
+            self.items.push(detail.clone());
+        }
+        self.focused_detail = Some(detail.id);
+        self.structure_dirty = true;
     }
 
     /// Replace the item feed. Idempotent — the widget re-derives its
@@ -218,6 +274,7 @@ impl StoreApp {
     pub fn set_query(&mut self, q: String) {
         if self.query != q {
             self.query = q;
+            self.pending_search = Some(self.query.clone());
             self.structure_dirty = true;
         }
     }
@@ -280,7 +337,12 @@ impl StoreApp {
         let header = self.build_header();
         let filter_row = self.build_filter_row();
         let category_row = self.build_category_row();
-        let list = self.build_list(theme);
+        let list = if self.remotes_open {
+            self.build_remotes(theme)
+        } else {
+            self.build_detail(theme)
+                .unwrap_or_else(|| self.build_list(theme))
+        };
         // No permanent footer strip: the catalog counts / action status
         // float as a transient bubble (see `draw_status_bubble`), so the
         // card list spans to the window bottom.
@@ -291,6 +353,104 @@ impl StoreApp {
             .push(category_row)
             .push(list);
         Box::new(Container::new().filling().with_child(Box::new(column)))
+    }
+
+    fn build_detail(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
+        let id = self.focused_detail.as_ref()?;
+        let item = self.items.iter().find(|item| &item.id == id)?;
+        let source = match &item.source {
+            crate::StoreSource::Qos { registry_name } => format!("qOS · {registry_name}"),
+            crate::StoreSource::Flathub => "Flatpak · Flathub".to_string(),
+        };
+        let mut column = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(
+                ui::widget::Button::new("store.detail.back", "Back to apps", Some(DETAIL_BACK_KEY))
+                    .ghost(),
+            ))
+            .push(Box::new(Text::new(&item.name).with_size(22.0)))
+            .push(Box::new(
+                Text::new(&source)
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
+            ))
+            .push(Box::new(Text::new(&item.description).with_size(14.0)));
+        if let Some(homepage) = item.homepage_url.as_ref() {
+            column = column.push(Box::new(
+                Text::new(homepage)
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
+            ));
+        }
+        Some(Box::new(
+            Container::new()
+                .filling()
+                .with_background()
+                .with_child(Box::new(column)),
+        ))
+    }
+
+    fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
+        let mut column = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(
+                ui::widget::Button::new("store.remotes.back", "Back to apps", Some(REMOTES_BACK_KEY))
+                    .ghost(),
+            ))
+            .push(Box::new(Text::new("Flatpak remotes").with_size(22.0)))
+            .push(Box::new(
+                Text::new("Remote configuration applies to this machine and runs through the package worker.")
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
+            ));
+        for remote in &self.remotes {
+            let label = format!(
+                "{} · {}{}",
+                remote.title,
+                remote.url,
+                if remote.disabled { " · disabled" } else { "" }
+            );
+            let key = format!("{}{}", REMOTES_REMOVE_KEY_PREFIX, remote.name);
+            column = column.push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(Text::new(&label).with_size(13.0)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        ui::widget::Button::new(&key, "Remove", Some(&key)).ghost(),
+                    )),
+            ));
+        }
+        let form = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                TextInput::new(vec![])
+                    .with_id("store.remote.name")
+                    .with_on_change_path(REMOTE_NAME_KEY)
+                    .with_placeholder("Remote name"),
+            ))
+            .push(Box::new(
+                TextInput::new(vec![])
+                    .with_id("store.remote.url")
+                    .with_on_change_path(REMOTE_URL_KEY)
+                    .with_placeholder("Repository URL"),
+            ))
+            .push(Box::new(
+                ui::widget::Button::new("store.remote.add", "Add remote", Some(REMOTES_ADD_KEY))
+                    .primary(),
+            ))
+            .push(Box::new(ui::widget::Button::new(
+                "store.remote.refresh",
+                "Refresh",
+                Some(REMOTES_REFRESH_KEY),
+            )));
+        column = column.push(Box::new(form));
+        Box::new(
+            Container::new()
+                .filling()
+                .with_background()
+                .with_child(Box::new(column)),
+        )
     }
 
     fn build_header(&self) -> Box<dyn Widget> {
@@ -305,10 +465,13 @@ impl StoreApp {
         // Refresh button writes REFRESH_KEY; the outer host drives
         // the real refetch when it sees the bit go high.
         let refresh_btn = ui::widget::Button::new("store.refresh", "Refresh", Some(REFRESH_KEY));
+        let remotes_btn =
+            ui::widget::Button::new("store.remotes", "Remotes", Some(REMOTES_OPEN_KEY));
         let row = Row::new()
             .no_wrap()
             .push(Box::new(search))
             .push(Box::new(Spacer::new()))
+            .push(Box::new(remotes_btn))
             .push(Box::new(refresh_btn));
         Box::new(Container::new().with_background().with_child(Box::new(row)))
     }
@@ -495,6 +658,7 @@ impl StoreApp {
                 ActionKind::MarkInstalled => format!("Marking {id} installed…"),
                 ActionKind::Unmark => format!("Unmarking {id}…"),
                 ActionKind::FlatpakInstall => format!("Installing Flatpak {id}…"),
+                ActionKind::FlatpakUpdate => format!("Updating Flatpak {id}…"),
                 // Named as unconfined in the status line, not only in
                 // the launcher's log: this is the moment the user
                 // chooses to start it.
@@ -529,10 +693,61 @@ impl StoreApp {
                     secondary.push((item.id.clone(), action));
                 }
             }
+            let detail_key = format!("{}{}", DETAIL_SELECT_KEY_PREFIX, item.id);
+            if take_bool_edge(state, path, &detail_key) {
+                self.focused_detail = Some(item.id.clone());
+                self.pending_detail = Some(item.id.clone());
+                self.status_line = format!("Loading details for {}…", item.name);
+                self.structure_dirty = true;
+                any = true;
+            }
         }
         for (id, action) in secondary {
             self.status_line = format!("{} {}…", action.label(), id);
             self.pending_actions.push((id, action));
+            any = true;
+        }
+        if take_bool_edge(state, path, DETAIL_BACK_KEY) {
+            self.focused_detail = None;
+            self.structure_dirty = true;
+            any = true;
+        }
+        if take_bool_edge(state, path, REMOTES_OPEN_KEY) {
+            self.remotes_open = true;
+            self.pending_remote_intents.push(RemoteIntent::Refresh);
+            self.structure_dirty = true;
+            any = true;
+        }
+        if take_bool_edge(state, path, REMOTES_BACK_KEY) {
+            self.remotes_open = false;
+            self.structure_dirty = true;
+            any = true;
+        }
+        if take_bool_edge(state, path, REMOTES_REFRESH_KEY) {
+            self.pending_remote_intents.push(RemoteIntent::Refresh);
+            any = true;
+        }
+        let remote_names: Vec<String> = self
+            .remotes
+            .iter()
+            .map(|remote| remote.name.clone())
+            .collect();
+        for name in remote_names {
+            let key = format!("{}{}", REMOTES_REMOVE_KEY_PREFIX, name);
+            if take_bool_edge(state, path, &key) {
+                self.pending_remote_intents.push(RemoteIntent::Remove(name));
+                any = true;
+            }
+        }
+        if take_bool_edge(state, path, REMOTES_ADD_KEY) {
+            let name = text_at(state, path, REMOTE_NAME_KEY);
+            let url = text_at(state, path, REMOTE_URL_KEY);
+            if !name.trim().is_empty() && !url.trim().is_empty() {
+                self.pending_remote_intents
+                    .push(RemoteIntent::Add { name, url });
+            } else {
+                self.status_line = "Remote name and repository URL are required.".into();
+            }
             any = true;
         }
         // Refresh.
@@ -573,6 +788,16 @@ fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
         .expect("put_object Text never fails")
 }
 
+fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
+    state
+        .get(root, key)
+        .ok()
+        .flatten()
+        .and_then(|(value, id)| matches!(value, Value::Object(ObjType::Text)).then_some(id))
+        .and_then(|id| state.text(&id).ok())
+        .unwrap_or_default()
+}
+
 /// Read a `path`.`key` boolean and clear it in one shot. `true`
 /// return means the key was true; the CRDT is left with the key
 /// false so the next frame sees a fresh edge.
@@ -602,6 +827,8 @@ impl Widget for StoreApp {
         // splice keystrokes into (it binds to an existing `Text` but
         // never creates one).
         let search_obj = ensure_text_obj(state, path, SEARCH_QUERY_KEY);
+        let _ = ensure_text_obj(state, path, REMOTE_NAME_KEY);
+        let _ = ensure_text_obj(state, path, REMOTE_URL_KEY);
         let _ = self.drain_click_keys(state, path);
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
@@ -936,6 +1163,8 @@ mod tests {
         doc.splice_text(&obj, 0, 0, "Term").unwrap();
         app.sync(&mut doc, &root);
         assert_eq!(app.query(), "Term");
+        assert_eq!(app.take_search_requested().as_deref(), Some("Term"));
+        assert!(app.take_search_requested().is_none());
         let names: Vec<&str> = app
             .visible_items()
             .iter()
@@ -982,5 +1211,23 @@ mod tests {
             Ok(Some((Value::Scalar(value), _)))
                 if matches!(value.as_ref(), ScalarValue::Boolean(false))
         ));
+    }
+
+    #[test]
+    fn detail_and_remote_controls_emit_serialized_worker_intents() {
+        use automerge::transaction::Transactable;
+
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "store.detail_select.id.chess", true)
+            .unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.take_detail_requested().as_deref(), Some("id.chess"));
+        assert!(app.take_detail_requested().is_none());
+
+        doc.put(automerge::ROOT, REMOTES_OPEN_KEY, true).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.take_remote_intents(), vec![RemoteIntent::Refresh]);
+        assert!(app.take_remote_intents().is_empty());
     }
 }

@@ -77,6 +77,9 @@ pub fn store_card(
         .no_wrap()
         .push(icon_placeholder(theme))
         .push(Box::new(text_col))
+        .push(Box::new(
+            Button::new(&format!("{select_key}.button"), "Details", Some(select_key)).ghost(),
+        ))
         .push(Box::new(action_btn));
     // Optional secondary controls for a cached qOS app: the "mark
     // installed" (pin) toggle and a small Remove. These are absent
@@ -92,19 +95,6 @@ pub fn store_card(
             Button::new(remove_click_key, "Remove", Some(remove_click_key)).ghost(),
         ));
     }
-
-    // A click on the card body (outside the action button) opens
-    // the detail sheet — modelled as a Button that spans the row
-    // and writes `select_key`. We inline it as an outer wrapper
-    // Container with the row inside it, and rely on the
-    // Container's `with_permission_scope` follow-up when we wire
-    // permissions.
-    // For now: a two-button card would be ergonomically confusing.
-    // We instead render the row inside a Container, and reserve
-    // the click-to-open flow as a follow-up (the detail sheet is
-    // reachable from a keyboard shortcut in the meantime — Enter
-    // on the focused card writes `select_key`).
-    let _ = select_key;
 
     Box::new(Container::new().with_background().with_child(Box::new(row)))
 }
