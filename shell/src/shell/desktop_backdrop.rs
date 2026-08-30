@@ -48,22 +48,35 @@ const NOISE_ALPHA: f32 = 0.08;
 /// byte-identical across headless render tests.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// Pixel count of the tileable [`NOISE_SIZE`]×[`NOISE_SIZE`] noise
+/// texture. A `const` (rather than computed in the function body) so
+/// the multiplication is evaluated at compile time — `NOISE_SIZE` never
+/// changes, so there is nothing for `arithmetic_side_effects` to guard
+/// against here.
+const NOISE_PIXEL_COUNT: usize = (NOISE_SIZE as usize) * (NOISE_SIZE as usize);
+
+/// [`NOISE_PIXEL_COUNT`] in RGBA8 bytes (4 bytes/pixel), likewise
+/// compile-time constant.
+const NOISE_BYTE_COUNT: usize = NOISE_PIXEL_COUNT * 4;
+
 /// Each pixel is `(0xFF, 0xFF, 0xFF, alpha)`, `alpha ∈ [0, 40]` — kept
 /// low before [`NOISE_ALPHA`] dampens it further.
 fn generate_noise_bytes() -> Vec<u8> {
-    let pixel_count = (NOISE_SIZE as usize) * (NOISE_SIZE as usize);
-    let mut bytes = Vec::with_capacity(pixel_count * 4);
+    let mut bytes = Vec::with_capacity(NOISE_BYTE_COUNT);
 
     // xorshift64 state — must be non-zero.
     let mut state: u64 = NOISE_SEED;
-    for _ in 0..pixel_count {
+    for _ in 0..NOISE_PIXEL_COUNT {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
 
         let alpha = (state & 0xFF) as u8;
-        // [0, 255] -> [0, 40] so the tallest speck is barely visible.
-        let alpha = (u16::from(alpha) * 40 / 255) as u8;
+        // [0, 255] -> [0, 40] so the tallest speck is barely visible;
+        // the numerator tops out at 255 * 40 = 10_200, well inside u16.
+        let alpha = u16::from(alpha) * 40 / 255;
+        // Safe: the division above bounds `alpha` to `[0, 40]`.
+        let alpha = u8::try_from(alpha).unwrap_or(40);
         bytes.push(0xFF);
         bytes.push(0xFF);
         bytes.push(0xFF);
@@ -112,29 +125,90 @@ fn ground_stops(theme: &Theme) -> (Color, Color) {
     (base, shade(base, GROUND_FALLOFF))
 }
 
+/// `v` is clamped into `[0.0, 255.0]` by every caller in this module
+/// immediately before calling, so the truncation and sign-loss this
+/// cast could otherwise cause cannot happen.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "callers clamp v into [0.0, 255.0] right before calling"
+)]
+fn clamped_f32_to_u8(v: f32) -> u8 {
+    v as u8
+}
+
 /// Both gradient ends are the *same* ground, one lit and one fallen
 /// away — deriving the far end from the near one makes the ramp read
 /// as a surface catching light, not two materials.
 fn shade(color: Color, factor: f32) -> Color {
-    let [r, g, b, a] = color.to_rgba8().to_u8_array();
-    let f = factor.clamp(0.0, 1.0);
-    let m = |v: u8| (f32::from(v) * f).round().clamp(0.0, 255.0) as u8;
-    Color::from_rgba8(m(r), m(g), m(b), a)
+    let [red, green, blue, alpha] = color.to_rgba8().to_u8_array();
+    let clamped_factor = factor.clamp(0.0, 1.0);
+    let scale = |channel: u8| {
+        clamped_f32_to_u8(
+            (f32::from(channel) * clamped_factor)
+                .round()
+                .clamp(0.0, 255.0),
+        )
+    };
+    Color::from_rgba8(scale(red), scale(green), scale(blue), alpha)
 }
 
 /// Mix `color` toward its own perceived luminance by `amount` in
 /// `0.0..=1.0`. At 1 it is fully grey at the same brightness, so the
 /// result only drains the tint — never lightens or darkens.
 fn settle_toward_neutral(color: Color, amount: f32) -> Color {
-    let [r, g, b, a] = color.to_rgba8().to_u8_array();
-    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
-    let k = amount.clamp(0.0, 1.0);
-    let mix = |v: u8| {
-        (f32::from(v) + (luma - f32::from(v)) * k)
-            .round()
-            .clamp(0.0, 255.0) as u8
+    let [red, green, blue, alpha] = color.to_rgba8().to_u8_array();
+    let luma = 0.2126 * f32::from(red) + 0.7152 * f32::from(green) + 0.0722 * f32::from(blue);
+    let mix_amount = amount.clamp(0.0, 1.0);
+    let mix = |channel: u8| {
+        clamped_f32_to_u8(
+            (f32::from(channel) + (luma - f32::from(channel)) * mix_amount)
+                .round()
+                .clamp(0.0, 255.0),
+        )
     };
-    Color::from_rgba8(mix(r), mix(g), mix(b), a)
+    Color::from_rgba8(mix(red), mix(green), mix(blue), alpha)
+}
+
+/// Bit-exact float inequality, for cache-invalidation checks that need
+/// to catch any change — including one too small for a tolerance-based
+/// comparison to notice — rather than clippy's `float_cmp`-flagged `!=`.
+fn f64_ne(a: f64, b: f64) -> bool {
+    a.to_bits() != b.to_bits()
+}
+
+/// How many grid lines spaced [`GRID_STEP`] apart, starting at
+/// `start_col * GRID_STEP`, fall strictly before `end`. A count rather
+/// than a `while` loop over the float position itself, so there is no
+/// floating-point loop counter to drift on a wide rect.
+fn grid_line_count(start_col: f64, end: f64) -> u32 {
+    let span = end - start_col * GRID_STEP;
+    if !span.is_finite() || span <= 0.0 {
+        return 0;
+    }
+    // A real screen rect never needs anywhere near u32::MAX grid lines;
+    // clamp rather than let an extreme rect panic or wrap the cast.
+    f64_to_u32_clamped((span / GRID_STEP).ceil())
+}
+
+/// Clamp `v` into `u32`'s range before converting — safe for any finite
+/// `v`, including one far outside `u32`, and for a non-finite `v`.
+fn f64_to_u32_clamped(v: f64) -> u32 {
+    if !v.is_finite() || v <= 0.0 {
+        0
+    } else if v >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        // Safe: v is checked into [0.0, u32::MAX] immediately above.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "v is checked into [0.0, u32::MAX] immediately above"
+        )]
+        {
+            v as u32
+        }
+    }
 }
 
 impl DesktopBackdrop {
@@ -149,6 +223,7 @@ impl DesktopBackdrop {
         }
     }
 
+    #[must_use]
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
         self.child = Some(child);
         self
@@ -165,8 +240,12 @@ impl DesktopBackdrop {
     /// this bakes once and replays via translate.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let stops = ground_stops(theme);
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
+        // Bit-exact comparison, not "close enough": any change (even one
+        // ULP, from a layout recompute) must invalidate the cached scene,
+        // so a tolerant comparison would let a real resize slip through
+        // unnoticed.
+        let size_changed = f64_ne(self.rect.width(), self.cache_rect.width())
+            || f64_ne(self.rect.height(), self.cache_rect.height());
         let theme_changed = self.cache_stops != Some(stops);
         let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed || theme_changed;
 
@@ -174,10 +253,9 @@ impl DesktopBackdrop {
             // Pure-translation reuse — same as `Button::draw`.
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(
-                &self.cached,
-                Some(out_transform * Affine::translate((dx, dy))),
-            );
+            // `pre_translate` is kurbo's non-operator equivalent of
+            // `out_transform * Affine::translate((dx, dy))`.
+            out_scene.append(&self.cached, Some(out_transform.pre_translate((dx, dy))));
             return;
         }
 
@@ -229,18 +307,22 @@ impl DesktopBackdrop {
             &self.rect,
         );
 
-        let mut x = (self.rect.x0 / GRID_STEP).ceil() * GRID_STEP;
-        while x < self.rect.x1 {
+        // Grid-line count computed up front, then each position derived
+        // fresh from an integer index (`start_col + f64::from(i)`)
+        // rather than accumulated via `x += GRID_STEP` — a float loop
+        // counter drifts by rounding error over a wide rect.
+        let start_col = (self.rect.x0 / GRID_STEP).ceil();
+        for i in 0..grid_line_count(start_col, self.rect.x1) {
+            let x = (start_col + f64::from(i)) * GRID_STEP;
             let line = Line::new((x, self.rect.y0), (x, self.rect.y1));
             scene.stroke(&stroke, transform, line_color, None, &line);
-            x += GRID_STEP;
         }
 
-        let mut y = (self.rect.y0 / GRID_STEP).ceil() * GRID_STEP;
-        while y < self.rect.y1 {
+        let start_row = (self.rect.y0 / GRID_STEP).ceil();
+        for i in 0..grid_line_count(start_row, self.rect.y1) {
+            let y = (start_row + f64::from(i)) * GRID_STEP;
             let line = Line::new((self.rect.x0, y), (self.rect.x1, y));
             scene.stroke(&stroke, transform, line_color, None, &line);
-            y += GRID_STEP;
         }
 
         scene.pop_layer();
@@ -303,16 +385,32 @@ impl Widget for DesktopBackdrop {
         };
 
         let node = if let Some(child) = child_node {
-            taffy.new_with_children(style, &[child]).unwrap()
+            // `child` was just created in this same tree, so this is not
+            // reachable to fail; if it (impossibly) does, fall back to
+            // the child node itself rather than panicking this
+            // panic=abort process.
+            taffy.new_with_children(style, &[child]).unwrap_or(child)
         } else {
-            taffy.new_leaf(style).unwrap()
+            match taffy.new_leaf(style) {
+                Ok(node) => node,
+                Err(err) => {
+                    // `TaffyTree::new_leaf` only ever returns `Ok` for a
+                    // fresh, unattached leaf; this arm exists so a
+                    // future upstream change degrades the backdrop
+                    // instead of aborting the whole session.
+                    tracing::error!("desktop_backdrop: leaf allocation failed: {err}");
+                    NodeId::from(0u64)
+                }
+            }
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -321,7 +419,12 @@ impl Widget for DesktopBackdrop {
         );
 
         if let Some(child) = &mut self.child {
-            let child_node = taffy.children(node).unwrap()[0];
+            let Ok(children) = taffy.children(node) else {
+                return;
+            };
+            let Some(&child_node) = children.first() else {
+                return;
+            };
             child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
     }
@@ -375,7 +478,12 @@ impl Widget for DesktopBackdrop {
         taffy: &TaffyTree<()>,
     ) {
         if let Some(child) = &mut self.child {
-            let child_node = taffy.children(node_id).unwrap()[0];
+            let Ok(children) = taffy.children(node_id) else {
+                return;
+            };
+            let Some(&child_node) = children.first() else {
+                return;
+            };
             child.handle_event(
                 event,
                 scale_factor,
