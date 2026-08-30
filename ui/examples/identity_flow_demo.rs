@@ -4,13 +4,13 @@
 //!
 //! ```bash
 //! # Volatile demo, in-memory only:
-//! cargo run -p ui --example identity_flow_demo
+//! cargo run -p ui --example ui-lab -- identity_flow_demo
 //!
 //! # Persist to a directory (the demo writes identity.json on success):
-//! cargo run -p ui --example identity_flow_demo -- --persist /tmp/qos-alice
+//! cargo run -p ui --example ui-lab -- identity_flow_demo --persist /tmp/qos-alice
 //!
 //! # Jump to a specific screen pre-seeded with sample data:
-//! cargo run -p ui --example identity_flow_demo -- --screen recovery_share
+//! cargo run -p ui --example ui-lab -- identity_flow_demo --screen recovery_share
 //! ```
 //!
 //! With `--persist <DIR>` the demo saves the created identity to
@@ -21,7 +21,7 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -80,10 +80,6 @@ impl DemoFileStore {
             cached: Mutex::new(cached),
         })
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl IdentityStore for DemoFileStore {
@@ -104,8 +100,7 @@ impl IdentityStore for DemoFileStore {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+pub fn run(args: &[String]) {
     let screen = args
         .windows(2)
         .find(|w| w[0] == "--screen")

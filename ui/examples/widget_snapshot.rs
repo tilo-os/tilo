@@ -5,7 +5,7 @@
 //!
 //! Run with:
 //! ```
-//! cargo run -p quick-ui --example widget_snapshot
+//! cargo run -p ui --example ui-shots -- widget_snapshot
 //! ```
 //! The PNG is written to `/tmp/quick-ui-widget-gallery.png`. Override
 //! the path with `QUICK_UI_SNAPSHOT_OUT=…`.
@@ -208,7 +208,7 @@ fn placeholder_image() -> PenikoImage {
     }
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let out = std::env::var("QUICK_UI_SNAPSHOT_OUT")
         .unwrap_or_else(|_| "/tmp/quick-ui-widget-gallery.png".to_string());
     let (canvas_w, canvas_h) = (1100u32, 1500u32);

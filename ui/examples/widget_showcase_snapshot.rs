@@ -2,7 +2,7 @@
 //! Lets reviewers (and Claude) inspect the live App layout without opening
 //! a window. Run with:
 //! ```
-//! cargo run -p quick-ui --example widget_showcase_snapshot
+//! cargo run -p ui --example ui-shots -- widget_showcase_snapshot
 //! ```
 //! PNG written to `/tmp/quick-ui-widget-showcase.png`.
 
@@ -162,7 +162,7 @@ fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let out_top = std::env::var("QUICK_UI_SHOWCASE_OUT")
         .unwrap_or_else(|_| "/tmp/quick-ui-widget-showcase.png".to_string());
     let out_scrolled = "/tmp/quick-ui-widget-showcase-scrolled.png";

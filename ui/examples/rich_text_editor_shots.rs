@@ -1,11 +1,11 @@
 //! Offscreen renders of the shared `RichTextEditor` in light + dark, so the
 //! WYSIWYG rich-text widget can be self-inspected without opening a window.
-//! Drives the real five-pass pipeline (sync → `build_layout` → `compute_layout` →
-//! `apply_layout` → draw) on live CRDT documents seeded with Automerge native
+//! Drives the real five-pass pipeline (sync → build_layout → compute_layout →
+//! apply_layout → draw) on live CRDT documents seeded with Automerge native
 //! marks (bold / italic / underline) and block styles.
 //!
-//! Run:  cargo run -p ui --example `rich_text_editor_shots`
-//! Out:  $`RTE_SHOTS_OUT` (default /`tmp/rte_shots`) — rte-dark.png, rte-light.png
+//! Run:  cargo run -p ui --example ui-shots -- rich_text_editor_shots
+//! Out:  $RTE_SHOTS_OUT (default /tmp/rte_shots) — rte-dark.png, rte-light.png
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -76,9 +76,9 @@ fn place_and_draw(
                 height: AvailableSpace::MaxContent,
             },
             |known, available, nid, _, _| {
-                nm.get(&nid).map_or(Size::ZERO, |&p| unsafe {
-                    (*p).measure(known, available, tr)
-                })
+                nm.get(&nid)
+                    .map(|&p| unsafe { (*p).measure(known, available, tr) })
+                    .unwrap_or(Size::ZERO)
             },
         )
         .unwrap();
@@ -142,7 +142,7 @@ fn shoot(theme: &Theme, out: PathBuf) {
         Affine::IDENTITY,
         theme.bg_app,
         None,
-        &vello::kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        &vello::kurbo::Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64),
     );
 
     let pad = 24.0;
@@ -166,7 +166,7 @@ fn shoot(theme: &Theme, out: PathBuf) {
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir = std::env::var("RTE_SHOTS_OUT").unwrap_or_else(|_| "/tmp/rte_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();
     shoot(&Theme::dark(), PathBuf::from(&dir).join("rte-dark.png"));

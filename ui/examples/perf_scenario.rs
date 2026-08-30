@@ -19,8 +19,8 @@
 //!
 //! Run:
 //! ```text
-//! cargo run -p ui --release --example perf_scenario
-//! cargo run -p ui --release --example perf_scenario -- --count 240 --json
+//! cargo run -p ui --release --example ui-perf -- perf_scenario
+//! cargo run -p ui --release --example ui-perf -- perf_scenario --count 240 --json
 //! ```
 //!
 //! Any app author gets the same measurement over their own root with one call:
@@ -31,8 +31,7 @@ use ui::state::State;
 use ui::theme::Theme;
 use ui::widget::{Column, Scrollable, Text, Widget};
 
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+use super::gallery_scene;
 
 /// A tall scrollable list — a realistic "feed / notes" app shape, and a
 /// reliable scroll target (its content overflows the viewport).
@@ -48,10 +47,8 @@ fn list_app(rows: usize) -> (State, Box<dyn Widget>) {
     (state, Box::new(root))
 }
 
-fn main() {
+pub fn run(args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
-
-    let args: Vec<String> = std::env::args().collect();
     let count = arg_value(&args, "--count")
         .and_then(|v| v.parse().ok())
         .unwrap_or(120usize);

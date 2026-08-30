@@ -488,7 +488,7 @@ pub struct Segment {
 
 **File scope:** `quick-ui/src/app.rs`. Migrate from the deprecated `EventLoop::create_window` + `EventLoop::run` to `ApplicationHandler` + `EventLoop::run_app`. This is the path the compositor's `WinitBackend` already uses (see `quick-shell/src/compositor/backend/winit.rs` as a reference).
 
-**Tests:** the existing example apps under `quick-ui/examples/` must still launch and paint. Verify with `cargo run -p quick-ui --example gallery` inside distrobox.
+**Tests:** the named scenarios under the `ui-lab` example must still launch and paint. Verify with `cargo run -p ui --example ui-lab -- gallery` inside distrobox.
 
 ---
 

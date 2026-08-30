@@ -46,7 +46,7 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 
 ### Phases 1, 4, 5 — UI widgets
 
-- `ActivityTimeline`, `HistoryScrubber`, `ConflictBanner`, `ConflictPicker`, `ChannelBrowser` exist with full tests and `cargo run -p ui --example <name>` demos.
+- `ActivityTimeline`, `HistoryScrubber`, `ConflictBanner`, `ConflictPicker`, `ChannelBrowser` exist with full tests and named `ui-lab` scenarios (`cargo run -p ui --example ui-lab -- --list`).
 - None of them are bound to a real data source in any deployed app.
 
 ---

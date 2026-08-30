@@ -9,7 +9,7 @@
 //!      scrim behind, collapse chevron.
 //!   4. `nav_shell-narrow-detail.png`   — detail slid over the overview + Back button.
 //!
-//! Run: `cargo run -p ui --example nav_shell_shots`
+//! Run: `cargo run -p ui --example ui-shots -- nav_shell_shots`
 //! Output dir: `$NAV_SHELL_SHOTS_OUT` (default `/tmp/nav_shell_shots`).
 
 use std::collections::HashMap;
@@ -189,7 +189,7 @@ fn shoot(shell: &mut NavShell, w: u32, h: u32, out: PathBuf, set: impl Fn(&mut N
     println!("wrote {}", out.display());
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     let dir =
         std::env::var("NAV_SHELL_SHOTS_OUT").unwrap_or_else(|_| "/tmp/nav_shell_shots".to_string());
     std::fs::create_dir_all(&dir).unwrap();

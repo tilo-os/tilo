@@ -3,21 +3,20 @@
 //! controls, text/selection, badges/chips/avatars, feedback/loading, metrics,
 //! charts/gauges, navigation, banners, empty state, and an editable table).
 //!
-//! Run:  cargo run -p ui --example gallery
+//! Run:  cargo run -p ui --example ui-lab -- gallery
 //! For the offscreen light+dark renders, see `gallery_shots`.
 
 use ui::theme::Theme;
 use ui::widget::{Scrollable, Widget};
 use ui::{App, State};
 
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+use super::gallery_scene;
 
 fn build_gallery(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     Box::new(Scrollable::new_vertical().with_child(gallery_scene::build_showcase(state, theme)))
 }
 
-fn main() {
+pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
 
     let mut state = State::new();
