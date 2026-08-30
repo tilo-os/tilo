@@ -112,6 +112,7 @@ struct CacheFingerprint {
     media_key: Vec<(u32, u8, String)>,
     media_expanded: bool,
     notification_badge: u32,
+    workspace_lens_open: bool,
 }
 
 /// No calendar source is wired to the shell, so this paints what's
@@ -408,6 +409,10 @@ impl TopBarChrome {
             media_key: self.media_signature.clone(),
             media_expanded: self.media_expanded,
             notification_badge: self.notification_badge,
+            workspace_lens_open: self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.ws_settings),
         }
     }
 
@@ -874,6 +879,9 @@ impl TopBarChrome {
             center_y + 12.0,
         );
         self.ws_pill_rect = ws_pill_outer;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().workspace_settings_anchor = ws_pill_outer;
+        }
         // A thing you choose between is a capsule (HIG §9.1, Selector).
         let pill = RoundedRect::from_rect(
             ws_pill_outer,
@@ -888,6 +896,28 @@ impl TopBarChrome {
                 edge,
                 None,
                 &pill,
+            );
+        }
+        let workspace_lens_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.ws_settings);
+        if workspace_lens_open {
+            let context_rule = RoundedRect::from_rect(
+                Rect::new(
+                    ws_pill_outer.x0 + 8.0,
+                    ws_pill_outer.y1 - 2.5,
+                    ws_pill_outer.x1 - 8.0,
+                    ws_pill_outer.y1 - 0.5,
+                ),
+                1.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &context_rule,
             );
         }
         text_renderer.draw_text_weighted(
@@ -906,7 +936,11 @@ impl TopBarChrome {
             transform,
             gear_rect,
             ui::icons::Icon::Settings2,
-            colors.text_dim,
+            if workspace_lens_open {
+                colors.accent[5]
+            } else {
+                colors.text_dim
+            },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
@@ -1863,8 +1897,7 @@ impl TopBarChrome {
             return;
         }
         if self.ws_pill_rect.contains(p) {
-            state.overlays.ws_settings = !state.overlays.ws_settings;
-            state.bump();
+            state.toggle_workspace_settings();
             *handled = true;
             return;
         }

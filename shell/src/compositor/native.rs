@@ -2441,6 +2441,12 @@ pub fn run() -> ! {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        // Contextual routes from Personal Settings cross a worker-thread
+        // service, then land here because ChromeState intentionally remains
+        // compositor-thread owned.
+        if let Some(service) = tool_service.as_ref() {
+            service.pump_workspace_settings(&frame_builder.chrome_handle());
+        }
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;

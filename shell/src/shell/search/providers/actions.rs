@@ -103,9 +103,36 @@ impl Action {
         chrome(
             "settings.open",
             "Open workspace settings",
-            "Identity, members, permissions",
+            "Identity, people, privacy, apps and files for this workspace",
             |st, _| {
-                st.overlays.ws_settings = true;
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::General);
+                Ok(())
+            },
+        ),
+        chrome(
+            "settings.members.open",
+            "Open workspace members",
+            "People, roles and invitations in this workspace",
+            |st, _| {
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Members);
+                Ok(())
+            },
+        ),
+        chrome(
+            "settings.privacy.open",
+            "Open workspace privacy & security",
+            "App grants and enforced access for this workspace",
+            |st, _| {
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                Ok(())
+            },
+        ),
+        chrome(
+            "settings.apps.open",
+            "Open workspace apps & files",
+            "Shared app defaults and your workspace overrides",
+            |st, _| {
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Apps);
                 Ok(())
             },
         ),
@@ -504,6 +531,36 @@ mod tests {
         });
         let opens: Vec<_> = out.iter().filter(|r| r.title.starts_with("Open")).collect();
         assert!(opens.iter().all(|r| r.score == 100));
+    }
+
+    #[test]
+    fn workspace_privacy_search_result_deep_links_to_exact_lens_tab() {
+        let p = ActionsProvider::new();
+        let c = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let out = {
+            let state = c.borrow();
+            p.query(SearchContext {
+                needle: "workspace privacy",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let result = out
+            .iter()
+            .find(|result| result.id == "settings.privacy.open")
+            .expect("privacy governance is directly searchable");
+
+        (result.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none()).unwrap();
+
+        let state = c.borrow();
+        assert!(state.overlays.ws_settings);
+        assert_eq!(
+            state.ws_settings_tab,
+            crate::shell::workspace_settings::WsTab::Permissions
+        );
     }
 
     #[test]

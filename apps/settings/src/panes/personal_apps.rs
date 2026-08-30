@@ -7,7 +7,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Dropdown, Widget};
+use ui::widget::{Button, Dropdown, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -111,6 +111,19 @@ impl PersonalAppsPane {
                 value_row("Applies to", "Your identity on every device"),
                 caption(
                     "A workspace may set a shared choice. In Workspace Settings you can follow it, return to this personal choice, or select a different app for that workspace.",
+                ),
+                Box::new(
+                    Button::new(
+                        "open-workspace-app-defaults",
+                        "Open current workspace app rules",
+                        None,
+                    )
+                    .with_size(236.0, 40.0)
+                    .on_click(|| {
+                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+                        });
+                    }),
                 ),
             ]),
         );
