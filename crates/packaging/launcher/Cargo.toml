@@ -52,6 +52,10 @@ collab-types = { path = "../../collab/collab-types" }
 # packaging — it is the freedesktop format, and the compositor's search
 # providers read it directly too.
 desktop-entry = { package = "qos-desktop-entry", path = "../../system/desktop-entry" }
+# Resolves the explicit active identity selector.  The launcher still binds
+# exactly one record read-only into the sandbox; it never exposes the identity
+# directory or lets apps choose a different person.
+runtime-identity = { path = "../../runtime/runtime-identity" }
 
 [dev-dependencies]
 tempfile.workspace = true

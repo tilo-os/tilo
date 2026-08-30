@@ -33,12 +33,186 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use ed25519_dalek::{Signer, SigningKey};
 
 pub use runtime_portal::NotAvailable;
 
 /// Env var the launcher sets to the on-disk identity record's path.
 pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
+
+/// Non-secret information Settings may show for an identity record.  The
+/// private signing share is intentionally absent and `Debug` is safe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentitySummary {
+    pub id: String,
+    pub display_name: String,
+    pub public_key: [u8; 32],
+    pub threshold: u16,
+    pub total_shares: u16,
+    pub active: bool,
+}
+
+const ACTIVE_FILE: &str = "active";
+
+/// Resolve the per-login-user identity directory using XDG rules.
+pub fn identity_dir_from_env() -> io::Result<PathBuf> {
+    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(xdg).join("qos").join("identity"));
+    }
+    if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(home)
+            .join(".config")
+            .join("qos")
+            .join("identity"));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "neither XDG_CONFIG_HOME nor HOME is set",
+    ))
+}
+
+fn valid_identity_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().enumerate().all(|(i, b)| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit() && i > 0
+                || matches!(b, b'_' | b'-') && i > 0
+        })
+}
+
+fn identity_path(dir: &std::path::Path, id: &str) -> io::Result<PathBuf> {
+    if !valid_identity_id(id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity id must start with a lowercase letter and contain only lowercase letters, numbers, '-' or '_'",
+        ));
+    }
+    Ok(dir.join(format!("{id}.json")))
+}
+
+/// Active record chosen for newly launched apps.  The selector contains only
+/// an id, never key material.  A malformed selector fails closed to the
+/// backwards-compatible `primary.json`, and a selected symlink is refused.
+pub fn resolve_active_identity(dir: &std::path::Path) -> Option<PathBuf> {
+    let id = fs::read_to_string(dir.join(ACTIVE_FILE))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| valid_identity_id(s))
+        .unwrap_or_else(|| "primary".to_string());
+    let path = identity_path(dir, &id).ok()?;
+    let meta = fs::symlink_metadata(&path).ok()?;
+    (meta.file_type().is_file() && !meta.file_type().is_symlink()).then_some(path)
+}
+
+/// Inspect all valid records without exposing their signing shares.
+pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>> {
+    let active = resolve_active_identity(dir);
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)?;
+        if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+            continue;
+        }
+        let Some(id) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|id| valid_identity_id(id))
+        else {
+            continue;
+        };
+        let Ok(identity) = load_from_path(path.clone()) else {
+            continue;
+        };
+        out.push(IdentitySummary {
+            id: id.to_string(),
+            display_name: identity.display_name().to_string(),
+            public_key: identity.group_public_key(),
+            threshold: identity.threshold(),
+            total_shares: identity.total_shares(),
+            active: active.as_deref() == Some(path.as_path()),
+        });
+    }
+    out.sort_by(|a, b| b.active.cmp(&a.active).then_with(|| a.id.cmp(&b.id)));
+    Ok(out)
+}
+
+/// Import a complete, already-provisioned identity record.  The record is
+/// cryptographically self-checked before its first byte reaches the final
+/// path; creation is exclusive and mode 0600.
+pub fn import_identity(dir: &std::path::Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    load_from_bytes(bytes).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("identity record rejected: {e}"),
+        )
+    })?;
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    let path = identity_path(dir, id)?;
+    if path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "an identity with this id already exists",
+        ));
+    }
+    atomic_file::write_with_mode(&path, bytes, 0o600)?;
+    Ok(path)
+}
+
+/// Select which identity the launcher binds read-only into newly started
+/// apps. Running apps retain the old identity until relaunched, avoiding a
+/// mid-operation author change.
+pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
+    let path = identity_path(dir, id)?;
+    let meta = fs::symlink_metadata(&path)?;
+    if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity record must be a regular file",
+        ));
+    }
+    load_from_path(path).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("identity record rejected: {e}"),
+        )
+    })?;
+    atomic_file::write_with_mode(&dir.join(ACTIVE_FILE), format!("{id}\n").as_bytes(), 0o600)
+}
+
+/// Remove a non-active identity.  The active identity and final remaining
+/// identity are protected; callers must first select another identity and
+/// confirm removal in their UI.
+pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
+    let path = identity_path(dir, id)?;
+    if resolve_active_identity(dir).as_deref() == Some(path.as_path()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "select another identity before removing the active one",
+        ));
+    }
+    if list_identities(dir)?.len() <= 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the final identity cannot be removed",
+        ));
+    }
+    let meta = fs::symlink_metadata(&path)?;
+    if !meta.file_type().is_file() || meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity record must be a regular file",
+        ));
+    }
+    fs::remove_file(path)
+}
 
 /// Wire-format types the loader deserialises from disk, mirroring
 /// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
@@ -571,5 +745,76 @@ mod tests {
         });
         let bytes = serde_json::to_vec(&record).unwrap();
         load_from_bytes(&bytes).expect("must tolerate unknown fields");
+    }
+
+    fn record_bytes(name: &str, seed: u8) -> Vec<u8> {
+        let secret = [seed; 32];
+        let key = SigningKey::from_bytes(&secret);
+        serde_json::to_vec(&serde_json::json!({
+            "display_name": name,
+            "avatar_color": [10, 20, 30],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": key.verifying_key().to_bytes(),
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": secret.to_vec(),
+            },
+            "created_at": "2026-08-30T00:00:00Z",
+            "schema_version": 1,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn multi_identity_store_has_explicit_active_record() {
+        let dir = tempfile::tempdir().unwrap();
+        import_identity(dir.path(), "personal", &record_bytes("Ada", 21)).unwrap();
+        import_identity(dir.path(), "work", &record_bytes("Ada at Work", 22)).unwrap();
+        set_active_identity(dir.path(), "work").unwrap();
+        let listed = list_identities(dir.path()).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, "work");
+        assert!(listed[0].active);
+        assert_eq!(listed[1].display_name, "Ada");
+        let active = resolve_active_identity(dir.path()).unwrap();
+        assert_eq!(active.file_name().unwrap(), "work.json");
+    }
+
+    #[test]
+    fn identity_store_refuses_traversal_symlinks_and_active_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(import_identity(dir.path(), "../escape", &record_bytes("No", 23)).is_err());
+        import_identity(dir.path(), "personal", &record_bytes("Ada", 24)).unwrap();
+        import_identity(dir.path(), "work", &record_bytes("Work", 25)).unwrap();
+        set_active_identity(dir.path(), "personal").unwrap();
+        assert!(remove_identity(dir.path(), "personal").is_err());
+        remove_identity(dir.path(), "work").unwrap();
+        assert_eq!(list_identities(dir.path()).unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn imported_secrets_and_selector_are_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 26)).unwrap();
+        set_active_identity(dir.path(), "personal").unwrap();
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(dir.path().join(ACTIVE_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 }
