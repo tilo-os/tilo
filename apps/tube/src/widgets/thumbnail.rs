@@ -25,6 +25,11 @@ use ui::widget::Widget;
 
 use crate::util::{duration_hms, seed_gradient};
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent display toggle (live, dearrow, hero) or render \
+              cache (dirty), not a state machine"
+)]
 pub struct Thumbnail {
     seed: String,
     duration: u32,
@@ -47,6 +52,7 @@ pub struct Thumbnail {
 }
 
 /// Everything about a corner pill's look and placement, apart from its text.
+#[derive(Clone, Copy)]
 struct PillSpec {
     size: f32,
     bg: Color,
@@ -75,6 +81,7 @@ impl Thumbnail {
 
     /// Supply a real decoded thumbnail image directly (or `None` to keep the
     /// gradient). Used by tests/`--shots` that inject a pre-decoded image.
+    #[must_use]
     pub fn image(mut self, image: Option<PenikoImage>) -> Self {
         self.image = image;
         self
@@ -84,42 +91,47 @@ impl Thumbnail {
     /// [`sync`]). Empty `url` / `None` store keeps the seed gradient. This is the
     /// live path — it avoids the build-time `imgs.get()` that made every decode
     /// completion rebuild the whole widget tree.
+    #[must_use]
     pub fn image_source(mut self, store: Option<ImageStore>, url: &str) -> Self {
         self.store = store;
         self.url = url.to_string();
         self
     }
 
+    #[must_use]
     pub fn height(mut self, h: f32) -> Self {
         self.height = h;
         self
     }
+    #[must_use]
     pub fn dearrow(mut self, on: bool) -> Self {
         self.dearrow = on;
         self
     }
+    #[must_use]
     pub fn live(mut self, on: bool) -> Self {
         self.live = on;
         self
     }
+    #[must_use]
     pub fn progress(mut self, p: f32) -> Self {
         self.progress = Some(p.clamp(0.0, 1.0));
         self
     }
+    #[must_use]
     pub fn hero(mut self) -> Self {
         self.hero = true;
         self
     }
 
     fn pill(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         text: &str,
-        spec: PillSpec,
+        spec: &PillSpec,
     ) {
-        let PillSpec {
+        let &PillSpec {
             size,
             bg,
             fg,
@@ -144,7 +156,13 @@ impl Thumbnail {
         );
     }
 
-    fn paint(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer) {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over this tile's fixed chrome (gradient/image, \
+                  duration/live pill, dearrow marker, progress bar); splitting it would only \
+                  relocate the line count, not the amount a reader must hold in mind"
+    )]
+    fn paint(&self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer) {
         if self.rect.width() <= 0.0 {
             return;
         }
@@ -207,12 +225,12 @@ impl Thumbnail {
 
         // Duration / LIVE pill, bottom-right.
         if self.live {
-            self.pill(
+            Self::pill(
                 scene,
                 transform,
                 text_renderer,
                 "LIVE",
-                PillSpec {
+                &PillSpec {
                     size: 11.0,
                     bg: Color::from_rgb8(0xcc, 0x00, 0x00),
                     fg: Color::WHITE,
@@ -221,12 +239,12 @@ impl Thumbnail {
                 },
             );
         } else {
-            self.pill(
+            Self::pill(
                 scene,
                 transform,
                 text_renderer,
                 &duration_hms(self.duration),
-                PillSpec {
+                &PillSpec {
                     size: 11.0,
                     bg: Color::from_rgba8(0, 0, 0, 200),
                     fg: Color::WHITE,
@@ -238,12 +256,12 @@ impl Thumbnail {
 
         // DeArrow marker, top-left.
         if self.dearrow {
-            self.pill(
+            Self::pill(
                 scene,
                 transform,
                 text_renderer,
                 "DeArrow",
-                PillSpec {
+                &PillSpec {
                     size: 10.0,
                     bg: Color::from_rgb8(0x9b, 0x59, 0xb6),
                     fg: Color::WHITE,
