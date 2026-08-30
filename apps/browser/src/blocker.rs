@@ -78,6 +78,7 @@ const LISTS: &[(&str, &str)] = &[
 /// described above; `apps/browser/examples/adblock_blank_repro.rs`
 /// reproduces it. Named here so the invariant is testable rather than
 /// only stated in prose.
+#[cfg(test)]
 const EXCLUDED_LISTS: &[&str] = &["ublock-quick-fixes.txt", "adguard-base.txt"];
 
 /// Re-download a cached list after this age.

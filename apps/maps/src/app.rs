@@ -2361,12 +2361,6 @@ impl MapsApp {
     }
 }
 
-/// Whether two coordinates are equal to within a sub-tile epsilon (used to
-/// dedupe re-downloads of the same offline region footprint).
-fn same_coord(a: LatLon, b: LatLon) -> bool {
-    (a.lat - b.lat).abs() < 1e-6 && (a.lon - b.lon).abs() < 1e-6
-}
-
 /// Whether `outer` fully contains `inner` (both lat/lon extents).
 fn bounds_contains(outer: GeoBounds, inner: GeoBounds) -> bool {
     outer.min.lat <= inner.min.lat

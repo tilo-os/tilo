@@ -1283,18 +1283,6 @@ mod tests {
         assert_eq!(out[0].id, "/home/tester/src/todo.md");
     }
 
-    fn full_index_paths() -> Vec<String> {
-        (0..MAX_ENTRIES)
-            .map(|i| {
-                format!(
-                    "~/Development/project-{}/src/module_{}/component_{i}.rs",
-                    i % 97,
-                    i % 31
-                )
-            })
-            .collect()
-    }
-
     /// Typing a word must cost one sweep of the index, not one per
     /// character — asserted on entries examined so it holds across build
     /// profiles. (One sweep of 50 000 entries measures 6.1 ms in release.)

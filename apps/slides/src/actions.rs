@@ -766,15 +766,6 @@ mod tests {
         (app, doc)
     }
 
-    /// Dispatch an action through the executor, as the on-screen affordance path
-    /// does.
-    fn dispatch(doc: &mut AutoCommit, action: &SlidesAction) {
-        let encoded = encode(action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
     /// Ctrl+K on Slides yields the deck root exporting "Add slide" + a theme row
     /// per palette, a `slides.slide:<id>` child per slide (duplicate / delete /
     /// layout / background), and a `slides.element:<id>` per element (delete /

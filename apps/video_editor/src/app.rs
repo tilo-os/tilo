@@ -4749,14 +4749,6 @@ fn hit_slider(track: Rect, p: Point) -> bool {
     p.x >= track.x0 - 8.0 && p.x <= track.x1 + 8.0 && (p.y - track.center().y).abs() < 14.0
 }
 
-fn triangle(x: f64, y: f64, s: f64) -> BezPath {
-    let mut p = BezPath::new();
-    p.move_to((x, y));
-    p.line_to((x + s, y + s / 2.0));
-    p.line_to((x, y + s));
-    p.close_path();
-    p
-}
 fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
     let mut p = BezPath::new();
     p.move_to((cx - s / 2.0, top));
