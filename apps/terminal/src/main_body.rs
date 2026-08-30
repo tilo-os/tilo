@@ -2554,7 +2554,7 @@ impl Perform for TerminalPerformer<'_> {
             'r' => { // DECSTBM — set scrolling region
                 let mut it = params.iter();
                 let top = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                let bot = it.next().and_then(|p| p.first()).copied().unwrap_or((self.height as u16)) as usize;
+                let bot = it.next().and_then(|p| p.first()).copied().unwrap_or(self.height as u16 ) as usize;
                 let top0 = top.saturating_sub(1).min(self.height.saturating_sub(1));
                 let bot0 = if bot == 0 { self.height - 1 } else { (bot - 1).min(self.height - 1) };
                 if top0 < bot0 {

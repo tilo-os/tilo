@@ -23,7 +23,7 @@ use std::io::Read;
 use std::os::unix::io::{AsFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
-use smithay::input::{Seat, SeatHandler};
+use smithay::input::Seat;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, generic::Generic};
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;

@@ -4193,7 +4193,7 @@ mod responsive_body_tests {
         for i in 0..5 {
             std::fs::write(dir.path().join(format!("f{i}.txt")), b"x").unwrap();
         }
-        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
+        let h = H::new(Some(dir.path()), 600.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
 
         assert!(

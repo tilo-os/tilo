@@ -13,10 +13,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, ButtonState, Event as InputEventTrait, GestureBeginEvent,
-    GestureEndEvent, GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputEvent, KeyState,
-    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
-    TouchSlot,
+    AbsolutePositionEvent, Axis, ButtonState, GestureBeginEvent, GestureEndEvent,
+    GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 // xkb comes from smithay's re-export, no new dependency; mirrors `XkbConfig::default()`'s `XKB_DEFAULT_*` handling via empty rule names (see `KeyboardXkb::new`).
@@ -36,7 +35,9 @@ use winit::keyboard::{
 };
 
 use super::devices::{ModeInfo, filter_kms_nodes};
-use super::gestures::{GestureAction, GestureConfig, GestureTracker};
+#[cfg(test)]
+use super::gestures::GestureAction;
+use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
 use super::input_config::{DeviceCaps, InputSettings};
