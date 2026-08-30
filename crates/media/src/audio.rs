@@ -239,7 +239,15 @@ fn as_u32(v: &Value) -> Option<u32> {
 /// the slider position a user set. `wpctl set-volume` takes the perceptual
 /// value back, so the round trip is exact.
 fn perceptual_from_channel_volumes(cv: &[f64]) -> Option<f32> {
-    cv.first().map(|v| (v.max(0.0)).cbrt() as f32)
+    // Treat the loudest channel as the device's base volume. Reading the
+    // first channel made a right-balanced sink appear quieter on every graph
+    // refresh; a persistent balance policy would then attenuate it again and
+    // again. Pulse/WirePlumber likewise expose the loud side as the overall
+    // volume while balance describes the channel ratio.
+    cv.iter()
+        .copied()
+        .reduce(f64::max)
+        .map(|v| (v.max(0.0)).cbrt() as f32)
 }
 
 /// Read a node's first `Props` param that carries channel volumes, yielding
@@ -689,6 +697,12 @@ pub fn real_control() -> Arc<dyn GraphControl> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_volume_uses_loud_channel_so_balance_does_not_decay() {
+        let volume = perceptual_from_channel_volumes(&[0.064, 0.512]).unwrap();
+        assert!((volume - 0.8).abs() < 0.001);
+    }
 
     /// A faithful, trimmed capture of a real `pw-dump` from a running
     /// `PipeWire` 1.6 / `WirePlumber` host: two sinks (the built-in analog stereo,

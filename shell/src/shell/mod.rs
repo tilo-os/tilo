@@ -62,6 +62,7 @@ pub mod remote_cursors;
 pub mod room_activity;
 pub mod room_records;
 pub mod search;
+pub mod session_audio_policy;
 pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
 pub mod sidebar_wheel_disc;

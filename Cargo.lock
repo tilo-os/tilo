@@ -12618,6 +12618,7 @@ dependencies = [
  "landlock",
  "launcher",
  "libc",
+ "media",
  "naga",
  "openh264",
  "os-actions",
