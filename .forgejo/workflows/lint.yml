@@ -33,6 +33,14 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
+      # rustc's own warnings, which the workspace is at zero of. Kept
+      # separate from the clippy ratchet: this one is a hard gate, because
+      # there is nothing to ratchet down from.
+      - name: no rustc warnings
+        env:
+          CARGO_BUILD_JOBS: "4"
+        run: tools/check-warnings.sh
+
       # Runs whatever check.yml did not: every target, including tests.
       # Not a plain `cargo clippy`: the workspace has ~50,000 existing
       # violations, so that gate would be red for months and gate nothing.
