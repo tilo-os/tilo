@@ -85,13 +85,21 @@ pub struct RustyPipeBackend {
 
 impl RustyPipeBackend {
     /// Construct with the default (null) `PoToken` provider — metadata only.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` under the same conditions as [`Self::with_potoken`].
     pub fn new() -> Result<Self, BackendError> {
-        Self::with_potoken(Box::new(NullPoToken))
+        Self::with_potoken(&NullPoToken)
     }
 
     /// Construct with an explicit `PoToken` provider. The provider's capability
     /// selects whether rustypipe's botguard path is enabled.
-    pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the tokio runtime or the rustypipe client fails to build.
+    pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
         // A multi-thread runtime (not current-thread): rustypipe fires internal
         // `tokio::spawn`/blocking work (visitor-data prefetch, the botguard
         // subprocess) that a single-threaded runtime can deadlock on.
@@ -100,7 +108,7 @@ impl RustyPipeBackend {
             .enable_all()
             .build()
             .map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
-        let potoken_desc = bind_potoken(provider.as_ref());
+        let potoken_desc = bind_potoken(provider);
         let can_stream = provider.can_stream();
         // Build the client *inside* the runtime so anything rustypipe wires up
         // at construction (the reqwest pool, cache tasks) has a reactor.
@@ -135,6 +143,10 @@ impl RustyPipeBackend {
     /// Run one search and split the results into videos, playlists and creator
     /// rows — the enrichment source for the primary backend, which returns only
     /// videos (and no avatars). Real `InnerTube` data in a single call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the search request fails.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
@@ -156,6 +168,10 @@ impl RustyPipeBackend {
     }
 
     /// Fetch a playlist page: its metadata + ordered video list.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the playlist request fails.
     pub fn playlist_page(&self, id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
         let q = self.rp.query();
         let pl = self
