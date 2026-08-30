@@ -40,7 +40,7 @@ use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
-use super::input_config::{DeviceCaps, InputSettings};
+use super::input_config::{AccessibilityInputSettings, DeviceCaps, InputSettings};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{CardHandle, CursorPlanes, DrmScanout, ScanoutBuild, open_all_scanouts};
@@ -86,6 +86,12 @@ pub struct DrmDispatchState {
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
     pub input: InputSettings,
+    pub accessibility: AccessibilityInputSettings,
+    /// Slow-keys presses are accepted only after being held for the delay.
+    pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
+    /// Sticky modifiers stay logically down through the next non-modifier.
+    pub sticky_latched: ModifiersState,
+    pub physical_modifiers: ModifiersState,
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
@@ -117,6 +123,7 @@ pub struct DrmDispatchState {
 pub struct LiveEntry {
     pub key: DrmOutputKey,
     pub id: OutputId,
+    pub connector_name: String,
     pub size: (u32, u32),
     pub physical_mm: Option<(u32, u32)>,
     pub crtc: smithay::reexports::drm::control::crtc::Handle,
@@ -143,7 +150,10 @@ pub enum ScanoutCommand {
     /// The session lost the hardware: stop presenting entirely.
     Pause,
     /// The session has it back: re-modeset every output, restore the panels' power state, and resume presenting.
-    Resume { dpms_on: bool },
+    Resume {
+        dpms_on: bool,
+    },
+    SetCursorSize(u32),
 }
 
 impl DrmDispatchState {
@@ -267,6 +277,7 @@ impl DrmDispatchState {
             self.live.push(LiveEntry {
                 key,
                 id,
+                connector_name: build.connector_name,
                 size: build.scanout.size(),
                 physical_mm: build.physical_mm,
                 crtc: build.crtc,
@@ -288,12 +299,58 @@ impl DrmDispatchState {
     ///
     /// Called after any change to the live set — re-packing (not leaving survivors in place) closes the hole an unplugged middle monitor would leave.
     fn relayout_outputs(&mut self) {
-        self.live.sort_by_key(|l| l.id.0);
+        let config = settings_store::hardware::DisplayConfig::load();
+        self.live.sort_by_key(|l| {
+            (
+                !config
+                    .outputs
+                    .get(&l.connector_name)
+                    .is_some_and(|c| c.primary),
+                l.id.0,
+            )
+        });
         let sizes: Vec<(u32, u32)> = self.live.iter().map(|l| l.size).collect();
-        let positions = hotplug::layout(&sizes);
+        let fallback = hotplug::layout(&sizes);
+        let mut positions: Vec<(i32, i32)> = self
+            .live
+            .iter()
+            .zip(&fallback)
+            .map(|(entry, fallback)| {
+                config
+                    .outputs
+                    .get(&entry.connector_name)
+                    .map_or(*fallback, |c| (c.x, c.y))
+            })
+            .collect();
+        for index in 0..self.live.len() {
+            if let Some(target) = config
+                .outputs
+                .get(&self.live[index].connector_name)
+                .and_then(|c| c.mirror_of.as_deref())
+                && let Some(target_index) =
+                    self.live.iter().position(|l| l.connector_name == target)
+            {
+                positions[index] = positions[target_index];
+            }
+        }
+        // KMS accepts negative logical coordinates, but the renderer's
+        // combined texture starts at zero. Preserve relative arrangement and
+        // translate the whole monitor island into that texture.
+        let min_x = positions.iter().map(|p| p.0).min().unwrap_or(0);
+        let min_y = positions.iter().map(|p| p.1).min().unwrap_or(0);
+        for p in &mut positions {
+            p.0 -= min_x;
+            p.1 -= min_y;
+        }
         for (entry, position) in self.live.iter_mut().zip(&positions) {
             entry.position = *position;
-            entry.scale = resolve_scale(entry.size, entry.physical_mm, self.scale_override);
+            entry.scale = config
+                .outputs
+                .get(&entry.connector_name)
+                .map(|c| c.scale)
+                .unwrap_or_else(|| {
+                    resolve_scale(entry.size, entry.physical_mm, self.scale_override)
+                });
         }
         let extent = hotplug::combined_extent(&positions, &sizes);
         self.output_size = extent;
@@ -404,6 +461,17 @@ impl DrmDispatchState {
         if let Some(speed) = plan.accel_speed() {
             let _ = device.config_accel_set_speed(speed);
         }
+        if let Some(on) = plan.left_handed {
+            let _ = device.config_left_handed_set(on);
+        }
+        if let Some(flat) = plan.flat_acceleration {
+            use smithay::reexports::input::AccelProfile;
+            let _ = device.config_accel_set_profile(if flat {
+                AccelProfile::Flat
+            } else {
+                AccelProfile::Adaptive
+            });
+        }
         tracing::info!(
             device = device.name(),
             touchpad = caps.is_touchpad(),
@@ -421,12 +489,13 @@ impl DrmDispatchState {
         // carries a finger count, so every later event asks what the
         // gesture in flight belongs to — and `end` clears that, which
         // would leave a shell-owned gesture's closing event looking unowned, sending a client a `swipe_end` for a swipe it never saw begin.
-        let shell_owns = match ev {
-            GestureEvent::SwipeBegin { fingers }
-            | GestureEvent::PinchBegin { fingers }
-            | GestureEvent::HoldBegin { fingers } => super::gestures::claims(fingers),
-            _ => self.gestures.shell_owns_current(),
-        };
+        let shell_owns = self.input.touchpad_gestures
+            && match ev {
+                GestureEvent::SwipeBegin { fingers }
+                | GestureEvent::PinchBegin { fingers }
+                | GestureEvent::HoldBegin { fingers } => super::gestures::claims(fingers),
+                _ => self.gestures.shell_owns_current(),
+            };
         let action = match ev {
             GestureEvent::SwipeBegin { fingers } => {
                 self.gestures.swipe_begin(fingers);
@@ -473,6 +542,23 @@ impl DrmDispatchState {
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
     fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        if self.accessibility.slow_keys {
+            if pressed {
+                self.slow_pending.insert(keycode, std::time::Instant::now());
+                return;
+            }
+            let Some(started) = self.slow_pending.remove(&keycode) else {
+                return;
+            };
+            if started.elapsed() < std::time::Duration::from_millis(300) {
+                return;
+            }
+            self.process_keyboard_key(keycode, true);
+        }
+        self.process_keyboard_key(keycode, pressed);
+    }
+
+    fn process_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
         // Scope the `&mut self.keyboard` borrow so we can push onto `self.events` afterwards without aliasing.
         let outcome = {
             let Some(kbd) = self.keyboard.as_mut() else {
@@ -481,10 +567,37 @@ impl DrmDispatchState {
             kbd.process(keycode, pressed)
         };
         if let Some(mods) = outcome.modifiers_changed {
-            self.events.push(BackendEvent::ModifiersChanged(mods));
+            let actual = mods.state();
+            if self.accessibility.sticky_keys {
+                if actual.is_empty() && !self.physical_modifiers.is_empty() {
+                    self.sticky_latched |= self.physical_modifiers;
+                    self.physical_modifiers = ModifiersState::empty();
+                    self.events
+                        .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                            self.sticky_latched,
+                        )));
+                } else {
+                    self.physical_modifiers = actual;
+                    self.events
+                        .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                            actual | self.sticky_latched,
+                        )));
+                }
+            } else {
+                self.events.push(BackendEvent::ModifiersChanged(mods));
+            }
         }
         if let Some(input) = outcome.input {
+            let consumes_sticky =
+                self.accessibility.sticky_keys && pressed && !self.sticky_latched.is_empty();
             self.events.push(BackendEvent::Input(input));
+            if consumes_sticky {
+                self.sticky_latched = ModifiersState::empty();
+                self.events
+                    .push(BackendEvent::ModifiersChanged(Modifiers::from(
+                        self.physical_modifiers,
+                    )));
+            }
         }
     }
 }
@@ -830,6 +943,7 @@ impl DrmRuntime {
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();
+        let accessibility = AccessibilityInputSettings::load();
         let scale_override = load_display_scale_override();
         tracing::info!(
             tap_to_click = input.tap_to_click,
@@ -849,6 +963,10 @@ impl DrmRuntime {
             live: Vec::new(),
             commands: Some(tx),
             input,
+            accessibility,
+            slow_pending: HashMap::new(),
+            sticky_latched: ModifiersState::empty(),
+            physical_modifiers: ModifiersState::empty(),
             devices: Vec::new(),
             scale_override,
             gestures: GestureTracker::new(GestureConfig {
@@ -927,7 +1045,21 @@ impl DrmRuntime {
     /// `DeviceAdded`; already-attached ones are re-configured here from the dispatch state's handles, so a pointer-speed change is felt on the touchpad the user is holding, not the next one plugged in.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
+        let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
+        let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
+        self.dispatch.accessibility = accessibility;
+        if accessibility.effective_cursor_size() != previous_cursor_size {
+            self.dispatch.command(ScanoutCommand::SetCursorSize(
+                accessibility.effective_cursor_size(),
+            ));
+        }
+        if !accessibility.sticky_keys {
+            self.dispatch.sticky_latched = ModifiersState::empty();
+        }
+        if !accessibility.slow_keys {
+            self.dispatch.slow_pending.clear();
+        }
         self.dispatch.gestures.set_config(GestureConfig {
             natural_scroll: input.natural_scroll,
             ..GestureConfig::default()
@@ -944,6 +1076,21 @@ impl DrmRuntime {
             self.dispatch.outputs_changed = true;
             self.dispatch.push(BackendEvent::OutputsChanged);
         }
+        // The same atomic settings write may carry a topology/mode change.
+        // Re-probe first so a requested advertised mode is genuinely
+        // modeset; then publish arrangement/scale even when the connector
+        // set itself did not change.
+        self.dispatch.rescan_outputs("display settings changed");
+        self.dispatch.relayout_outputs();
+        let outputs = self.dispatch.output_table();
+        self.dispatch.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs,
+        });
+        self.dispatch.outputs_changed = true;
+        self.dispatch.push(BackendEvent::OutputsChanged);
+        self.dispatch.push(BackendEvent::Redraw);
     }
 
     /// Drain pending events from the internal calloop — non-blocking, a zero timeout so the outer compositor loop owns the cadence.
@@ -981,6 +1128,10 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_dwt: device.config_dwt_is_available(),
         supports_middle_emulation: device.config_middle_emulation_is_available(),
         is_pointer: device.has_capability(smithay::reexports::input::DeviceCapability::Pointer),
+        supports_left_handed: device.config_left_handed_is_available(),
+        supports_flat_acceleration: device
+            .config_accel_profiles()
+            .contains(&smithay::reexports::input::AccelProfile::Flat),
     }
 }
 
@@ -2013,6 +2164,8 @@ mod tests {
             supports_dwt: true,
             supports_middle_emulation: true,
             is_pointer: true,
+            supports_left_handed: true,
+            supports_flat_acceleration: true,
         };
         let plan = input_config::plan_for(&state.input, &caps);
         assert_eq!(plan.tap, Some(true));

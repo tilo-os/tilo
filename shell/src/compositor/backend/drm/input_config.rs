@@ -21,6 +21,66 @@ pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
 pub const POINTER_SPEED_KEY: &str = "pointer_speed";
 pub const KEY_REPEAT_KEY: &str = "key_repeat";
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct AccessibilityInputSettings {
+    pub sticky_keys: bool,
+    pub slow_keys: bool,
+    pub large_cursor: bool,
+    pub cursor_size: u32,
+    pub on_screen_keyboard: bool,
+}
+
+impl Default for AccessibilityInputSettings {
+    fn default() -> Self {
+        Self {
+            sticky_keys: false,
+            slow_keys: false,
+            large_cursor: false,
+            cursor_size: 24,
+            on_screen_keyboard: false,
+        }
+    }
+}
+
+impl AccessibilityInputSettings {
+    pub fn load() -> Self {
+        let section = settings_store::load_section("accessibility");
+        let d = Self::default();
+        Self {
+            sticky_keys: section
+                .get("sticky_keys")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(d.sticky_keys),
+            slow_keys: section
+                .get("slow_keys")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(d.slow_keys),
+            large_cursor: section
+                .get("large_cursor")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(d.large_cursor),
+            cursor_size: section
+                .get("cursor_size")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(d.cursor_size)
+                .clamp(24, 64),
+            on_screen_keyboard: section
+                .get("on_screen_keyboard")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(d.on_screen_keyboard),
+        }
+    }
+
+    pub fn effective_cursor_size(self) -> u32 {
+        if self.large_cursor {
+            self.cursor_size.clamp(24, 64)
+        } else {
+            24
+        }
+    }
+}
+
 /// Slowest auto-repeat the `key_repeat` slider can select, in keys per second — below this, holding a key feels broken rather than slow.
 pub const REPEAT_RATE_MIN: u32 = 10;
 /// Fastest auto-repeat the slider can select, in keys per second.
@@ -42,6 +102,12 @@ pub struct InputSettings {
     pub pointer_speed: f64,
     /// Keyboard auto-repeat, `0.0` (slow, long delay) … `1.0` (fast, short delay).
     pub key_repeat: f64,
+    pub tap_drag: bool,
+    pub disable_while_typing: bool,
+    pub middle_emulation: bool,
+    pub left_handed: bool,
+    pub flat_acceleration: bool,
+    pub touchpad_gestures: bool,
 }
 
 impl Default for InputSettings {
@@ -51,6 +117,12 @@ impl Default for InputSettings {
             tap_to_click: true,
             pointer_speed: 0.5,
             key_repeat: 0.5,
+            tap_drag: true,
+            disable_while_typing: true,
+            middle_emulation: true,
+            left_handed: false,
+            flat_acceleration: false,
+            touchpad_gestures: true,
         }
     }
 }
@@ -78,6 +150,15 @@ impl InputSettings {
             tap_to_click: bool_at(TAP_TO_CLICK_KEY, d.tap_to_click),
             pointer_speed: unit_at(POINTER_SPEED_KEY, d.pointer_speed),
             key_repeat: unit_at(KEY_REPEAT_KEY, d.key_repeat),
+            tap_drag: bool_at("tap_drag", d.tap_drag),
+            disable_while_typing: bool_at("disable_while_typing", d.disable_while_typing),
+            middle_emulation: bool_at("middle_emulation", d.middle_emulation),
+            left_handed: bool_at("left_handed", d.left_handed),
+            flat_acceleration: section
+                .get("accel_profile")
+                .and_then(serde_json::Value::as_str)
+                == Some("flat"),
+            touchpad_gestures: bool_at("touchpad_gestures", d.touchpad_gestures),
         }
     }
 
@@ -185,6 +266,8 @@ pub struct DeviceCaps {
     pub supports_middle_emulation: bool,
     /// The device has left-handed configuration, i.e. it is a pointer.
     pub is_pointer: bool,
+    pub supports_left_handed: bool,
+    pub supports_flat_acceleration: bool,
 }
 
 impl DeviceCaps {
@@ -205,6 +288,8 @@ pub struct DevicePlan {
     pub middle_emulation: Option<bool>,
     /// Present as milli-units (`accel_speed * 1000`, rounded) so the plan stays `Eq` and comparable in tests; the applier divides it back.
     pub accel_speed_milli: Option<i32>,
+    pub left_handed: Option<bool>,
+    pub flat_acceleration: Option<bool>,
 }
 
 impl DevicePlan {
@@ -218,17 +303,25 @@ impl DevicePlan {
 pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
     DevicePlan {
         tap: caps.supports_tap.then_some(settings.tap_to_click),
-        tap_drag: caps.supports_tap.then_some(settings.tap_to_click),
+        tap_drag: caps
+            .supports_tap
+            .then_some(settings.tap_to_click && settings.tap_drag),
         natural_scroll: caps
             .supports_natural_scroll
             .then_some(settings.natural_scroll),
         // Only touchpads get disable-while-typing, and unconditionally: it's what makes tap-to-click safe to default on, so it's not a separate preference to forget to set.
-        disable_while_typing: caps.supports_dwt.then_some(true),
+        disable_while_typing: caps.supports_dwt.then_some(settings.disable_while_typing),
         // A touchpad with no physical middle button is the norm; without emulation there's no way to middle-click at all.
-        middle_emulation: caps.supports_middle_emulation.then_some(true),
+        middle_emulation: caps
+            .supports_middle_emulation
+            .then_some(settings.middle_emulation),
         accel_speed_milli: caps
             .supports_accel
             .then(|| (settings.accel_speed() * 1000.0).round() as i32),
+        left_handed: caps.supports_left_handed.then_some(settings.left_handed),
+        flat_acceleration: caps
+            .supports_flat_acceleration
+            .then_some(settings.flat_acceleration),
     }
 }
 
@@ -244,6 +337,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn accessibility_cursor_size_is_capability_safe() {
+        let normal = AccessibilityInputSettings::default();
+        assert_eq!(normal.effective_cursor_size(), 24);
+        let large = AccessibilityInputSettings {
+            large_cursor: true,
+            cursor_size: 48,
+            ..normal
+        };
+        assert_eq!(large.effective_cursor_size(), 48);
+    }
+
     fn touchpad() -> DeviceCaps {
         DeviceCaps {
             supports_tap: true,
@@ -252,6 +357,8 @@ mod tests {
             supports_dwt: true,
             supports_middle_emulation: true,
             is_pointer: true,
+            supports_left_handed: true,
+            supports_flat_acceleration: true,
         }
     }
 
@@ -263,6 +370,8 @@ mod tests {
             supports_dwt: false,
             supports_middle_emulation: false,
             is_pointer: true,
+            supports_left_handed: true,
+            supports_flat_acceleration: true,
         }
     }
 

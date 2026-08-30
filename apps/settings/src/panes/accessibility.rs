@@ -32,7 +32,7 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{AccessibilityPrefs, AppearancePrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -152,10 +152,9 @@ impl AccessibilityPane {
                     "Ignore brief, accidental key presses",
                     Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY),
                 ),
-                setting_row_described(
+                value_row(
                     "On-screen keyboard",
-                    "Show a keyboard for typing without a physical one",
-                    Self::toggle("a11y.osk", OSK_KEY),
+                    "Unavailable until the secure compositor overlay is installed",
                 ),
             ]),
         );

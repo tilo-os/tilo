@@ -44,6 +44,7 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
+use settings_store::hardware::{DisplayConfig, OutputConfig, OutputDescriptor, OutputMode};
 
 /// CRDT key the brightness slider writes into.
 pub const BRIGHTNESS_KEY: &str = "display.brightness";
@@ -106,6 +107,10 @@ fn scale_factor_of(label: &str) -> Option<f64> {
         .map(|(_, s)| *s)
 }
 
+fn output_key(connector: &str, field: &str) -> String {
+    format!("display.output.{connector}.{field}")
+}
+
 /// One real display output, derived from a DRM connector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplayOutput {
@@ -113,6 +118,14 @@ pub struct DisplayOutput {
     pub label: String,
     pub connected: bool,
     pub builtin: bool,
+    /// Stable DRM connector name used by the compositor-facing contract.
+    pub connector: String,
+    /// Modes discovered from sysfs/compositor status. An empty list means
+    /// mode selection is unavailable, not that a made-up default is valid.
+    pub modes: Vec<OutputMode>,
+    pub hdr: bool,
+    pub vrr: bool,
+    pub color_profiles: Vec<String>,
 }
 
 /// Map a raw DRM connector directory name + its `status` file contents to a
@@ -133,6 +146,11 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         label,
         connected: status.trim() == "connected",
         builtin,
+        connector: name.to_string(),
+        modes: Vec::new(),
+        hdr: false,
+        vrr: false,
+        color_profiles: Vec::new(),
     }
 }
 
@@ -168,7 +186,28 @@ fn read_outputs() -> Vec<DisplayOutput> {
         }
         let status_path = entry.path().join("status");
         if let Ok(status) = std::fs::read_to_string(&status_path) {
-            out.push(classify_connector(&name, &status));
+            let mut output = classify_connector(&name, &status);
+            if let Ok(modes) = std::fs::read_to_string(entry.path().join("modes")) {
+                output.modes = modes
+                    .lines()
+                    .filter_map(|line| {
+                        let (w, h) = line.trim().split_once('x')?;
+                        Some(OutputMode {
+                            width: w.parse().ok()?,
+                            height: h.parse().ok()?,
+                            refresh_mhz: 0,
+                        })
+                    })
+                    .collect();
+                output.modes.sort_by_key(|m| {
+                    (
+                        std::cmp::Reverse(m.width * m.height),
+                        std::cmp::Reverse(m.refresh_mhz),
+                    )
+                });
+                output.modes.dedup();
+            }
+            out.push(output);
         }
     }
     // Deterministic order: built-in first, then connected, then alphabetical.
@@ -190,6 +229,7 @@ pub struct DisplayPane {
     initial_prefs: DisplayPrefs,
     last_brightness: f32,
     last_prefs: DisplayPrefs,
+    output_config: DisplayConfig,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -212,6 +252,7 @@ impl DisplayPane {
             initial_prefs: SystemPrefs::load().display,
             last_brightness: initial,
             last_prefs: DisplayPrefs::default(),
+            output_config: DisplayConfig::load(),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -231,12 +272,22 @@ impl DisplayPane {
                 label: "Built-in display".into(),
                 connected: true,
                 builtin: true,
+                connector: "eDP-1".into(),
+                modes: vec![OutputMode {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                }],
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
             }],
             ambient_sensor_available: true,
             initial_brightness,
             initial_prefs: DisplayPrefs::default(),
             last_brightness: initial_brightness,
             last_prefs: DisplayPrefs::default(),
+            output_config: DisplayConfig::default(),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -294,26 +345,6 @@ impl DisplayPane {
             card("Displays", rows(out_rows))
         };
 
-        // --- Scale card: HiDPI display-scale factor.
-        let scale_opts: Vec<String> = DISPLAY_SCALES.iter().map(|(l, _)| l.to_string()).collect();
-        let scale = card(
-            "Scale",
-            rows(vec![
-                choice_row(
-                    "Display scale",
-                    Box::new(
-                        Dropdown::new(scale_opts, DISPLAY_SCALE_KEY)
-                            .with_id("display.scale")
-                            .with_placeholder(scale_label(self.initial_prefs.scale)),
-                    ),
-                ),
-                caption(
-                    "Sizes text and interface elements. The compositor and \
-                     every qOS app render crisp at the chosen scale.",
-                ),
-            ]),
-        );
-
         // --- Brightness & comfort card.
         let automatic_brightness = if self.ambient_sensor_available {
             setting_row(
@@ -366,7 +397,145 @@ impl DisplayPane {
             ]),
         );
 
-        crate::widgets::cards(vec![arrangement, scale, brightness])
+        let mut cards = vec![arrangement];
+        for (index, output) in connected.iter().enumerate() {
+            let config = self
+                .output_config
+                .outputs
+                .get(&output.connector)
+                .cloned()
+                .unwrap_or_else(|| OutputConfig {
+                    primary: index == 0,
+                    x: index as i32 * 1920,
+                    ..Default::default()
+                });
+            let primary_key = output_key(&output.connector, "primary");
+            let scale_key = output_key(&output.connector, "scale");
+            let position_key = output_key(&output.connector, "position");
+            let mirror_key = output_key(&output.connector, "mirror");
+            let mode_key = output_key(&output.connector, "mode");
+            let toggle_id = format!("settings.display.{}.primary", output.connector);
+            let mirror_placeholder = config
+                .mirror_of
+                .as_ref()
+                .and_then(|target| {
+                    connected
+                        .iter()
+                        .find(|candidate| candidate.connector == *target)
+                })
+                .map_or("Extend workspace".into(), |target| {
+                    format!("Mirror {}", target.label)
+                });
+            let mut output_rows = vec![
+                setting_row(
+                    "Primary display",
+                    Box::new(Toggle::new(&toggle_id, &primary_key).with_id(&primary_key)),
+                ),
+                choice_row(
+                    "Scale",
+                    Box::new(
+                        Dropdown::new(
+                            DISPLAY_SCALES.iter().map(|(l, _)| (*l).into()).collect(),
+                            &scale_key,
+                        )
+                        .with_id(&scale_key)
+                        .with_placeholder(scale_label(config.scale)),
+                    ),
+                ),
+                choice_row(
+                    "Position",
+                    Box::new(
+                        Dropdown::new(
+                            vec![
+                                "Automatic".into(),
+                                "Left of primary".into(),
+                                "Right of primary".into(),
+                                "Above primary".into(),
+                                "Below primary".into(),
+                            ],
+                            &position_key,
+                        )
+                        .with_id(&position_key)
+                        .with_placeholder("Automatic"),
+                    ),
+                ),
+                choice_row(
+                    "Mirroring",
+                    Box::new(
+                        Dropdown::new(
+                            std::iter::once("Extend workspace".into())
+                                .chain(
+                                    connected
+                                        .iter()
+                                        .filter(|candidate| candidate.connector != output.connector)
+                                        .map(|candidate| format!("Mirror {}", candidate.label)),
+                                )
+                                .collect(),
+                            &mirror_key,
+                        )
+                        .with_id(&mirror_key)
+                        .with_placeholder(&mirror_placeholder),
+                    ),
+                ),
+            ];
+            if output.modes.is_empty() {
+                output_rows.push(value_row(
+                    "Resolution & refresh rate",
+                    "Compositor capability data unavailable",
+                ));
+            } else {
+                let mode_placeholder = config
+                    .mode
+                    .map_or_else(|| "Preferred".into(), OutputMode::label);
+                output_rows.push(choice_row(
+                    "Resolution & refresh rate",
+                    Box::new(
+                        Dropdown::new(
+                            output
+                                .modes
+                                .iter()
+                                .copied()
+                                .map(OutputMode::label)
+                                .collect(),
+                            &mode_key,
+                        )
+                        .with_id(&mode_key)
+                        .with_placeholder(&mode_placeholder),
+                    ),
+                ));
+            }
+            output_rows.push(value_row(
+                "Rotation",
+                "Unavailable until renderer and input transforms agree",
+            ));
+            output_rows.push(value_row(
+                "HDR",
+                if output.hdr {
+                    "Supported by hardware · off"
+                } else {
+                    "Not reported by hardware"
+                },
+            ));
+            output_rows.push(value_row(
+                "Variable refresh rate",
+                if output.vrr {
+                    "Supported by hardware · off"
+                } else {
+                    "Not reported by hardware"
+                },
+            ));
+            output_rows.push(value_row(
+                "Colour profile",
+                if output.color_profiles.is_empty() {
+                    "System default · no profiles detected"
+                } else {
+                    "System default"
+                },
+            ));
+            cards.push(card(&output.label, rows(output_rows)));
+        }
+        cards.push(brightness);
+        crate::widgets::cards(cards)
     }
 
     /// Load prefs fresh, apply `f` to the display section, persist.
@@ -411,6 +580,45 @@ impl Widget for DisplayPane {
                 DISPLAY_SCALE_KEY,
                 scale_label(self.initial_prefs.scale),
             );
+            let connected: Vec<_> = self
+                .outputs
+                .iter()
+                .filter(|o| o.connected)
+                .cloned()
+                .collect();
+            for (index, output) in connected.iter().enumerate() {
+                let cfg = self
+                    .output_config
+                    .outputs
+                    .entry(output.connector.clone())
+                    .or_insert_with(|| OutputConfig {
+                        primary: index == 0,
+                        x: index as i32 * 1920,
+                        ..Default::default()
+                    });
+                let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
+                let _ = state.put(
+                    root,
+                    output_key(&output.connector, "scale"),
+                    scale_label(cfg.scale),
+                );
+                let _ = state.put(root, output_key(&output.connector, "position"), "Automatic");
+                let mirror = cfg
+                    .mirror_of
+                    .as_ref()
+                    .and_then(|target| {
+                        connected
+                            .iter()
+                            .find(|candidate| candidate.connector == *target)
+                    })
+                    .map_or("Extend workspace".into(), |target| {
+                        format!("Mirror {}", target.label)
+                    });
+                let _ = state.put(root, output_key(&output.connector, "mirror"), mirror);
+                if let Some(mode) = cfg.mode {
+                    let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
+                }
+            }
             self.last_prefs = self.initial_prefs;
             self.needs_seed = false;
         }
@@ -465,6 +673,132 @@ impl Widget for DisplayPane {
         {
             self.last_prefs.scale = v;
             Self::persist_display(|d| d.scale = v);
+        }
+
+        // Per-output intent is staged in a clone and only atomically saved
+        // after capability validation. Invalid/transient CRDT values never
+        // reach the compositor.
+        let connected: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|o| o.connected)
+            .cloned()
+            .collect();
+        let mut next = self.output_config.clone();
+        let mut changed = false;
+        for output in &connected {
+            let mut cfg = next
+                .outputs
+                .get(&output.connector)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(primary) = read_bool(state, root, &output_key(&output.connector, "primary"))
+                && primary != cfg.primary
+            {
+                if primary {
+                    for other in next.outputs.values_mut() {
+                        other.primary = false;
+                    }
+                }
+                cfg.primary = primary;
+                changed = true;
+            }
+            if let Some(label) = read_str(state, root, &output_key(&output.connector, "scale"))
+                && let Some(scale) = scale_factor_of(&label)
+                && (scale - cfg.scale).abs() > f64::EPSILON
+            {
+                cfg.scale = scale;
+                changed = true;
+            }
+            if let Some(label) = read_str(state, root, &output_key(&output.connector, "mode"))
+                && let Some(mode) = output
+                    .modes
+                    .iter()
+                    .copied()
+                    .find(|mode| mode.label() == label)
+                && cfg.mode != Some(mode)
+            {
+                cfg.mode = Some(mode);
+                changed = true;
+            }
+            if let Some(label) = read_str(state, root, &output_key(&output.connector, "mirror")) {
+                let mirror = if label == "Extend workspace" {
+                    None
+                } else {
+                    connected
+                        .iter()
+                        .find(|candidate| label == format!("Mirror {}", candidate.label))
+                        .map(|candidate| candidate.connector.clone())
+                };
+                if mirror != cfg.mirror_of {
+                    cfg.mirror_of = mirror;
+                    changed = true;
+                }
+            }
+            if let Some(position) =
+                read_str(state, root, &output_key(&output.connector, "position"))
+            {
+                let primary = connected.iter().find(|candidate| {
+                    next.outputs
+                        .get(&candidate.connector)
+                        .is_some_and(|c| c.primary)
+                });
+                if let Some(primary) = primary {
+                    let primary_cfg = next
+                        .outputs
+                        .get(&primary.connector)
+                        .cloned()
+                        .unwrap_or_default();
+                    let point = match position.as_str() {
+                        "Left of primary" => Some((
+                            primary_cfg.x - output.modes.first().map_or(1920, |m| m.width) as i32,
+                            primary_cfg.y,
+                        )),
+                        "Right of primary" => Some((
+                            primary_cfg.x + primary.modes.first().map_or(1920, |m| m.width) as i32,
+                            primary_cfg.y,
+                        )),
+                        "Above primary" => Some((
+                            primary_cfg.x,
+                            primary_cfg.y - output.modes.first().map_or(1080, |m| m.height) as i32,
+                        )),
+                        "Below primary" => Some((
+                            primary_cfg.x,
+                            primary_cfg.y + primary.modes.first().map_or(1080, |m| m.height) as i32,
+                        )),
+                        _ => None,
+                    };
+                    if let Some((x, y)) = point
+                        && (cfg.x, cfg.y) != (x, y)
+                    {
+                        cfg.x = x;
+                        cfg.y = y;
+                        changed = true;
+                    }
+                }
+            }
+            next.outputs.insert(output.connector.clone(), cfg);
+        }
+        if changed {
+            let descriptors: Vec<_> = connected
+                .iter()
+                .map(|o| OutputDescriptor {
+                    connector: o.connector.clone(),
+                    modes: o.modes.clone(),
+                    hdr: o.hdr,
+                    vrr: o.vrr,
+                    color_profiles: o.color_profiles.clone(),
+                })
+                .collect();
+            match next.validate_for(&descriptors).and_then(|()| {
+                next.save()
+                    .map_err(|_| settings_store::hardware::DisplayConfigError::NoEnabledOutput)
+            }) {
+                Ok(()) => self.output_config = next,
+                Err(error) => {
+                    warn!(target: "qos::settings", ?error, "rejected invalid display configuration")
+                }
+            }
         }
 
         if let Some(c) = &mut self.composed {
@@ -685,11 +1019,21 @@ mod tests {
                     label: "Built-in display".into(),
                     connected: true,
                     builtin: true,
+                    connector: "eDP-1".into(),
+                    modes: Vec::new(),
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
                 },
                 DisplayOutput {
                     label: "HDMI-A-1".into(),
                     connected: true,
                     builtin: false,
+                    connector: "HDMI-A-1".into(),
+                    modes: Vec::new(),
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
                 },
             ]);
         assert_eq!(pane.outputs().len(), 2);
@@ -718,21 +1062,41 @@ mod tests {
                     label: "Built-in display".into(),
                     connected: true,
                     builtin: true,
+                    connector: "eDP-1".into(),
+                    modes: Vec::new(),
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
                 },
                 DisplayOutput {
                     label: "DP-1".into(),
                     connected: false,
                     builtin: false,
+                    connector: "DP-1".into(),
+                    modes: Vec::new(),
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
                 },
                 DisplayOutput {
                     label: "DP-2".into(),
                     connected: false,
                     builtin: false,
+                    connector: "DP-2".into(),
+                    modes: Vec::new(),
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
                 },
                 DisplayOutput {
                     label: "HDMI-A-1".into(),
                     connected: false,
                     builtin: false,
+                    connector: "HDMI-A-1".into(),
+                    modes: Vec::new(),
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
                 },
             ]);
         let shown = pane.connected_outputs();
