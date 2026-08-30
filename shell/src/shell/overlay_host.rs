@@ -5367,6 +5367,30 @@ impl Widget for ShellOverlayHost {
             stack.draw(scene, transform, text_renderer, theme, presence);
         }
 
+        // A visual alert is deliberately an edge treatment rather than a
+        // full-screen luminance flash: it stays obvious without obscuring
+        // content or creating an unnecessarily harsh photosensitivity risk.
+        let visual_alert = self.chrome.as_ref().is_some_and(|chrome| {
+            chrome
+                .borrow()
+                .visual_alert_active(std::time::Instant::now())
+        });
+        if visual_alert {
+            let edge = Rect::new(
+                self.rect.x0 + 4.0,
+                self.rect.y0 + 4.0,
+                self.rect.x1 - 4.0,
+                self.rect.y1 - 4.0,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(7.0),
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &edge,
+            );
+        }
+
         if overview_alpha <= 0.0 {
             // Clear the cached hit rect so a stray click during an
             // in-flight close can't create a workspace.
