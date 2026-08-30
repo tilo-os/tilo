@@ -141,7 +141,9 @@ mod tests {
 
     fn envelope(artifact: ArtifactId, seq: u64) -> SignedOp {
         SignedOp::new_unsigned(
-            vec![seq as u8],
+            // Test fixture payload byte — truncation is fine here (only
+            // used as an opaque marker below AUDIT_LOG_RING_CAPACITY+3).
+            vec![u8::try_from(seq % 256).unwrap_or(0)],
             artifact,
             Ed25519PublicKey([7; 32]),
             AttestationId::default(),
@@ -188,8 +190,8 @@ mod tests {
         let artifact = ArtifactId::new();
         let mut channels = BrokerChannels::default();
 
-        let first = channels.state_for(artifact) as *mut ChannelState;
-        let second = channels.state_for(artifact) as *mut ChannelState;
+        let first = std::ptr::from_mut(channels.state_for(artifact));
+        let second = std::ptr::from_mut(channels.state_for(artifact));
 
         assert_eq!(first, second);
         assert_eq!(channels.states.len(), 1);
