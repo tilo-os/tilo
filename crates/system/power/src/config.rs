@@ -78,16 +78,38 @@ pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
 
 /// Parse a [`PowerPolicy`] from just the `"power"` object.
 pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
+    policy_from_section_for_profile(section, active_power_profile().as_deref())
+}
+
+/// Resolve a policy for a known power-profiles-daemon profile.
+///
+/// This separate entry point keeps parsing deterministic in tests and makes
+/// the Settings/compositor contract explicit. Unknown profiles retain the
+/// legacy `suspend_minutes` value.
+pub fn policy_from_section_for_profile(
+    section: &serde_json::Value,
+    active_profile: Option<&str>,
+) -> PowerPolicy {
     let defaults = default_policy();
 
     let auto_suspend = section
         .get("auto_suspend")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
-    let suspend_minutes = section
+    let legacy_suspend_minutes = section
         .get("suspend_minutes")
         .and_then(serde_json::Value::as_u64)
         .map_or(DEFAULT_SUSPEND_MINUTES, |m| m as u32);
+    let profile_key = match active_profile {
+        Some("power-saver") => Some("saver_suspend_minutes"),
+        Some("balanced") => Some("balanced_suspend_minutes"),
+        Some("performance") => Some("performance_suspend_minutes"),
+        _ => None,
+    };
+    let suspend_minutes = profile_key
+        .and_then(|key| section.get(key))
+        .and_then(serde_json::Value::as_u64)
+        .map_or(legacy_suspend_minutes, |m| m as u32);
 
     // `auto_suspend` off, or a 0-minute timeout, disables idle-suspend.
     let idle_suspend = if auto_suspend && suspend_minutes > 0 {
@@ -121,6 +143,18 @@ pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
         ),
         critical_action: action("critical_action", defaults.critical_action),
     }
+}
+
+fn active_power_profile() -> Option<String> {
+    let output = std::process::Command::new("powerprofilesctl")
+        .arg("get")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let profile = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!profile.is_empty()).then_some(profile)
 }
 
 #[cfg(test)]
@@ -200,5 +234,42 @@ mod tests {
         assert_eq!(p.power_key_action, d.power_key_action);
         assert_eq!(p.low_battery_percent, d.low_battery_percent);
         assert_eq!(p.idle_suspend, d.idle_suspend);
+    }
+
+    #[test]
+    fn active_profile_selects_its_idle_timeout() {
+        let section: serde_json::Value = serde_json::from_str(
+            r#"{
+                "auto_suspend": true,
+                "suspend_minutes": 15,
+                "saver_suspend_minutes": 7,
+                "balanced_suspend_minutes": 17,
+                "performance_suspend_minutes": 37
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            policy_from_section_for_profile(&section, Some("power-saver")).idle_suspend,
+            Some(Duration::from_secs(7 * 60))
+        );
+        assert_eq!(
+            policy_from_section_for_profile(&section, Some("balanced")).idle_suspend,
+            Some(Duration::from_secs(17 * 60))
+        );
+        assert_eq!(
+            policy_from_section_for_profile(&section, Some("performance")).idle_suspend,
+            Some(Duration::from_secs(37 * 60))
+        );
+    }
+
+    #[test]
+    fn unknown_profile_uses_legacy_timeout() {
+        let section: serde_json::Value =
+            serde_json::from_str(r#"{"suspend_minutes":23,"balanced_suspend_minutes":99}"#)
+                .unwrap();
+        assert_eq!(
+            policy_from_section_for_profile(&section, Some("vendor-profile")).idle_suspend,
+            Some(Duration::from_secs(23 * 60))
+        );
     }
 }
