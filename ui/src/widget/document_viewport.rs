@@ -52,6 +52,18 @@ const SCROLLBAR_INSET: f64 = 3.0;
 /// with the animated widgets in case a future smooth-zoom is added.
 const MAX_FRAME_DT: f64 = 0.1;
 
+/// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64`
+/// matrix multiply-add with no overflow trap, so it cannot panic regardless
+/// of operand magnitude — centralised here rather than repeating the
+/// exemption at every composed transform in this module.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn compose(a: Affine, b: Affine) -> Affine {
+    a * b
+}
+
 /// How the content is positioned along an axis when it is *smaller* than
 /// the viewport along that axis (i.e. nothing to scroll).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +166,7 @@ impl ViewportState {
 
     /// Override the inclusive zoom bounds. `min` is clamped `> 0` and `max`
     /// is raised to at least `min`.
+    #[must_use]
     pub fn with_zoom_bounds(mut self, min: f64, max: f64) -> Self {
         self.min_zoom = min.max(1e-3);
         self.max_zoom = max.max(self.min_zoom);
@@ -162,6 +175,7 @@ impl ViewportState {
     }
 
     /// Override the screen-px padding reserved around the content.
+    #[must_use]
     pub fn with_padding(mut self, pad: f64) -> Self {
         self.pad = pad.max(0.0);
         self
@@ -169,6 +183,7 @@ impl ViewportState {
 
     /// Override how content is aligned along each axis when it is smaller
     /// than the viewport on that axis.
+    #[must_use]
     pub fn with_alignment(
         mut self,
         align_x: SmallContentAlign,
@@ -304,7 +319,10 @@ impl ViewportState {
     /// correctly. Pure function of the current state.
     pub fn content_to_screen(&self) -> Affine {
         let o = self.content_origin();
-        Affine::translate(Vec2::new(o.x, o.y)) * Affine::scale(self.zoom)
+        compose(
+            Affine::translate(Vec2::new(o.x, o.y)),
+            Affine::scale(self.zoom),
+        )
     }
 
     /// Map a single content-space point to screen space.
@@ -844,18 +862,21 @@ impl DocumentViewport {
     }
 
     /// Override the zoom bounds (forwards to the kernel builder).
+    #[must_use]
     pub fn with_zoom_bounds(mut self, min: f64, max: f64) -> Self {
         self.state = self.state.with_zoom_bounds(min, max);
         self
     }
 
     /// Override the content padding (forwards to the kernel builder).
+    #[must_use]
     pub fn with_padding(mut self, pad: f64) -> Self {
         self.state = self.state.with_padding(pad);
         self
     }
 
     /// Override small-content alignment (forwards to the kernel builder).
+    #[must_use]
     pub fn with_alignment(
         mut self,
         align_x: SmallContentAlign,
@@ -892,11 +913,16 @@ impl DocumentViewport {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = child.build_layout(&mut taffy, theme, &mut map);
         if cw > 0.0 && ch > 0.0 {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "narrowing content-space layout dimensions for taffy; never near f32::MAX"
+            )]
+            let (w, h) = (cw as f32, ch as f32);
             let _ = taffy.compute_layout_with_measure(
                 node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(cw as f32),
-                    height: taffy::AvailableSpace::Definite(ch as f32),
+                    width: taffy::AvailableSpace::Definite(w),
+                    height: taffy::AvailableSpace::Definite(h),
                 },
                 |known, available, node_id, _, _| {
                     if let Some(&ptr) = map.get(&node_id) {
@@ -962,7 +988,7 @@ impl Widget for DocumentViewport {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let content_xf = transform * self.state.content_to_screen();
+        let content_xf = compose(transform, self.state.content_to_screen());
         match &mut self.content {
             Content::Widget(c) => c.draw(scene, content_xf, text_renderer, theme, presence),
             Content::Draw(draw) => draw(scene, content_xf, text_renderer, theme, self.rect),
@@ -1021,7 +1047,7 @@ impl Widget for DocumentViewport {
                         self.route_to_child(
                             event,
                             scale_factor,
-                            modifiers,
+                            *modifiers,
                             state,
                             path,
                             handled,
@@ -1080,7 +1106,7 @@ impl Widget for DocumentViewport {
             self.route_to_child(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 handled,
@@ -1131,7 +1157,7 @@ impl DocumentViewport {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1147,7 +1173,7 @@ impl DocumentViewport {
         c.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -1321,6 +1347,14 @@ mod tests {
         );
     }
 
+    // Exact equality is intentional: `reset_to_fit` either sets `zoom` to a
+    // computed value or clamps it to `zoom_bounds().0` via `f64::clamp`,
+    // which returns the bound verbatim — not an independent float
+    // computation prone to precision drift.
+    #[allow(
+        clippy::float_cmp,
+        reason = "checks whether zoom was clamped to the exact min-zoom bound, not a fuzzy tolerance"
+    )]
     #[test]
     fn reset_to_fit_shows_whole_content() {
         let mut v = kernel();
@@ -1386,7 +1420,10 @@ mod tests {
         // start (same reset the geometry test above relies on).
         v.set_scroll(0.0, 0.0);
         let thumb = v.v_scrollbar_thumb().unwrap();
-        let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
+        let mid = Point::new(
+            f64::midpoint(thumb.x0, thumb.x1),
+            f64::midpoint(thumb.y0, thumb.y1),
+        );
         assert!(v.press_scrollbar(mid), "press on the v-thumb is consumed");
         assert!(v.scrollbar_dragging(), "thumb press begins a drag");
         assert_eq!(v.scroll_y(), 0.0, "press alone does not scroll");
@@ -1410,7 +1447,7 @@ mod tests {
         v.set_zoom(3.0);
         v.set_scroll(0.0, 0.0); // normalise to the top (see above)
         let thumb = v.v_scrollbar_thumb().unwrap();
-        let below = Point::new((thumb.x0 + thumb.x1) / 2.0, thumb.y1 + 5.0);
+        let below = Point::new(f64::midpoint(thumb.x0, thumb.x1), thumb.y1 + 5.0);
         assert!(v.press_scrollbar(below), "track click consumed");
         assert!(!v.scrollbar_dragging(), "track click is not a drag");
         assert!(
@@ -1438,7 +1475,10 @@ mod tests {
         v.set_zoom(3.0);
         v.set_scroll(0.0, 0.0); // normalise to the left
         let thumb = v.h_scrollbar_thumb().unwrap();
-        let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, (thumb.y0 + thumb.y1) / 2.0);
+        let mid = Point::new(
+            f64::midpoint(thumb.x0, thumb.x1),
+            f64::midpoint(thumb.y0, thumb.y1),
+        );
         assert!(v.press_scrollbar(mid), "press on the h-thumb is consumed");
         v.drag_scrollbar(Point::new(mid.x + 80.0, mid.y));
         assert!(
