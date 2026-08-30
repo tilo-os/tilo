@@ -20,6 +20,8 @@ mod browser_stub;
 mod capability_enforcement;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
+#[path = "collab_policy_state.rs"]
+mod collab_policy_state;
 #[path = "color_management_protocol.rs"]
 mod color_management_protocol;
 #[path = "color_management_surface_override.rs"]
@@ -46,8 +48,6 @@ mod document_open_e2e;
 mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
-#[path = "everything_composes.rs"]
-mod everything_composes;
 #[path = "expand_fullscreen_visual.rs"]
 mod expand_fullscreen_visual;
 #[path = "file_drop_routing.rs"]
@@ -92,8 +92,6 @@ mod nirios_e2e_test;
 mod nvenc_hardware_encode;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
-#[path = "participant_names.rs"]
-mod participant_names;
 #[path = "peer_join_toast_batches.rs"]
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
@@ -116,14 +114,10 @@ mod portal_test;
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
 mod real_apps_visual;
-#[path = "redaction_pipeline.rs"]
-mod redaction_pipeline;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
-#[path = "scrollback_pipeline.rs"]
-mod scrollback_pipeline;
 #[path = "server_side_decorations.rs"]
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
@@ -134,8 +128,6 @@ mod shell_chrome_test;
 mod shell_state_test;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
-#[path = "signed_op_pipeline.rs"]
-mod signed_op_pipeline;
 #[path = "strip_navigation.rs"]
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]
