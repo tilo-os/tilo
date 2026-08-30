@@ -378,11 +378,27 @@ impl NotificationsPane {
                 ),
                 value_row(
                     "Notification sounds",
-                    "Unavailable until the shell sound route exists",
+                    match media::notification_sound::sound_backend() {
+                        media::notification_sound::SoundBackend::Libcanberra => {
+                            "Available through the session sound theme"
+                        }
+                        media::notification_sound::SoundBackend::PipeWire => {
+                            "Available through the PipeWire session route"
+                        }
+                        media::notification_sound::SoundBackend::Unavailable => {
+                            "Unavailable: install libcanberra or PipeWire sound tools"
+                        }
+                    },
                 ),
-                value_row(
-                    "Application badges",
-                    "Unavailable until launchers expose badge state",
+                setting_row_described(
+                    "Play sounds",
+                    "Use the current desktop sound theme and audio route",
+                    Self::toggle("notifications.sounds", SOUNDS_KEY),
+                ),
+                setting_row_described(
+                    "Show notification badges",
+                    "Show verified application counts in shell surfaces that support badges",
+                    Self::toggle("notifications.badges", BADGES_KEY),
                 ),
             ]),
         );
@@ -470,6 +486,28 @@ impl NotificationsPane {
                         ),
                     ),
                     setting_row_described(
+                        "Play sounds",
+                        "Override the global sound choice for this application",
+                        Box::new(
+                            Toggle::new(
+                                &format!("notifications.app.{}.sounds", app.id),
+                                &app_key(&app.id, "sounds"),
+                            )
+                            .with_id(&format!("notifications.app.{}.sounds", app.id)),
+                        ),
+                    ),
+                    setting_row_described(
+                        "Show badges",
+                        "Allow verified unread counts in supported shell surfaces",
+                        Box::new(
+                            Toggle::new(
+                                &format!("notifications.app.{}.badges", app.id),
+                                &app_key(&app.id, "badges"),
+                            )
+                            .with_id(&format!("notifications.app.{}.badges", app.id)),
+                        ),
+                    ),
+                    setting_row_described(
                         "Priority during focus",
                         "Let this verified application pierce scheduled focus",
                         Box::new(
@@ -478,6 +516,17 @@ impl NotificationsPane {
                                 &app_key(&app.id, "priority"),
                             )
                             .with_id(&format!("notifications.app.{}.priority", app.id)),
+                        ),
+                    ),
+                    setting_row_described(
+                        "Priority contacts",
+                        "Allow this verified communications app to identify senders; only Contacts favourites can pierce focus",
+                        Box::new(
+                            Toggle::new(
+                                &format!("notifications.app.{}.priority_contacts", app.id),
+                                &app_key(&app.id, "priority_contacts"),
+                            )
+                            .with_id(&format!("notifications.app.{}.priority_contacts", app.id)),
                         ),
                     ),
                     choice_row(
@@ -535,10 +584,12 @@ impl NotificationsPane {
         cards.extend(app_cards);
         cards.push(card(
             "Priority contacts",
-            rows(vec![value_row(
-                "Contacts",
-                "Unavailable until a verified Contacts identity source is installed",
-            )]),
+            rows(vec![
+                value_row("Source", "Favourites in Contacts"),
+                caption(
+                    "Contacts publishes a redacted, salted priority registry to the shell. Raw addresses are not stored there. Only communication apps you authorize above may assert a sender; the shell verifies the sender against that registry.",
+                ),
+            ]),
         ));
         crate::widgets::cards(cards)
     }
@@ -631,7 +682,22 @@ impl Widget for NotificationsPane {
                     &app_key(&app.id, "previews"),
                     rule.previews.unwrap_or(self.prefs.show_previews),
                 );
+                seed(
+                    state,
+                    &app_key(&app.id, "sounds"),
+                    rule.sounds.unwrap_or(self.prefs.play_sounds),
+                );
+                seed(
+                    state,
+                    &app_key(&app.id, "badges"),
+                    rule.badges.unwrap_or(self.prefs.show_badges),
+                );
                 seed(state, &app_key(&app.id, "priority"), rule.priority);
+                seed(
+                    state,
+                    &app_key(&app.id, "priority_contacts"),
+                    rule.priority_contacts,
+                );
                 let _ = state.put(
                     root,
                     app_key(&app.id, "mute"),
@@ -670,10 +736,29 @@ impl Widget for NotificationsPane {
                 rule.previews = Some(value);
                 changed = true;
             }
+            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "sounds"))
+                && rule.sounds != Some(value)
+            {
+                rule.sounds = Some(value);
+                changed = true;
+            }
+            if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "badges"))
+                && rule.badges != Some(value)
+            {
+                rule.badges = Some(value);
+                changed = true;
+            }
             if let Some(value) = Self::read_bool(state, root, &app_key(&app.id, "priority"))
                 && rule.priority != value
             {
                 rule.priority = value;
+                changed = true;
+            }
+            if let Some(value) =
+                Self::read_bool(state, root, &app_key(&app.id, "priority_contacts"))
+                && rule.priority_contacts != value
+            {
+                rule.priority_contacts = value;
                 changed = true;
             }
             if let Some(label) = Self::read_text(state, root, &app_key(&app.id, "mute"))

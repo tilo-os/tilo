@@ -12,7 +12,7 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -32,6 +32,72 @@ const APP_CACHE_TTL: Duration = Duration::from_secs(2);
 /// the dynamic loader's complaint, small enough a chatty app can't grow
 /// the shell's memory.
 const STDERR_TAIL_LINES: usize = 12;
+
+/// A launcher process is the stable host-side ancestor of its sandbox,
+/// including the per-app xdg-dbus-proxy. D-Bus sender names are resolved to
+/// PIDs by the bus daemon and then walked back to this table. We retain the
+/// kernel start-time as well as the numeric PID so PID reuse cannot attribute a
+/// later, unrelated process to an exited app.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LaunchedProcess {
+    package_id: String,
+    start_time: u64,
+}
+
+static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm is parenthesised and may contain spaces/parentheses; the final ')'
+    // is the only safe place from which to index the remaining fields.
+    let rest = stat.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // `rest[0]` is field 3 (state), so ppid=field 4 -> 1 and starttime=22 -> 19.
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+fn register_launched_process(pid: u32, package_id: &str) {
+    let Some((_, start_time)) = proc_stat(pid) else {
+        return;
+    };
+    if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
+        map.insert(
+            pid,
+            LaunchedProcess {
+                package_id: package_id.to_string(),
+                start_time,
+            },
+        );
+    }
+}
+
+fn unregister_launched_process(pid: u32) {
+    if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
+        map.remove(&pid);
+    }
+}
+
+/// Resolve a host process (normally xdg-dbus-proxy) to the qOS package
+/// supervising one of its ancestors. The walk is bounded and refuses stale
+/// registry entries. Unknown/direct session-bus callers stay unattributed.
+pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
+    const MAX_ANCESTORS: usize = 32;
+    for _ in 0..MAX_ANCESTORS {
+        let (ppid, start_time) = proc_stat(pid)?;
+        if let Ok(map) = LAUNCHED_PROCESSES.lock()
+            && let Some(known) = map.get(&pid)
+            && known.start_time == start_time
+        {
+            return Some(known.package_id.clone());
+        }
+        if ppid == 0 || ppid == pid {
+            return None;
+        }
+        pid = ppid;
+    }
+    None
+}
 
 /// One installed application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -827,6 +893,7 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
                 return;
             }
         };
+        register_launched_process(child.id(), &app.package_id);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -859,7 +926,9 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
             }
         }
 
+        let launcher_pid = child.id();
         let status = child.wait();
+        unregister_launched_process(launcher_pid);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
             Ok(status) => LaunchEventKind::Failed {
@@ -1663,5 +1732,37 @@ mod tests {
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
         assert!(escaped.is_err(), "`..` in a package id must be refused");
         assert!(slashed.is_err(), "`/` in a package id must be refused");
+    }
+
+    #[test]
+    fn dbus_proxy_descendant_resolves_only_while_launcher_identity_is_live() {
+        let parent = std::process::id();
+        register_launched_process(parent, "dev.qos.mail");
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 2"])
+            .spawn()
+            .expect("spawn descendant");
+        assert_eq!(
+            verified_package_for_descendant(child.id()).as_deref(),
+            Some("dev.qos.mail")
+        );
+        unregister_launched_process(parent);
+        assert_eq!(verified_package_for_descendant(child.id()), None);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn stale_start_time_is_never_accepted_as_pid_identity() {
+        let pid = std::process::id();
+        LAUNCHED_PROCESSES.lock().unwrap().insert(
+            pid,
+            LaunchedProcess {
+                package_id: "dev.qos.spoof".into(),
+                start_time: u64::MAX,
+            },
+        );
+        assert_eq!(verified_package_for_descendant(pid), None);
+        unregister_launched_process(pid);
     }
 }
