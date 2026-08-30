@@ -5,8 +5,9 @@
 //! differ between drivers, and granting a GUI arbitrary sysfs writes would be
 //! a privilege boundary disguised as a setting.
 
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+pub use qos_power_mgmt::{BatteryHistory, BatteryHistoryPoint, load_battery_history};
 
 /// A normalized description of the charge-limit control the kernel or
 /// platform driver actually exposes.  Settings builds its choices from this
@@ -77,80 +78,6 @@ pub fn power_devices_from(root: &Path) -> Vec<PowerDevice> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BatteryHistoryPoint {
-    pub unix_minute: u64,
-    pub capacity: u32,
-    pub health: Option<u32>,
-    pub on_ac: bool,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BatteryHistory {
-    pub points: Vec<BatteryHistoryPoint>,
-}
-
-impl BatteryHistory {
-    const MAX_AGE_MINUTES: u64 = 30 * 24 * 60;
-    const MIN_INTERVAL_MINUTES: u64 = 15;
-    const MAX_POINTS: usize = 30 * 24 * 4;
-
-    pub fn record(&mut self, point: BatteryHistoryPoint) {
-        self.points
-            .retain(|p| point.unix_minute.saturating_sub(p.unix_minute) <= Self::MAX_AGE_MINUTES);
-        if self.points.last().is_some_and(|p| {
-            point.unix_minute.saturating_sub(p.unix_minute) < Self::MIN_INTERVAL_MINUTES
-        }) {
-            if let Some(last) = self.points.last_mut() {
-                *last = point;
-            }
-        } else {
-            self.points.push(point);
-        }
-        if self.points.len() > Self::MAX_POINTS {
-            self.points.drain(..self.points.len() - Self::MAX_POINTS);
-        }
-    }
-}
-
-fn history_path() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(x).join("qos/power-history.json"));
-    }
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|h| PathBuf::from(h).join(".local/state/qos/power-history.json"))
-}
-
-pub fn load_battery_history() -> BatteryHistory {
-    history_path()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
-pub fn record_battery_history(info: &BatteryInfo) -> Result<BatteryHistory, String> {
-    let path = history_path().ok_or("no per-user state directory is available")?;
-    let mut history = load_battery_history();
-    let unix_minute = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / 60;
-    history.record(BatteryHistoryPoint {
-        unix_minute,
-        capacity: info.capacity,
-        health: info.health_percent(),
-        on_ac: info.on_ac,
-    });
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let bytes = serde_json::to_vec(&history).map_err(|e| e.to_string())?;
-    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
-    Ok(history)
 }
 
 impl ChargeCapCapability {
@@ -459,26 +386,5 @@ mod tests {
         let d = power_devices_from(root.path());
         assert_eq!(d.len(), 2);
         assert_eq!(d[1].kind, PowerSupplyKind::Ups);
-    }
-
-    #[test]
-    fn history_is_bounded_coalesced_and_privacy_safe() {
-        let mut h = BatteryHistory::default();
-        h.record(BatteryHistoryPoint {
-            unix_minute: 100,
-            capacity: 50,
-            health: Some(90),
-            on_ac: false,
-        });
-        h.record(BatteryHistoryPoint {
-            unix_minute: 105,
-            capacity: 49,
-            health: Some(90),
-            on_ac: false,
-        });
-        assert_eq!(h.points.len(), 1);
-        assert_eq!(h.points[0].capacity, 49);
-        let json = serde_json::to_string(&h).unwrap();
-        assert!(!json.contains("serial"));
     }
 }
