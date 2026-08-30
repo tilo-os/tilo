@@ -153,6 +153,9 @@ enum FeedMenuAction {
 struct ToolbarButton {
     rect: Rect,
     action: ToolbarAction,
+    /// Hover text for the button. Carried but never drawn — see the
+    /// `tooltips are not drawn statically` note on the toolbar's draw pass.
+    #[allow(dead_code)]
     tip: &'static str,
 }
 

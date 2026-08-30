@@ -725,6 +725,7 @@ impl VpnApp {
     /// The last [`qos_actions::EncodedAction`] an affordance dispatched, for the
     /// `affordance == ActionSpec` covenant test — an on-screen control and its
     /// Ctrl+K entry must build the byte-identical action.
+    #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

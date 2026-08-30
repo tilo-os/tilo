@@ -181,6 +181,11 @@ enum Hit {
     /// Dismiss the open map-data info sheet.
     CloseMapInfo,
     /// Open the offline-download / manage-cache overlay.
+    /// Open the offline-downloads overlay. Handled below and covered by the
+    /// tests, but `draw` never records a hot region for it, so the only thing
+    /// that opens the overlay in a running app is `set_demo_offline`. The
+    /// affordance is missing, not the behaviour.
+    #[allow(dead_code)]
     OfflineOpen,
     /// Close the overlay.
     OfflineClose,
@@ -2881,6 +2886,7 @@ impl MapsApp {
     }
 
     /// Whether the floating endpoint (From/To) results overlay is on screen.
+    #[cfg(test)]
     fn endpoint_overlay_active(&self) -> bool {
         let Some(field) = self.edit_field else {
             return false;
