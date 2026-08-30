@@ -164,6 +164,9 @@ impl Notification {
     /// that many milliseconds.
     pub fn from_incoming(inc: crate::notifications::IncomingNotification) -> Self {
         let app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
+        let verified_name = app_id.as_ref().map(|id| {
+            crate::shell::launcher::display_name_for_app_id(id).unwrap_or_else(|| id.clone())
+        });
         let severity = match inc.urgency {
             2 => NotificationSeverity::Error,
             _ => NotificationSeverity::Info,
@@ -186,11 +189,9 @@ impl Notification {
             created_at: Instant::now(),
             dismiss_after,
             dbus_id: Some(inc.dbus_id),
-            app_name: if inc.app_name.is_empty() {
-                None
-            } else {
-                Some(inc.app_name)
-            },
+            // `app_name` is sender-controlled in the freedesktop protocol.
+            // Only show the label derived from launcher attribution.
+            app_name: verified_name,
             app_id,
             source_workspace: inc.caller.as_ref().map(|c| c.workspace_id.0),
             actions: inc.actions,
@@ -774,6 +775,8 @@ mod tests {
             expire_timeout: expire,
             urgency,
             caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
+            badge_count: None,
+            contact_endpoint: None,
         }
     }
 
@@ -783,7 +786,7 @@ mod tests {
         assert_eq!(n.title, "New mail");
         assert_eq!(n.body, "secret subject");
         assert_eq!(n.dbus_id, Some(3));
-        assert_eq!(n.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(n.app_name.as_deref(), Some("org.mail"));
         assert_eq!(n.source_workspace, Some(9));
         // Critical urgency → Error severity + persistent dwell.
         assert_eq!(n.severity, NotificationSeverity::Error);
@@ -822,7 +825,28 @@ mod tests {
         let toast = &ch.notifications()[0];
         assert_eq!(toast.dbus_id, Some(11));
         assert_eq!(toast.source_workspace, Some(9));
-        assert_eq!(toast.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(toast.app_name.as_deref(), Some("org.mail"));
+    }
+
+    #[test]
+    fn only_verified_senders_can_update_shell_badges() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+
+        let mut unverified = incoming(21, 1, 5000);
+        unverified.caller = None;
+        unverified.badge_count = Some(88);
+        bridge.push_incoming(unverified);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notification_badge_total(), 0);
+
+        let mut verified = incoming(22, 1, 5000);
+        verified.badge_count = Some(12);
+        bridge.push_incoming(verified);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
+        assert_eq!(chrome.borrow().notification_badge_total(), 12);
     }
 
     #[test]
