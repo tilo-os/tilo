@@ -115,6 +115,16 @@ pub fn extension_of(path: &Path) -> Option<String> {
 /// Pure — touches neither the workspace nor the process table, so a
 /// context menu can call it just to build an "Open with…" label.
 pub fn resolve(path: &Path) -> DocumentTarget {
+    resolve_for(path, "", None)
+}
+
+/// Resolve with the active workspace's policy and the authenticated person's
+/// identity. Context-menu previews and launch use this same function.
+pub fn resolve_for(
+    path: &Path,
+    user_id: &str,
+    workspace_defaults: Option<&desktop_policy::WorkspaceDefaults>,
+) -> DocumentTarget {
     if path.is_dir() {
         return DocumentTarget::Directory;
     }
@@ -122,7 +132,7 @@ pub fn resolve(path: &Path) -> DocumentTarget {
         return DocumentTarget::Unclaimed;
     };
     let editable_document = qdoc::is_supported_ext(&ext);
-    match launcher::app_for_extension(&ext) {
+    match launcher::app_for_extension_with_policy(&ext, user_id, workspace_defaults) {
         Some(app) => DocumentTarget::App {
             app,
             editable_document,
@@ -147,7 +157,17 @@ pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Ope
 }
 
 fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
-    let app = match resolve(path) {
+    let target = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree.active_workspace();
+        resolve_for(
+            path,
+            &state.local_user_id,
+            workspace.map(|ws| &ws.default_apps),
+        )
+    };
+    let app = match target {
         DocumentTarget::App { app, .. } => app,
         DocumentTarget::NoAppForDocument { ext } => {
             return Err(OpenError::NoHandler {

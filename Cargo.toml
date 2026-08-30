@@ -30,6 +30,7 @@ members = [
     "crates/system/tts",
     "crates/system/accounts",
     "crates/system/app-state",
+    "crates/system/desktop-policy",
     "crates/doc/qdoc",
     "crates/text/spellcheck",
     "crates/doc/qdoc-pdf",
