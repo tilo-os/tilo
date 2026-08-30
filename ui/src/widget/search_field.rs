@@ -395,6 +395,10 @@ impl Widget for SearchField {
         self.input.cursor_shape(point)
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.input as &dyn Widget]
     }
@@ -429,16 +433,21 @@ impl Widget for SearchField {
                     .with_state(AccessState::new().focusable(true)),
             );
         }
-        Some(
-            AccessNode::new(Role::TextInput)
-                .with_name("Search")
-                .with_value(self.input.value().to_string())
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.input.is_focused()),
-                ),
-        )
+        self.input
+            .accessibility()
+            .map(|node| node.with_name("Search"))
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if self.opens_palette {
+            return false;
+        }
+        Widget::perform_action(&mut self.input, action, state, path)
     }
 }
 

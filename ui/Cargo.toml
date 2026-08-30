@@ -96,6 +96,9 @@ automerge.workspace = true
 # diagnose interaction bugs in hosted mode without source-reading.
 tracing.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
+# Keep this aligned with cosmic-text: text painting needs the font's complete
+# variation-axis order to translate CSS-like axis values for Vello.
+skrifa = "0.40.0"
 pollster.workspace = true
 
 # Raw-Vulkan interop for the WebView DMA-BUF zero-copy import (feature
@@ -114,6 +117,18 @@ winit.workspace = true
 dirs.workspace = true
 fluent.workspace = true
 unic-langid.workspace = true
+unicode-segmentation = "1.12"
+# UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
+# cosmic-text uses the same crate internally; naming it directly lets toolkit
+# code that must mirror shaped rows avoid ASCII-space heuristics.
+unicode-linebreak = "0.1.5"
+# ICU dictionary/LSTM segmentation for scripts whose word boundaries cannot
+# be inferred from whitespace (Thai, Lao, Khmer, Myanmar, CJK).
+icu_segmenter = "1.5"
+# TeX/Liang hyphenation patterns with language-specific minima. The same
+# implementation is already used by the workspace's Typst document engine;
+# making it direct lets UI paragraphs opt in without runtime dictionary I/O.
+hypher = "0.1.7"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

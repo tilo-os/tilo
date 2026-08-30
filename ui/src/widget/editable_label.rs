@@ -392,6 +392,10 @@ impl Widget for EditableLabel {
         self.editing
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.editing && self.input.is_dragging()
     }
@@ -412,6 +416,23 @@ impl Widget for EditableLabel {
                     ..Default::default()
                 }),
         )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        if !self.editing {
+            match action {
+                Action::SetValue(_) | Action::SetSelection { .. } => self.begin_edit(),
+                _ => return false,
+            }
+        }
+        Widget::perform_action(&mut self.input, action, state, path)
     }
 }
 
