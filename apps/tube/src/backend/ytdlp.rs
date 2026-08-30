@@ -51,6 +51,10 @@ pub struct YtDlpBackend {
 impl YtDlpBackend {
     /// Construct, probing that `yt-dlp` is actually runnable. Returns an error
     /// (so the worker falls back to another source) when the binary is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `yt-dlp --version` cannot be run or fails.
     pub fn new() -> Result<Self, BackendError> {
         let bin = "yt-dlp".to_string();
         let out = Command::new(&bin)
@@ -249,9 +253,8 @@ fn channel_from_json(v: &Value) -> Channel {
 /// `id == "avatar_uncropped"`; fall back to the widest image for the banner and
 /// the largest square-ish image for the avatar.
 fn pick_channel_images(v: &Value) -> (String, String) {
-    let thumbs = match v.get("thumbnails").and_then(|t| t.as_array()) {
-        Some(t) => t,
-        None => return (String::new(), String::new()),
+    let Some(thumbs) = v.get("thumbnails").and_then(|t| t.as_array()) else {
+        return (String::new(), String::new());
     };
     let url_of = |t: &Value| str_field(t, "url");
     let dims = |t: &Value| {
@@ -402,7 +405,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let yoe = y - era * 400; // [0, 399]
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146097 + doe - 719468
+    era * 146_097 + doe - 719_468
 }
 
 /// Today, as days since the civil epoch (UTC).
@@ -426,14 +429,15 @@ fn humanize_date(d: &str) -> String {
         return d.to_string();
     }
     let (y, m, day) = (
-        d[0..4].parse::<i64>().unwrap_or(0),
-        d[4..6].parse::<i64>().unwrap_or(0),
-        d[6..8].parse::<i64>().unwrap_or(0),
+        d.get(0..4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+        d.get(4..6).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
+        d.get(6..8).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0),
     );
     if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
         return d.to_string();
     }
-    let absolute = format!("{} {}, {}", MONTHS[(m - 1) as usize], day, y);
+    let month = MONTHS.get((m - 1) as usize).copied().unwrap_or("");
+    let absolute = format!("{month} {day}, {y}");
     let age = today_days() - days_from_civil(y, m, day);
     age_label(age, &absolute)
 }
@@ -578,12 +582,12 @@ impl YtBackend for YtDlpBackend {
         let mut uploads = videos_from_entries(&v, "Channel");
         for u in &mut uploads {
             if !channel.id.is_empty() {
-                u.channel_id = channel.id.clone();
+                channel.id.clone_into(&mut u.channel_id);
             }
             if u.channel_name.is_empty() || u.channel_name == "Unknown" {
-                u.channel_name = channel.name.clone();
+                channel.name.clone_into(&mut u.channel_name);
             }
-            u.channel_seed = channel.id.clone();
+            channel.id.clone_into(&mut u.channel_seed);
         }
         Ok(BackendResult::Channel {
             channel: Box::new(channel),
@@ -662,12 +666,12 @@ impl YtBackend for YtDlpBackend {
     }
 
     fn resolve_playback_source(&self, id: &str) -> Result<PlaybackSource, BackendError> {
-        let url = format!("https://www.youtube.com/watch?v={id}");
         // Let yt-dlp's format selector pick a single playable stream — a
         // progressive muxed https format (audio+video in one URL) when available,
         // else the best mp4/whatever — so only that one format's `nsig` is
         // deciphered (~2s). GStreamer negotiates the codec regardless.
         const SELECTOR: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
+        let url = format!("https://www.youtube.com/watch?v={id}");
         let v = self.run_print(
             Some(SELECTOR),
             &[
