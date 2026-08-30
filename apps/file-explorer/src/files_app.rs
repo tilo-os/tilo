@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{

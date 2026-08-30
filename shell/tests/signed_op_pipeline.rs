@@ -12,11 +12,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use collab_fixtures::{role_attestation, signed_op};
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
-    generate_keypair, sign_event, sign_op,
+    ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, OpClass, Role,
+    ValidationError, generate_keypair,
 };
-use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
