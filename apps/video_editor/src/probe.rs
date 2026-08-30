@@ -144,36 +144,35 @@ fn fallback_from_extension(path: &Path) -> ProbedMedia {
 // ---- magic-byte sniffers --------------------------------------------------
 
 fn is_png(d: &[u8]) -> bool {
-    d.len() >= 8 && &d[0..8] == b"\x89PNG\r\n\x1a\n"
+    d.get(0..8) == Some(b"\x89PNG\r\n\x1a\n".as_slice())
 }
 fn is_jpeg(d: &[u8]) -> bool {
-    d.len() >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF
+    d.get(0..3) == Some([0xFF, 0xD8, 0xFF].as_slice())
 }
 fn is_wav(d: &[u8]) -> bool {
-    d.len() >= 12 && &d[0..4] == b"RIFF" && &d[8..12] == b"WAVE"
+    d.get(0..4) == Some(b"RIFF".as_slice()) && d.get(8..12) == Some(b"WAVE".as_slice())
 }
 fn is_isobmff(d: &[u8]) -> bool {
     // The first box is normally `ftyp`; be lenient and also accept a leading
     // `moov` / `mdat` / `free` / `skip` / `wide` box (some `.mov` files).
-    d.len() >= 8
-        && matches!(
-            &d[4..8],
-            b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide"
-        )
+    matches!(
+        d.get(4..8),
+        Some(b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide")
+    )
 }
 fn is_ebml(d: &[u8]) -> bool {
     // Both Matroska and WebM open with the EBML header magic `1A 45 DF A3`.
-    d.len() >= 4 && d[0..4] == [0x1A, 0x45, 0xDF, 0xA3]
+    d.get(0..4) == Some([0x1A, 0x45, 0xDF, 0xA3].as_slice())
 }
 /// Whether `d` (with `path`'s extension as a hint) is an MP3 stream: an `ID3v2`
 /// tag, or a raw MPEG audio frame sync in the first bytes. Extension-only files
 /// still fall through to the frame-sync scan, so a mislabelled file is rejected
 /// rather than reported with fabricated numbers.
 fn looks_like_mp3(d: &[u8], path: &Path) -> bool {
-    if d.len() >= 3 && &d[0..3] == b"ID3" {
+    if d.get(0..3) == Some(b"ID3".as_slice()) {
         return true;
     }
-    if d.len() >= 2 && d[0] == 0xFF && (d[1] & 0xE0) == 0xE0 {
+    if d.first() == Some(&0xFF) && d.get(1).is_some_and(|b| (b & 0xE0) == 0xE0) {
         return true;
     }
     let ext = path
@@ -205,11 +204,15 @@ fn be_u16(d: &[u8], at: usize) -> Option<u16> {
     let end = at.checked_add(2)?;
     Some(u16::from_be_bytes(d.get(at..end)?.try_into().ok()?))
 }
+fn be_u64(d: &[u8], at: usize) -> Option<u64> {
+    let end = at.checked_add(8)?;
+    Some(u64::from_be_bytes(d.get(at..end)?.try_into().ok()?))
+}
 
 fn png_dimensions(d: &[u8]) -> Option<(u32, u32)> {
     // IHDR is the first chunk: [len:4][ "IHDR" ][ width:4 ][ height:4 ]... at
     // byte 8. Width/height are big-endian at offsets 16 and 20.
-    if d.len() < 24 || &d[12..16] != b"IHDR" {
+    if d.len() < 24 || d.get(12..16) != Some(b"IHDR".as_slice()) {
         return None;
     }
     Some((be_u32(d, 16)?, be_u32(d, 20)?))
@@ -220,11 +223,13 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
     // non-frame markers C4/C8/CC), whose payload holds height then width.
     let mut i = 2usize; // skip SOI (FFD8)
     while i + 9 < d.len() {
-        if d[i] != 0xFF {
+        if d.get(i) != Some(&0xFF) {
             i += 1;
             continue;
         }
-        let marker = d[i + 1];
+        let Some(&marker) = d.get(i + 1) else {
+            return None;
+        };
         // Standalone markers (RSTn, SOI, EOI, TEM) have no length.
         if (0xD0..=0xD9).contains(&marker) || marker == 0x01 {
             i += 2;
@@ -261,7 +266,7 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
     let mut audio_format = 0u16;
     let mut data_len = 0u32;
     while i + 8 <= d.len() {
-        let id = &d[i..i + 4];
+        let id = d.get(i..i + 4)?;
         let size = le_u32(d, i + 4)? as usize;
         let body = i + 8;
         match id {
@@ -413,7 +418,7 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
                 height = h;
             }
             if let Some(c) = &track_codec {
-                codec = c.clone();
+                c.clone_into(&mut codec);
             }
             // fps ≈ video sample count / movie duration.
             let samples = stbl.and_then(|s| child(s, b"stsz")).and_then(stsz_count);
@@ -460,9 +465,7 @@ fn mvhd_time(body: &[u8]) -> Option<(u32, u64)> {
             return None;
         }
         let ts = be_u32(body, 20)?;
-        let dur = u64::from_be_bytes([
-            body[24], body[25], body[26], body[27], body[28], body[29], body[30], body[31],
-        ]);
+        let dur = be_u64(body, 24)?;
         Some((ts, dur))
     } else {
         // 1 + 3 + 4 create + 4 modify = 12, then timescale(4), duration(4)
@@ -489,19 +492,13 @@ fn tkhd_dims(body: &[u8]) -> Option<(u32, u32)> {
 
 /// Handler type ("vide" / "soun" / …) from an `hdlr` payload (at offset 8).
 fn hdlr_type(body: &[u8]) -> Option<String> {
-    if body.len() < 12 {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&body[8..12]).trim().to_string())
+    Some(String::from_utf8_lossy(body.get(8..12)?).trim().to_string())
 }
 
 /// Codec four-CC from an `stsd` payload's first sample entry.
 fn stsd_codec(body: &[u8]) -> Option<String> {
     // version+flags(4) entry_count(4) then entry: size(4) format(4).
-    if body.len() < 16 {
-        return None;
-    }
-    let fourcc = &body[12..16];
+    let fourcc = body.get(12..16)?;
     Some(String::from_utf8_lossy(fourcc).trim().to_string())
 }
 
@@ -518,7 +515,7 @@ fn stsz_count(body: &[u8]) -> Option<u32> {
 // The EBML element IDs we care about, in their full (marker-retained) form.
 const EBML_SEGMENT: u64 = 0x1853_8067;
 const EBML_INFO: u64 = 0x1549_A966;
-const EBML_TIMESTAMP_SCALE: u64 = 0x2AD7_B1;
+const EBML_TIMESTAMP_SCALE: u64 = 0x2A_D7_B1;
 const EBML_DURATION: u64 = 0x4489;
 const EBML_TRACKS: u64 = 0x1654_AE6B;
 const EBML_TRACK_ENTRY: u64 = 0xAE;
@@ -538,9 +535,7 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         return None; // lengths beyond 8 bytes are not needed here
     }
     let len = first.leading_zeros() as usize + 1; // 1..=8
-    let Some(end) = i.checked_add(len) else {
-        return None;
-    };
+    let end = i.checked_add(len)?;
     if len > 8 || end > d.len() {
         return None;
     }
@@ -554,9 +549,7 @@ fn read_vint(d: &[u8], i: usize, keep_marker: bool) -> Option<(u64, usize)> {
         u64::from(first & mask)
     };
     for k in 1..len {
-        let Some(&byte) = d.get(i.saturating_add(k)) else {
-            return None;
-        };
+        let byte = *d.get(i.saturating_add(k))?;
         value = (value << 8) | u64::from(byte);
     }
     Some((value, len))
@@ -607,10 +600,8 @@ fn ebml_uint(d: &[u8]) -> u64 {
 /// IEEE float from an EBML element payload (4 or 8 bytes; 0 otherwise).
 fn ebml_float(d: &[u8]) -> Option<f64> {
     match d.len() {
-        4 => Some(f64::from(f32::from_be_bytes([d[0], d[1], d[2], d[3]]))),
-        8 => Some(f64::from_be_bytes([
-            d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
-        ])),
+        4 => Some(f64::from(f32::from_be_bytes(*d.first_chunk::<4>()?))),
+        8 => Some(f64::from_be_bytes(*d.first_chunk::<8>()?)),
         _ => None,
     }
 }
@@ -676,11 +667,14 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
 // ---- MP3 (MPEG-1/2/2.5 Layer III) -----------------------------------------
 
 /// Read a 4-byte `ID3v2` syncsafe integer (7 bits per byte).
-fn syncsafe(b: &[u8]) -> usize {
-    ((b[0] as usize & 0x7F) << 21)
-        | ((b[1] as usize & 0x7F) << 14)
-        | ((b[2] as usize & 0x7F) << 7)
-        | (b[3] as usize & 0x7F)
+fn syncsafe(b: &[u8]) -> Option<usize> {
+    let &[b0, b1, b2, b3] = b.first_chunk::<4>()?;
+    Some(
+        ((b0 as usize & 0x7F) << 21)
+            | ((b1 as usize & 0x7F) << 14)
+            | ((b2 as usize & 0x7F) << 7)
+            | (b3 as usize & 0x7F),
+    )
 }
 
 /// One decoded MPEG audio frame header.
@@ -695,19 +689,20 @@ struct Mp3Header {
 }
 
 fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
-    if d.len() < 4 || d[0] != 0xFF || (d[1] & 0xE0) != 0xE0 {
+    let &[b0, b1, b2, b3] = d.first_chunk::<4>()?;
+    if b0 != 0xFF || (b1 & 0xE0) != 0xE0 {
         return None;
     }
-    let version_bits = (d[1] >> 3) & 0x03; // 0=2.5,2=2,3=1 (1 reserved)
-    let layer_bits = (d[1] >> 1) & 0x03; // 1=Layer III
+    let version_bits = (b1 >> 3) & 0x03; // 0=2.5,2=2,3=1 (1 reserved)
+    let layer_bits = (b1 >> 1) & 0x03; // 1=Layer III
     if version_bits == 1 || layer_bits != 1 {
         return None; // only Layer III is handled
     }
     let mpeg1 = version_bits == 3;
-    let bitrate_index = (d[2] >> 4) & 0x0F;
-    let samplerate_index = (d[2] >> 2) & 0x03;
-    let padding = ((d[2] >> 1) & 0x01) as usize;
-    let channel_mode = (d[3] >> 6) & 0x03; // 3 = mono
+    let bitrate_index = (b2 >> 4) & 0x0F;
+    let samplerate_index = (b2 >> 2) & 0x03;
+    let padding = ((b2 >> 1) & 0x01) as usize;
+    let channel_mode = (b3 >> 6) & 0x03; // 3 = mono
     if bitrate_index == 0 || bitrate_index == 0x0F || samplerate_index == 3 {
         return None; // free-format / reserved
     }
@@ -718,7 +713,10 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
     const BR_V2: [u32; 16] = [
         0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
     ];
-    let bitrate_kbps = if mpeg1 { BR_V1 } else { BR_V2 }[bitrate_index as usize];
+    let bitrate_kbps = (if mpeg1 { BR_V1 } else { BR_V2 })
+        .get(bitrate_index as usize)
+        .copied()
+        .unwrap_or(0);
     // Sample-rate tables by MPEG version, indexed by samplerate_index.
     const SR_V1: [u32; 3] = [44100, 48000, 32000];
     const SR_V2: [u32; 3] = [22050, 24000, 16000];
@@ -727,7 +725,10 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
         3 => SR_V1,
         2 => SR_V2,
         _ => SR_V25,
-    }[samplerate_index as usize];
+    }
+    .get(samplerate_index as usize)
+    .copied()
+    .unwrap_or(0);
     let samples_per_frame = if mpeg1 { 1152 } else { 576 };
     let bitrate_bps = bitrate_kbps * 1000;
     let _ = padding;
@@ -743,17 +744,19 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
 fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     // Skip an ID3v2 tag if present.
     let mut off = 0usize;
-    if d.len() >= 10 && &d[0..3] == b"ID3" {
-        off = 10 + syncsafe(&d[6..10]);
+    if d.get(0..3) == Some(b"ID3".as_slice())
+        && let Some(sync) = d.get(6..10).and_then(syncsafe)
+    {
+        off = 10 + sync;
     }
     // Find the first valid frame sync.
     let mut header = None;
     let mut scan = off;
     let limit = d.len().saturating_sub(4);
     while scan <= limit {
-        if d[scan] == 0xFF
-            && (d[scan + 1] & 0xE0) == 0xE0
-            && let Some(h) = parse_mp3_frame_header(&d[scan..])
+        if d.get(scan) == Some(&0xFF)
+            && d.get(scan + 1).is_some_and(|b| (b & 0xE0) == 0xE0)
+            && let Some(h) = d.get(scan..).and_then(parse_mp3_frame_header)
         {
             header = Some((scan, h));
             break;
@@ -776,7 +779,8 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     };
     let xing_at = frame_off + 4 + side_info;
     if xing_at + 12 <= d.len()
-        && (&d[xing_at..xing_at + 4] == b"Xing" || &d[xing_at..xing_at + 4] == b"Info")
+        && let Some(tag) = d.get(xing_at..xing_at + 4)
+        && (tag == b"Xing" || tag == b"Info")
     {
         let flags = be_u32(d, xing_at + 4)?;
         if flags & 0x1 != 0 {
