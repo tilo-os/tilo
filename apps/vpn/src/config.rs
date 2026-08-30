@@ -4,12 +4,9 @@
 //!
 //! 1. Parsing a `WireGuard` `.conf` or `OpenVPN` `.ovpn` file into a
 //!    [`Connection`] (used by the import flow).
-//! 2. Building the exact argv we would hand to `wg-quick` / `nmcli` /
-//!    `openvpn` to bring a tunnel up or down. The argv is shown to the
-//!    user in a confirm dialog *before* anything is executed — the
-//!    network is never touched without consent, and never in `--shots`.
-
-use std::path::PathBuf;
+//! 2. Building the exact NetworkManager action shown to the user before a
+//!    connection changes. Execution accepts only that narrow vocabulary;
+//!    the network is never touched without consent or in screenshot tests.
 
 use crate::model::{ConnKind, Connection};
 
@@ -169,9 +166,9 @@ impl CommandPlan {
     }
 }
 
-/// Which backend tool a connection drives. The live app prefers
-/// `NetworkManager` (`nmcli`) when present for a unified, polkit-gated
-/// path, and falls back to the protocol-native tools otherwise.
+/// Which backend tool a connection drives. Live connections use
+/// `NetworkManager`: it owns credentials, routing, DNS and polkit policy,
+/// and is also the source queried by shell quick settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
     /// `wg-quick up/down <name>` (`WireGuard` native).
@@ -298,46 +295,15 @@ fn sanitize_iface(s: &str) -> String {
     joined.trim_matches('-').to_string()
 }
 
-/// The per-user data directory where imported tunnel configs are persisted so
-/// the real bring-up command can reference them (`$XDG_DATA_HOME/qos-vpn`).
-pub fn data_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("qos-vpn")
-}
-
-/// Persist an imported raw config so the real bring-up can reference it. The
-/// filename basename becomes the `wg-quick` interface name; the file is written
-/// `0600` because `WireGuard` refuses a world-readable config that holds a
-/// private key. Returns the absolute path written.
-pub fn persist_config(iface: &str, kind: ConnKind, raw: &str) -> std::io::Result<PathBuf> {
-    let dir = data_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{iface}.{}", kind.ext()));
-    std::fs::write(&path, raw)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(path)
-}
-
-/// Whether the user has opted in to real host command execution. Mutating
-/// commands (bring-up / teardown / Tor) never run without this.
-pub fn exec_allowed() -> bool {
-    std::env::var("QOS_VPN_ALLOW_EXEC").as_deref() == Ok("1")
-}
-
 /// Default backend choice for a protocol.
-pub fn default_backend(kind: ConnKind) -> Backend {
-    match kind {
-        ConnKind::WireGuard => Backend::WgQuick,
-        ConnKind::OpenVpn => Backend::OpenVpnCli,
-    }
+pub fn default_backend(_kind: ConnKind) -> Backend {
+    Backend::NetworkManager
+}
+
+/// Production uses the narrow live backend directly. Unit tests stay
+/// hermetic unless a specifically marked integration run opts in.
+pub fn exec_allowed() -> bool {
+    !cfg!(test) || std::env::var("QOS_VPN_ALLOW_EXEC").as_deref() == Ok("1")
 }
 
 /// The command that would toggle the system Tor service.
@@ -357,26 +323,25 @@ pub fn tor_plan(enable: bool) -> CommandPlan {
 /// Execute a planned command. ONLY called after the user confirms; never
 /// reached on the `--shots` path. Returns the captured status text.
 ///
-/// This is intentionally guarded by an env var so that an accidental
-/// invocation in a sandbox/test never mutates host networking — the live
-/// app sets `QOS_VPN_ALLOW_EXEC=1` once the user has acknowledged the
-/// confirm dialog.
+/// Only a deliberately small command vocabulary is accepted. VPN changes
+/// are delegated to the shared NetworkManager boundary; this function is
+/// not an arbitrary process launcher.
 pub fn execute(plan: &CommandPlan) -> Result<String, String> {
     if !exec_allowed() {
         return Err(format!(
-            "execution disabled (set QOS_VPN_ALLOW_EXEC=1): {}",
+            "execution disabled in test process: {}",
             plan.display()
         ));
     }
-    let out = std::process::Command::new(&plan.program)
-        .args(&plan.args)
-        .output()
-        .map_err(|e| format!("spawn {}: {e}", plan.program))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    if plan.program == "nmcli"
+        && plan.args.len() == 3
+        && plan.args[0] == "connection"
+        && matches!(plan.args[1].as_str(), "up" | "down")
+    {
+        os_actions::set_vpn_connection(&plan.args[2], plan.args[1] == "up")?;
+        return Ok(String::new());
     }
+    Err(format!("unsupported privileged action: {}", plan.display()))
 }
 
 #[cfg(test)]
@@ -510,24 +475,9 @@ dhcp-option DNS 172.20.4.1
 
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn persist_config_writes_the_raw_bytes() {
-        // Point the data dir at a scratch location and confirm the exact raw
-        // config is written where the bring-up command will find it.
-        let tmp = std::env::temp_dir().join(format!("qos-vpn-persist-{}", uuid::Uuid::new_v4()));
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
-        let path = persist_config("home", ConnKind::WireGuard, WG).expect("persist");
-        assert!(path.ends_with("qos-vpn/home.conf"));
-        let back = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(back, WG);
-        let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
-    }
-
-    #[test]
-    #[serial_test::serial(vpn_env)]
     fn execute_is_guarded_off_by_default() {
-        // Without the opt-in env var, execution must refuse — proving the
-        // confirm gate can never be bypassed in tests/sandboxes.
+        // The execution boundary rejects anything outside its fixed VPN
+        // vocabulary, even after a UI confirmation.
         let plan = tor_plan(true);
         let r = execute(&plan);
         assert!(r.is_err());
