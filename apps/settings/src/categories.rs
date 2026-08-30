@@ -146,7 +146,7 @@ impl Category {
             Category::Notifications => "Notifications",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
-            Category::Permissions => "Permissions & Roles",
+            Category::Permissions => "Privacy & Security",
             Category::Updates => "Updates",
             Category::About => "About",
         }
@@ -170,7 +170,7 @@ impl Category {
             Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
             Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
             Category::RegionFormats => "Currency, date, time, and measurement units",
-            Category::Permissions => "Roles and per-action permissions for this workspace",
+            Category::Permissions => "Device security, privacy hardware, and workspace access",
             Category::Updates => "System updates and release channel",
             Category::About => "Device identity and transfer",
         }
@@ -355,6 +355,12 @@ impl Category {
                 "file access",
                 "collaboration",
                 "security",
+                "privacy",
+                "encryption",
+                "secure boot",
+                "firewall",
+                "camera",
+                "microphone",
             ],
             Category::Updates => &[
                 "software", "upgrade", "channel", "stable", "nightly", "version", "bootc",
