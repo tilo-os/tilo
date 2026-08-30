@@ -35,7 +35,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Button, ButtonFace, TextInput, Widget};
 
 use crate::model::{self, Account, Algorithm};
 
@@ -1094,38 +1094,14 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-        let bg = if hovered && enabled {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-        let color = if enabled {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            color,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(tw) / 2.0,
-                    rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(rect, label)
+                .hovered(hovered)
+                .disabled(!enabled),
         );
     }
 
@@ -1140,28 +1116,15 @@ impl AddAccountPanel {
         hovered: bool,
         enabled: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-        let bg = if !enabled {
-            theme.accent_primary.with_alpha_factor(0.4)
-        } else if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            Color::WHITE,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(tw) / 2.0,
-                    rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Semibold,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(rect, label)
+                .primary()
+                .hovered(hovered)
+                .disabled(!enabled),
         );
     }
 
