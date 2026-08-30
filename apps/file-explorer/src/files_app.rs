@@ -4139,10 +4139,6 @@ mod responsive_body_tests {
             });
         }
 
-        fn escape(&mut self) {
-            self.press_named(winit::keyboard::NamedKey::Escape);
-        }
-
         fn type_char(&mut self, s: &str) {
             let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
             ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));

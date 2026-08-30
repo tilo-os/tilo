@@ -145,11 +145,6 @@ impl BottomPanel {
         }
     }
 
-    /// The Search tab's current state.
-    pub fn search(&self) -> &SearchState {
-        &self.search
-    }
-
     /// The search row the user clicked, if any. Cleared on read.
     pub fn take_activated_hit(&mut self) -> Option<usize> {
         self.activated_hit.take()
@@ -418,12 +413,14 @@ impl BottomPanel {
     }
 
     /// What the panel is saying in place of "no problems", if anything.
+    #[cfg(test)]
     pub fn analysis(&self) -> Option<&str> {
         self.analysis.as_deref()
     }
 
     /// The diagnostics currently listed, so callers can assert on what the user
     /// is shown rather than only on how many rows there are.
+    #[cfg(test)]
     pub fn problems(&self) -> &[Diagnostic] {
         &self.problems
     }

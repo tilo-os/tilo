@@ -570,6 +570,7 @@ impl GreeterApp {
     /// name, never the internal desktop id it is launched under. The id
     /// (`nirios`) is a `DesktopNames=` contract with the portal; it is not
     /// something to show the person logging in.
+    #[cfg(test)]
     fn session_label(&self) -> String {
         match self.sessions.get(self.selected_session) {
             Some(s) => s.name.clone(),
