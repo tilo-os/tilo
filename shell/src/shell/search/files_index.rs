@@ -77,6 +77,7 @@ pub struct ContentHit {
     pub snippet: Option<String>,
 }
 
+#[derive(Copy, Clone)]
 struct Fields {
     path: Field,
     stem: Field,
@@ -131,9 +132,27 @@ pub struct FilesIndex {
     _writer_handle: Arc<RwLock<Option<thread::JoinHandle<()>>>>,
 }
 
+/// Scales a tantivy BM25 score into the small integer rank
+/// [`ContentHit::score`] sorts by. Rust's `f32 as i32` cast saturates
+/// (never wraps or is UB) for any input, including the astronomically
+/// unlikely score that would overflow `i32` at this scale.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "f32 as i32 saturates rather than wrapping; a display rank losing sub-integer precision is intended, not a bug"
+)]
+fn bm25_score_to_rank(score: f32) -> i32 {
+    (score * 20.0) as i32
+}
+
 impl FilesIndex {
     /// Open (or create) the index and kick off a background walker.
     /// Returns immediately; queries answer once the first batch commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying `tantivy` error if the on-disk index at
+    /// `~/.cache/qos/files-index` can't be opened or created (a missing
+    /// schema field, a corrupt directory, or similar).
     pub fn open_or_create(home: &Path) -> Result<Self, tantivy::error::TantivyError> {
         let dir = files_index_dir()?;
         fs::create_dir_all(&dir).ok();
@@ -251,7 +270,7 @@ impl FilesIndex {
                 continue;
             };
             let path = PathBuf::from(path_val);
-            let normalised = (score * 20.0) as i32;
+            let normalised = bm25_score_to_rank(score);
             out.push(ContentHit {
                 path,
                 score: normalised,
@@ -325,7 +344,10 @@ fn load_mtime_snapshot(
 /// single large non-binary file. `known_len` only sizes the initial `Vec`;
 /// it is not trusted as an upper bound.
 fn read_head(path: &Path, known_len: u64, cap: u64) -> Option<Vec<u8>> {
-    let reserve = known_len.min(cap) as usize;
+    // Only a capacity hint for the allocation below, so a 32-bit usize
+    // that can't hold the full u64 just under-reserves (0) rather than
+    // truncating into a wrong-but-still-"valid" number.
+    let reserve = usize::try_from(known_len.min(cap)).unwrap_or(0);
     let file = fs::File::open(path).ok()?;
     let mut bytes = Vec::with_capacity(reserve);
     file.take(cap).read_to_end(&mut bytes).ok()?;
@@ -387,8 +409,8 @@ fn walk_and_index(
         doc.add_u64(fields.mtime, mtime);
         writer.add_document(doc).ok();
 
-        count += 1;
-        since_commit += 1;
+        count = count.saturating_add(1);
+        since_commit = since_commit.saturating_add(1);
         if since_commit >= COMMIT_BATCH
             || last_commit.elapsed().map_or(0, |d| d.as_secs()) >= COMMIT_INTERVAL_SECS
         {
@@ -461,14 +483,14 @@ mod tests {
         let out = read_head(&path, big.len() as u64, cap).unwrap();
         assert_eq!(
             out.len(),
-            cap as usize,
+            usize::try_from(cap).unwrap(),
             "read_head must stop at the cap for a large file",
         );
         // Under-reporting known_len (0) still caps — bound is `take`, not `known_len`.
         let out2 = read_head(&path, 0, cap).unwrap();
         assert_eq!(
             out2.len(),
-            cap as usize,
+            usize::try_from(cap).unwrap(),
             "cap holds even when known_len lies"
         );
 
@@ -517,7 +539,10 @@ mod content_index_integration {
     use std::time::{Duration, Instant};
 
     fn wait_for<F: FnMut() -> bool>(mut cond: F, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        let now = Instant::now();
+        // `Instant::checked_add` can't panic; an (unreachable for a test
+        // timeout) overflow just times out immediately instead.
+        let deadline = now.checked_add(timeout).unwrap_or(now);
         while Instant::now() < deadline {
             if cond() {
                 return true;
