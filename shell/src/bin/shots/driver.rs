@@ -630,6 +630,13 @@ impl ShellDriver {
                 });
                 self.fb.host_mut().force_ws_settings_settled();
             }
+            "ws-settings-apps" => {
+                self.with_chrome(|st| {
+                    st.overlays.ws_settings = true;
+                    st.ws_settings_tab = WsTab::Apps;
+                });
+                self.fb.host_mut().force_ws_settings_settled();
+            }
             "room-activity" => {
                 // Drives the room through the production mirrors, not a
                 // seeded `HistoryEntry` — these are the same calls the
@@ -1047,6 +1054,7 @@ impl ShellDriver {
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",
+        "ws-settings-apps",
         "notifications",
         "notifications-one",
         "notifications-dnd",
@@ -1089,6 +1097,7 @@ impl ShellDriver {
             "ws_settings_tab[permissions]" => {
                 Some(host.ws_settings_tab_pill_rect(WsTab::Permissions))
             }
+            "ws_settings_tab[apps]" => Some(host.ws_settings_tab_pill_rect(WsTab::Apps)),
             _ => None,
         };
         if let Some(r) = curated
