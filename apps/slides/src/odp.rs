@@ -417,7 +417,12 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
+        .and_then(|a| {
+            let raw = std::str::from_utf8(a.value.as_ref()).ok()?;
+            quick_xml::escape::unescape(raw)
+                .ok()
+                .map(std::borrow::Cow::into_owned)
+        })
 }
 
 #[cfg(test)]

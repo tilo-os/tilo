@@ -2,6 +2,7 @@
 name = "swipe"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
 # Wraps the FUTO swipe-library (GPL-3.0-or-later) + ExecuTorch via a C-ABI
 # shim. qOS is AGPL-3.0-or-later, which incorporates GPL-3.0 cleanly.
 license = "AGPL-3.0-or-later"

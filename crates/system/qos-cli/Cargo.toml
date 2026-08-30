@@ -2,6 +2,8 @@
 name = "qos-cli"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "The `qos` command: what a person types to ask this machine about the image it booted, and to change it."
 
 [[bin]]
