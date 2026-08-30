@@ -7,10 +7,15 @@
 //! For the offscreen light+dark renders, see `gallery_shots`.
 
 use ui::theme::Theme;
+use ui::widget::{Scrollable, Widget};
 use ui::{App, State};
 
 #[path = "common/gallery_scene.rs"]
 mod gallery_scene;
+
+fn build_gallery(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
+    Box::new(Scrollable::new_vertical().with_child(gallery_scene::build_showcase(state, theme)))
+}
 
 fn main() {
     ui::i18n::I18nManager::init("en-US");
@@ -19,8 +24,22 @@ fn main() {
     // The live window opens in dark; dimmed-label colours are baked from this
     // theme (the offscreen `gallery_shots` example rebuilds per theme for a
     // correct light render).
-    let root_widget = gallery_scene::build_showcase(&mut state, &Theme::dark());
+    let root_widget = build_gallery(&mut state, &Theme::dark());
 
     let app = App::new(state, root_widget);
     app.run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_gallery_has_a_scrollable_viewport() {
+        let mut state = State::new();
+        let root = build_gallery(&mut state, &Theme::dark());
+
+        assert_eq!(root.name(), "Scrollable");
+        assert_eq!(root.children().len(), 1);
+    }
 }
