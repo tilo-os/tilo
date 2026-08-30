@@ -10,7 +10,6 @@
 //! Intentionally thin: cryptographic logic stays in
 //! `threshold-identity`, visual logic stays in `ui`.
 
-use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};

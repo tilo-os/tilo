@@ -3000,6 +3000,14 @@ impl Widget for TextInput {
         Some(Rect::new(x, top, x + CARET_WIDTH, top + height))
     }
 
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(if self.secret {
+            winit::window::ImePurpose::Password
+        } else {
+            winit::window::ImePurpose::Normal
+        })
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // A secret (password) input never leaks its value into the a11y tree —
@@ -3263,6 +3271,20 @@ mod tests {
     fn text_input_test_id_default_is_text_input() {
         let ti = TextInput::new(Vec::new());
         assert_eq!(Widget::test_id(&ti), Some("text_input"));
+    }
+
+    #[test]
+    fn ime_purpose_does_not_leak_secret_field_contents() {
+        let plain = TextInput::local();
+        let secret = TextInput::local().with_secret(true);
+        assert_eq!(
+            Widget::ime_purpose(&plain),
+            Some(winit::window::ImePurpose::Normal)
+        );
+        assert_eq!(
+            Widget::ime_purpose(&secret),
+            Some(winit::window::ImePurpose::Password)
+        );
     }
 
     #[test]
