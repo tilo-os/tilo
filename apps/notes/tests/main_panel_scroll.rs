@@ -5,6 +5,7 @@
 //! clamp) that has no test today.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use notes::NotesApp;
 use taffy::prelude::*;
@@ -27,12 +28,17 @@ fn wheel(lines: f32) -> WindowEvent {
 fn tall_body() -> String {
     let mut s = String::from("# Long page\n\n");
     for i in 0..60 {
-        s.push_str(&format!("Paragraph number {i} with some words.\n\n"));
+        let _ = writeln!(s, "Paragraph number {i} with some words.\n");
     }
     s
 }
 
-fn settle(app: &mut NotesApp, state: &mut ui::State, w: u32, h: u32) -> (TaffyTree<()>, NodeId) {
+fn settle(
+    app: &mut NotesApp,
+    state: &mut ui::State,
+    w: u16,
+    h: u16,
+) -> Result<(TaffyTree<()>, NodeId), String> {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     app.sync(&mut state.doc, &state.root);
@@ -45,14 +51,14 @@ fn settle(app: &mut NotesApp, state: &mut ui::State, w: u32, h: u32) -> (TaffyTr
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(f32::from(w)),
+                        height: Dimension::length(f32::from(h)),
                     },
                     ..Default::default()
                 },
                 &[child],
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
         {
             let measure_map = node_map.clone();
             let tr = &mut text_renderer;
@@ -60,8 +66,8 @@ fn settle(app: &mut NotesApp, state: &mut ui::State, w: u32, h: u32) -> (TaffyTr
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(f32::from(w)),
+                        height: AvailableSpace::Definite(f32::from(h)),
                     },
                     |known, avail, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -71,7 +77,7 @@ fn settle(app: &mut NotesApp, state: &mut ui::State, w: u32, h: u32) -> (TaffyTr
                         }
                     },
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
         }
         app.apply_layout(&taffy, child, Point::ORIGIN);
         let settled = !app.take_structure_dirty();
@@ -80,7 +86,7 @@ fn settle(app: &mut NotesApp, state: &mut ui::State, w: u32, h: u32) -> (TaffyTr
             break;
         }
     }
-    result.unwrap()
+    result.ok_or_else(|| "layout never settled".to_string())
 }
 
 fn dispatch(
@@ -116,7 +122,7 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
 
     let mut state = ui::State::new();
     // Wide (stays inline) but short so the content overflows.
-    let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
+    let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
     assert_eq!(
         app.main_panel_mut().scroll_y_for_test(),
         0.0,
@@ -125,7 +131,7 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
 
     // Scroll down: negative LineDelta y → positive px offset.
     dispatch(&mut app, &mut state, &taffy, child, &wheel(-3.0));
-    let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
+    let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
     let scrolled = app.main_panel_mut().scroll_y_for_test();
     assert!(
         scrolled > 0.0,
@@ -135,10 +141,10 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
     // Scroll far past the bottom: scroll_y must clamp to the content
     // extent — a second huge scroll can't push it further.
     dispatch(&mut app, &mut state, &taffy, child, &wheel(-1000.0));
-    let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
+    let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
     let at_max = app.main_panel_mut().scroll_y_for_test();
     dispatch(&mut app, &mut state, &taffy, child, &wheel(-1000.0));
-    let (taffy, child) = settle(&mut app, &mut state, 1000, 300);
+    let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
     let still_max = app.main_panel_mut().scroll_y_for_test();
     assert!(
         at_max > scrolled,
@@ -151,7 +157,7 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
 
     // Scroll back up past the top: clamps at 0.
     dispatch(&mut app, &mut state, &taffy, child, &wheel(1000.0));
-    let _ = settle(&mut app, &mut state, 1000, 300);
+    let _ = settle(&mut app, &mut state, 1000, 300).unwrap();
     assert_eq!(
         app.main_panel_mut().scroll_y_for_test(),
         0.0,
