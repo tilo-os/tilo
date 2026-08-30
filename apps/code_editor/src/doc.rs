@@ -24,6 +24,14 @@ pub struct EditorDoc;
 
 impl EditorDoc {
     /// Get-or-create the top-level `buffers` Map.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` on `ROOT` only fails for an invalid or
+    /// deleted parent object, and `ROOT` is permanent for the life of the doc.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn buffers_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "buffers") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -35,9 +43,8 @@ impl EditorDoc {
 
     /// The `Text` `ObjId` for `node`'s buffer, if it has been opened.
     pub fn buffer_text(doc: &AutoCommit, node: NodeId) -> Option<ObjId> {
-        let buffers = match doc.get(&ROOT, "buffers") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), buffers))) = doc.get(&ROOT, "buffers") else {
+            return None;
         };
         match doc.get(&buffers, node.to_string().as_str()) {
             Ok(Some((Value::Object(ObjType::Text), t))) => Some(t),
@@ -47,6 +54,14 @@ impl EditorDoc {
 
     /// Get-or-create the `Text` object for `node`, seeding it with `seed` if it
     /// did not already exist. Returns the Text `ObjId`.
+    ///
+    /// # Panics
+    /// Never in practice: `buffers` was just fetched-or-created above, so
+    /// `put_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "buffers is a Map this call itself just fetched-or-created via buffers_map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn ensure_buffer(doc: &mut AutoCommit, node: NodeId, seed: &str) -> ObjId {
         let buffers = Self::buffers_map(doc);
         let key = node.to_string();
@@ -73,9 +88,8 @@ impl EditorDoc {
     /// the app surfaces a buffer created by a Ctrl+K "New file" action or by a
     /// peer that it does not yet track in its in-memory session.
     pub fn buffer_keys(doc: &AutoCommit) -> Vec<NodeId> {
-        let buffers = match doc.get(&ROOT, "buffers") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), buffers))) = doc.get(&ROOT, "buffers") else {
+            return Vec::new();
         };
         doc.keys(&buffers)
             .filter_map(|k| k.parse::<NodeId>().ok())
@@ -86,6 +100,14 @@ impl EditorDoc {
     /// The `TerminalWidget` stores its grid + cursor under whatever object it's
     /// handed as "root"; giving it a dedicated sub-map keeps its keys
     /// (`terminal_grid`, `cursor`) out of the editor's own root namespace.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` on `ROOT` only fails for an invalid or
+    /// deleted parent object, and `ROOT` is permanent for the life of the doc.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn terminal_root(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "terminal_panel") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
