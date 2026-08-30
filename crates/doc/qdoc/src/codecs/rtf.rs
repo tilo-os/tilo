@@ -73,6 +73,13 @@ enum Token {
     Text(String),
 }
 
+/// Char at `i`, or `'\0'` past the end. Every call site here is guarded by `i < n` first, so
+/// the sentinel is never actually observed — it exists so indexing can't panic on the
+/// (unreachable) alternative.
+fn at(chars: &[char], i: usize) -> char {
+    chars.get(i).copied().unwrap_or('\0')
+}
+
 /// Tokenizes the RTF source over chars (== bytes after the import-side byte→char map).
 fn tokenize(src: &str) -> Vec<Token> {
     let chars: Vec<char> = src.chars().collect();
@@ -90,50 +97,50 @@ fn tokenize(src: &str) -> Vec<Token> {
     }
 
     while i < n {
-        let c = chars[i];
+        let c = at(&chars, i);
         match c {
             '{' => {
                 flush_text!();
                 out.push(Token::GroupOpen);
-                i += 1;
+                i = i.saturating_add(1);
             }
             '}' => {
                 flush_text!();
                 out.push(Token::GroupClose);
-                i += 1;
+                i = i.saturating_add(1);
             }
             '\r' | '\n' => {
-                i += 1;
+                i = i.saturating_add(1);
             }
             '\\' => {
                 flush_text!();
-                i += 1;
+                i = i.saturating_add(1);
                 if i >= n {
                     break;
                 }
-                let d = chars[i];
+                let d = at(&chars, i);
                 if d.is_ascii_alphabetic() {
                     let mut word = String::new();
-                    while i < n && chars[i].is_ascii_alphabetic() {
-                        word.push(chars[i]);
-                        i += 1;
+                    while i < n && at(&chars, i).is_ascii_alphabetic() {
+                        word.push(at(&chars, i));
+                        i = i.saturating_add(1);
                     }
                     let mut param: Option<i32> = None;
-                    if i < n && (chars[i] == '-' || chars[i].is_ascii_digit()) {
+                    if i < n && (at(&chars, i) == '-' || at(&chars, i).is_ascii_digit()) {
                         let mut num = String::new();
-                        if chars[i] == '-' {
+                        if at(&chars, i) == '-' {
                             num.push('-');
-                            i += 1;
+                            i = i.saturating_add(1);
                         }
-                        while i < n && chars[i].is_ascii_digit() {
-                            num.push(chars[i]);
-                            i += 1;
+                        while i < n && at(&chars, i).is_ascii_digit() {
+                            num.push(at(&chars, i));
+                            i = i.saturating_add(1);
                         }
                         param = num.parse::<i32>().ok();
                     }
                     // A single trailing space is the control-word delimiter and is consumed.
-                    if i < n && chars[i] == ' ' {
-                        i += 1;
+                    if i < n && at(&chars, i) == ' ' {
+                        i = i.saturating_add(1);
                     }
                     // `\u`: the parameter is the code unit; RTF's `\ucN` governs how many fallback chars follow (default 1) — we always skip exactly one.
                     if word == "u" {
@@ -145,11 +152,11 @@ fn tokenize(src: &str) -> Vec<Token> {
                         out.push(Token::Control(word, param));
                     }
                 } else if d == '\'' {
-                    i += 1;
+                    i = i.saturating_add(1);
                     let mut hex = String::new();
-                    while i < n && hex.len() < 2 && chars[i].is_ascii_hexdigit() {
-                        hex.push(chars[i]);
-                        i += 1;
+                    while i < n && hex.len() < 2 && at(&chars, i).is_ascii_hexdigit() {
+                        hex.push(at(&chars, i));
+                        i = i.saturating_add(1);
                     }
                     if let Ok(byte) = u8::from_str_radix(&hex, 16) {
                         out.push(Token::HexByte(byte));
@@ -157,12 +164,12 @@ fn tokenize(src: &str) -> Vec<Token> {
                 } else {
                     // The single char is the symbol; `\\ \{ \}` are literal specials, others (`\*`, `\~`, `\-`, …) carry meaning the parser interprets.
                     out.push(Token::Symbol(d));
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
             }
             _ => {
                 text.push(c);
-                i += 1;
+                i = i.saturating_add(1);
             }
         }
     }
@@ -176,22 +183,22 @@ fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
     if i >= n {
         return i;
     }
-    if chars[i] == '\\' {
-        i += 1;
-        if i < n && chars[i] == '\'' {
-            i += 1;
+    if at(chars, i) == '\\' {
+        i = i.saturating_add(1);
+        if i < n && at(chars, i) == '\'' {
+            i = i.saturating_add(1);
             let mut k = 0;
-            while i < n && k < 2 && chars[i].is_ascii_hexdigit() {
-                i += 1;
-                k += 1;
+            while i < n && k < 2 && at(chars, i).is_ascii_hexdigit() {
+                i = i.saturating_add(1);
+                k = k.saturating_add(1);
             }
         } else {
-            while i < n && chars[i].is_ascii_alphabetic() {
-                i += 1;
+            while i < n && at(chars, i).is_ascii_alphabetic() {
+                i = i.saturating_add(1);
             }
         }
     } else {
-        i += 1; // a single literal char
+        i = i.saturating_add(1); // a single literal char
     }
     i
 }
@@ -199,23 +206,23 @@ fn skip_one_fallback(chars: &[char], mut i: usize, n: usize) -> usize {
 /// Parses a `{\colortbl;\redR\greenG\blueB; …}` group into a 1-based list of `#rrggbb` strings; index 0 is the reserved auto entry.
 fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
     let mut out: Vec<Option<String>> = Vec::new();
-    let (mut r, mut g, mut b) = (0u32, 0u32, 0u32);
+    let (mut red, mut green, mut blue) = (0u32, 0u32, 0u32);
     let mut saw_component = false;
-    for t in tokens {
-        match t {
-            Token::Control(w, p) => {
-                let v = p.unwrap_or(0).clamp(0, 255) as u32;
-                match w.as_str() {
+    for tok in tokens {
+        match tok {
+            Token::Control(word, param) => {
+                let component = u32::try_from(param.unwrap_or(0).clamp(0, 255)).unwrap_or(0);
+                match word.as_str() {
                     "red" => {
-                        r = v;
+                        red = component;
                         saw_component = true;
                     }
                     "green" => {
-                        g = v;
+                        green = component;
                         saw_component = true;
                     }
                     "blue" => {
-                        b = v;
+                        blue = component;
                         saw_component = true;
                     }
                     _ => {}
@@ -225,13 +232,13 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
                 for ch in s.chars() {
                     if ch == ';' {
                         if saw_component {
-                            out.push(Some(format!("#{r:02x}{g:02x}{b:02x}")));
+                            out.push(Some(format!("#{red:02x}{green:02x}{blue:02x}")));
                         } else {
                             out.push(None); // the reserved/auto slot
                         }
-                        r = 0;
-                        g = 0;
-                        b = 0;
+                        red = 0;
+                        green = 0;
+                        blue = 0;
                         saw_component = false;
                     }
                 }
@@ -243,6 +250,10 @@ fn parse_color_table(tokens: &[Token]) -> Vec<Option<String>> {
 }
 
 /// Per-scope character formatting, pushed/popped on `{`/`}`.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent, orthogonal per-run toggles mirroring RTF's own flags (\\b \\i \\ul \\strike); a bitflags enum would add indirection with no behavioral benefit"
+)]
 #[derive(Clone, Default)]
 struct CharState {
     bold: bool,
@@ -269,6 +280,191 @@ enum MarkVal {
     Int(i64),
 }
 
+/// If the token at `idx` opens a `\colortbl` group, parses it and returns `(colors, index just
+/// past the closing brace)`.
+fn consume_colortbl(tokens: &[Token], idx: usize) -> Option<(Vec<Option<String>>, usize)> {
+    let start = idx.saturating_add(1);
+    let mut j = start;
+    let mut inner_depth = 1usize; // we are inside the colortbl's group
+    while j < tokens.len() && inner_depth > 0 {
+        match tokens.get(j) {
+            Some(Token::GroupOpen) => inner_depth = inner_depth.saturating_add(1),
+            Some(Token::GroupClose) => inner_depth = inner_depth.saturating_sub(1),
+            _ => {}
+        }
+        if inner_depth == 0 {
+            break;
+        }
+        j = j.saturating_add(1);
+    }
+    let colors = parse_color_table(tokens.get(start..j)?);
+    Some((colors, j))
+}
+
+/// Route one token to its content-producing handler, honoring `skip_depth`. `depth` still
+/// advances/retreats on group tokens even while skipping, so the skip-destination's own
+/// closing brace is still detected.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same parser state as this file's other per-token handlers (push_char/push_text/handle_control)"
+)]
+fn dispatch_token(
+    tok: &Token,
+    stack: &mut Vec<CharState>,
+    skip_depth: &mut Option<usize>,
+    depth: &mut usize,
+    doc: &mut DocMut,
+    prev_block: &mut Option<String>,
+    cur_block: &mut Option<String>,
+    cur_len: &mut usize,
+    need_new_block: &mut bool,
+    pending_bullet: &mut bool,
+    colors: &[Option<String>],
+    pending_marks: &mut Vec<PendingMark>,
+) {
+    match tok {
+        Token::GroupOpen => {
+            *depth = depth.saturating_add(1);
+            let top = stack.last().cloned().unwrap_or_default();
+            stack.push(top);
+        }
+        Token::GroupClose => {
+            if stack.len() > 1 {
+                stack.pop();
+            }
+            if let Some(sd) = *skip_depth
+                && *depth == sd
+            {
+                *skip_depth = None;
+            }
+            *depth = depth.saturating_sub(1);
+        }
+        Token::Symbol(sym) if skip_depth.is_none() => {
+            if *sym == '*' {
+                *skip_depth = Some(*depth);
+            } else {
+                handle_symbol(
+                    *sym,
+                    doc,
+                    prev_block,
+                    cur_block,
+                    cur_len,
+                    need_new_block,
+                    pending_bullet,
+                );
+            }
+        }
+        Token::Control(word, param) if skip_depth.is_none() => {
+            handle_control(
+                word,
+                *param,
+                stack,
+                skip_depth,
+                *depth,
+                doc,
+                prev_block,
+                cur_block,
+                cur_len,
+                need_new_block,
+                pending_bullet,
+                colors,
+                pending_marks,
+            );
+        }
+        Token::HexByte(b) if skip_depth.is_none() => {
+            // Decode the byte as Latin-1 (the common ANSI fallback): most documents using a
+            // different code page still escape ASCII as ASCII, so this is correct in the printable range.
+            push_char(
+                doc,
+                prev_block,
+                cur_block,
+                cur_len,
+                need_new_block,
+                pending_bullet,
+                *b as char,
+            );
+        }
+        Token::Unicode(cu) if skip_depth.is_none() => {
+            let u = u16::try_from(i64::from(*cu) & 0xffff).unwrap_or(0);
+            let ch = char::from_u32(u32::from(u)).unwrap_or('\u{fffd}');
+            push_char(
+                doc,
+                prev_block,
+                cur_block,
+                cur_len,
+                need_new_block,
+                pending_bullet,
+                ch,
+            );
+        }
+        Token::Text(s) if skip_depth.is_none() => {
+            push_text(
+                s,
+                &stack.last().cloned().unwrap_or_default(),
+                doc,
+                prev_block,
+                cur_block,
+                cur_len,
+                need_new_block,
+                pending_bullet,
+                colors,
+                pending_marks,
+            );
+        }
+        // Currently inside a skip-destination: drop the token's content.
+        Token::Symbol(_) | Token::Control(..) | Token::HexByte(_) | Token::Unicode(_)
+        | Token::Text(_) => {}
+    }
+}
+
+/// Handle a control symbol by emitting its literal char, if any (`\*` is handled by the caller,
+/// since it opens a skip-destination rather than producing content).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors this file's other char-emission helpers (push_char/handle_control) that thread the same parser state"
+)]
+fn handle_symbol(
+    sym: char,
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+    need_new_block: &mut bool,
+    pending_bullet: &mut bool,
+) {
+    let literal = match sym {
+        '\\' => '\\',
+        '{' => '{',
+        '}' => '}',
+        '~' => '\u{a0}',
+        '_' => '\u{2011}',
+        // Optional hyphen (no visible glyph) and anything unrecognized.
+        '-' | _ => return,
+    };
+    push_char(
+        doc,
+        prev,
+        cur,
+        cur_len,
+        need_new_block,
+        pending_bullet,
+        literal,
+    );
+}
+
+fn apply_pending_marks(doc: &mut DocMut, pending_marks: Vec<PendingMark>) {
+    for pm in pending_marks {
+        if pm.end <= pm.start {
+            continue;
+        }
+        match pm.value {
+            Some(MarkVal::Int(n)) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, n),
+            Some(MarkVal::Str(s)) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, s.as_str()),
+            None => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, true),
+        }
+    }
+}
+
 fn import_rtf(src: &str, doc: &mut DocMut) {
     let tokens = tokenize(src);
 
@@ -292,191 +488,36 @@ fn import_rtf(src: &str, doc: &mut DocMut) {
 
     let mut idx = 0;
     while idx < tokens.len() {
-        let tok = &tokens[idx];
+        let Some(tok) = tokens.get(idx) else { break };
 
         if skip_depth.is_none()
             && let Token::Control(w, _) = tok
             && w == "colortbl"
+            && let Some((new_colors, next)) = consume_colortbl(&tokens, idx)
         {
-            let mut j = idx + 1;
-            let mut inner_depth = 1; // we are inside the colortbl's group
-            let start = j;
-            while j < tokens.len() && inner_depth > 0 {
-                match &tokens[j] {
-                    Token::GroupOpen => inner_depth += 1,
-                    Token::GroupClose => inner_depth -= 1,
-                    _ => {}
-                }
-                if inner_depth == 0 {
-                    break;
-                }
-                j += 1;
-            }
-            colors = parse_color_table(&tokens[start..j]);
-            idx = j;
+            colors = new_colors;
+            idx = next;
             continue;
         }
 
-        match tok {
-            Token::GroupOpen => {
-                depth += 1;
-                let top = stack.last().cloned().unwrap_or_default();
-                stack.push(top);
-            }
-            Token::GroupClose => {
-                if stack.len() > 1 {
-                    stack.pop();
-                }
-                if let Some(sd) = skip_depth
-                    && depth == sd
-                {
-                    skip_depth = None;
-                }
-                depth = depth.saturating_sub(1);
-            }
-            Token::Symbol(sym) => {
-                if skip_depth.is_some() {
-                    idx += 1;
-                    continue;
-                }
-                match sym {
-                    '*' => skip_depth = Some(depth),
-                    '\\' => push_char(
-                        doc,
-                        &mut prev_block,
-                        &mut cur_block,
-                        &mut cur_len,
-                        &mut need_new_block,
-                        &mut pending_bullet,
-                        '\\',
-                    ),
-                    '{' => push_char(
-                        doc,
-                        &mut prev_block,
-                        &mut cur_block,
-                        &mut cur_len,
-                        &mut need_new_block,
-                        &mut pending_bullet,
-                        '{',
-                    ),
-                    '}' => push_char(
-                        doc,
-                        &mut prev_block,
-                        &mut cur_block,
-                        &mut cur_len,
-                        &mut need_new_block,
-                        &mut pending_bullet,
-                        '}',
-                    ),
-                    '~' => push_char(
-                        doc,
-                        &mut prev_block,
-                        &mut cur_block,
-                        &mut cur_len,
-                        &mut need_new_block,
-                        &mut pending_bullet,
-                        '\u{a0}',
-                    ),
-                    '_' => push_char(
-                        doc,
-                        &mut prev_block,
-                        &mut cur_block,
-                        &mut cur_len,
-                        &mut need_new_block,
-                        &mut pending_bullet,
-                        '\u{2011}',
-                    ),
-                    '-' => {} // optional hyphen: no visible glyph
-                    _ => {}
-                }
-            }
-            Token::Control(word, param) => {
-                if skip_depth.is_some() {
-                    idx += 1;
-                    continue;
-                }
-                handle_control(
-                    word,
-                    *param,
-                    &mut stack,
-                    &mut skip_depth,
-                    depth,
-                    doc,
-                    &mut prev_block,
-                    &mut cur_block,
-                    &mut cur_len,
-                    &mut need_new_block,
-                    &mut pending_bullet,
-                    &colors,
-                    &mut pending_marks,
-                );
-            }
-            Token::HexByte(b) => {
-                if skip_depth.is_some() {
-                    idx += 1;
-                    continue;
-                }
-                // Decode the byte as Latin-1 (the common ANSI fallback): most documents using a
-                // different code page still escape ASCII as ASCII, so this is correct in the printable range.
-                push_char(
-                    doc,
-                    &mut prev_block,
-                    &mut cur_block,
-                    &mut cur_len,
-                    &mut need_new_block,
-                    &mut pending_bullet,
-                    *b as char,
-                );
-            }
-            Token::Unicode(cu) => {
-                if skip_depth.is_some() {
-                    idx += 1;
-                    continue;
-                }
-                let u = (i64::from(*cu) & 0xffff) as u16;
-                let ch = char::from_u32(u32::from(u)).unwrap_or('\u{fffd}');
-                push_char(
-                    doc,
-                    &mut prev_block,
-                    &mut cur_block,
-                    &mut cur_len,
-                    &mut need_new_block,
-                    &mut pending_bullet,
-                    ch,
-                );
-            }
-            Token::Text(s) => {
-                if skip_depth.is_some() {
-                    idx += 1;
-                    continue;
-                }
-                push_text(
-                    s,
-                    stack.last().cloned().unwrap_or_default(),
-                    doc,
-                    &mut prev_block,
-                    &mut cur_block,
-                    &mut cur_len,
-                    &mut need_new_block,
-                    &mut pending_bullet,
-                    &colors,
-                    &mut pending_marks,
-                );
-            }
-        }
-        idx += 1;
+        dispatch_token(
+            tok,
+            &mut stack,
+            &mut skip_depth,
+            &mut depth,
+            doc,
+            &mut prev_block,
+            &mut cur_block,
+            &mut cur_len,
+            &mut need_new_block,
+            &mut pending_bullet,
+            &colors,
+            &mut pending_marks,
+        );
+        idx = idx.saturating_add(1);
     }
 
-    for pm in pending_marks {
-        if pm.end <= pm.start {
-            continue;
-        }
-        match pm.value {
-            Some(MarkVal::Int(n)) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, n),
-            Some(MarkVal::Str(s)) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, s.as_str()),
-            None => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, true),
-        }
-    }
+    apply_pending_marks(doc, pending_marks);
 }
 
 /// Resolve `\cfN` to a `#rrggbb` string, or `None` (auto / out of range).
@@ -507,6 +548,10 @@ fn open_block(
 
 /// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::expect_used,
+    reason = "cur is always Some here — either it already was, or open_block just set it unconditionally above"
+)]
 fn ensure_block(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -536,14 +581,14 @@ fn push_char(
     let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
     let mut buf = [0u8; 4];
     doc.splice_text(&id, *cur_len, 0, ch.encode_utf8(&mut buf));
-    *cur_len += 1;
+    *cur_len = cur_len.saturating_add(1);
 }
 
 /// Pushes a run of literal text under the active char formatting, gathering the run marks it implies.
 #[allow(clippy::too_many_arguments)]
 fn push_text(
     s: &str,
-    cs: CharState,
+    cs: &CharState,
     doc: &mut DocMut,
     prev: &mut Option<String>,
     cur: &mut Option<String>,
@@ -560,7 +605,7 @@ fn push_text(
     let start = *cur_len;
     doc.splice_text(&id, start, 0, s);
     let len = s.chars().count();
-    let end = start + len;
+    let end = start.saturating_add(len);
     *cur_len = end;
 
     if cs.bold {
@@ -622,6 +667,10 @@ fn push_text(
 
 /// Handle a control word: toggle char state, break paragraphs, or note a bullet.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::expect_used,
+    reason = "stack always holds at least one CharState: seeded with one in import_rtf and GroupClose only pops while len() > 1"
+)]
 fn handle_control(
     word: &str,
     param: Option<i32>,
@@ -656,19 +705,19 @@ fn handle_control(
         "line" => {
             let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
             doc.splice_text(&id, *cur_len, 0, " ");
-            *cur_len += 1;
+            *cur_len = cur_len.saturating_add(1);
         }
         "tab" => {
             let id = ensure_block(doc, prev, cur, cur_len, need_new_block, pending_bullet);
             doc.splice_text(&id, *cur_len, 0, "\t");
-            *cur_len += 1;
+            *cur_len = cur_len.saturating_add(1);
         }
         "b" => cs.bold = on,
         "i" => cs.italic = on,
         "ul" => cs.underline = on,
         "ulnone" => cs.underline = false,
         "strike" => cs.strike = on,
-        "cf" => cs.color = param.unwrap_or(0).max(0) as usize,
+        "cf" => cs.color = usize::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
         "fs" => cs.fs_halfpt = param,
         "plain" => *cs = CharState::default(),
         // A literal bullet glyph (`qdoc-rtf` emits `\bullet\tab `) marks the paragraph as a
@@ -913,7 +962,9 @@ mod tests {
             .find(|m| m.name == "strong")
             .expect("bold run survives");
         assert_eq!(
-            &p.text[strong.start..strong.end],
+            p.text
+                .get(strong.start..strong.end)
+                .expect("strong span is within text bounds"),
             "world",
             "bold covers the right run: {:?}",
             p.marks
