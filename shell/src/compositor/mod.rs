@@ -33,6 +33,7 @@ pub mod render_node;
 pub mod selection;
 pub mod state;
 pub mod surface_readback;
+pub mod switch_control;
 pub mod tab_binding;
 pub mod test_control;
 
