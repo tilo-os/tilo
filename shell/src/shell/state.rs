@@ -3499,47 +3499,104 @@ impl WorkspaceTree {
     /// cache had. Each rebuilt workspace inherits `strips` from the
     /// existing cache entry sharing its id; one from the doc alone
     /// starts empty.
+    /// The child object at `obj[prop]` (a map key or a list index), or
+    /// `None` if absent/not an object.
+    fn doc_obj(
+        doc: &AutoCommit,
+        obj: &automerge::ObjId,
+        prop: impl Into<automerge::Prop>,
+    ) -> Option<automerge::ObjId> {
+        use automerge::ReadDoc;
+        doc.get(obj, prop).ok().flatten().map(|(_, id)| id)
+    }
+
+    /// The `Uint` scalar at `obj[prop]`, or `None` if absent/a different type.
+    fn doc_uint(
+        doc: &AutoCommit,
+        obj: &automerge::ObjId,
+        prop: impl Into<automerge::Prop>,
+    ) -> Option<u64> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        match doc.get(obj, prop).ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Uint(v) => Some(*v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `Str` scalar at `obj[prop]`, or `None` if absent/a different type.
+    fn doc_str(
+        doc: &AutoCommit,
+        obj: &automerge::ObjId,
+        prop: impl Into<automerge::Prop>,
+    ) -> Option<String> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        match doc.get(obj, prop).ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `Boolean` scalar at `obj[prop]`, or `None` if absent/a different type.
+    fn doc_bool(
+        doc: &AutoCommit,
+        obj: &automerge::ObjId,
+        prop: impl Into<automerge::Prop>,
+    ) -> Option<bool> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        match doc.get(obj, prop).ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Boolean(v) => Some(*v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `Bytes` scalar at `obj[prop]`, or `None` if absent/a different type.
+    fn doc_bytes(
+        doc: &AutoCommit,
+        obj: &automerge::ObjId,
+        prop: impl Into<automerge::Prop>,
+    ) -> Option<Vec<u8>> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        match doc.get(obj, prop).ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Bytes(b) => Some(b.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn rebuild_cache_from_doc(&mut self) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        if let Some((Value::Scalar(s), _)) = self.doc.get(&ROOT, "active").ok().flatten()
-            && let ScalarValue::Uint(raw) = s.as_ref()
-        {
-            self.active = WorkspaceId::from(*raw);
+        use automerge::{ROOT, ReadDoc};
+        if let Some(raw) = Self::doc_uint(&self.doc, &ROOT, "active") {
+            self.active = WorkspaceId::from(raw);
         }
         // Rebuild while preserving any existing nested state by id-match.
-        if let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() {
+        if let Some(workspaces_id) = Self::doc_obj(&self.doc, &ROOT, "workspaces") {
             let len = self.doc.length(&workspaces_id);
             let mut new_workspaces: Vec<Workspace> = Vec::with_capacity(len);
             for i in 0..len {
-                let entry_id = match self.doc.get(&workspaces_id, i).ok().flatten() {
-                    Some((_, id)) => id,
-                    None => continue,
+                let Some(entry_id) = Self::doc_obj(&self.doc, &workspaces_id, i) else {
+                    continue;
                 };
-                let id_raw = match self.doc.get(&entry_id, "id").ok().flatten() {
-                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                        ScalarValue::Uint(v) => *v,
-                        _ => continue,
-                    },
-                    _ => continue,
+                let Some(id_raw) = Self::doc_uint(&self.doc, &entry_id, "id") else {
+                    continue;
                 };
-                let name = match self.doc.get(&entry_id, "name").ok().flatten() {
-                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                        ScalarValue::Str(v) => v.to_string(),
-                        _ => String::new(),
-                    },
-                    _ => String::new(),
-                };
+                let name = Self::doc_str(&self.doc, &entry_id, "name").unwrap_or_default();
                 let ws_id = WorkspaceId::from(id_raw);
                 // Room identity replicates too; absent or unparseable
                 // (a pre-rooms doc) leaves whatever the cache already had.
-                let replicated_room = match self.doc.get(&entry_id, "room").ok().flatten() {
-                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                        ScalarValue::Str(v) => RoomId::parse(v.as_str()),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-                .filter(|r| !r.is_nil());
+                let replicated_room = Self::doc_str(&self.doc, &entry_id, "room")
+                    .and_then(|v| RoomId::parse(v.as_str()))
+                    .filter(|r| !r.is_nil());
                 // Capabilities/ownership rebuild from the doc, not carried
                 // from the cache — this is the half that makes a
                 // *revocation* take effect.
@@ -3570,221 +3627,190 @@ impl WorkspaceTree {
         // Reconstruct per-window-group `maximized`, `width_permille` and
         // `tabs`, matching each strip/group by id; a missing cache entry
         // gets a fresh `Strip`/`WindowGroup` synthesized.
-        if let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() {
-            let ws_len = self.doc.length(&workspaces_id);
-            for ws_idx in 0..ws_len {
-                let ws_entry = match self.doc.get(&workspaces_id, ws_idx).ok().flatten() {
-                    Some((_, id)) => id,
-                    None => continue,
-                };
-                let ws_id_raw = match self.doc.get(&ws_entry, "id").ok().flatten() {
-                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                        ScalarValue::Uint(v) => *v,
-                        _ => continue,
-                    },
-                    _ => continue,
-                };
-                let ws_id = WorkspaceId::from(ws_id_raw);
-                let strips_id = match self.doc.get(&ws_entry, "strips").ok().flatten() {
-                    Some((_, id)) => id,
-                    None => continue,
-                };
-                let strips_len = self.doc.length(&strips_id);
-                for strip_idx in 0..strips_len {
-                    let strip_entry = match self.doc.get(&strips_id, strip_idx).ok().flatten() {
-                        Some((_, id)) => id,
-                        None => continue,
-                    };
-                    let strip_id_raw = match self.doc.get(&strip_entry, "id").ok().flatten() {
-                        Some((Value::Scalar(s), _)) => match s.as_ref() {
-                            ScalarValue::Uint(v) => *v,
-                            _ => continue,
-                        },
-                        _ => continue,
-                    };
-                    let strip_id = StripId::from(strip_id_raw);
-                    let groups_id = match self.doc.get(&strip_entry, "window_groups").ok().flatten()
-                    {
-                        Some((_, id)) => id,
-                        None => continue,
-                    };
-                    let groups_len = self.doc.length(&groups_id);
-                    for group_idx in 0..groups_len {
-                        let group_entry = match self.doc.get(&groups_id, group_idx).ok().flatten() {
-                            Some((_, id)) => id,
-                            None => continue,
-                        };
-                        let group_id = match self.doc.get(&group_entry, "id").ok().flatten() {
-                            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                ScalarValue::Uint(v) => *v,
-                                _ => continue,
-                            },
-                            _ => continue,
-                        };
-                        let maximized = match self.doc.get(&group_entry, "maximized").ok().flatten()
-                        {
-                            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                ScalarValue::Boolean(v) => *v,
-                                _ => false,
-                            },
-                            _ => false,
-                        };
-                        // Peers publish a *fraction*, so width means the
-                        // same share of this replica's own display, not
-                        // the sender's pixel count. `width_pixels` is the
-                        // pre-fraction shape — migrate rather than drop it.
-                        let width =
-                            match self.doc.get(&group_entry, "width_permille").ok().flatten() {
-                                Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                    ScalarValue::Uint(v) if *v > 0 => {
-                                        Some(WindowWidth::Fraction(*v as u16))
-                                    }
-                                    _ => None,
-                                },
-                                _ => None,
-                            }
-                            .or_else(|| {
-                                match self.doc.get(&group_entry, "width_pixels").ok().flatten() {
-                                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                        ScalarValue::Uint(v) if *v > 0 => {
-                                            Some(WindowWidth::from_legacy_pixels(*v as u32))
-                                        }
-                                        _ => None,
-                                    },
-                                    _ => None,
-                                }
-                            });
+        if let Some(workspaces_id) = Self::doc_obj(&self.doc, &ROOT, "workspaces") {
+            self.rebuild_window_groups_from_doc(&workspaces_id);
+        }
+    }
 
-                        let ws = match self.workspaces.iter_mut().find(|w| w.id == ws_id) {
-                            Some(w) => w,
-                            None => continue,
-                        };
-                        let strip = if let Some(s) = ws.strips.iter_mut().find(|s| s.id == strip_id)
-                        {
-                            s
-                        } else {
-                            ws.strips.push(Strip::new(strip_id, "Main"));
-                            ws.strips.last_mut().expect("strip just pushed")
-                        };
-                        // Tabs missing from the doc fall back to the
-                        // cache; new ids get synthesized entries.
-                        let mut doc_tabs: Vec<(u64, String, Vec<u8>)> = Vec::new();
-                        if let Some((_, tabs_id)) =
-                            self.doc.get(&group_entry, "tabs").ok().flatten()
-                        {
-                            let tabs_len = self.doc.length(&tabs_id);
-                            for t_idx in 0..tabs_len {
-                                let Some((_, tab_entry)) =
-                                    self.doc.get(&tabs_id, t_idx).ok().flatten()
-                                else {
-                                    continue;
-                                };
-                                let id = match self.doc.get(&tab_entry, "id").ok().flatten() {
-                                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                        ScalarValue::Uint(v) => *v,
-                                        _ => continue,
-                                    },
-                                    _ => continue,
-                                };
-                                let title = match self.doc.get(&tab_entry, "title").ok().flatten() {
-                                    Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                        ScalarValue::Str(v) => v.to_string(),
-                                        _ => String::new(),
-                                    },
-                                    _ => String::new(),
-                                };
-                                let tile_blob: Vec<u8> =
-                                    match self.doc.get(&tab_entry, "tile_json").ok().flatten() {
-                                        Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                            ScalarValue::Bytes(b) => b.clone(),
-                                            _ => Vec::new(),
-                                        },
-                                        _ => Vec::new(),
-                                    };
-                                doc_tabs.push((id, title, tile_blob));
-                            }
-                        }
+    /// Second half of [`Self::rebuild_cache_from_doc`]: walks
+    /// `workspaces_id`'s strips/window_groups/tabs and folds their doc
+    /// state into the matching cache entries.
+    fn rebuild_window_groups_from_doc(&mut self, workspaces_id: &automerge::ObjId) {
+        use automerge::ReadDoc;
+        let ws_len = self.doc.length(workspaces_id);
+        for ws_idx in 0..ws_len {
+            let Some(ws_entry) = Self::doc_obj(&self.doc, workspaces_id, ws_idx) else {
+                continue;
+            };
+            let Some(ws_id_raw) = Self::doc_uint(&self.doc, &ws_entry, "id") else {
+                continue;
+            };
+            let ws_id = WorkspaceId::from(ws_id_raw);
+            let Some(strips_id) = Self::doc_obj(&self.doc, &ws_entry, "strips") else {
+                continue;
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for strip_idx in 0..strips_len {
+                let Some(strip_entry) = Self::doc_obj(&self.doc, &strips_id, strip_idx) else {
+                    continue;
+                };
+                let Some(strip_id_raw) = Self::doc_uint(&self.doc, &strip_entry, "id") else {
+                    continue;
+                };
+                let strip_id = StripId::from(strip_id_raw);
+                let Some(groups_id) = Self::doc_obj(&self.doc, &strip_entry, "window_groups")
+                else {
+                    continue;
+                };
+                let groups_len = self.doc.length(&groups_id);
+                for group_idx in 0..groups_len {
+                    let Some(group_entry) = Self::doc_obj(&self.doc, &groups_id, group_idx) else {
+                        continue;
+                    };
+                    let Some(group_id) = Self::doc_uint(&self.doc, &group_entry, "id") else {
+                        continue;
+                    };
+                    let maximized =
+                        Self::doc_bool(&self.doc, &group_entry, "maximized").unwrap_or(false);
+                    // Peers publish a *fraction*, so width means the
+                    // same share of this replica's own display, not
+                    // the sender's pixel count. `width_pixels` is the
+                    // pre-fraction shape — migrate rather than drop it.
+                    let width = Self::doc_uint(&self.doc, &group_entry, "width_permille")
+                        .filter(|v| *v > 0)
+                        .and_then(|v| u16::try_from(v).ok())
+                        .map(WindowWidth::Fraction)
+                        .or_else(|| {
+                            Self::doc_uint(&self.doc, &group_entry, "width_pixels")
+                                .filter(|v| *v > 0)
+                                .and_then(|v| u32::try_from(v).ok())
+                                .map(WindowWidth::from_legacy_pixels)
+                        });
 
-                        if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                            g.maximized = maximized;
-                            // Always `Fraction`: mapping back onto
-                            // Narrow/Normal/Wide would silently coerce a
-                            // peer's manual resize to the closest preset.
-                            if let Some(w) = width {
-                                g.width = w;
-                            }
-                            if !doc_tabs.is_empty() {
-                                let mut new_tabs: Vec<Tab> = Vec::with_capacity(doc_tabs.len());
-                                for (tid, title, blob) in &doc_tabs {
-                                    if let Some(existing) = g.tabs.iter().find(|t| t.id == *tid) {
-                                        new_tabs.push(existing.clone());
-                                    } else {
-                                        let tile = if blob.is_empty() {
-                                            TileContent::Stub {
-                                                kind: AppKind::Other(String::new()),
-                                                label: title.clone(),
-                                            }
-                                        } else {
-                                            serde_json::from_slice::<TileContent>(blob).unwrap_or(
-                                                TileContent::Stub {
-                                                    kind: AppKind::Other(String::new()),
-                                                    label: title.clone(),
-                                                },
-                                            )
-                                        };
-                                        new_tabs.push(Tab {
-                                            id: *tid,
-                                            title: title.clone(),
-                                            tile,
-                                        });
-                                    }
-                                }
-                                if g.tabs
-                                    .iter()
-                                    .all(|t| !doc_tabs.iter().any(|(id, _, _)| *id == t.id))
-                                    || g.tabs.is_empty()
-                                {
-                                    g.active_tab = new_tabs.first().map_or(0, |t| t.id);
-                                }
-                                g.tabs = new_tabs;
-                            }
-                        } else {
-                            // A placeholder group, carrying doc tabs.
-                            let synthesized_tabs: Vec<Tab> = doc_tabs
-                                .iter()
-                                .map(|(tid, title, blob)| {
-                                    let tile = if blob.is_empty() {
-                                        TileContent::Stub {
-                                            kind: AppKind::Other(String::new()),
-                                            label: title.clone(),
-                                        }
-                                    } else {
-                                        serde_json::from_slice::<TileContent>(blob).unwrap_or(
-                                            TileContent::Stub {
-                                                kind: AppKind::Other(String::new()),
-                                                label: title.clone(),
-                                            },
-                                        )
-                                    };
-                                    Tab {
-                                        id: *tid,
-                                        title: title.clone(),
-                                        tile,
-                                    }
-                                })
-                                .collect();
-                            let active_tab = synthesized_tabs.first().map_or(0, |t| t.id);
-                            strip.window_groups.push(WindowGroup {
-                                id: group_id,
-                                tabs: synthesized_tabs,
-                                active_tab,
-                                width: width.unwrap_or(WindowWidth::Normal),
-                                maximized,
-                            });
-                        }
-                    }
+                    let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+                        continue;
+                    };
+                    let strip = if let Some(s) = ws.strips.iter_mut().find(|s| s.id == strip_id) {
+                        s
+                    } else {
+                        ws.strips.push(Strip::new(strip_id, "Main"));
+                        ws.strips.last_mut().expect("strip just pushed")
+                    };
+                    // Tabs missing from the doc fall back to the
+                    // cache; new ids get synthesized entries.
+                    // Explicit `&self.doc` (not a `&self` method): `strip`
+                    // above already holds a mutable borrow into
+                    // `self.workspaces`, so this can only borrow the `doc`
+                    // field, not all of `self`.
+                    let doc_tabs = Self::collect_doc_tabs(&self.doc, &group_entry);
+                    Self::apply_group_from_doc(strip, group_id, maximized, width, &doc_tabs);
                 }
             }
+        }
+    }
+
+    /// Tabs recorded under `group_entry` in the doc, as `(id, title,
+    /// tile_json blob)` — the raw material [`Self::apply_group_from_doc`]
+    /// folds into a cached [`WindowGroup`]'s `tabs`.
+    fn collect_doc_tabs(
+        doc: &AutoCommit,
+        group_entry: &automerge::ObjId,
+    ) -> Vec<(u64, String, Vec<u8>)> {
+        use automerge::ReadDoc;
+        let mut doc_tabs = Vec::new();
+        let Some(tabs_id) = Self::doc_obj(doc, group_entry, "tabs") else {
+            return doc_tabs;
+        };
+        let tabs_len = doc.length(&tabs_id);
+        for t_idx in 0..tabs_len {
+            let Some(tab_entry) = Self::doc_obj(doc, &tabs_id, t_idx) else {
+                continue;
+            };
+            let Some(id) = Self::doc_uint(doc, &tab_entry, "id") else {
+                continue;
+            };
+            let title = Self::doc_str(doc, &tab_entry, "title").unwrap_or_default();
+            let tile_blob = Self::doc_bytes(doc, &tab_entry, "tile_json").unwrap_or_default();
+            doc_tabs.push((id, title, tile_blob));
+        }
+        doc_tabs
+    }
+
+    /// Fold a doc-side group's `maximized`/`width`/`doc_tabs` into
+    /// `strip`'s cached window group `group_id`, synthesizing a fresh
+    /// placeholder group (carrying the doc's tabs) if the cache doesn't
+    /// have one yet.
+    fn apply_group_from_doc(
+        strip: &mut Strip,
+        group_id: u64,
+        maximized: bool,
+        width: Option<WindowWidth>,
+        doc_tabs: &[(u64, String, Vec<u8>)],
+    ) {
+        let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
+            // A placeholder group, carrying doc tabs.
+            let synthesized_tabs: Vec<Tab> = doc_tabs
+                .iter()
+                .map(|(tid, title, blob)| Tab {
+                    id: *tid,
+                    title: title.clone(),
+                    tile: Self::tile_from_blob(blob, title),
+                })
+                .collect();
+            let active_tab = synthesized_tabs.first().map_or(0, |t| t.id);
+            strip.window_groups.push(WindowGroup {
+                id: group_id,
+                tabs: synthesized_tabs,
+                active_tab,
+                width: width.unwrap_or(WindowWidth::Normal),
+                maximized,
+            });
+            return;
+        };
+        g.maximized = maximized;
+        // Always `Fraction`: mapping back onto Narrow/Normal/Wide would
+        // silently coerce a peer's manual resize to the closest preset.
+        if let Some(w) = width {
+            g.width = w;
+        }
+        if doc_tabs.is_empty() {
+            return;
+        }
+        let mut new_tabs: Vec<Tab> = Vec::with_capacity(doc_tabs.len());
+        for (tid, title, blob) in doc_tabs {
+            if let Some(existing) = g.tabs.iter().find(|t| t.id == *tid) {
+                new_tabs.push(existing.clone());
+            } else {
+                new_tabs.push(Tab {
+                    id: *tid,
+                    title: title.clone(),
+                    tile: Self::tile_from_blob(blob, title),
+                });
+            }
+        }
+        if g.tabs
+            .iter()
+            .all(|t| !doc_tabs.iter().any(|(id, _, _)| *id == t.id))
+            || g.tabs.is_empty()
+        {
+            g.active_tab = new_tabs.first().map_or(0, |t| t.id);
+        }
+        g.tabs = new_tabs;
+    }
+
+    /// A `TileContent` from a `tile_json` blob (empty when unset), or a
+    /// bare `Stub` carrying just the title if the blob fails to decode.
+    fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
+        if blob.is_empty() {
+            TileContent::Stub {
+                kind: AppKind::Other(String::new()),
+                label: title.to_string(),
+            }
+        } else {
+            serde_json::from_slice::<TileContent>(blob).unwrap_or(TileContent::Stub {
+                kind: AppKind::Other(String::new()),
+                label: title.to_string(),
+            })
         }
     }
 
@@ -3797,16 +3823,15 @@ impl WorkspaceTree {
         let ws_len = self.doc.length(&workspaces_id);
         for ws_idx in 0..ws_len {
             let (_, ws_entry) = self.doc.get(&workspaces_id, ws_idx).ok().flatten()?;
-            let strips_id = match self.doc.get(&ws_entry, "strips").ok().flatten() {
-                Some((_, id)) => id,
-                None => continue,
+            let Some(strips_id) = Self::doc_obj(&self.doc, &ws_entry, "strips") else {
+                continue;
             };
             let strips_len = self.doc.length(&strips_id);
             for strip_idx in 0..strips_len {
                 let (_, strip_entry) = self.doc.get(&strips_id, strip_idx).ok().flatten()?;
-                let groups_id = match self.doc.get(&strip_entry, "window_groups").ok().flatten() {
-                    Some((_, id)) => id,
-                    None => continue,
+                let Some(groups_id) = Self::doc_obj(&self.doc, &strip_entry, "window_groups")
+                else {
+                    continue;
                 };
                 let groups_len = self.doc.length(&groups_id);
                 for group_idx in 0..groups_len {
