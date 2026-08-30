@@ -384,6 +384,7 @@ fn count_to_f64(n: usize) -> f64 {
 /// Narrows a layout dimension to `f32` for taffy. Every call site is a
 /// toolbar axis extent, always many orders of magnitude below `f32::MAX`,
 /// so the truncation the lint warns about can't actually occur.
+#[cfg(test)]
 #[allow(
     clippy::cast_possible_truncation,
     reason = "toolbar axis extents never approach f32::MAX"
