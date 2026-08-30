@@ -16,7 +16,13 @@ use zip::{CompressionMethod, ZipWriter};
 pub trait SheetProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;
+    /// # Errors
+    /// Returns [`CodecError`] if `bytes` are malformed, exceed the package's
+    /// resource bounds, or use a construct the codec refuses to import.
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError>;
+    /// # Errors
+    /// Returns [`CodecError`] if the workbook cannot be serialised into this
+    /// format, or if writing its container fails.
     fn export(&self, wb: &Workbook) -> Result<Vec<u8>, CodecError>;
 }
 
@@ -91,10 +97,9 @@ impl SheetPackage {
 
 /// Strip a namespace prefix (`table:table-cell` → `table-cell`).
 fn strip_prefix(raw: &[u8]) -> &[u8] {
-    match raw.iter().position(|b| *b == b':') {
-        Some(i) => &raw[i + 1..],
-        None => raw,
-    }
+    // `splitn(2)` yields the part after the first colon, or nothing at all when
+    // the name carries no prefix.
+    raw.splitn(2, |b| *b == b':').nth(1).unwrap_or(raw)
 }
 
 /// The local (prefix-stripped) name of a start/empty element (namespace prefixes vary across producers).
@@ -110,12 +115,7 @@ pub(crate) fn end_local_name<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a 
 /// Read an attribute by its local name (prefix-insensitive), unescaping its value.
 pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
-        let raw = a.key.as_ref();
-        let lname = match raw.iter().position(|b| *b == b':') {
-            Some(i) => &raw[i + 1..],
-            None => raw,
-        };
-        if lname == local {
+        if strip_prefix(a.key.as_ref()) == local {
             return a.unescape_value().ok().map(std::borrow::Cow::into_owned);
         }
     }

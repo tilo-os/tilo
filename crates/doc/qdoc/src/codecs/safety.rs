@@ -43,7 +43,10 @@ impl Default for ZipLimits {
 /// [`ZipLimits`]. Directory entries are skipped; `.xml`/`.rels` parts are scanned
 /// for a DTD/entity declaration and rejected if found (XXE defence).
 ///
-/// Any breach of a limit is a [`CodecError::Parse`] — the input is never silently truncated.
+/// # Errors
+/// Any breach of a limit is a [`CodecError::Parse`] — the input is never silently
+/// truncated. A malformed archive, an unreadable entry and a DTD-bearing XML part
+/// are reported the same way.
 pub fn read_zip_parts(
     bytes: &[u8],
     limits: &ZipLimits,
@@ -87,7 +90,7 @@ pub fn read_zip_parts(
         let cap = limits.max_part_bytes;
         let mut buf = Vec::new();
         let read = (&mut f)
-            .take(cap + 1)
+            .take(cap.saturating_add(1))
             .read_to_end(&mut buf)
             .map_err(|e| CodecError::Parse(format!("zip read {name}: {e}")))?
             as u64;
@@ -117,8 +120,9 @@ pub fn read_zip_parts(
 /// Binary parts (images, the ODF `mimetype` literal) are exempt — a `<!DOCTYPE`
 /// byte sequence inside a JPEG isn't a threat, and such parts are never parsed as XML.
 fn is_xml_part(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".xml") || lower.ends_with(".rels")
+    std::path::Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xml") || ext.eq_ignore_ascii_case("rels"))
 }
 
 /// Whether `bytes` contains an XML DTD/entity declaration (`<!DOCTYPE`/`<!ENTITY`),
@@ -127,7 +131,7 @@ fn is_xml_part(name: &str) -> bool {
 pub fn contains_dtd(bytes: &[u8]) -> bool {
     // A DTD must appear before the root element; 64 KiB of prolog is far more
     // than any real document uses, and caps the scan cost.
-    let head = &bytes[..bytes.len().min(64 * 1024)];
+    let head = bytes.get(..bytes.len().min(64 * 1024)).unwrap_or(bytes);
     contains_ci(head, b"<!doctype") || contains_ci(head, b"<!entity")
 }
 
@@ -173,9 +177,8 @@ mod tests {
 
     #[test]
     fn rejects_too_many_parts() {
-        let entries: Vec<(String, Vec<u8>)> = (0..20)
-            .map(|i| (format!("p{i}.dat"), vec![i as u8]))
-            .collect();
+        let entries: Vec<(String, Vec<u8>)> =
+            (0..20u8).map(|i| (format!("p{i}.dat"), vec![i])).collect();
         let refs: Vec<(&str, &[u8])> = entries
             .iter()
             .map(|(n, b)| (n.as_str(), b.as_slice()))
