@@ -224,7 +224,7 @@ impl NotesApp {
         if let Some(sel) = workspace.selected() {
             if let Some(meta) = workspace.get(sel) {
                 let body = storage::read_page_body(&root, sel).unwrap_or_default();
-                main.load_page_with_link_resolver(sel, meta.title.clone(), body, |t| {
+                main.load_page_with_link_resolver(sel, &meta.title, body, |t| {
                     by_title.get(t).copied()
                 });
             }
@@ -236,7 +236,7 @@ impl NotesApp {
             if let Some((id, title)) = first {
                 workspace.set_selected(Some(id));
                 let body = storage::read_page_body(&root, id).unwrap_or_default();
-                main.load_page_with_link_resolver(id, title, body, |t| by_title.get(t).copied());
+                main.load_page_with_link_resolver(id, &title, body, |t| by_title.get(t).copied());
                 sidebar.sync_from_workspace(&workspace);
             }
         }
@@ -738,7 +738,7 @@ impl NotesApp {
             .map(|m| m.title.clone())
             .unwrap_or_default();
         let body = storage::read_page_body(&self.root, sel).unwrap_or_default();
-        self.main.bind_page(state, sel, title, list, &body);
+        self.main.bind_page(state, sel, &title, list, &body);
         self.bound_page = Some(sel);
     }
 
@@ -896,7 +896,7 @@ impl NotesApp {
                     if let Some((id, title)) = first {
                         self.workspace.set_selected(Some(id));
                         let body = storage::read_page_body(&self.root, id).unwrap_or_default();
-                        self.main.load_page(id, title, body);
+                        self.main.load_page(id, &title, body);
                     } else {
                         self.main.clear();
                     }
@@ -909,8 +909,7 @@ impl NotesApp {
                 if let Err(e) = storage::write_page_body(&self.root, id, "") {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
-                self.main
-                    .load_page(id, "Untitled".to_string(), String::new());
+                self.main.load_page(id, "Untitled", String::new());
             }
             OutEvent::Move { id, delta } => {
                 // Reorder among siblings. The new `order` propagates to
@@ -968,7 +967,7 @@ impl NotesApp {
             .map(|p| (p.title.clone(), p.id))
             .collect();
         self.main
-            .load_page_with_link_resolver(id, title, body, |t| by_title.get(t).copied());
+            .load_page_with_link_resolver(id, &title, body, |t| by_title.get(t).copied());
     }
 
     /// Navigate to `id`: select + load the page. Used both by the
