@@ -15,7 +15,7 @@ pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber
 pub use radii::Radii;
 pub use spacing::Spacing;
 pub use terminal_palette::TerminalPalette;
-pub use typography::{FontFamily, TypeScale, Typography, WeightScale};
+pub use typography::{FontFamily, TextRole, TypeScale, Typography, WeightScale};
 
 #[derive(Clone, Debug)]
 pub struct Tokens {

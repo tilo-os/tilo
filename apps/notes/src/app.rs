@@ -1724,7 +1724,7 @@ impl Widget for NotesApp {
         path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
@@ -1793,6 +1793,7 @@ impl Widget for NotesApp {
                 self.palette
                     .set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
                 self.palette.set_visible(true);
+                *focus_target = Some(node_id);
                 *handled = true;
                 return;
             }
@@ -1828,13 +1829,19 @@ impl Widget for NotesApp {
 
         // While the palette is visible it owns ALL keystrokes.
         if self.palette.is_visible()
-            && let WindowEvent::KeyboardInput { .. } = event
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
         {
             let consumed = self.palette.handle_key(event);
             if let Some(entry) = self.palette.take_selection() {
                 self.navigate_to(entry.id);
             }
             if consumed {
+                if !self.palette.is_visible() {
+                    *focus_target = self.main_node;
+                }
                 *handled = true;
                 return;
             }
@@ -2016,6 +2023,17 @@ impl Widget for NotesApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.palette.is_visible()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.palette
+            .is_visible()
+            .then(|| Widget::ime_cursor_rect(&self.palette))
+            .flatten()
     }
 
     fn needs_redraw(&self) -> bool {

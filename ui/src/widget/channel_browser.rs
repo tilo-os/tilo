@@ -21,8 +21,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use collab_types::ChannelId;
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::Widget;
 
@@ -76,6 +78,7 @@ pub struct ChannelBrowser {
     /// Mirrors the command-palette model so the same keyboard contract
     /// (arrow, shift+arrow, Ctrl+A/C/V/X) works inside the search input.
     query_selection: crate::text_selection::Selection,
+    query_composition: QueryComposition,
     /// Row index into `visible`.
     cursor: usize,
     /// Indexes into `entries` that pass the current filter, in display
@@ -110,6 +113,7 @@ impl ChannelBrowser {
             entries: Vec::new(),
             query: String::new(),
             query_selection: crate::text_selection::Selection::collapsed(0),
+            query_composition: QueryComposition::new(),
             cursor: 0,
             visible: Vec::new(),
             rect: Rect::ZERO,
@@ -142,6 +146,7 @@ impl ChannelBrowser {
         self.query = q.into();
         let end = self.query.len();
         self.query_selection = crate::text_selection::Selection::collapsed(end);
+        self.query_composition.clear();
         self.rebuild();
     }
 
@@ -225,29 +230,6 @@ impl ChannelBrowser {
 
     fn now(&self) -> SystemTime {
         self.now_override.unwrap_or_else(SystemTime::now)
-    }
-
-    /// Replaces the selected range in the query, or inserts at the
-    /// caret when the selection is collapsed.
-    fn replace_query_selection(&mut self, s: &str) {
-        let r = self.query_selection.range();
-        self.query.replace_range(r.clone(), s);
-        let new_caret = r.start + s.len();
-        self.query_selection = crate::text_selection::Selection::collapsed(new_caret);
-        self.rebuild();
-    }
-
-    /// Returns true if a range was actually removed, so per-char
-    /// fallbacks can skip.
-    fn delete_query_selection(&mut self) -> bool {
-        if self.query_selection.is_collapsed() {
-            return false;
-        }
-        let r = self.query_selection.range();
-        self.query.replace_range(r.clone(), "");
-        self.query_selection = crate::text_selection::Selection::collapsed(r.start);
-        self.rebuild();
-        true
     }
 
     /// Sort key: (`space_name` asc, !`is_pinned`, `last_activity` desc).
@@ -359,7 +341,7 @@ impl ChannelBrowser {
     }
 
     fn draw_search_input(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -387,24 +369,20 @@ impl ChannelBrowser {
             &shape,
         );
         let text_size = theme.tokens.typography.scale.sm;
-        let display = if self.query.is_empty() {
-            "Search channels"
-        } else {
-            &self.query
-        };
-        let text_color = if self.query.is_empty() {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        let text_y = row.y0 + (row.height() - f64::from(text_size)) / 2.0;
-        text_renderer.draw_text(
+        self.query_composition.draw(
             scene,
-            display,
-            text_size,
-            text_color,
-            transform * Affine::translate((row.x0 + 12.0, text_y)),
-            None,
+            transform,
+            text_renderer,
+            &self.query,
+            &self.query_selection,
+            "Search channels",
+            Rect::new(row.x0 + 12.0, row.y0, row.x1 - 12.0, row.y1),
+            &TextStyle::new(text_size),
+            theme.tokens.colors.text_primary,
+            theme.tokens.colors.text_dim,
+            theme.tokens.colors.accent[5].with_alpha_factor(0.3),
+            theme.tokens.colors.accent[5],
+            self.is_focused,
         );
     }
 
@@ -1006,6 +984,22 @@ impl Widget for ChannelBrowser {
         if !self.is_focused {
             return;
         }
+        if matches!(event, WindowEvent::Ime(_)) {
+            let change = self.query_composition.handle_event(
+                event,
+                &mut self.query,
+                &mut self.query_selection,
+                false,
+                false,
+            );
+            if change == QueryEventChange::Edited {
+                self.rebuild();
+            } else {
+                self.dirty = true;
+            }
+            *handled = true;
+            return;
+        }
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -1021,10 +1015,6 @@ impl Widget for ChannelBrowser {
         if *element_state != ElementState::Pressed {
             return;
         }
-        use crate::text_selection::{
-            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary,
-        };
         let mods = modifiers.state();
         let shift = mods.shift_key();
         let ctrl = mods.control_key() || mods.super_key();
@@ -1068,15 +1058,13 @@ impl Widget for ChannelBrowser {
                     let new_idx = if idx == 0 { total - 1 } else { idx - 1 };
                     self.set_active_pill_index(new_idx);
                 } else {
-                    let new_pos = if ctrl {
-                        prev_word_boundary(&self.query, pos)
-                    } else {
-                        prev_char_boundary(&self.query, pos)
-                    };
-                    self.query_selection.cursor = new_pos;
-                    if !shift {
-                        self.query_selection.collapse_to_cursor();
-                    }
+                    self.query_composition.handle_event(
+                        event,
+                        &mut self.query,
+                        &mut self.query_selection,
+                        shift,
+                        ctrl,
+                    );
                 }
                 *handled = true;
             }
@@ -1088,97 +1076,33 @@ impl Widget for ChannelBrowser {
                     let new_idx = (idx + 1) % total;
                     self.set_active_pill_index(new_idx);
                 } else {
-                    let new_pos = if ctrl {
-                        next_word_boundary(&self.query, pos)
-                    } else {
-                        next_char_boundary(&self.query, pos)
-                    };
-                    self.query_selection.cursor = new_pos;
-                    if !shift {
-                        self.query_selection.collapse_to_cursor();
-                    }
+                    self.query_composition.handle_event(
+                        event,
+                        &mut self.query,
+                        &mut self.query_selection,
+                        shift,
+                        ctrl,
+                    );
                 }
                 *handled = true;
             }
-            Key::Named(NamedKey::Home) => {
-                self.query_selection.cursor = 0;
-                if !shift {
-                    self.query_selection.collapse_to_cursor();
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::End) => {
-                self.query_selection.cursor = self.query.len();
-                if !shift {
-                    self.query_selection.collapse_to_cursor();
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if !self.delete_query_selection() {
-                    let pos = self.query_selection.cursor;
-                    if pos > 0 {
-                        let prev = prev_char_boundary(&self.query, pos);
-                        self.query.replace_range(prev..pos, "");
-                        self.query_selection = Selection::collapsed(prev);
-                        self.rebuild();
-                    }
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::Delete) => {
-                if !self.delete_query_selection() {
-                    let pos = self.query_selection.cursor;
-                    if pos < self.query.len() {
-                        let next = next_char_boundary(&self.query, pos);
-                        self.query.replace_range(pos..next, "");
-                        self.rebuild();
-                    }
-                }
-                *handled = true;
-            }
-            Key::Character(s) if ctrl => match s.as_str() {
-                "a" | "A" => {
-                    self.query_selection.anchor = 0;
-                    self.query_selection.cursor = self.query.len();
+            _ => {
+                let change = self.query_composition.handle_event(
+                    event,
+                    &mut self.query,
+                    &mut self.query_selection,
+                    shift,
+                    ctrl,
+                );
+                if change == QueryEventChange::Edited {
+                    self.rebuild();
+                } else if change == QueryEventChange::Display {
                     self.dirty = true;
-                    *handled = true;
                 }
-                "c" | "C" => {
-                    let r = self.query_selection.range();
-                    if !r.is_empty() {
-                        clipboard_copy(&self.query[r]);
-                    }
-                    *handled = true;
-                }
-                "x" | "X" => {
-                    let r = self.query_selection.range();
-                    if !r.is_empty() {
-                        clipboard_copy(&self.query[r]);
-                        self.delete_query_selection();
-                    }
-                    *handled = true;
-                }
-                "v" | "V" => {
-                    if let Some(s) = clipboard_paste() {
-                        self.replace_query_selection(&s);
-                    }
-                    *handled = true;
-                }
-                _ => {}
-            },
-            Key::Named(NamedKey::Space) => {
-                self.replace_query_selection(" ");
-                *handled = true;
-            }
-            Key::Character(s) => {
-                let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-                if !filtered.is_empty() {
-                    self.replace_query_selection(&filtered);
+                if change != QueryEventChange::Ignored {
                     *handled = true;
                 }
             }
-            _ => {}
         }
     }
 
@@ -1213,9 +1137,16 @@ impl Widget for ChannelBrowser {
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
+        if !focused {
+            self.query_composition.clear();
+        }
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.query_composition.ime_cursor_rect()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1374,6 +1305,48 @@ mod tests {
         assert_eq!(b.query(), "eng");
         assert_eq!(b.visible_len(), 1);
         assert_eq!(b.visible_entry(0).unwrap().name, "engineering");
+    }
+
+    #[test]
+    fn ime_preedit_is_display_only_until_atomic_filter_commit() {
+        let entries = vec![
+            entry("東京", "Travel", 200.0, 100, 0, false, None),
+            entry("London", "Travel", 200.0, 200, 0, false, None),
+        ];
+        let mut b = browser_at(Rect::new(0.0, 0.0, 640.0, 480.0), entries);
+        b.set_focus(true);
+
+        dispatch(
+            &mut b,
+            &WindowEvent::Ime(winit::event::Ime::Preedit(
+                "東京".into(),
+                Some(("東".len(), "東".len())),
+            )),
+            Modifiers::default(),
+        );
+        assert_eq!(b.query(), "");
+        assert_eq!(b.visible_len(), 2);
+
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        Widget::draw(
+            &mut b,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(Widget::ime_cursor_rect(&b).is_some());
+
+        dispatch(
+            &mut b,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+            Modifiers::default(),
+        );
+        assert_eq!(b.query(), "東京");
+        assert_eq!(b.visible_len(), 1);
+        assert_eq!(b.visible_entry(0).unwrap().name, "東京");
     }
 
     #[test]
