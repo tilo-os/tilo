@@ -3,7 +3,7 @@
 //! qOS is an immutable bootc image: updates are atomic image pulls staged
 //! for the next boot, not piecemeal package upgrades. This pane shows the
 //! current deployment, whether a newer image is *actually* staged (read from
-//! `bootc status --format json`), the release channel, and real actions:
+//! `bootc status --format json`), and real actions:
 //!
 //! - **Check for updates** re-queries the system and stamps the last-checked
 //!   time (persisted so it survives restarts).
@@ -15,13 +15,10 @@
 //!   doing.
 //! - **Roll back** makes the previous image the one this machine boots, after
 //!   showing what a rollback does not undo.
-//! - **Release channel** is still a durable preference in the shared store
-//!   ([`crate::prefs::SystemPrefs`]).
 //
 // CRDT keys this pane reads / writes:
 //   `updates.check`             — bool, "Check for updates" button
 //   `updates.restart`           — bool, "Restart & update" button
-//   `updates.channel`           — string, release-channel dropdown
 //   `updates.auto`              — bool, automatic-updates toggle
 //   `updates.rollback`          — bool, "Roll back…" (opens the explanation)
 //   `updates.rollback.confirm`  — bool, the second click, which acts
@@ -47,7 +44,6 @@ use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row
 pub const CHECK_KEY: &str = "updates.check";
 pub const RESTART_KEY: &str = "updates.restart";
 pub const AUTO_KEY: &str = "updates.auto";
-pub const CHANNEL_KEY: &str = "updates.channel";
 pub const ROLLBACK_KEY: &str = "updates.rollback";
 /// Two clicks to roll back, because the first one is easy to make by accident
 /// and the second comes after the pane has said what a rollback does not undo.
@@ -58,9 +54,6 @@ pub const SCHEDULE_KEY: &str = "updates.schedule";
 pub const METERED_KEY: &str = "updates.metered";
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
-
-/// The channels offered by the release-channel dropdown.
-pub const CHANNELS: &[&str] = &["Stable", "Testing", "Nightly"];
 
 /// The system-derived part of the update state: the current image and any
 /// image staged for the next boot. Preferences (channel, auto, last-checked)
@@ -598,7 +591,8 @@ pub struct UpdatesPane {
     rollback_target: Option<String>,
     /// `None` means fwupd is unavailable; `Some([])` means it answered and
     /// there are no applicable upgrades.
-    firmware_updates: Option<Vec<os_actions::FirmwareUpdate>>,
+    firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
+    firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
     firmware_state: FirmwareUiState,
     firmware_events: Option<std::sync::mpsc::Receiver<os_actions::FirmwareEvent>>,
     /// Set once the person has asked to roll back and been shown what it does
@@ -638,7 +632,8 @@ impl UpdatesPane {
         let details = UpdateDetails::from_system(rollback_target.as_deref());
         let schedule = control.schedule();
         let allow_metered = control.allow_metered();
-        let firmware_updates = os_actions::get_firmware_updates().ok();
+        let firmware_updates = os_actions::get_firmware_updates();
+        let firmware_history = os_actions::get_firmware_history();
         Self {
             status,
             details,
@@ -653,6 +648,7 @@ impl UpdatesPane {
             allow_metered,
             rollback_target,
             firmware_updates,
+            firmware_history,
             firmware_state: FirmwareUiState::Idle,
             firmware_events: None,
             rollback_armed: false,
@@ -719,7 +715,8 @@ impl UpdatesPane {
             schedule,
             allow_metered,
             rollback_target,
-            firmware_updates: None,
+            firmware_updates: Err("fwupd is unavailable in this test".into()),
+            firmware_history: Err("fwupd is unavailable in this test".into()),
             firmware_state: FirmwareUiState::Idle,
             firmware_events: None,
             rollback_armed: false,
@@ -837,9 +834,9 @@ impl UpdatesPane {
                 value_row(
                     "Device firmware",
                     match &self.firmware_updates {
-                        None => "fwupd unavailable",
-                        Some(updates) if updates.is_empty() => "Up to date",
-                        Some(_) => "Updates available",
+                        Err(_) => "Could not query fwupd",
+                        Ok(updates) if updates.is_empty() => "Up to date",
+                        Ok(_) => "Updates available",
                     },
                 ),
             ]),
@@ -925,11 +922,20 @@ impl UpdatesPane {
         let lifecycle_card = card("History & recovery health", rows(lifecycle_rows));
 
         let firmware_body: El = match &self.firmware_updates {
-            None => rows(vec![
-                value_row("Service", "fwupd is unavailable"),
-                caption("Firmware upgrades require the fwupd service and a supported device."),
+            Err(error) => rows(vec![
+                value_row("Status", "Firmware inventory could not be queried"),
+                caption(&format!("fwupd reported: {error}")),
+                Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "settings.updates.firmware.refresh",
+                            "Try again",
+                            Some(FIRMWARE_REFRESH_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ),
             ]),
-            Some(updates) if updates.is_empty() => {
+            Ok(updates) if updates.is_empty() => {
                 let mut body = vec![value_row("Status", "Device firmware is up to date")];
                 if matches!(
                     self.firmware_state,
@@ -958,7 +964,7 @@ impl UpdatesPane {
                 }
                 rows(body)
             }
-            Some(updates) => {
+            Ok(updates) => {
                 let mut items: Vec<El> = updates
                     .iter()
                     .map(|update| {
@@ -1025,6 +1031,35 @@ impl UpdatesPane {
         };
         let firmware_card = card("Device firmware", firmware_body);
 
+        let firmware_history_card = match &self.firmware_history {
+            Ok(history) if history.is_empty() => card(
+                "Firmware history",
+                caption("fwupd has not recorded a firmware transaction on this device."),
+            ),
+            Ok(history) => {
+                let mut entries = Vec::new();
+                for item in history.iter().take(8) {
+                    let versions = match (&item.from_version, &item.to_version) {
+                        (Some(from), Some(to)) => format!("{from} → {to} · {}", item.state),
+                        (_, Some(to)) => format!("{to} · {}", item.state),
+                        _ => item.state.clone(),
+                    };
+                    entries.push(value_row(&item.device, &versions));
+                    if let Some(error) = &item.error {
+                        entries.push(caption(&format!("fwupd error: {error}")));
+                    }
+                }
+                card("Firmware history", rows(entries))
+            }
+            Err(error) => card(
+                "Firmware history",
+                rows(vec![
+                    value_row("Status", "History could not be queried"),
+                    caption(&format!("fwupd reported: {error}")),
+                ]),
+            ),
+        };
+
         // The rollback card. Present whether or not there is anything to go
         // back to, because "this machine has nothing to roll back to" is
         // information a person looking for the control needs, and an absent
@@ -1089,6 +1124,7 @@ impl UpdatesPane {
             overview,
             status_card,
             firmware_card,
+            firmware_history_card,
             detail,
             lifecycle_card,
             rollback_card,
@@ -1160,7 +1196,8 @@ impl Widget for UpdatesPane {
                         } else {
                             "Firmware installation finished successfully.".into()
                         });
-                        self.firmware_updates = os_actions::get_firmware_updates().ok();
+                        self.firmware_updates = os_actions::get_firmware_updates();
+                        self.firmware_history = os_actions::get_firmware_history();
                         finished = true;
                     }
                     os_actions::FirmwareEvent::Failed(error) => {
@@ -1176,7 +1213,6 @@ impl Widget for UpdatesPane {
             self.firmware_events = None;
         }
         if self.needs_seed {
-            let _ = state.put(root, CHANNEL_KEY, self.prefs.channel.as_str());
             let _ = state.put(
                 root,
                 AUTO_KEY,
@@ -1241,11 +1277,12 @@ impl Widget for UpdatesPane {
             {
                 Ok(updates) => {
                     self.notice = None;
-                    Some(updates)
+                    self.firmware_history = os_actions::get_firmware_history();
+                    Ok(updates)
                 }
                 Err(e) => {
                     self.notice = Some(format!("Firmware metadata could not be refreshed: {e}"));
-                    None
+                    Err(e)
                 }
             };
             self.structure_dirty = true;
@@ -1260,7 +1297,7 @@ impl Widget for UpdatesPane {
             match self
                 .firmware_updates
                 .as_deref()
-                .ok_or_else(|| "fwupd is unavailable".to_string())
+                .map_err(Clone::clone)
                 .and_then(os_actions::start_firmware_install)
             {
                 Ok(events) => {
@@ -1287,16 +1324,6 @@ impl Widget for UpdatesPane {
                     warn!(target: "qos::settings", op = "reboot", error = %e, "restart & update failed");
                 }
             }
-        }
-
-        // Release channel → persist on change.
-        if let Some(ch) = read_str(state, root, CHANNEL_KEY)
-            && CHANNELS.contains(&ch.as_str())
-            && ch != self.last_prefs.channel
-        {
-            self.last_prefs.channel = ch.clone();
-            self.prefs.channel = ch;
-            self.persist();
         }
 
         // Automatic updates → drive the timer, then report what the timer
@@ -1665,25 +1692,6 @@ mod tests {
         let _ = doc.put(&root, RESTART_KEY, automerge::ScalarValue::Boolean(true));
         pane.sync(&mut doc, &root);
         assert_eq!(*reb.calls.lock().unwrap(), 1);
-    }
-
-    /// Changing the release channel is adopted (a live control), and only a
-    /// known channel is accepted.
-    #[test]
-    fn channel_change_is_adopted_and_validated() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_channel");
-        let reb = Arc::new(RecordingRebooter::default());
-        let mut pane = pane_with(None, reb);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, CHANNEL_KEY, "Nightly");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().channel, "Nightly");
-        // An unknown value is ignored.
-        let _ = doc.put(&root, CHANNEL_KEY, "Bogus");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().channel, "Nightly");
     }
 
     // ---- timer + rollback control -------------------------------------------

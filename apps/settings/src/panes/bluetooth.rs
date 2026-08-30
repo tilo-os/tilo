@@ -202,13 +202,13 @@ impl BluetoothPane {
                 }
                 if d.paired {
                     block.push(setting_row(
-                        "Reconnect automatically",
+                        "Trust this device",
                         Box::new(Toggle::new(
                             &format!("settings.bluetooth.trusted.{}", token(&d.path)),
                             &key(&d.path, "trusted"),
                         )),
                     ));
-                    block.push(caption("Backed by BlueZ Trusted: previously authorised services may reconnect without a new prompt."));
+                    block.push(caption("A trusted device may use previously authorised services without another confirmation. This does not force reconnection."));
                     block.push(Box::new(
                         TextInput::new(Vec::new())
                             .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
@@ -445,13 +445,13 @@ impl Widget for BluetoothPane {
                 match self.control.set_trusted(&d.path, v) {
                     Ok(()) => {
                         self.notice = Some(if v {
-                            format!("{} may reconnect automatically.", d.name)
+                            format!("{} is now trusted.", d.name)
                         } else {
                             format!("{} now requires service authorisation.", d.name)
                         })
                     }
                     Err(e) => {
-                        self.notice = Some(format!("Could not change reconnect policy: {e}"));
+                        self.notice = Some(format!("Could not change device trust: {e}"));
                         let _ = state.put(root, key(&d.path, "trusted"), d.trusted);
                     }
                 }

@@ -690,10 +690,11 @@ fn global_search_selected_row_is_indigo_500_not_grey() {
 }
 
 /// Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
-/// concept's top row is 3 action tiles (Settings/Camera/Power), ours none.
-/// Asserts >= 12 fills against the current ~9.
+/// The top row keeps common shell actions one gesture away. qOS adds a
+/// notification-history tile beside Settings, Privacy and Power because the
+/// compositor, not Settings, owns delivered notification history.
 #[test]
-fn quick_settings_renders_action_row_with_settings_camera_power() {
+fn quick_settings_renders_settings_privacy_history_and_power_actions() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     open_quick_settings(&chrome);

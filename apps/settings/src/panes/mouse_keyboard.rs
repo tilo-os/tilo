@@ -5,31 +5,27 @@
 //!   persisted to the shared preferences store
 //!   ([`crate::prefs::SystemPrefs`]); the compositor reads them when it
 //!   configures libinput for the session.
-//! - **Keyboard layout** additionally applies immediately via
-//!   `localectl set-x11-keymap <code>` through [`LayoutSetter`] (privileged,
-//!   so a denial is logged rather than surfaced as a crash), and the choice
-//!   is persisted so it survives the session.
+//! - **Keyboard input sources** are per-user durable intent. Settings never
+//!   invokes `localectl`; the compositor owns XKB and hot-reloads this file.
 //
 // CRDT keys this pane reads / writes:
 //   `input.pointer_speed`    — f64 in `[0.0, 1.0]`
 //   `input.natural_scroll`   — bool
 //   `input.tap_to_click`     — bool
 //   `input.key_repeat`       — f64 in `[0.0, 1.0]`
-//   `input.keyboard_layout`  — string, a display name from [`LAYOUTS`]
-
-use std::collections::HashMap;
-use std::process::Command;
-use std::sync::Arc;
+//   `input.keyboard_layout`  — active source display label
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Dropdown, Slider, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, setting_row_described};
 
@@ -45,63 +41,16 @@ pub const LEFT_HANDED_KEY: &str = "input.left_handed";
 pub const ACCEL_PROFILE_KEY: &str = "input.accel_profile";
 pub const GESTURES_KEY: &str = "input.touchpad_gestures";
 pub const COMPOSE_KEY: &str = "input.compose_key";
-
-/// The offered layouts as `(display name, xkb code)`. The display name is
-/// what the dropdown shows and stores in the CRDT; the code is what
-/// `localectl` and the prefs store use.
-pub const LAYOUTS: &[(&str, &str)] = &[
-    ("English (US)", "us"),
-    ("English (UK)", "gb"),
-    ("German", "de"),
-    ("French", "fr"),
-    ("Dutch", "nl"),
-    ("Spanish", "es"),
-];
-
-/// Map an xkb code back to its display name (falls back to English (US)).
-fn layout_label(code: &str) -> &'static str {
-    LAYOUTS
-        .iter()
-        .find(|(_, c)| *c == code)
-        .map_or("English (US)", |(label, _)| *label)
-}
-
-/// Map a display name to its xkb code, if recognised.
-fn layout_code(label: &str) -> Option<&'static str> {
-    LAYOUTS
-        .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, code)| *code)
-}
-
-/// Side-effect interface for applying the keyboard layout. Production shells
-/// out to `localectl`; tests inject a recorder.
-pub trait LayoutSetter: Send + Sync {
-    fn set_layout(&self, xkb_code: &str) -> Result<(), String>;
-}
-
-/// Production impl: `localectl set-x11-keymap <code>`.
-pub struct RealLayout;
-
-impl LayoutSetter for RealLayout {
-    fn set_layout(&self, xkb_code: &str) -> Result<(), String> {
-        let out = Command::new("localectl")
-            .args(["set-x11-keymap", xkb_code])
-            .output()
-            .map_err(|e| format!("localectl not available: {e}"))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-        }
-    }
-}
+pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
+pub const ADD_SOURCE_KEY: &str = "input.source.add";
 
 pub struct MouseKeyboardPane {
-    layout_setter: Arc<dyn LayoutSetter>,
     initial: InputPrefs,
     last: InputPrefs,
+    catalog: Vec<CatalogEntry>,
+    pending_add_id: Option<String>,
     needs_seed: bool,
+    structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -114,27 +63,55 @@ impl Default for MouseKeyboardPane {
 
 impl MouseKeyboardPane {
     pub fn new() -> Self {
-        let prefs = SystemPrefs::load().input;
+        let mut prefs = SystemPrefs::load().input;
+        prefs.normalise_keyboard_sources();
         Self {
-            layout_setter: Arc::new(RealLayout),
             initial: prefs.clone(),
             last: prefs,
+            catalog: installed_catalog(),
+            pending_add_id: None,
             needs_seed: true,
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
     }
 
-    /// Test constructor: inject the layout setter and starting preferences.
-    pub fn with_setter(layout_setter: Arc<dyn LayoutSetter>, initial: InputPrefs) -> Self {
+    /// Test constructor with a deterministic installed-source catalogue.
+    #[cfg(test)]
+    fn with_catalog(mut initial: InputPrefs, catalog: Vec<CatalogEntry>) -> Self {
+        initial.normalise_keyboard_sources();
         Self {
-            layout_setter,
             initial: initial.clone(),
             last: initial,
+            catalog,
+            pending_add_id: None,
             needs_seed: true,
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
+    }
+
+    fn source_label(&self, id: &str) -> String {
+        self.catalog
+            .iter()
+            .find(|entry| entry.id == id)
+            .map_or_else(|| id.to_string(), |entry| entry.label.clone())
+    }
+
+    fn source_id(&self, label: &str) -> Option<String> {
+        self.catalog
+            .iter()
+            .find(|entry| entry.label == label)
+            .map(|entry| entry.id.clone())
+            .or_else(|| {
+                self.last
+                    .keyboard_layouts
+                    .iter()
+                    .find(|id| id.as_str() == label)
+                    .cloned()
+            })
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -225,16 +202,21 @@ impl MouseKeyboardPane {
             ]),
         );
 
-        let layouts: Vec<String> = LAYOUTS.iter().map(|(l, _)| l.to_string()).collect();
+        let active_sources: Vec<String> = self
+            .last
+            .keyboard_layouts
+            .iter()
+            .map(|id| self.source_label(id))
+            .collect();
         let keyboard = card(
             "Keyboard",
             rows(vec![
                 choice_row(
-                    "Layout",
+                    "Active input source",
                     Box::new(
-                        Dropdown::new(layouts, LAYOUT_KEY)
+                        Dropdown::new(active_sources, LAYOUT_KEY)
                             .with_id("input.layout")
-                            .with_placeholder(layout_label(&self.initial.keyboard_layout)),
+                            .with_placeholder(&self.source_label(&self.last.keyboard_layout)),
                     ),
                 ),
                 setting_row(
@@ -245,8 +227,7 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 caption(
-                    "The layout applies to the current session; pointer and \
-                     repeat preferences are applied by the compositor.",
+                    "Changes apply to this user session through the compositor. With multiple sources, Alt+Shift switches temporarily; Super+Space remains global search.",
                 ),
                 choice_row(
                     "Compose key",
@@ -274,6 +255,72 @@ impl MouseKeyboardPane {
             ]),
         );
 
+        let mut source_rows = Vec::new();
+        for (index, id) in self.last.keyboard_layouts.iter().enumerate() {
+            let mut row = Row::new()
+                .push(Box::new(Text::new(&self.source_label(id)).with_size(13.0)))
+                .push(Box::new(Spacer::new()));
+            if id == &self.last.keyboard_layout {
+                row = row.push(Box::new(
+                    Text::new("Active")
+                        .with_size(12.0)
+                        .with_color(Theme::dark().accent_primary),
+                ));
+            }
+            let up = format!("input.source.{index}.up");
+            let down = format!("input.source.{index}.down");
+            let remove = format!("input.source.{index}.remove");
+            row = row
+                .push(Box::new(
+                    Button::new(&up, "↑", Some(&up))
+                        .with_size(36.0, 34.0)
+                        .with_accessible_name("Move input source up")
+                        .with_enabled(index > 0),
+                ))
+                .push(Box::new(
+                    Button::new(&down, "↓", Some(&down))
+                        .with_size(36.0, 34.0)
+                        .with_accessible_name("Move input source down")
+                        .with_enabled(index + 1 < self.last.keyboard_layouts.len()),
+                ))
+                .push(Box::new(
+                    Button::new(&remove, "Remove", Some(&remove))
+                        .with_size(84.0, 34.0)
+                        .with_enabled(self.last.keyboard_layouts.len() > 1),
+                ));
+            source_rows.push(Box::new(row) as Box<dyn Widget>);
+        }
+        let available: Vec<String> = self
+            .catalog
+            .iter()
+            .filter(|entry| !self.last.keyboard_layouts.contains(&entry.id))
+            .map(|entry| entry.label.clone())
+            .collect();
+        if self.last.keyboard_layouts.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+            && !available.is_empty()
+        {
+            source_rows.push(choice_row(
+                "Add a language or layout",
+                Box::new(
+                    Dropdown::new(available, ADD_SOURCE_PICKER_KEY)
+                        .with_id("input.source.add_picker")
+                        .with_placeholder("Choose a source"),
+                ),
+            ));
+            source_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+                Box::new(Button::new(
+                    "input.source.add",
+                    "Add input source",
+                    Some(ADD_SOURCE_KEY),
+                )),
+            )));
+        } else {
+            source_rows.push(caption(
+                "Up to four input sources can be active at once, matching the interoperable XKB group limit.",
+            ));
+        }
+        let input_sources = card("Input sources", rows(source_rows));
+
         let pen = card(
             "Pen & tablet",
             rows(vec![caption(
@@ -281,16 +328,42 @@ impl MouseKeyboardPane {
             )]),
         );
 
-        crate::widgets::cards(vec![mouse, advanced_pointer, keyboard, pen])
+        crate::widgets::cards(vec![mouse, advanced_pointer, keyboard, input_sources, pen])
     }
 
     /// Load prefs fresh, apply `f` to the input section, persist.
     fn persist_input(f: impl FnOnce(&mut InputPrefs)) {
         let mut p = SystemPrefs::load();
         f(&mut p.input);
-        if let Err(e) = p.save() {
+        p.input.normalise_keyboard_sources();
+        let section = serde_json::to_value(&p.input)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        if let Err(e) = settings_store::update_section("input", section) {
             warn!(target: "qos::settings", op = "input_prefs_save", error = %e, "failed to persist input prefs");
         }
+    }
+
+    fn persist_keyboard_sources(&self) {
+        let active = self.last.keyboard_layout.clone();
+        let sources = self.last.keyboard_layouts.clone();
+        Self::persist_input(|input| {
+            input.keyboard_layout = active;
+            input.keyboard_layouts = sources;
+        });
+    }
+
+    fn source_action(index: usize, action: &str) -> String {
+        format!("input.source.{index}.{action}")
+    }
+
+    fn consume_action(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
+        if read_bool(state, root, key) != Some(true) {
+            return false;
+        }
+        let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
+        true
     }
 }
 
@@ -345,8 +418,18 @@ impl Widget for MouseKeyboardPane {
             let _ = state.put(
                 root,
                 LAYOUT_KEY,
-                layout_label(&self.initial.keyboard_layout),
+                self.source_label(&self.initial.keyboard_layout),
             );
+            let first_available = self
+                .catalog
+                .iter()
+                .find(|entry| !self.initial.keyboard_layouts.contains(&entry.id))
+                .cloned();
+            if let Some(entry) = first_available {
+                let _ = state.put(root, ADD_SOURCE_PICKER_KEY, entry.label);
+                self.pending_add_id = Some(entry.id);
+            }
+            let _ = state.put(root, ADD_SOURCE_KEY, false);
             self.last = self.initial.clone();
             self.needs_seed = false;
         }
@@ -429,17 +512,71 @@ impl Widget for MouseKeyboardPane {
                 Self::persist_input(|i| i.compose_key = owned);
             }
         }
-        // Keyboard layout → apply via localectl AND persist the choice.
+        // Active source is durable preference only. The session compositor's
+        // file watch compiles and applies it without a privileged helper.
         if let Some(label) = read_str(state, root, LAYOUT_KEY)
-            && let Some(code) = layout_code(&label)
-            && code != self.last.keyboard_layout.as_str()
+            && let Some(id) = self.source_id(&label)
+            && self.last.keyboard_layouts.contains(&id)
+            && id != self.last.keyboard_layout
         {
-            self.last.keyboard_layout = code.to_string();
-            if let Err(e) = self.layout_setter.set_layout(code) {
-                warn!(target: "qos::settings", op = "set_layout", error = %e, "keyboard layout apply failed");
+            self.last.keyboard_layout = id;
+            self.persist_keyboard_sources();
+            self.structure_dirty = true;
+        }
+
+        if let Some(label) = read_str(state, root, ADD_SOURCE_PICKER_KEY) {
+            self.pending_add_id = self.source_id(&label);
+        }
+        if Self::consume_action(state, root, ADD_SOURCE_KEY)
+            && self.last.keyboard_layouts.len()
+                < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+            && let Some(id) = self.pending_add_id.clone()
+            && !self.last.keyboard_layouts.contains(&id)
+        {
+            self.last.keyboard_layouts.push(id.clone());
+            self.last.keyboard_layout = id;
+            let _ = state.put(
+                root,
+                LAYOUT_KEY,
+                self.source_label(&self.last.keyboard_layout),
+            );
+            self.persist_keyboard_sources();
+            self.structure_dirty = true;
+        }
+
+        let source_count = self.last.keyboard_layouts.len();
+        for index in 0..source_count {
+            let up = Self::source_action(index, "up");
+            let down = Self::source_action(index, "down");
+            let remove = Self::source_action(index, "remove");
+            if index > 0 && Self::consume_action(state, root, &up) {
+                self.last.keyboard_layouts.swap(index - 1, index);
+                self.persist_keyboard_sources();
+                self.structure_dirty = true;
+                break;
             }
-            let owned = code.to_string();
-            Self::persist_input(|i| i.keyboard_layout = owned);
+            if index + 1 < source_count && Self::consume_action(state, root, &down) {
+                self.last.keyboard_layouts.swap(index, index + 1);
+                self.persist_keyboard_sources();
+                self.structure_dirty = true;
+                break;
+            }
+            if source_count > 1 && Self::consume_action(state, root, &remove) {
+                let removed = self.last.keyboard_layouts.remove(index);
+                if removed == self.last.keyboard_layout {
+                    self.last.keyboard_layout = self.last.keyboard_layouts
+                        [index.min(self.last.keyboard_layouts.len() - 1)]
+                    .clone();
+                    let _ = state.put(
+                        root,
+                        LAYOUT_KEY,
+                        self.source_label(&self.last.keyboard_layout),
+                    );
+                }
+                self.persist_keyboard_sources();
+                self.structure_dirty = true;
+                break;
+            }
         }
 
         if let Some(c) = &mut self.composed {
@@ -552,6 +689,15 @@ impl Widget for MouseKeyboardPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self
+            .composed
+            .as_mut()
+            .is_some_and(|composed| composed.take_structure_dirty());
+        own || child
+    }
 }
 
 fn read_f64(state: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
@@ -590,25 +736,22 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    #[derive(Default)]
-    struct RecordingLayout {
-        calls: Mutex<Vec<String>>,
-    }
-    impl LayoutSetter for RecordingLayout {
-        fn set_layout(&self, code: &str) -> Result<(), String> {
-            self.calls.lock().unwrap().push(code.to_string());
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn layout_label_and_code_round_trip() {
-        assert_eq!(layout_label("de"), "German");
-        assert_eq!(layout_code("German"), Some("de"));
-        assert_eq!(layout_label("zz"), "English (US)");
-        assert_eq!(layout_code("Klingon"), None);
+    fn catalog() -> Vec<CatalogEntry> {
+        vec![
+            CatalogEntry {
+                id: "us".into(),
+                label: "English (US)".into(),
+            },
+            CatalogEntry {
+                id: "de".into(),
+                label: "German".into(),
+            },
+            CatalogEntry {
+                id: "fr".into(),
+                label: "French".into(),
+            },
+        ]
     }
 
     #[test]
@@ -620,25 +763,47 @@ mod tests {
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
-    /// Selecting a layout applies it via the setter exactly once, with the
-    /// right xkb code, and not again while it rests.
     #[test]
-    fn selecting_layout_invokes_setter_with_xkb_code() {
+    fn active_source_selection_is_per_user_and_durable() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_layout");
-        let setter = Arc::new(RecordingLayout::default());
-        let mut pane = MouseKeyboardPane::with_setter(setter.clone(), InputPrefs::default());
+        let initial = InputPrefs {
+            keyboard_layouts: vec!["us".into(), "de".into()],
+            ..Default::default()
+        };
+        let mut pane = MouseKeyboardPane::with_catalog(initial, catalog());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert!(
-            setter.calls.lock().unwrap().is_empty(),
-            "seed must not apply"
-        );
-        // Dropdown writes the display name into a Text object; emulate that.
         let _ = doc.put(&root, LAYOUT_KEY, "German");
         pane.sync(&mut doc, &root);
+        assert_eq!(pane.last.keyboard_layout, "de");
+        assert_eq!(SystemPrefs::load().input.keyboard_layout, "de");
+        assert!(pane.take_structure_dirty());
+    }
+
+    #[test]
+    fn add_reorder_and_remove_preserve_a_valid_active_source() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_sources");
+        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(setter.calls.lock().unwrap().as_slice(), ["de"]);
+
+        let _ = doc.put(&root, ADD_SOURCE_PICKER_KEY, "German");
+        let _ = doc.put(&root, ADD_SOURCE_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.last.keyboard_layouts, ["us", "de"]);
+        assert_eq!(pane.last.keyboard_layout, "de", "new source becomes active");
+
+        let _ = doc.put(&root, MouseKeyboardPane::source_action(1, "up"), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.last.keyboard_layouts, ["de", "us"]);
+        assert_eq!(pane.last.keyboard_layout, "de");
+
+        let _ = doc.put(&root, MouseKeyboardPane::source_action(0, "remove"), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.last.keyboard_layouts, ["us"]);
+        assert_eq!(pane.last.keyboard_layout, "us");
     }
 
     /// The pointer-speed slider is consumed by `sync` (a live control, not a
@@ -647,8 +812,7 @@ mod tests {
     #[test]
     fn pointer_speed_change_is_consumed() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_pointer");
-        let setter = Arc::new(RecordingLayout::default());
-        let mut pane = MouseKeyboardPane::with_setter(setter, InputPrefs::default());
+        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);

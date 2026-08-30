@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod vault;
-pub use vault::{Secret, SecretVault};
+pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod status;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,

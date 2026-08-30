@@ -59,24 +59,25 @@ pub use display::{
     set_brightness,
 };
 pub use firmware::{
-    FirmwareEvent, FirmwareInstallOutcome, FirmwareUpdate, get_firmware_updates,
-    refresh_firmware_metadata, start_firmware_install,
+    FirmwareEvent, FirmwareHistoryEntry, FirmwareInstallOutcome, FirmwareUpdate,
+    get_firmware_history, get_firmware_updates, refresh_firmware_metadata, start_firmware_install,
 };
 pub use modem::{SimInfo, list_mobile_sims, unlock_mobile_sim, unlock_mobile_sim_on};
 pub use network::{
-    CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectivityState,
-    EnterpriseEapMethod, EnterpriseWifiConfiguration, HOTSPOT_PROFILE, HotspotBand, HotspotClient,
-    HotspotConfiguration, IpConfiguration, LinkKind, LinkStatus, MacPolicy, MeteredPolicy,
-    ProxyConfiguration, RadioState, SavedNetworkProfile, VpnConnectionInfo, WifiNetworkInfo,
-    WiredInfo, captive_portal_uri, configure_connection_policy, configure_hotspot, configure_ipv4,
-    connect_enterprise_wifi, connect_wifi, connection_diagnostics, create_mobile_profile,
+    CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectionPolicyPatch,
+    ConnectionProfileSettings, ConnectivityState, EnterpriseEapMethod, EnterpriseWifiConfiguration,
+    HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, IpConfiguration, LinkKind,
+    LinkStatus, MacPolicy, MeteredPolicy, ProxyConfiguration, RadioState, SavedNetworkProfile,
+    VpnConnectionInfo, WifiNetworkInfo, WiredInfo, captive_portal_uri, configure_connection_policy,
+    configure_connection_policy_patch, configure_hotspot, configure_ipv4, connect_enterprise_wifi,
+    connect_wifi, connection_diagnostics, connection_profile_settings, create_mobile_profile,
     forget_network_profile, get_connectivity, get_link_status, get_radio_state, get_wifi,
     get_wired, import_vpn_config, inspect_certificate, list_hotspot_clients,
     list_saved_network_profiles, list_vpn_connections, list_wifi_networks, set_airplane_mode,
     set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection, set_wifi,
     set_wired,
 };
-pub use power::{PowerProfile, get_power_profile, set_power_profile};
+pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
 pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
