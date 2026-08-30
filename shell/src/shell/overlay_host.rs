@@ -1021,11 +1021,6 @@ type QsFastFields = (
 );
 
 impl ShellOverlayHost {
-    /// Fallback name in the General tab's collaborator tile when no `me`
-    /// collaborator is seeded, so the adjacent "You" badge doesn't
-    /// duplicate as "You [You]".
-    pub(crate) const ME_TILE_FALLBACK_NAME: &'static str = "Me";
-
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -4463,15 +4458,9 @@ impl ShellOverlayHost {
     /// Shared by the draw pass and the click router, so the rect that
     /// paints the button is the rect that can be clicked.
     fn ws_settings_copy_rect(&self) -> Rect {
-        let rect = self.ws_settings_rect();
-        // Mirrors the draw pass: body_y = rect.y0 + 168, invite_y = body_y + 80.
-        let invite_y = rect.y0 + 168.0 + 80.0;
-        Rect::new(
-            rect.x1 - 24.0 - 72.0,
-            invite_y + 20.0,
-            rect.x1 - 24.0,
-            invite_y + 52.0,
-        )
+        let body = self.ws_settings_body_rect(self.ws_settings_rect());
+        let link_y = body.y0 + 202.0;
+        Rect::new(body.x1 - 16.0 - 72.0, link_y, body.x1 - 16.0, link_y + 34.0)
     }
 
     /// Copy-button geometry for integration tests.
@@ -4642,7 +4631,7 @@ impl ShellOverlayHost {
     fn ws_settings_body_rect(&self, card: Rect) -> Rect {
         Rect::new(
             card.x0 + 16.0,
-            card.y0 + 144.0,
+            card.y0 + 160.0,
             card.x1 - 16.0,
             card.y1 - 16.0,
         )
@@ -4681,30 +4670,38 @@ impl ShellOverlayHost {
     /// Name-input rect inside the ws-settings modal. Matches the drawn
     /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
     fn ws_settings_name_rect(&self) -> Rect {
-        let r = self.ws_settings_rect();
-        let body_y = r.y0 + 168.0;
-        Rect::new(r.x0 + 24.0, body_y + 20.0, r.x1 - 24.0, body_y + 48.0)
+        let body = self.ws_settings_body_rect(self.ws_settings_rect());
+        Rect::new(
+            body.x0 + 16.0,
+            body.y0 + 62.0,
+            body.x1 - 16.0,
+            body.y0 + 96.0,
+        )
     }
 
-    /// Mirror of the geometry in `draw_ws_settings` — centered modal card.
-    /// Modal grows when Roles / Files tabs are active so the longer per-
-    /// app permission grid + file list fit without overflowing into the
-    /// workspace area below; click-detection geometry stays in sync.
-    fn ws_settings_rect(&self) -> Rect {
-        let modal_w = 720.0_f64;
-        let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
-            Some(WsTab::Permissions | WsTab::Apps) => 640.0_f64,
-            Some(WsTab::Members) => 600.0_f64,
-            _ => 440.0_f64,
-        };
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
+    /// Visible pointer-accessible close control in the identity card.
+    fn ws_settings_close_rect(&self) -> Rect {
+        let rect = self.ws_settings_rect();
         Rect::new(
-            cx - modal_w / 2.0,
-            cy - modal_h / 2.0,
-            cx + modal_w / 2.0,
-            cy + modal_h / 2.0,
+            rect.x1 - 58.0,
+            rect.y0 + 25.0,
+            rect.x1 - 28.0,
+            rect.y0 + 55.0,
         )
+    }
+
+    /// A contextual lens docked beside the live workspace. Narrow displays
+    /// promote the same surface to a nearly full-width sheet.
+    fn ws_settings_rect(&self) -> Rect {
+        let margin = 12.0_f64;
+        let top = self.rect.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
+        let bottom = (self.rect.y1 - margin).max(top + 320.0);
+        if self.rect.width() < 820.0 {
+            return Rect::new(self.rect.x0 + margin, top, self.rect.x1 - margin, bottom);
+        }
+        let lens_w = (self.rect.width() * 0.46).clamp(620.0, 780.0);
+        let right = self.rect.x1 - margin;
+        Rect::new(right - lens_w, top, right, bottom)
     }
 
     /// The band the scope + kind controls paint into — the palette's own
@@ -6394,8 +6391,15 @@ impl ShellOverlayHost {
             return true;
         }
         if flags.ws_settings {
-            self.handle_shell_ws_settings_click(p, handled);
-            return true;
+            if self.ws_settings_rect().contains(p) {
+                self.handle_shell_ws_settings_click(p, handled);
+                return true;
+            }
+            if let Some(chrome) = self.chrome.clone() {
+                // Commit an in-progress field before the desktop takes focus,
+                // but keep the contextual lens open beside the workspace.
+                chrome.borrow_mut().commit_workspace_name();
+            }
         }
         false
     }
@@ -6882,19 +6886,17 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Clicks inside the open workspace-settings modal: outside-click
-    /// commits and dismisses; then default-app rects, the capability
+    /// Clicks inside the open workspace-settings lens: the pointer close
+    /// control comes first, then default-app rects, the capability
     /// grant composer, member role/remove controls and revoke rects
     /// each take priority over the tab pills and name field. Reached
     /// only once `flags.ws_settings` is true, at which point every path
     /// absorbs the click (the trailing tab/name handling sets
     /// `*handled` for the paths that fall all the way through).
     fn handle_shell_ws_settings_click(&mut self, p: Point, handled: &mut bool) {
-        let modal_rect = self.ws_settings_rect();
-        if !modal_rect.contains(p) {
+        if self.ws_settings_close_rect().contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
-                // Clicking away acts like "save & dismiss".
                 st.commit_workspace_name();
                 st.overlays.ws_settings = false;
                 st.bump();
@@ -8382,6 +8384,12 @@ fn panel_surface(theme: &Theme, alpha: f32) -> Color {
     ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
 
+/// Workspace settings is app-grade content hosted by the shell, so it uses
+/// the same base surface as applications rather than the brighter popover tier.
+fn workspace_settings_surface(theme: &Theme) -> Color {
+    theme.tokens.colors.surfaces.base
+}
+
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Seeds `active_provider_id` for
 /// [`crate::shell::search::SearchRegistry::query`] under
@@ -8581,27 +8589,44 @@ impl ShellOverlayHost {
         self.ws_settings_was_open = flags.ws_settings;
         self.ws_settings_transition.set_open(
             flags.ws_settings,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            if theme.reduce_motion {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(MODAL_OPEN_ANIM_MS)
+            },
             ui::Curve::EaseOut,
         );
         let now = Instant::now();
         if self.ws_settings_transition.is_visible(now) {
-            // The softer modal scrim, not the stronger overview/palette
-            // dimmer; fades with the panel on close.
-            draw_modal_scrim_at(
-                scene,
-                transform,
-                self.rect,
-                self.ws_settings_transition.value(now),
-                theme,
-            );
-            let (alpha, dy, scale) =
-                modal_transition_curve(&self.ws_settings_transition, now, 0.95);
+            let alpha = self.ws_settings_transition.value(now);
             let in_flight = alpha < 1.0;
             let panel_rect = self.ws_settings_rect();
+
+            if !theme.reduce_motion
+                && in_flight
+                && let Some(anchor) = self
+                    .chrome
+                    .as_ref()
+                    .map(|chrome| chrome.borrow().workspace_settings_anchor)
+                    .filter(|anchor| anchor.area() > 0.0)
+            {
+                let start = anchor.center();
+                let end = Point::new(panel_rect.x0 + 28.0, panel_rect.y0 + 24.0);
+                let t = f64::from(alpha);
+                let x = start.x + (end.x - start.x) * t;
+                let y = start.y + (end.y - start.y) * t;
+                let pulse_alpha = (std::f32::consts::PI * alpha).sin().max(0.0);
+                let mark =
+                    RoundedRect::from_rect(Rect::new(x - 14.0, y - 2.0, x + 14.0, y + 2.0), 2.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.accent[5].with_alpha_factor(pulse_alpha),
+                    None,
+                    &mark,
+                );
+            }
             if in_flight {
-                // Clip generously so the scrim doesn't get painted over by
-                // the modal's alpha layer.
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     BlendMode::default(),
@@ -8610,18 +8635,12 @@ impl ShellOverlayHost {
                     &self.rect,
                 );
             }
-            let panel_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
-                let cx = panel_rect.center().x;
-                let cy = panel_rect.center().y;
-                transform
-                    .pre_translate((cx, cy + dy).into())
-                    .pre_scale(scale)
-                    .pre_translate((-cx, -cy).into())
+            let travel = if theme.reduce_motion {
+                0.0
             } else {
-                transform
+                48.0 * (1.0 - f64::from(alpha))
             };
-            // Soft elevation so the modal lifts off its scrim. Faded by
-            // openness (== alpha here) so it animates with the panel.
+            let panel_xform = transform.pre_translate((travel, 0.0).into());
             ui::surface::soft_shadow(
                 scene,
                 panel_xform,
@@ -8629,7 +8648,7 @@ impl ShellOverlayHost {
                 theme.tokens.colors.neutral[0],
                 40.0,
                 16.0,
-                0.55 * alpha,
+                0.62 * alpha,
             );
             self.draw_ws_settings(scene, panel_xform, text_renderer, theme);
             if in_flight {
@@ -9801,8 +9820,15 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         let tree = state.tree();
 
-        let active_name =
-            Self::draw_ws_settings_header_text(scene, transform, text_renderer, theme, rect, &tree);
+        let active_name = self.draw_ws_settings_header_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            &state,
+            &tree,
+        );
 
         // Reads the typed `ws_settings_tab` field on chrome state, kept
         // orthogonal to the name-edit buffer.
@@ -9894,7 +9920,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            panel_surface(theme, MODAL_SURFACE_ALPHA),
+            workspace_settings_surface(theme),
             None,
             &card,
         );
@@ -9911,39 +9937,121 @@ impl ShellOverlayHost {
     /// workspace's name so the General tab's name input can fall back
     /// to it while nothing is being edited.
     fn draw_ws_settings_header_text(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
+        state: &crate::shell::chrome_state::ChromeState,
         tree: &WorkspaceTree,
     ) -> String {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-
-        let title = "Workspace Settings";
-        let tsize = tokens.typography.scale.xl;
+        let identity = Rect::new(
+            rect.x0 + 16.0,
+            rect.y0 + 14.0,
+            rect.x1 - 16.0,
+            rect.y0 + 94.0,
+        );
+        let identity_rr = RoundedRect::from_rect(identity, f64::from(tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &identity_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &identity_rr,
+        );
+        let mark = Rect::new(
+            identity.x0 + 14.0,
+            identity.y0 + 14.0,
+            identity.x0 + 62.0,
+            identity.y1 - 14.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5].with_alpha_factor(0.18),
+            None,
+            &RoundedRect::from_rect(mark, f64::from(tokens.radii.lg)),
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            mark.inset(14.0),
+            ui::icons::Icon::LayoutGrid,
+            colors.accent[4],
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let close = self.ws_settings_close_rect();
+        let close_rr = RoundedRect::from_rect(close, f64::from(tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &close_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &close_rr,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            close.inset(8.0),
+            ui::icons::Icon::X,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
         text_renderer.draw_text(
             scene,
-            title,
-            tsize,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + 24.0, rect.y0 + 24.0).into()),
+            "CURRENT WORKSPACE",
+            tokens.typography.scale.xs,
+            colors.accent[4],
+            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
         );
-
         let active_name = tree
             .active_workspace()
             .map(|w| w.name.clone())
-            .unwrap_or_default();
-        let label = format!("Active workspace: {active_name}");
-        let lsize = tokens.typography.scale.base;
+            .unwrap_or_else(|| "Workspace".into());
+        let tsize = tokens.typography.scale.xl;
+        let shown_name = text_renderer.elide_to_width(
+            &active_name,
+            tsize,
+            f64_to_f32_lossy(close.x0 - (identity.x0 + 76.0) - 12.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            &shown_name,
+            tsize,
+            colors.text_primary,
+            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 34.0).into()),
+            None,
+        );
+        let active_role = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.role_of(&state.local_user_id))
+            .map(crate::shell::workspace_settings::role_label)
+            .unwrap_or("Guest");
+        let label = format!("{active_role} · Settings and policy stay with this workspace");
         text_renderer.draw_text(
             scene,
             &label,
-            lsize,
+            tokens.typography.scale.sm,
             colors.text_dim,
-            transform.pre_translate((rect.x0 + 24.0, rect.y0 + 72.0).into()),
+            transform.pre_translate((identity.x0 + 76.0, identity.y0 + 58.0).into()),
             None,
         );
         active_name
@@ -9964,62 +10072,101 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let lsize = tokens.typography.scale.base;
         let tabs = WsTab::all();
-        let mut tx = rect.x0 + 24.0;
-        let ty = rect.y0 + 112.0;
+        let nav = Rect::new(
+            rect.x0 + 16.0,
+            rect.y0 + 104.0,
+            rect.x1 - 16.0,
+            rect.y0 + 146.0,
+        );
+        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
+        scene.fill(Fill::NonZero, transform, colors.neutral[0], None, &nav_rr);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard.with_alpha_factor(0.72),
+            None,
+            &nav_rr,
+        );
+        let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
         // Written into `self.ws_settings_tab_pill_rects` after the loop
         // so one source of geometry feeds draw and click-routing.
         let mut pill_rects = [Rect::ZERO; 4];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
-            let label = tab.label();
+            let label = if rect.width() < 680.0 {
+                tab.compact_label()
+            } else {
+                tab.label()
+            };
             let (w, h) = text_renderer.measure(label, lsize, None);
+            let ix = usize_to_f64_lossy(i);
             let pill_rect = Rect::new(
-                tx - 8.0,
-                ty - 4.0,
-                tx + f64::from(w) + 8.0,
-                ty + f64::from(h) + 4.0,
+                nav.x0 + segment_w * ix + 3.0,
+                nav.y0 + 3.0,
+                nav.x0 + segment_w * (ix + 1.0) - 3.0,
+                nav.y1 - 3.0,
             );
             if let Some(slot) = pill_rects.get_mut(i) {
                 *slot = pill_rect;
             }
             let pill = RoundedRect::from_rect(pill_rect, f64::from(tokens.radii.md));
             if active {
-                // Pinned by `tests::ws_settings_active_tab_pill_uses_white_overlay`.
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.surface_white_10,
+                    colors.surfaces.raised,
                     None,
                     &pill,
                 );
-                // White-on-glass alone is a very quiet difference on the
-                // dark modal surface; the accent rule gives the
-                // selection a form, not just a slightly lighter fill.
-                let underline = RoundedRect::from_rect(
-                    Rect::new(
-                        pill_rect.x0 + 4.0,
-                        pill_rect.y1 + 3.0,
-                        pill_rect.x1 - 4.0,
-                        pill_rect.y1 + 5.0,
-                    ),
-                    1.0,
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    colors.border_standard,
+                    None,
+                    &pill,
                 );
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &underline);
             }
             let color = if active {
                 colors.text_primary
             } else {
                 colors.text_dim
             };
+            let icon = match tab {
+                WsTab::General => ui::icons::Icon::Settings2,
+                WsTab::Members => ui::icons::Icon::Home,
+                WsTab::Permissions => ui::icons::Icon::Shield,
+                WsTab::Apps => ui::icons::Icon::LayoutGrid,
+            };
+            let icon_size = 15.0;
+            let content_w = icon_size + 7.0 + f64::from(w);
+            let content_x = pill_rect.center().x - content_w / 2.0;
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    content_x,
+                    pill_rect.center().y - icon_size / 2.0,
+                    content_x + icon_size,
+                    pill_rect.center().y + icon_size / 2.0,
+                ),
+                icon,
+                if active { colors.accent[4] } else { color },
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
             text_renderer.draw_text(
                 scene,
                 label,
                 lsize,
                 color,
-                transform.pre_translate((tx, ty).into()),
+                transform.pre_translate(
+                    (
+                        content_x + icon_size + 7.0,
+                        pill_rect.center().y - f64::from(h) / 2.0,
+                    )
+                        .into(),
+                ),
                 None,
             );
-            tx += f64::from(w) + 32.0;
         }
         self.ws_settings_tab_pill_rects = pill_rects;
     }
@@ -10218,21 +10365,46 @@ impl ShellOverlayHost {
         rect: Rect,
         state: &crate::shell::chrome_state::ChromeState,
         active_name: &str,
-        body_y: f64,
+        _body_y: f64,
     ) -> bool {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+        let body = self.ws_settings_body_rect(rect);
+        let identity_card = Rect::new(body.x0, body.y0 + 8.0, body.x1, body.y0 + 112.0);
+        let identity_rr = RoundedRect::from_rect(identity_card, f64::from(tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &identity_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &identity_rr,
+        );
         text_renderer.draw_text(
             scene,
-            "Name",
-            tokens.typography.scale.sm,
+            "Workspace identity",
+            tokens.typography.scale.base,
+            colors.text_primary,
+            transform.pre_translate((identity_card.x0 + 16.0, identity_card.y0 + 13.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "This name appears in the top bar, invites, and shared activity.",
+            tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((rect.x0 + 24.0, body_y).into()),
+            transform.pre_translate((identity_card.x0 + 16.0, identity_card.y0 + 36.0).into()),
             None,
         );
         let input_rect = self.ws_settings_name_rect();
         let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.sm));
-        scene.fill(Fill::NonZero, transform, colors.neutral[1], None, &input);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &input);
         let editing = state.editing_workspace_name.is_some();
         let border_color = if editing {
             colors.accent[5]
@@ -10273,11 +10445,7 @@ impl ShellOverlayHost {
         editing
     }
 
-    /// Two indigo-500 fills here (Copy button + "You" badge in the
-    /// collaborators section) clear the spec test's `added_indigo >= 2`
-    /// floor against the closed-modal baseline. Returns the invite
-    /// section's top y, so the caller can place the collaborators
-    /// section directly beneath it.
+    /// Sharing card with the workspace's stable invitation URI.
     fn draw_ws_settings_invite_link(
         &self,
         scene: &mut Scene,
@@ -10286,36 +10454,82 @@ impl ShellOverlayHost {
         theme: &Theme,
         rect: Rect,
         tree: &WorkspaceTree,
-        body_y: f64,
+        _body_y: f64,
     ) -> f64 {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let invite_y = body_y + 80.0;
-        let dot = Rect::new(
-            rect.x0 + 24.0,
-            invite_y + 2.0,
-            rect.x0 + 32.0,
-            invite_y + 10.0,
-        );
-        scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
-        text_renderer.draw_text(
-            scene,
-            "Invite Link",
-            tokens.typography.scale.sm,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + 40.0, invite_y).into()),
-            None,
-        );
-        let url_pill = Rect::new(
-            rect.x0 + 24.0,
-            invite_y + 20.0,
-            rect.x1 - 24.0 - 80.0,
-            invite_y + 52.0,
-        );
+        let body = self.ws_settings_body_rect(rect);
+        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
+        let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
             transform,
             colors.surfaces.raised,
+            None,
+            &sharing_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &sharing_rr,
+        );
+        let share_icon = Rect::new(
+            sharing_card.x0 + 16.0,
+            sharing_card.y0 + 14.0,
+            sharing_card.x0 + 48.0,
+            sharing_card.y0 + 46.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5].with_alpha_factor(0.16),
+            None,
+            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.md)),
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            share_icon.inset(8.0),
+            ui::icons::Icon::Copy,
+            colors.accent[4],
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Invite people",
+            tokens.typography.scale.base,
+            colors.text_primary,
+            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 13.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Anyone with this link must still pass the workspace's secure join flow.",
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
+            None,
+        );
+        let invite_y = body.y0 + 202.0;
+        let url_pill = Rect::new(
+            sharing_card.x0 + 16.0,
+            invite_y,
+            sharing_card.x1 - 16.0 - 80.0,
+            invite_y + 34.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            workspace_settings_surface(theme),
+            None,
+            &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
             None,
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
@@ -10330,7 +10544,7 @@ impl ShellOverlayHost {
             &invite_url,
             tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 8.0).into()),
+            transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
             None,
         );
         let copy_btn = self.ws_settings_copy_rect();
@@ -10363,7 +10577,7 @@ impl ShellOverlayHost {
             transform.pre_translate(
                 (
                     copy_btn.x0 + (copy_btn.width() - f64::from(cw)) / 2.0,
-                    copy_btn.y0 + 8.0,
+                    copy_btn.y0 + 9.0,
                 )
                     .into(),
             ),
@@ -10372,8 +10586,9 @@ impl ShellOverlayHost {
         invite_y
     }
 
-    /// At minimum one "You" tile with its badge, so the second indigo
-    /// fill the test requires is present even on a fresh workspace.
+    /// Live workspace summary. Detailed member management belongs to the
+    /// Members tab; General stays an honest overview rather than inventing
+    /// a placeholder collaborator.
     fn draw_ws_settings_collaborators(
         scene: &mut Scene,
         transform: Affine,
@@ -10381,75 +10596,85 @@ impl ShellOverlayHost {
         theme: &Theme,
         rect: Rect,
         tree: &WorkspaceTree,
-        collab_y: f64,
+        _collab_y: f64,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+        let body = Rect::new(
+            rect.x0 + 16.0,
+            rect.y0 + 160.0,
+            rect.x1 - 16.0,
+            rect.y1 - 16.0,
+        );
+        let summary_card = Rect::new(body.x0, body.y0 + 268.0, body.x1, body.y0 + 374.0);
+        let summary_rr = RoundedRect::from_rect(summary_card, f64::from(tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &summary_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &summary_rr,
+        );
         text_renderer.draw_text(
             scene,
-            "Collaborators",
-            tokens.typography.scale.sm,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + 24.0, collab_y).into()),
+            "At a glance",
+            tokens.typography.scale.base,
+            colors.text_primary,
+            transform.pre_translate((summary_card.x0 + 16.0, summary_card.y0 + 13.0).into()),
             None,
         );
-        // Exactly one tile, real `me` or not, so the You-badge fill count
-        // stays constant — extra fills would push
-        // `workspace_settings_renders_roles_tab_with_per_role_app_grid`
-        // over its >=20-fill threshold.
-        let me_tile = tree
-            .active_workspace()
-            .and_then(|w| {
-                w.collaborators
-                    .iter()
-                    .find(|c| c.id == "me")
-                    .map(|c| (c.name.clone(), true))
-            })
-            .unwrap_or_else(|| (Self::ME_TILE_FALLBACK_NAME.to_string(), true));
-        // Always exactly one element (see above), so nothing here is
-        // actually capped by a `.take()` — the list was never more than
-        // this single "me" tile.
-        let tiles: Vec<(String, bool)> = vec![me_tile];
-        let tile_w = 160.0_f64;
-        let tile_gap = 12.0_f64;
-        let row_y = collab_y + 20.0;
-        for (i, (name, is_self)) in tiles.iter().enumerate() {
-            let tx = rect.x0 + 24.0 + (tile_w + tile_gap) * usize_to_f64_lossy(i);
-            // No tile fill/stroke — keeps the solid-colour fill count
-            // under the threshold the Roles spec test pins.
+        let (members, grants, app_rules) = tree.active_workspace().map_or((0, 0, 0), |ws| {
+            let members = ws.roster().len();
+            let grants = ws
+                .capabilities
+                .iter()
+                .filter(|cap| {
+                    cap.effect == crate::shell::state::Effect::Grant && !cap.is_room_membership()
+                })
+                .count();
+            (members, grants, ws.default_apps.policy.len())
+        });
+        let stats = [
+            (members.to_string(), "members"),
+            (grants.to_string(), "specific grants"),
+            (app_rules.to_string(), "app rules"),
+        ];
+        let stat_gap = 8.0;
+        let stat_y0 = summary_card.y0 + 44.0;
+        let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
+        for (i, (value, label)) in stats.iter().enumerate() {
+            let x0 = summary_card.x0 + 16.0 + usize_to_f64_lossy(i) * (stat_w + stat_gap);
+            let stat = Rect::new(x0, stat_y0, x0 + stat_w, summary_card.y1 - 14.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.base,
+                None,
+                &RoundedRect::from_rect(stat, f64::from(tokens.radii.md)),
+            );
             text_renderer.draw_text(
                 scene,
-                name,
-                tokens.typography.scale.sm,
+                value,
+                tokens.typography.scale.lg,
                 colors.text_primary,
-                transform.pre_translate((tx + 12.0, row_y + 12.0).into()),
+                transform.pre_translate((stat.x0 + 12.0, stat.y0 + 8.0).into()),
                 None,
             );
-            if *is_self {
-                // Cap radius at half-shorter-side; tokens.radii.full = 9999
-                // can degenerate the rounded-rect path on a narrow badge.
-                let badge = Rect::new(
-                    tx + tile_w - 44.0,
-                    row_y + 10.0,
-                    tx + tile_w - 8.0,
-                    row_y + 30.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &RoundedRect::from_rect(badge, 10.0),
-                );
-                text_renderer.draw_text(
-                    scene,
-                    "You",
-                    tokens.typography.scale.xs,
-                    colors.text_primary,
-                    transform.pre_translate((tx + tile_w - 36.0, row_y + 13.0).into()),
-                    None,
-                );
-            }
+            text_renderer.draw_text(
+                scene,
+                label,
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((stat.x0 + 12.0, stat.y0 + 33.0).into()),
+                None,
+            );
         }
     }
 
@@ -15180,30 +15405,6 @@ mod two_workspace_host_tests {
 }
 
 #[cfg(test)]
-mod me_tile_fallback_tests {
-    //! Pin the General-tab "me" collaborator fallback to a label that
-    //! doesn't duplicate the adjacent "You" badge — the fallback is the
-    //! only contributor to that text, so a single string-equality
-    //! assertion is enough.
-    use super::*;
-
-    #[test]
-    fn fallback_does_not_duplicate_you_badge() {
-        // The adjacent badge always says "You"; the row label must not
-        // repeat it in the same 160 px tile.
-        assert_ne!(
-            ShellOverlayHost::ME_TILE_FALLBACK_NAME,
-            "You",
-            "ME_TILE_FALLBACK_NAME duplicates the adjacent You-badge — \
-             see 2026-05-04 critical-UI-inspection sweep"
-        );
-        // Spec the chosen value so a casing change ("ME" / "me" / "self")
-        // still has to update this test deliberately.
-        assert_eq!(ShellOverlayHost::ME_TILE_FALLBACK_NAME, "Me");
-    }
-}
-
-#[cfg(test)]
 mod modal_curve_tests {
     //! Guards the shared ease-out-cubic curve used by the workspace-settings
     //! modal and the command palette (`modal_transition_curve`, which both
@@ -15949,6 +16150,39 @@ mod overlay_event_absorb_tests {
             "content.handle_event must NOT see CursorMoved when ws-settings absorbs it; log = {:?}",
             *log
         );
+    }
+
+    #[test]
+    fn workspace_lens_leaves_wide_workspace_visible_and_interactive() {
+        let mut h = build_harness_sized(1600.0, 900.0);
+        h.chrome
+            .borrow_mut()
+            .open_workspace_settings(WsTab::General);
+        let lens = h.host.ws_settings_rect();
+        assert_eq!(lens.x1, 1588.0, "lens docks to the right inset");
+        assert!(lens.x0 > 700.0, "workspace remains visible beside {lens:?}");
+
+        let workspace_point = Point::new(120.0, 300.0);
+        assert!(!lens.contains(workspace_point));
+        pump(&mut h, &cursor_moved_at(workspace_point));
+        h.log.borrow_mut().clear();
+        assert!(!pump(&mut h, &left_button_pressed()));
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Pressed")
+        );
+        assert!(h.chrome.borrow().overlays.ws_settings);
+    }
+
+    #[test]
+    fn workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs() {
+        let h = build_harness_sized(600.0, 700.0);
+        let lens = h.host.ws_settings_rect();
+        assert_eq!(lens.x0, 12.0);
+        assert_eq!(lens.x1, 588.0);
+        assert_eq!(lens.y1, 688.0);
     }
 
     #[test]
@@ -17075,6 +17309,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ws_settings_close_button_is_pointer_accessible() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.ws_settings = true;
+        let close = h.host.ws_settings_close_rect();
+        assert!(close.area() > 0.0);
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(close.center()), mods);
+        assert!(pump(&mut h, &left_button_pressed(), mods));
+        assert!(!h.chrome.borrow().overlays.ws_settings);
+    }
+
     /// Without the design's 1px backdrop blur, perceived dimming drops
     /// below intent, so the rendered alpha compensates. `0.45` is
     /// empirically where a non-blurred scrim reads like the blurred 0.30.
@@ -17099,20 +17346,14 @@ mod tests {
         );
     }
 
-    /// Keeps `surface_white_10` byte-aligned with the design's
-    /// `white/10` literal, so a future refactor that retypes the token
-    /// surfaces here loudly.
+    /// Workspace settings follows application surfaces, not the brighter
+    /// floating-panel material used by shell popovers.
     #[test]
-    fn ws_settings_active_tab_pill_uses_white_overlay() {
-        let tokens = ui::tokens::Tokens::dark();
-        let c = tokens.colors.surface_white_10;
-        let expected = vello::peniko::Color::from_rgba8(255, 255, 255, 26);
+    fn ws_settings_uses_application_base_surface() {
+        let theme = Theme::dark();
         assert_eq!(
-            c, expected,
-            "surface_white_10 must paint at the concept's `bg-white/10` \
-             (rgba8(255, 255, 255, 26)) so the active WS-settings tab \
-             pill reads as a soft glass-on-glass treatment, not a \
-             heavy black overlay (got {c:?})"
+            workspace_settings_surface(&theme),
+            theme.tokens.colors.surfaces.base
         );
     }
 
