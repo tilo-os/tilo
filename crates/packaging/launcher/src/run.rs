@@ -732,6 +732,18 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // A trusted shell launch may attach a small typed context for the target
+    // app (for example, a VPN profile selected in Settings). It carries no
+    // authority and is deliberately bounded + JSON-object checked before it
+    // crosses the clean-environment sandbox boundary.
+    if let Some(context) = validated_tool_context_from_env() {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        argv.push("--setenv".to_string());
+        argv.push("QOS_TOOL_CONTEXT".to_string());
+        argv.push(context);
+        argv.push(entry);
+    }
+
     // App directory: bound read-write at a fixed sandbox path, HOME/XDG vars
     // pointed inside it. Spliced here (not in `build_bwrap_argv`) since the
     // room is a launch property, not the package's.
@@ -1007,6 +1019,21 @@ pub fn run_with(
     drop(resolved);
     let status = child.wait()?;
     Ok(status)
+}
+
+fn validated_tool_context_from_env() -> Option<String> {
+    let context = std::env::var("QOS_TOOL_CONTEXT").ok()?;
+    if context.len() > 4 * 1024 {
+        tracing::warn!("dropping oversized QOS_TOOL_CONTEXT");
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(&context) {
+        Ok(serde_json::Value::Object(_)) => Some(context),
+        _ => {
+            tracing::warn!("dropping malformed QOS_TOOL_CONTEXT");
+            None
+        }
+    }
 }
 
 /// `run_with` variant that captures the child's stdout. Returns the
