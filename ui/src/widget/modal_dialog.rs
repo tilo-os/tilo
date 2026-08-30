@@ -107,6 +107,7 @@ impl<C: Widget> ModalDialog<C> {
 
     /// When closed, `draw` and `handle_event` are no-ops — the host can keep
     /// the widget in the tree at no cost while it's off-screen.
+    #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         self
@@ -119,6 +120,7 @@ impl<C: Widget> ModalDialog<C> {
     }
 
     /// The callback fires on a left-click inside `primary_rect`.
+    #[must_use]
     pub fn primary_action(
         mut self,
         label: impl Into<String>,
@@ -133,6 +135,7 @@ impl<C: Widget> ModalDialog<C> {
 
     /// Same shape as [`primary_action`] but renders with the muted
     /// (raised-surface) treatment.
+    #[must_use]
     pub fn secondary_action(
         mut self,
         label: impl Into<String>,
@@ -146,6 +149,7 @@ impl<C: Widget> ModalDialog<C> {
     }
 
     /// Fires on Escape (pressed) and on a backdrop click outside the box.
+    #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
         self
@@ -153,6 +157,7 @@ impl<C: Widget> ModalDialog<C> {
 
     /// Paints the primary button as a warning (`semantic.danger`) rather
     /// than the ordinary accent — for delete/kill/erase confirmations.
+    #[must_use]
     pub fn with_destructive(mut self, on: bool) -> Self {
         self.destructive = on;
         self
@@ -160,6 +165,7 @@ impl<C: Widget> ModalDialog<C> {
 
     /// Overrides the box's max width/height in logical px (still clamped to
     /// the viewport) and re-centers it immediately.
+    #[must_use]
     pub fn with_max_size(mut self, max_w: f64, max_h: f64) -> Self {
         self.max_w = max_w.max(1.0);
         self.max_h = max_h.max(1.0);
@@ -178,6 +184,7 @@ impl<C: Widget> ModalDialog<C> {
     /// Sets the viewport rect outside a taffy pass and re-centers the box
     /// immediately, so a host painting the dialog as an absolutely-positioned
     /// overlay doesn't need to spin up a taffy tree just to update geometry.
+    #[must_use]
     pub fn with_viewport(mut self, viewport: Rect) -> Self {
         self.viewport = viewport;
         self.recompute_layout();
@@ -231,11 +238,19 @@ impl<C: Widget> ModalDialog<C> {
         let content_node = self
             .content
             .build_layout(&mut inner_taffy, theme, &mut inner_map);
+        // `inner` is a dialog-box sub-rect, capped by MAX_DIALOG_WIDTH/HEIGHT
+        // (or a caller's `with_max_size`) and the viewport — both well
+        // within f32's range for on-screen layout math.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "dialog geometry is bounded screen-pixel size, never near f32's range limit"
+        )]
+        let (inner_w, inner_h) = (inner.width() as f32, inner.height() as f32);
         let _ = inner_taffy.compute_layout_with_measure(
             content_node,
             Size {
-                width: taffy::AvailableSpace::Definite(inner.width() as f32),
-                height: taffy::AvailableSpace::Definite(inner.height() as f32),
+                width: taffy::AvailableSpace::Definite(inner_w),
+                height: taffy::AvailableSpace::Definite(inner_h),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = inner_map.get(&node_id) {
@@ -260,7 +275,7 @@ impl<C: Widget> ModalDialog<C> {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -272,7 +287,7 @@ impl<C: Widget> ModalDialog<C> {
         self.content.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut inner_handled,
@@ -302,6 +317,10 @@ impl<C: Widget> ModalDialog<C> {
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+)]
 fn draw_action_button(
     scene: &mut Scene,
     transform: Affine,
@@ -403,6 +422,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.place_content(&theme, &mut tr);
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -501,7 +524,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
-                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -518,7 +541,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -540,7 +563,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     self.forward_to_content(
                         event,
                         scale_factor,
-                        modifiers,
+                        *modifiers,
                         state,
                         path,
                         focus_target,
@@ -557,7 +580,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     self.forward_to_content(
                         event,
                         scale_factor,
-                        modifiers,
+                        *modifiers,
                         state,
                         path,
                         focus_target,
@@ -636,7 +659,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -662,7 +685,7 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "TestContent"
         }
         fn get_rect(&self) -> Rect {
@@ -694,7 +717,7 @@ mod tests {
                 },
                 ..Default::default()
             });
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn measure(
@@ -732,9 +755,9 @@ mod tests {
             _node_id: NodeId,
             _taffy: &TaffyTree<()>,
         ) {
-            self.events.set(self.events.get() + 1);
+            self.events.set(self.events.get().saturating_add(1));
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "CountingContent"
         }
         fn get_rect(&self) -> Rect {
