@@ -24,39 +24,62 @@ fn runtime() -> Result<&'static Runtime, String> {
     .ok_or_else(|| "could not start the mobile-broadband runtime".to_string())
 }
 
-/// Unlock the first SIM ModemManager reports. Multi-SIM selection belongs in
-/// a later device picker; this function refuses ambiguity instead of sending
-/// a PIN to an arbitrary modem.
-pub fn unlock_mobile_sim(pin: &str) -> Result<(), String> {
-    if !(4..=8).contains(&pin.len()) || !pin.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("SIM PIN must contain 4–8 digits".into());
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimInfo {
+    pub path: String,
+    pub label: String,
+    pub operator: Option<String>,
+}
+
+pub fn list_mobile_sims() -> Result<Vec<SimInfo>, String> {
     let list = crate::process::run_capture("mmcli", &["--list-modems"])?;
-    let modems: Vec<&str> = list
+    let mut out = Vec::new();
+    for modem in list
         .lines()
-        .filter_map(|line| {
-            line.split_whitespace()
-                .find(|part| part.starts_with("/org/"))
-        })
-        .collect();
-    let [modem] = modems.as_slice() else {
-        return Err(if modems.is_empty() {
-            "ModemManager reports no modem".into()
-        } else {
-            "more than one modem is present; choose a SIM before unlocking".into()
-        });
-    };
-    let details = crate::process::run_capture("mmcli", &["--modem", modem, "--output-keyvalue"])?;
-    let sim = details
-        .lines()
-        .find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            key.trim()
+        .filter_map(|line| line.split_whitespace().find(|p| p.starts_with("/org/")))
+    {
+        let details =
+            crate::process::run_capture("mmcli", &["--modem", modem, "--output-keyvalue"])?;
+        let sim = details.lines().find_map(|line| {
+            let (k, v) = line.split_once(':')?;
+            k.trim()
                 .ends_with("generic.sim")
-                .then(|| value.trim().to_string())
-        })
-        .filter(|path| path.starts_with("/org/freedesktop/ModemManager1/SIM/"))
-        .ok_or("ModemManager did not report a SIM object")?;
+                .then(|| v.trim().to_string())
+        });
+        let Some(path) = sim.filter(|p| p.starts_with("/org/freedesktop/ModemManager1/SIM/"))
+        else {
+            continue;
+        };
+        let sim_data = crate::process::run_capture("mmcli", &["--sim", &path, "--output-keyvalue"])
+            .unwrap_or_default();
+        let operator = sim_data.lines().find_map(|line| {
+            let (k, v) = line.split_once(':')?;
+            k.trim()
+                .ends_with("properties.operator-name")
+                .then(|| v.trim().to_string())
+                .filter(|v| !v.is_empty() && v != "--")
+        });
+        let slot = path.rsplit('/').next().unwrap_or("SIM").to_string();
+        out.push(SimInfo {
+            path,
+            label: operator.clone().unwrap_or_else(|| format!("SIM {slot}")),
+            operator,
+        });
+    }
+    Ok(out)
+}
+
+pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
+    validate_pin(pin)?;
+    if !sim.starts_with("/org/freedesktop/ModemManager1/SIM/")
+        || !sim
+            .rsplit('/')
+            .next()
+            .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err("invalid ModemManager SIM object".into());
+    }
+    let sim = sim.to_string();
 
     runtime()?.block_on(async move {
         let connection = zbus::Connection::system()
@@ -75,6 +98,26 @@ pub fn unlock_mobile_sim(pin: &str) -> Result<(), String> {
             .await
             .map_err(|e| format!("SIM unlock failed: {e}"))
     })
+}
+
+pub fn unlock_mobile_sim(pin: &str) -> Result<(), String> {
+    validate_pin(pin)?;
+    let sims = list_mobile_sims()?;
+    let [sim] = sims.as_slice() else {
+        return Err(if sims.is_empty() {
+            "ModemManager reports no SIM".into()
+        } else {
+            "more than one SIM is present; choose one before unlocking".into()
+        });
+    };
+    unlock_mobile_sim_on(&sim.path, pin)
+}
+
+fn validate_pin(pin: &str) -> Result<(), String> {
+    if !(4..=8).contains(&pin.len()) || !pin.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("SIM PIN must contain 4–8 digits".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

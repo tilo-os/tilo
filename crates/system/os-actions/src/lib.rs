@@ -47,7 +47,9 @@ pub use audio::{
     toggle_source_mute,
 };
 pub use battery::{
-    BatteryInfo, ChargeCapBackend, ChargeCapCapability, charge_capability, set_charge_limit,
+    BatteryHistory, BatteryHistoryPoint, BatteryInfo, ChargeCapBackend, ChargeCapCapability,
+    PowerDevice, PowerSupplyKind, charge_capability, load_battery_history, power_devices,
+    record_battery_history, set_charge_limit, set_charge_limit_checked,
 };
 pub use bluetooth::{
     BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
@@ -60,16 +62,19 @@ pub use firmware::{
     FirmwareEvent, FirmwareInstallOutcome, FirmwareUpdate, get_firmware_updates,
     refresh_firmware_metadata, start_firmware_install,
 };
-pub use modem::unlock_mobile_sim;
+pub use modem::{SimInfo, list_mobile_sims, unlock_mobile_sim, unlock_mobile_sim_on};
 pub use network::{
-    ConnectivityState, EnterpriseWifiConfiguration, HOTSPOT_PROFILE, HotspotBand, HotspotClient,
-    HotspotConfiguration, IpConfiguration, LinkKind, LinkStatus, RadioState, SavedNetworkProfile,
-    VpnConnectionInfo, WifiNetworkInfo, WiredInfo, captive_portal_uri, configure_hotspot,
-    configure_ipv4, connect_enterprise_wifi, connect_wifi, create_mobile_profile,
+    CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectivityState,
+    EnterpriseEapMethod, EnterpriseWifiConfiguration, HOTSPOT_PROFILE, HotspotBand, HotspotClient,
+    HotspotConfiguration, IpConfiguration, LinkKind, LinkStatus, MacPolicy, MeteredPolicy,
+    ProxyConfiguration, RadioState, SavedNetworkProfile, VpnConnectionInfo, WifiNetworkInfo,
+    WiredInfo, captive_portal_uri, configure_connection_policy, configure_hotspot, configure_ipv4,
+    connect_enterprise_wifi, connect_wifi, connection_diagnostics, create_mobile_profile,
     forget_network_profile, get_connectivity, get_link_status, get_radio_state, get_wifi,
-    get_wired, import_vpn_config, list_hotspot_clients, list_saved_network_profiles,
-    list_vpn_connections, list_wifi_networks, set_airplane_mode, set_hotspot, set_mobile_broadband,
-    set_network_autoconnect, set_vpn_connection, set_wifi, set_wired,
+    get_wired, import_vpn_config, inspect_certificate, list_hotspot_clients,
+    list_saved_network_profiles, list_vpn_connections, list_wifi_networks, set_airplane_mode,
+    set_hotspot, set_mobile_broadband, set_network_autoconnect, set_vpn_connection, set_wifi,
+    set_wired,
 };
 pub use power::{PowerProfile, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
