@@ -44,6 +44,7 @@ use crate::model::{
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
 use crate::portal;
+use crate::presentation::{Blank, Command as PresentCommand, Presentation};
 use crate::render;
 
 /// Logical pixels scrolled per mouse-wheel line notch.
@@ -81,23 +82,6 @@ enum Mode {
     Present,
 }
 
-/// How the present surface is currently blanked. A presenter can black or
-/// white the screen mid-talk (to pull attention back to themselves, or to
-/// use the projector as a whiteboard) — `B` and `W` respectively. The
-/// inverse key (or any navigation / click) resumes the slide.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Blank {
-    None,
-    Black,
-    White,
-}
-
-impl Blank {
-    fn is_blanked(self) -> bool {
-        !matches!(self, Blank::None)
-    }
-}
-
 /// One of the two surfaces a multi-output present produces. Returned by
 /// [`SlidesApp::present_output_plan`] so a compositor integration knows
 /// which view to paint on which output. See the multi-monitor seam doc on
@@ -119,8 +103,6 @@ enum Guide {
     Horizontal(f64),
 }
 
-/// How long a present-mode slide cross-fade lasts.
-const TRANSITION_MS: u128 = 240;
 /// Snap threshold in *pixels*; converted to slide units per-drag.
 const SNAP_PX: f64 = 7.0;
 
@@ -365,7 +347,8 @@ pub struct SlidesApp {
     /// splices into the CRDT title; Enter/Esc/clicking away commits.
     editing_title: bool,
     title_caret: usize,
-    show_notes: bool,
+    /// Transient state and input policy for a running talk.
+    presentation: Presentation,
 
     /// Keyboard-shortcuts overlay visibility (toggled with `?`).
     show_help: bool,
@@ -373,26 +356,6 @@ pub struct SlidesApp {
     /// snapping is always on, but the active guide lines computed during the
     /// current drag live here so `draw` can paint them).
     active_guides: Vec<Guide>,
-    /// Wall-clock start of the current presentation, for the speaker timer.
-    present_started: Option<std::time::Instant>,
-    /// When the timer is paused: the running elapsed time captured at the
-    /// instant of the pause, so the displayed clock is frozen exactly (and
-    /// stable across reads). `None` means the timer is running.
-    present_paused_elapsed: Option<std::time::Duration>,
-    /// Accumulated paused time, subtracted from the raw elapsed so the clock
-    /// reflects only *running* presentation time.
-    paused_total: std::time::Duration,
-    /// In-flight present-mode cross-fade: `(from_slide_idx, started_at)`.
-    transition: Option<(usize, std::time::Instant)>,
-    /// Present-mode screen blank (press `B` for black, `W` for white).
-    blank: Blank,
-    /// Whether the *presenter dashboard* is shown instead of the clean
-    /// audience slide. On a single monitor this is a togglable full-window
-    /// view (press `P` while presenting); on dual monitors the compositor
-    /// would paint the dashboard on the presenter's output and the clean
-    /// slide on the audience output (see the multi-monitor seam below).
-    presenter_view: bool,
-
     last_mouse: Point,
     drag: Drag,
     /// The slide-thumbnail rail — the shared [`PageSidebar`] widget. It owns the
@@ -619,15 +582,9 @@ impl SlidesApp {
             sel_anchor: 0,
             editing_title: false,
             title_caret: 0,
-            show_notes: false,
+            presentation: Presentation::default(),
             show_help: false,
             active_guides: Vec::new(),
-            present_started: None,
-            present_paused_elapsed: None,
-            paused_total: std::time::Duration::ZERO,
-            transition: None,
-            blank: Blank::None,
-            presenter_view: false,
             last_mouse: Point::ZERO,
             drag: Drag::None,
             page_sidebar: PageSidebar::new(SLIDE_H / SLIDE_W).with_panel(false),
@@ -679,26 +636,26 @@ impl SlidesApp {
             "overview" => self.mode = Mode::Overview,
             "present" => {
                 self.mode = Mode::Present;
-                self.present_started = Some(std::time::Instant::now());
+                self.presentation.start();
             }
             "present_notes" => {
                 self.mode = Mode::Present;
-                self.show_notes = true;
-                self.present_started = Some(std::time::Instant::now());
+                self.presentation.start();
+                self.presentation.set_show_notes(true);
             }
             // Full presenter dashboard (current + next + notes + timer +
             // position) as it appears on the presenter's own monitor.
             "presenter" => {
                 self.mode = Mode::Present;
-                self.presenter_view = true;
-                self.present_started = Some(std::time::Instant::now());
+                self.presentation.start();
+                self.presentation.set_presenter_view(true);
             }
             // Present-mode white-out (`W`) — the projector becomes a
             // bright "whiteboard"/attention surface.
             "present_white" => {
                 self.mode = Mode::Present;
-                self.blank = Blank::White;
-                self.present_started = Some(std::time::Instant::now());
+                self.presentation.start();
+                self.presentation.set_blank(Blank::White);
             }
             "help" => self.show_help = true,
             // The inline deck-title rename in progress (title focused, caret in
@@ -2350,8 +2307,7 @@ impl SlidesApp {
         if i as usize != from {
             // Cross-fade only in present mode; edit/overview jumps are instant.
             if self.mode == Mode::Present {
-                self.transition = Some((from, std::time::Instant::now()));
-                self.blank = Blank::None;
+                self.presentation.start_transition(from);
             }
             self.cur_slide = i as usize;
         }
@@ -2370,8 +2326,7 @@ impl SlidesApp {
         let from = self.cur_slide;
         if target != from {
             if self.mode == Mode::Present {
-                self.transition = Some((from, std::time::Instant::now()));
-                self.blank = Blank::None;
+                self.presentation.start_transition(from);
             }
             self.cur_slide = target;
         }
@@ -2384,11 +2339,7 @@ impl SlidesApp {
         self.mode = Mode::Present;
         self.editing_text = false;
         self.editing_notes = false;
-        self.blank = Blank::None;
-        self.transition = None;
-        self.present_started = Some(std::time::Instant::now());
-        self.present_paused_elapsed = None;
-        self.paused_total = std::time::Duration::ZERO;
+        self.presentation.start();
     }
 
     /// Leave present mode back to the editor, clearing transient present
@@ -2396,55 +2347,7 @@ impl SlidesApp {
     /// re-entry via `P` resumes the same talk unless explicitly reset.
     fn exit_present(&mut self) {
         self.mode = Mode::Edit;
-        self.blank = Blank::None;
-        self.presenter_view = false;
-        self.transition = None;
-    }
-
-    /// Running elapsed time of the presentation, excluding paused spans.
-    /// While paused this returns the exact snapshot captured at pause time,
-    /// so the displayed clock is frozen and stable across reads.
-    fn present_elapsed(&self) -> std::time::Duration {
-        if let Some(frozen) = self.present_paused_elapsed {
-            return frozen;
-        }
-        let Some(start) = self.present_started else {
-            return std::time::Duration::ZERO;
-        };
-        start.elapsed().saturating_sub(self.paused_total)
-    }
-
-    /// Elapsed presentation time, formatted `m:ss`.
-    fn present_clock(&self) -> String {
-        let secs = self.present_elapsed().as_secs();
-        format!("{}:{:02}", secs / 60, secs % 60)
-    }
-
-    /// Toggle the speaker timer between running and paused.
-    fn toggle_timer(&mut self) {
-        match self.present_paused_elapsed.take() {
-            // Was paused → fold the elapsed-since-start-minus-displayed back
-            // into `paused_total` so the running clock continues from where it
-            // froze, then resume.
-            Some(frozen) => {
-                if let Some(start) = self.present_started {
-                    self.paused_total = start.elapsed().saturating_sub(frozen);
-                }
-            }
-            // Was running → snapshot the current running elapsed and freeze.
-            None => self.present_paused_elapsed = Some(self.present_elapsed()),
-        }
-    }
-
-    /// Reset the speaker timer to 0:00 and start it running.
-    fn reset_timer(&mut self) {
-        self.present_started = Some(std::time::Instant::now());
-        self.present_paused_elapsed = None;
-        self.paused_total = std::time::Duration::ZERO;
-    }
-
-    fn timer_paused(&self) -> bool {
-        self.present_paused_elapsed.is_some()
+        self.presentation.leave();
     }
 
     // --- fullscreen + multi-monitor seam -----------------------------------
@@ -2493,19 +2396,6 @@ impl SlidesApp {
     /// both views are pure functions of the shared deck + `cur_slide`.
     pub fn present_output_plan(&self) -> (PresentSurface, PresentSurface) {
         (PresentSurface::Audience, PresentSurface::Presenter)
-    }
-
-    /// Eased progress 0..1 of the active transition (or 1.0 when settled).
-    fn transition_alpha(&self) -> f32 {
-        match self.transition {
-            Some((_, t)) => {
-                let e = t.elapsed().as_millis().min(TRANSITION_MS);
-                let p = e as f32 / TRANSITION_MS as f32;
-                // smoothstep
-                (p * p * (3.0 - 2.0 * p)).clamp(0.0, 1.0)
-            }
-            None => 1.0,
-        }
     }
 
     // --- text editing -------------------------------------------------------
@@ -4029,7 +3919,7 @@ impl SlidesApp {
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         // Presenter dashboard takes over the whole window when toggled on.
-        if self.presenter_view {
+        if self.presentation.is_presenter_view() {
             self.draw_presenter(scene, t, tr, theme);
             return;
         }
@@ -4039,34 +3929,12 @@ impl SlidesApp {
         chrome::fill_rect(scene, t, self.rect, Color::BLACK);
 
         // Blanked screen (black or white): nothing but a faint resume hint.
-        if self.blank.is_blanked() {
-            let (bg, fg, msg) = match self.blank {
-                Blank::White => (
-                    Color::WHITE,
-                    render::with_alpha(Color::BLACK, 120),
-                    "Screen whited out  ·  press W to resume",
-                ),
-                _ => (
-                    Color::BLACK,
-                    render::with_alpha(Color::WHITE, 120),
-                    "Screen blacked out  ·  press B to resume",
-                ),
-            };
-            chrome::fill_rect(scene, t, self.rect, bg);
-            tr.draw_text_weighted(
-                scene,
-                msg,
-                14.0,
-                fg,
-                t * Affine::translate((self.rect.x0 + 40.0, self.rect.y1 - 40.0)),
-                None,
-                TextWeight::Regular,
-            );
+        if self.presentation.draw_blank(scene, t, tr, self.rect) {
             return;
         }
 
         // Letterbox the current slide.
-        let (area, notes_panel) = if self.show_notes {
+        let (area, notes_panel) = if self.presentation.show_notes() {
             let split = self.rect.y0 + self.rect.height() * 0.66;
             (
                 Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, split),
@@ -4086,8 +3954,8 @@ impl SlidesApp {
         let dest = Rect::new(sx, sy, sx + sw, sy + sh);
         // Cross-fade: paint the outgoing slide first, then the incoming
         // one inside an alpha layer that ramps in.
-        let alpha = self.transition_alpha();
-        if let Some((from, _)) = self.transition
+        let alpha = self.presentation.transition_alpha();
+        if let Some((from, _)) = self.presentation.transition()
             && alpha < 1.0
             && let Some(prev) = self.deck.slides.get(from)
         {
@@ -4135,36 +4003,7 @@ impl SlidesApp {
 
         // Elapsed-time pill, top-right. A leading ⏸ glyph + dimmer fill marks
         // a paused timer.
-        let paused = self.timer_paused();
-        let clock = if paused {
-            format!("II  {}", self.present_clock())
-        } else {
-            self.present_clock()
-        };
-        let tw = chrome::est_width(&clock, 13.0) + 26.0;
-        let tr_rect = Rect::new(
-            self.rect.x1 - 20.0 - tw,
-            self.rect.y0 + 16.0,
-            self.rect.x1 - 20.0,
-            self.rect.y0 + 16.0 + 28.0,
-        );
-        chrome::fill_rrect(
-            scene,
-            t,
-            tr_rect,
-            14.0,
-            render::with_alpha(Color::WHITE, if paused { 14 } else { 24 }),
-        );
-        chrome::text_centered(
-            scene,
-            t,
-            tr,
-            &clock,
-            tr_rect,
-            13.0,
-            render::with_alpha(Color::WHITE, if paused { 150 } else { 255 }),
-            TextWeight::Semibold,
-        );
+        self.presentation.draw_timer_pill(scene, t, tr, self.rect);
 
         // Slide counter pill + hint, in the gutter below the slide — only
         // when there's clear room (suppressed when the notes panel is up).
@@ -4234,7 +4073,7 @@ impl SlidesApp {
             let pw = np.width() * 0.26;
             let preview_x0 = np.x1 - 40.0 - pw;
             // Big elapsed clock, right-aligned just left of the preview.
-            let clock = self.present_clock();
+            let clock = self.presentation.clock();
             let (clock_w, _) = tr.measure_weighted(&clock, 30.0, None, TextWeight::Bold);
             tr.draw_text_weighted(
                 scene,
@@ -4387,8 +4226,8 @@ impl SlidesApp {
         );
 
         // Big timer pill, top-right, with position beneath.
-        let paused = self.timer_paused();
-        let clock = self.present_clock();
+        let paused = self.presentation.is_paused();
+        let clock = self.presentation.clock();
         let (clock_w, _) = tr.measure_weighted(&clock, 34.0, None, TextWeight::Bold);
         let clock_x = self.rect.x1 - pad - f64::from(clock_w);
         tr.draw_text_weighted(
@@ -5143,11 +4982,7 @@ impl Widget for SlidesApp {
             self.present_cache = None;
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
-        if let Some((_, t)) = self.transition
-            && t.elapsed().as_millis() >= TRANSITION_MS
-        {
-            self.transition = None;
-        }
+        self.presentation.expire_transition();
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
@@ -5287,7 +5122,7 @@ impl Widget for SlidesApp {
         // slide is static and the speaker clock reads wall-time on each paint,
         // so it re-renders on navigation/input rather than spinning at vsync
         // for a once-a-second clock. See the note on the redraw cadence below.
-        self.transition.is_some()
+        self.presentation.needs_animation_frame()
             || self.rail_flap.is_animating(self.rail_layout())
             || self.inspector_flap.is_animating(self.inspector_layout())
             || self.images.any_loading()
@@ -5693,14 +5528,7 @@ impl SlidesApp {
             return;
         }
         if self.mode == Mode::Present {
-            if self.blank.is_blanked() {
-                // A click resumes a blanked screen.
-                self.blank = Blank::None;
-            } else if self.presenter_view {
-                // The dashboard is a control surface, not a slide — a click
-                // there should not blindly advance. (Navigation is via keys.)
-            } else {
-                // Audience view: click anywhere advances.
+            if self.presentation.pointer_command() == PresentCommand::Advance {
                 self.next_slide(1);
             }
             *handled = true;
@@ -6468,96 +6296,24 @@ impl SlidesApp {
 
         // Present-mode keys.
         if self.mode == Mode::Present {
-            // Any blank screen resumes on the first navigation/control key
-            // other than its own toggle (handled per-key below).
-            match key {
-                Key::Named(
-                    NamedKey::ArrowRight
-                    | NamedKey::ArrowDown
-                    | NamedKey::Space
-                    | NamedKey::Enter
-                    | NamedKey::PageDown,
-                ) => {
-                    if self.blank.is_blanked() {
-                        self.blank = Blank::None;
-                    } else {
-                        self.next_slide(1);
+            if let Some(command) = self.presentation.handle_key(key) {
+                match command {
+                    PresentCommand::None => {}
+                    PresentCommand::Advance => self.next_slide(1),
+                    PresentCommand::Reverse => self.next_slide(-1),
+                    PresentCommand::First => self.goto_slide(0),
+                    PresentCommand::Last => {
+                        self.goto_slide(self.deck.slides.len().saturating_sub(1));
                     }
-                    *handled = true;
+                    PresentCommand::Exit => self.exit_present(),
                 }
-                Key::Named(
-                    NamedKey::ArrowLeft
-                    | NamedKey::ArrowUp
-                    | NamedKey::PageUp
-                    | NamedKey::Backspace,
-                ) => {
-                    if self.blank.is_blanked() {
-                        self.blank = Blank::None;
-                    } else {
-                        self.next_slide(-1);
-                    }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Home) => {
-                    self.goto_slide(0);
-                    *handled = true;
-                }
-                Key::Named(NamedKey::End) => {
-                    self.goto_slide(self.deck.slides.len().saturating_sub(1));
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.exit_present();
-                    *handled = true;
-                }
-                // Toggle the presenter dashboard (single-monitor) — `P`, the
-                // same key that launched present mode.
-                Key::Character(c) if c.eq_ignore_ascii_case("p") => {
-                    self.presenter_view = !self.presenter_view;
-                    *handled = true;
-                }
-                // Audience-visible speaker-notes strip (only meaningful in the
-                // clean audience view).
-                Key::Character(c) if c.eq_ignore_ascii_case("s") => {
-                    self.show_notes = !self.show_notes;
-                    *handled = true;
-                }
-                Key::Character(c) if c.eq_ignore_ascii_case("b") => {
-                    self.blank = if self.blank == Blank::Black {
-                        Blank::None
-                    } else {
-                        Blank::Black
-                    };
-                    *handled = true;
-                }
-                Key::Character(c) if c.eq_ignore_ascii_case("w") => {
-                    self.blank = if self.blank == Blank::White {
-                        Blank::None
-                    } else {
-                        Blank::White
-                    };
-                    *handled = true;
-                }
-                // Pause / resume the speaker timer.
-                Key::Character(c) if c.eq_ignore_ascii_case("k") => {
-                    self.toggle_timer();
-                    *handled = true;
-                }
-                // Reset the speaker timer to 0:00.
-                Key::Character(c) if c.as_str() == "0" => {
-                    self.reset_timer();
-                    *handled = true;
-                }
-                // Jump to slide N (1-9) by number.
-                Key::Character(c) => {
-                    if let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10))
-                        && d >= 1
-                    {
-                        self.goto_slide((d as usize) - 1);
-                        *handled = true;
-                    }
-                }
-                _ => {}
+                *handled = true;
+            } else if let Key::Character(c) = key
+                && let Some(d) = c.chars().next().and_then(|ch| ch.to_digit(10))
+                && d >= 1
+            {
+                self.goto_slide((d as usize) - 1);
+                *handled = true;
             }
             return;
         }
@@ -6887,7 +6643,7 @@ mod tests {
     fn present_clock_formats_minutes_seconds() {
         let app = SlidesApp::new();
         // No presentation started → 0:00.
-        assert_eq!(app.present_clock(), "0:00");
+        assert_eq!(app.presentation.clock(), "0:00");
     }
 
     // --- present-mode navigation (driven through the real key handler) -----
@@ -7027,19 +6783,19 @@ mod tests {
         let mut app = presenting_app();
         // B blacks out; B again resumes.
         assert!(press_char(&mut app, "b"));
-        assert_eq!(app.blank, Blank::Black);
+        assert_eq!(app.presentation.blank(), Blank::Black);
         assert!(press_char(&mut app, "b"));
-        assert_eq!(app.blank, Blank::None);
+        assert_eq!(app.presentation.blank(), Blank::None);
         // W whites out; pressing B switches to black (mutually exclusive).
         assert!(press_char(&mut app, "w"));
-        assert_eq!(app.blank, Blank::White);
+        assert_eq!(app.presentation.blank(), Blank::White);
         assert!(press_char(&mut app, "b"));
-        assert_eq!(app.blank, Blank::Black);
+        assert_eq!(app.presentation.blank(), Blank::Black);
         // A navigation key resumes the slide *without* advancing.
         let before = app.cur_slide;
         assert!(press_named(&mut app, NamedKey::ArrowRight));
         assert_eq!(
-            app.blank,
+            app.presentation.blank(),
             Blank::None,
             "navigation resumes a blanked screen"
         );
@@ -7116,11 +6872,14 @@ mod tests {
     #[test]
     fn presenter_dashboard_toggles_with_p() {
         let mut app = presenting_app();
-        assert!(!app.presenter_view);
+        assert!(!app.presentation.is_presenter_view());
         assert!(press_char(&mut app, "p"));
-        assert!(app.presenter_view, "P shows the presenter dashboard");
+        assert!(
+            app.presentation.is_presenter_view(),
+            "P shows the presenter dashboard"
+        );
         assert!(press_char(&mut app, "p"));
-        assert!(!app.presenter_view, "P hides it again");
+        assert!(!app.presentation.is_presenter_view(), "P hides it again");
         // Toggling the dashboard never leaves present mode.
         assert_eq!(app.mode, Mode::Present);
     }
@@ -7128,23 +6887,26 @@ mod tests {
     #[test]
     fn speaker_timer_pause_and_reset() {
         let mut app = presenting_app();
-        assert!(!app.timer_paused());
+        assert!(!app.presentation.is_paused());
         // K pauses, K resumes.
         assert!(press_char(&mut app, "k"));
-        assert!(app.timer_paused(), "K pauses the timer");
+        assert!(app.presentation.is_paused(), "K pauses the timer");
         // Elapsed is frozen while paused.
-        let frozen = app.present_elapsed();
+        let frozen = app.presentation.elapsed();
         std::thread::sleep(std::time::Duration::from_millis(15));
         assert_eq!(
-            app.present_elapsed(),
+            app.presentation.elapsed(),
             frozen,
             "elapsed is frozen while paused"
         );
         assert!(press_char(&mut app, "k"));
-        assert!(!app.timer_paused(), "K resumes the timer");
+        assert!(!app.presentation.is_paused(), "K resumes the timer");
         // 0 resets to zero.
         assert!(press_char(&mut app, "0"));
-        assert!(app.present_elapsed().as_millis() < 50, "0 resets the clock");
+        assert!(
+            app.presentation.elapsed().as_millis() < 50,
+            "0 resets the clock"
+        );
     }
 
     #[test]

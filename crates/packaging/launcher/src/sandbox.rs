@@ -288,13 +288,10 @@ fn is_drm_path(p: &Path) -> bool {
     p == Path::new(DRM_DIR) || p.starts_with(DRM_DIR)
 }
 
-/// In-sandbox path the launcher ro-binds the host identity JSON at,
-/// outside `~/.config` so staging doesn't leak the rest of the config dir.
-pub const SANDBOX_IDENTITY_PATH: &str = "/run/qos/identity.json";
-
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs: `runtime_root`, `service_binds` (fds reach the child by
-/// inheritance, not argv), `dbus_bind`, `identity_host_path`.
+/// inheritance, not argv), `dbus_bind`, and whether an identity broker fd is
+/// available (`identity_host_path` is a host-only presence marker).
 ///
 /// `capabilities` only ever adds binds — [`CapabilityPlan::empty`]
 /// renders exactly the sandbox the manifest alone describes, the whole
@@ -463,8 +460,10 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(mode.to_string());
     }
 
-    // User identity: ro-bind the caller-supplied host path (a specific
-    // file, not `~/.config/qos/` wholesale) and set QOS_USER_IDENTITY.
+    // User identity: the path is a host-side presence marker only. Private
+    // material is never mounted. run.rs puts one connected broker socket on
+    // BROKER_CHILD_FD and the app receives only that least-privilege signing
+    // capability.
     //
     // A **read-only participant gets no identity at all** — without a
     // signing key the app can't produce an authored change for anything
@@ -472,12 +471,10 @@ pub fn build_bwrap_argv_for_entry(
     if let Some(host_path) =
         identity_host_path.filter(|_| capabilities.participation.carries_identity())
     {
-        argv.push("--ro-bind".to_string());
-        argv.push(host_path.display().to_string());
-        argv.push(SANDBOX_IDENTITY_PATH.to_string());
+        let _ = host_path;
         argv.push("--setenv".to_string());
-        argv.push("QOS_USER_IDENTITY".to_string());
-        argv.push(SANDBOX_IDENTITY_PATH.to_string());
+        argv.push(runtime_identity::broker::BROKER_ENV_VAR.to_string());
+        argv.push(runtime_identity::broker::BROKER_CHILD_FD.to_string());
     }
 
     // Service sockets reach the app as inherited descriptors: dup2'd onto
@@ -789,6 +786,8 @@ mod tests {
             },
             cli_commands: Vec::new(),
             opens_ext: Vec::new(),
+            opens_mime: Vec::new(),
+            opens_schemes: Vec::new(),
         }
     }
 
@@ -1346,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_bind_emits_ro_bind_and_setenv() {
+    fn identity_handoff_sets_broker_fd_without_mounting_a_key() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
             &m,
@@ -1358,16 +1357,14 @@ mod tests {
             &CapabilityPlan::empty(),
         );
         assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind"
-                && w[1] == "/home/alice/.config/qos/identity/primary.json"
-                && w[2] == SANDBOX_IDENTITY_PATH),
-            "identity ro-bind missing: {argv:?}"
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == runtime_identity::broker::BROKER_ENV_VAR
+                && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
+            "identity broker setenv missing: {argv:?}"
         );
         assert!(
-            argv.windows(3).any(|w| w[0] == "--setenv"
-                && w[1] == "QOS_USER_IDENTITY"
-                && w[2] == SANDBOX_IDENTITY_PATH),
-            "identity setenv missing: {argv:?}"
+            !argv.iter().any(|arg| arg.contains("identity/primary.json")),
+            "private identity path reached the sandbox argv: {argv:?}"
         );
     }
 
@@ -1394,12 +1391,14 @@ mod tests {
             &read_only,
         );
         assert!(
-            !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
-            "a read-only participant must not be told where an identity is: {argv:?}"
+            !argv
+                .iter()
+                .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
+            "a read-only participant must not receive a signing capability: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a == SANDBOX_IDENTITY_PATH),
-            "nor may the identity be bound into its namespace at all: {argv:?}"
+            !argv.iter().any(|a| a == host.to_str().unwrap()),
+            "nor may the private identity path enter its namespace: {argv:?}"
         );
         // …and it is told which shape it is in, so chrome can present a
         // viewer rather than an editor whose saves vanish.
@@ -1423,10 +1422,10 @@ mod tests {
             &authoring,
         );
         assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind"
-                && w[1] == host.to_str().unwrap()
-                && w[2] == SANDBOX_IDENTITY_PATH),
-            "an authoring participant keeps its identity: {argv:?}"
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == runtime_identity::broker::BROKER_ENV_VAR
+                && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
+            "an authoring participant gets a signing broker: {argv:?}"
         );
         assert!(
             argv.windows(3)
@@ -1436,7 +1435,7 @@ mod tests {
     }
 
     // An app no workspace capability names keeps the launch it always had:
-    // identity bound, and no participation claim made on its behalf.
+    // brokered identity, and no participation claim made on its behalf.
     #[test]
     fn an_unscoped_launch_is_unchanged() {
         let m = mk_manifest("off");
@@ -1452,9 +1451,9 @@ mod tests {
         );
         assert!(
             argv.windows(3).any(|w| w[0] == "--setenv"
-                && w[1] == "QOS_USER_IDENTITY"
-                && w[2] == SANDBOX_IDENTITY_PATH),
-            "an unscoped launch keeps its identity: {argv:?}"
+                && w[1] == runtime_identity::broker::BROKER_ENV_VAR
+                && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
+            "an unscoped launch keeps brokered identity: {argv:?}"
         );
         assert!(
             !argv.iter().any(|a| a == "QOS_PARTICIPATION"),
@@ -1475,12 +1474,14 @@ mod tests {
             &CapabilityPlan::empty(),
         );
         assert!(
-            !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
-            "QOS_USER_IDENTITY must not appear without a host path: {argv:?}"
+            !argv
+                .iter()
+                .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
+            "identity broker fd must not appear without a host identity: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a == SANDBOX_IDENTITY_PATH),
-            "identity path must not appear without a host path: {argv:?}"
+            !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
+            "legacy identity path env must never appear: {argv:?}"
         );
     }
 

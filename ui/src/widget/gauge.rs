@@ -14,7 +14,7 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -31,6 +31,16 @@ const BAR_TRACK_H: f64 = 8.0;
 
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// Rounds a `0..=1` fraction to a whole percentage for the accessibility
+/// value string. Always within `0..=100`, far inside `i64` range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "frac is clamped to 0..1 immediately above, so the percentage is always within 0..=100"
+)]
+fn pct(frac: f32) -> i64 {
+    (frac.clamp(0.0, 1.0) * 100.0).round() as i64
 }
 
 /// Fraction thresholds (inclusive lower bounds) at which a gauge switches
@@ -101,29 +111,34 @@ impl RingGauge {
 
     /// `big` (prominent, bold) over `small` (dim caption). Either may be
     /// empty.
+    #[must_use]
     pub fn with_label(mut self, big: impl Into<String>, small: impl Into<String>) -> Self {
         self.big = big.into();
         self.small = small.into();
         self
     }
 
+    #[must_use]
     pub fn with_thresholds(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = Fillcolor::Threshold(thresholds);
         self
     }
 
     /// Bypasses the threshold bands.
+    #[must_use]
     pub fn with_color(mut self, color: Color) -> Self {
         self.fill = Fillcolor::Fixed(color);
         self
     }
 
+    #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
     /// Otherwise `radius * 0.16`.
+    #[must_use]
     pub fn with_thickness(mut self, thickness: f64) -> Self {
         self.thickness = thickness;
         self
@@ -187,7 +202,7 @@ impl RingGauge {
                 big,
                 size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((bx, by)),
+                transform.pre_translate(Vec2::new(bx, by)),
                 None,
                 TextWeight::Bold,
             );
@@ -201,7 +216,7 @@ impl RingGauge {
                     small,
                     ss,
                     tokens.colors.text_dim,
-                    transform * Affine::translate((sx, sy)),
+                    transform.pre_translate(Vec2::new(sx, sy)),
                     None,
                 );
             }
@@ -304,7 +319,7 @@ impl Widget for RingGauge {
         // percent". The dim caption (`small`) names it, falling back to the
         // prominent (`big`) readout. Both are host display strings, not FTL
         // keys → no `i18n!`.
-        let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
+        let pct = pct(self.frac);
         let name = if !self.small.is_empty() {
             Some(self.small.clone())
         } else if !self.big.is_empty() {
@@ -348,23 +363,27 @@ impl BarGauge {
         }
     }
 
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
         self.label = label.into();
         self.value = value.into();
         self
     }
 
+    #[must_use]
     pub fn with_thresholds(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = Fillcolor::Threshold(thresholds);
         self
     }
 
     /// Bypasses the threshold bands.
+    #[must_use]
     pub fn with_color(mut self, color: Color) -> Self {
         self.fill = Fillcolor::Fixed(color);
         self
     }
 
+    #[must_use]
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height;
         self
@@ -404,7 +423,7 @@ impl BarGauge {
                 label,
                 tokens.typography.scale.sm,
                 tokens.colors.text_primary,
-                transform * Affine::translate((rect.x0, rect.y0)),
+                transform.pre_translate(Vec2::new(rect.x0, rect.y0)),
                 None,
                 TextWeight::Medium,
             );
@@ -416,7 +435,7 @@ impl BarGauge {
                 value,
                 tokens.typography.scale.sm,
                 tokens.colors.text_dim,
-                transform * Affine::translate((rect.x1 - f64::from(vw), rect.y0)),
+                transform.pre_translate(Vec2::new(rect.x1 - f64::from(vw), rect.y0)),
                 None,
             );
         }
@@ -529,7 +548,7 @@ impl Widget for BarGauge {
         // `label` names it; `value` is the caller's readout when present
         // (e.g. "3.2 GB"), else the fraction as a percentage. Both are
         // display strings, not FTL keys → no `i18n!`.
-        let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
+        let pct = pct(self.frac);
         let value = if self.value.is_empty() {
             format!("{pct}%")
         } else {

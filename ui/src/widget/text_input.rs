@@ -5,6 +5,7 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
@@ -45,7 +46,6 @@ const FONT_SIZE: f32 = 16.0;
 /// Caret centres against this band, not `FONT_SIZE`, to line up with where
 /// cosmic-text actually draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
-const CARET_WIDTH: f64 = 2.0;
 /// 400 ms matches the GTK / Qt default.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_RADIUS: f64 = 4.0;
@@ -97,6 +97,10 @@ pub struct TextInput {
     /// Gates whether edits splice into `state`; false even with a path string
     /// set if it doesn't resolve to a real CRDT object.
     crdt_bound: bool,
+    /// Optional local-only mirror for secrets and other values that must not
+    /// enter an Automerge history. The owner controls its lifetime and can
+    /// zero/clear it immediately after use.
+    external_buffer: Option<Arc<Mutex<String>>>,
     on_change_path: String,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
@@ -160,6 +164,9 @@ pub struct TextInput {
     hl_sig: u64,
     /// Only re-centres when the caret moves, so a wheel scroll away from it sticks.
     last_scroll_caret: Option<usize>,
+    /// Last configured caret width, retained for the platform IME anchor whose
+    /// trait hook does not receive a theme.
+    last_caret_width: f64,
 }
 
 /// One on-screen row: a whole short logical line, or one soft-wrapped
@@ -215,6 +222,7 @@ impl TextInput {
             last_edit_time: None,
             dirty: false,
             crdt_bound: false,
+            external_buffer: None,
             font_size_override: None,
             plain: false,
             bound_text: None,
@@ -242,6 +250,7 @@ impl TextInput {
             hl_line_starts: Vec::new(),
             hl_sig: u64::MAX,
             last_scroll_caret: None,
+            last_caret_width: 2.0,
         }
     }
 
@@ -642,13 +651,13 @@ impl TextInput {
                     layout.caret_geometry_at(self.text_to_layout_position(position));
                 let x = self.single_origin.x + f64::from(x);
                 let y = self.single_origin.y + f64::from(top);
-                return Rect::new(x, y, x + CARET_WIDTH, y + f64::from(height));
+                return Rect::new(x, y, x + theme.caret_width, y + f64::from(height));
             }
-            return self.caret_rect_ml(position.byte);
+            return self.caret_rect_ml(position.byte, theme.caret_width);
         }
         let x = self.caret_x_at(theme, position);
         let (text_y, line_height) = self.text_band();
-        Rect::new(x, text_y, x + CARET_WIDTH, text_y + line_height)
+        Rect::new(x, text_y, x + theme.caret_width, text_y + line_height)
     }
 
     /// Single-line only; multiline callers use [`selection_rects`].
@@ -816,12 +825,12 @@ impl TextInput {
         (last, self.x_in_row(r, r.end))
     }
 
-    fn caret_rect_ml(&self, byte: usize) -> Rect {
+    fn caret_rect_ml(&self, byte: usize, width: f64) -> Rect {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
         let cy = self.rect.y0 + ML_PAD_Y + y - self.scroll_y;
-        Rect::new(cx, cy, cx + CARET_WIDTH, cy + self.line_height())
+        Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
     /// Requires a prior `draw` to have built the layout.
@@ -1294,7 +1303,7 @@ impl TextInput {
         let caret = Rect::new(
             self.single_origin.x + f64::from(x),
             self.single_origin.y + f64::from(top),
-            self.single_origin.x + f64::from(x) + CARET_WIDTH,
+            self.single_origin.x + f64::from(x) + theme.caret_width,
             self.single_origin.y + f64::from(top + height),
         );
         scene.fill(
@@ -1665,7 +1674,7 @@ impl TextInput {
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
 
         if self.is_focused && !self.disabled {
-            let caret = self.caret_rect_ml(self.cursor_pos);
+            let caret = self.caret_rect_ml(self.cursor_pos, theme.caret_width);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1782,6 +1791,15 @@ impl TextInput {
     pub fn with_on_change_path(mut self, path: &str) -> Self {
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
+        self
+    }
+
+    /// Mirror edits into caller-owned process-local memory without creating a
+    /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
+    #[must_use]
+    pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
+        self.external_buffer = Some(buffer);
+        self.crdt_bound = false;
         self
     }
 
@@ -2469,6 +2487,13 @@ impl TextInput {
 
 impl Widget for TextInput {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self.dirty
+            && let Some(buffer) = &self.external_buffer
+            && let Ok(mut value) = buffer.lock()
+        {
+            value.clear();
+            value.push_str(&self.text);
+        }
         // Directly-bound Text wins over the string-path mode entirely.
         if let Some(obj_id) = self.bound_text.clone() {
             if let Ok(text) = state.text(&obj_id) {
@@ -2802,7 +2827,7 @@ impl Widget for TextInput {
             Rect::new(
                 self.single_origin.x + f64::from(x) - self.scroll_x,
                 self.single_origin.y + f64::from(top),
-                self.single_origin.x + f64::from(x) - self.scroll_x + CARET_WIDTH,
+                self.single_origin.x + f64::from(x) - self.scroll_x + theme.caret_width,
                 self.single_origin.y + f64::from(top + height),
             )
         } else {
@@ -2825,6 +2850,7 @@ impl Widget for TextInput {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.last_caret_width = theme.caret_width;
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
@@ -3536,7 +3562,7 @@ impl Widget for TextInput {
             return None;
         }
         if self.multiline && !self.multiline_shaped {
-            return Some(self.caret_rect_ml(self.cursor_pos));
+            return Some(self.caret_rect_ml(self.cursor_pos, self.last_caret_width));
         }
         let (x, top, height) = if (!self.multiline || self.multiline_shaped)
             && !self.masked()
@@ -3565,7 +3591,15 @@ impl Widget for TextInput {
                 self.line_height(),
             )
         };
-        Some(Rect::new(x, top, x + CARET_WIDTH, top + height))
+        Some(Rect::new(x, top, x + self.last_caret_width, top + height))
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Some(if self.secret {
+            winit::window::ImePurpose::Password
+        } else {
+            winit::window::ImePurpose::Normal
+        })
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -3842,6 +3876,20 @@ mod tests {
     }
 
     #[test]
+    fn ime_purpose_does_not_leak_secret_field_contents() {
+        let plain = TextInput::local();
+        let secret = TextInput::local().with_secret(true);
+        assert_eq!(
+            Widget::ime_purpose(&plain),
+            Some(winit::window::ImePurpose::Normal)
+        );
+        assert_eq!(
+            Widget::ime_purpose(&secret),
+            Some(winit::window::ImePurpose::Password)
+        );
+    }
+
+    #[test]
     fn cursor_shape_is_text_over_rect() {
         let mut ti = TextInput::local();
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
@@ -3889,7 +3937,10 @@ mod tests {
         let r5 = ti.caret_rect(&theme, 5);
         let (_text_y, line_height) = ti.text_band();
 
-        assert!((r0.width() - 2.0).abs() < 0.01, "caret is CARET_WIDTH wide");
+        assert!(
+            (r0.width() - theme.caret_width).abs() < 0.01,
+            "caret uses the configured width"
+        );
         assert!(
             (r0.height() - line_height).abs() < 0.01,
             "caret spans the full line band, not a fixed 16px"
@@ -4715,6 +4766,21 @@ mod tests {
         plain.text = "hunter2".to_string();
         assert_eq!(plain.display_text(), "hunter2");
         assert_eq!(plain.display_prefix(3), "hun");
+    }
+
+    #[test]
+    fn local_secret_mirrors_without_entering_the_document() {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let mut input = TextInput::local()
+            .with_external_buffer(Arc::clone(&buffer))
+            .with_secret(true);
+        input.text = "correct horse battery staple".into();
+        input.dirty = true;
+        let mut document = AutoCommit::new();
+        input.sync(&mut document, &automerge::ROOT);
+
+        assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
+        assert!(document.keys(&automerge::ROOT).next().is_none());
     }
 
     #[test]

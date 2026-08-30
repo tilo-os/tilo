@@ -50,6 +50,12 @@ impl Rgb {
     }
     /// Apply a per-clip [`Filters`] grade. Brightness scales, contrast
     /// pivots around mid-grey, saturation lerps toward/away from luma.
+    #[must_use]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "r/g/b are the RGB channels and f the Filters grade being applied, the \
+                  standard vocabulary for colour math"
+    )]
     pub fn graded(self, f: &Filters) -> Rgb {
         let bright = Filters::gain(f.brightness);
         let contrast = Filters::gain(f.contrast);
@@ -66,12 +72,14 @@ impl Rgb {
         Rgb::new(r, g, b)
     }
     /// Scale toward black by `gain` (the fade/opacity envelope).
+    #[must_use]
     pub fn faded(self, gain: f64) -> Rgb {
         let g = gain.clamp(0.0, 1.0);
         Rgb::new(self.r * g, self.g * g, self.b * g)
     }
 
     /// Apply an ordered stack of [`ClipEffect`]s, in list order, after the grade.
+    #[must_use]
     pub fn with_effects(self, effects: &[ClipEffect]) -> Rgb {
         effects.iter().fold(self, apply_effect)
     }
@@ -394,10 +402,14 @@ pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) ->
                 px = mix(px, target, f.alpha);
             }
             let i = (y * w + x) * 4;
-            buf[i] = (px.r * 255.0).round().clamp(0.0, 255.0) as u8;
-            buf[i + 1] = (px.g * 255.0).round().clamp(0.0, 255.0) as u8;
-            buf[i + 2] = (px.b * 255.0).round().clamp(0.0, 255.0) as u8;
-            buf[i + 3] = 255;
+            if let Some(px_bytes) = buf.get_mut(i..).and_then(<[u8]>::first_chunk_mut::<4>) {
+                *px_bytes = [
+                    (px.r * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (px.g * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (px.b * 255.0).round().clamp(0.0, 255.0) as u8,
+                    255,
+                ];
+            }
         }
     }
     buf
@@ -434,7 +446,7 @@ mod tests {
                 let top = p.top_video_clip_at(23.0).unwrap();
                 assert_eq!(media, top.media);
             }
-            _ => panic!("expected a clip at the playhead"),
+            CompositedFrame::Empty => panic!("expected a clip at the playhead"),
         }
     }
 
@@ -504,17 +516,15 @@ mod tests {
         // adding a grayscale effect desaturates its composite base.
         let cid = p.clips[0].id;
         p.clip_mut(cid).unwrap().effects.clear();
-        let before = match composite(&p, 6.0) {
-            CompositedFrame::Clip { base, .. } => base,
-            _ => panic!("expected clip"),
+        let CompositedFrame::Clip { base: before, .. } = composite(&p, 6.0) else {
+            panic!("expected clip");
         };
         p.clip_mut(cid).unwrap().effects = vec![ClipEffect {
             kind: EffectKind::Grayscale,
             amount: 1.0,
         }];
-        let after = match composite(&p, 6.0) {
-            CompositedFrame::Clip { base, .. } => base,
-            _ => panic!("expected clip"),
+        let CompositedFrame::Clip { base: after, .. } = composite(&p, 6.0) else {
+            panic!("expected clip");
         };
         let spread = |c: Rgb| (c.r - c.g).abs() + (c.g - c.b).abs();
         assert!(

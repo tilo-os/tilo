@@ -22,11 +22,16 @@
 //! {
 //!   "version": 1,
 //!   "locale":  { … },                        // owned by Settings' region store
-//!   "appearance": {                           // owned here
-//!     "id":   "sunset",
-//!     "name": "Sunset",
-//!     "dark_base": true,
-//!     "theme": { …full ThemeSpec… }           // the exact tokens to materialise
+//!   "appearance": {                           // active choice owned by Settings
+//!     "theme": "custom:sunset",
+//!     "custom_theme": { …versioned ui::CustomThemeSpec… },
+//!     "high_contrast": false,
+//!     "studio": {                             // editable artifact owned here
+//!       "id":   "sunset",
+//!       "name": "Sunset",
+//!       "dark_base": true,
+//!       "theme": { …full ThemeSpec… }
+//!     }
 //!   }
 //! }
 //! ```
@@ -38,18 +43,13 @@
 //!
 //! # Non-destructive writes
 //!
-//! [`save`] is a **merge** write: it reads the current document, overwrites
-//! only the `appearance` section, and preserves every other key (locale,
-//! audio, display, …). So applying a theme never clobbers another app's
-//! settings.
+//! [`save`] is a **merge** write: it reads the current document, updates the
+//! nested `appearance.studio` artifact and active base theme, and preserves
+//! accessibility, scale and every foreign section. Settings likewise
+//! preserves this nested artifact.
 //!
-//! # Live propagation
-//!
-//! Persisting the active theme makes it the look on the *next* session /
-//! app launch. Pushing it into already-running apps instantly is a separate
-//! step: the compositor exposes [`ui::App::set_theme`] as the runtime hook,
-//! but there is no OS-wide "theme changed" broadcast socket yet — see the
-//! note in [`crate::app`] where Apply is dispatched.
+//! The runtime contract is consumed directly by `ui::Theme`, so Theme Studio,
+//! Settings, applications, and shell chrome cannot drift in reconstruction.
 
 use std::path::PathBuf;
 
@@ -57,6 +57,8 @@ use crate::model::ThemeSpec;
 
 /// The section key this store owns inside the shared settings document.
 pub const SECTION: &str = "appearance";
+/// Theme Studio's private artifact below Settings' canonical appearance state.
+pub const STUDIO_KEY: &str = "studio";
 
 /// Resolve the shared settings path. Delegating to [`settings_store`] is what
 /// keeps this in step with the Settings app rather than by hand.
@@ -65,7 +67,7 @@ pub fn store_path() -> Option<PathBuf> {
 }
 
 /// Merge `spec` into `existing` (the current settings-document text, or
-/// empty) as the `appearance` section, preserving every foreign key.
+/// empty) below `appearance.studio`, preserving Settings-owned preferences.
 /// Returns the pretty-printed document.
 pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
     let mut root: serde_json::Value =
@@ -75,8 +77,24 @@ pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
     }
     let obj = root.as_object_mut().expect("just ensured object");
     obj.insert("version".into(), serde_json::json!(1));
-    obj.insert(
-        SECTION.into(),
+    let appearance = obj.entry(SECTION).or_insert_with(|| serde_json::json!({}));
+    if !appearance.is_object() {
+        *appearance = serde_json::json!({});
+    }
+    let appearance = appearance.as_object_mut().expect("just ensured object");
+
+    let active = crate::model::builtin_theme(&spec.id)
+        .map(|theme| theme.name)
+        .unwrap_or_else(|| format!("custom:{}", spec.id));
+    appearance.insert("theme".into(), serde_json::json!(active));
+    if !spec.builtin {
+        appearance.insert(
+            "custom_theme".into(),
+            serde_json::to_value(spec.to_custom_spec()).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    appearance.insert(
+        STUDIO_KEY.into(),
         serde_json::json!({
             "id": spec.id,
             "name": spec.name,
@@ -92,6 +110,7 @@ pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
 pub fn active_id(text: &str) -> Option<String> {
     let root: serde_json::Value = serde_json::from_str(text).ok()?;
     root.get(SECTION)?
+        .get(STUDIO_KEY)?
         .get("id")?
         .as_str()
         .map(std::string::ToString::to_string)
@@ -100,7 +119,7 @@ pub fn active_id(text: &str) -> Option<String> {
 /// Parse the active [`ThemeSpec`] from a settings document, if present.
 pub fn active_spec(text: &str) -> Option<ThemeSpec> {
     let root: serde_json::Value = serde_json::from_str(text).ok()?;
-    let theme = root.get(SECTION)?.get("theme")?.clone();
+    let theme = root.get(SECTION)?.get(STUDIO_KEY)?.get("theme")?.clone();
     serde_json::from_value(theme).ok()
 }
 
@@ -141,7 +160,7 @@ mod tests {
 
     #[test]
     fn merge_writes_appearance_and_preserves_foreign_keys() {
-        let existing = r#"{"version":1,"locale":{"currency":"EUR"},"audio":{"event_sounds":true}}"#;
+        let existing = r#"{"version":1,"locale":{"currency":"EUR"},"audio":{"event_sounds":true},"appearance":{"high_contrast":true,"text_scale":1.25}}"#;
         let spec = seed_custom();
         let out = to_json_merged(&spec, existing);
         // Our section landed with the id + a nested full theme.
@@ -159,6 +178,14 @@ mod tests {
             out.contains("\"event_sounds\": true"),
             "audio survived: {out}"
         );
+        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(root["appearance"]["high_contrast"], true);
+        assert_eq!(root["appearance"]["text_scale"], 1.25);
+        assert_eq!(root["appearance"]["theme"], "custom:sunset");
+        let runtime = ui::Theme::from_settings_json(&out).expect("runtime consumes custom theme");
+        assert_eq!(runtime.name, spec.name);
+        assert_eq!(runtime.accent_primary, spec.to_theme().accent_primary);
+        assert_eq!(runtime.tokens.radii.md, spec.radius_px());
     }
 
     #[test]
@@ -182,8 +209,8 @@ mod tests {
 
     #[test]
     fn merge_overwrites_only_its_own_section_on_reapply() {
-        // Applying a second theme replaces the appearance section wholesale
-        // (no stale keys from the previous theme leak through).
+        // Applying a second theme replaces only Studio's artifact (no stale
+        // editor keys leak through) while Settings-owned fields survive.
         let first = to_json_merged(&presets()[0].clone(), "");
         let second = to_json_merged(&presets()[4].clone(), &first);
         assert_eq!(

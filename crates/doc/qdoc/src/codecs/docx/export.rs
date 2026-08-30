@@ -3,7 +3,7 @@
 //! numbering parts a from-scratch document lacks.
 
 use super::container::DocxContainer;
-use crate::document::MarkValue;
+use crate::export::InlinePlan;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
@@ -743,19 +743,8 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
-/// The active marks covering character `i`, sorted by name for stable grouping.
-fn marks_at(i: usize, marks: &[crate::document::MarkSpan]) -> Vec<(String, MarkValue)> {
-    let mut v: Vec<(String, MarkValue)> = marks
-        .iter()
-        .filter(|m| i >= m.start && i < m.end)
-        .map(|m| (m.name.clone(), m.value.clone()))
-        .collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
-    v
-}
-
 /// Build the `<w:rPr>` body for an active mark set (empty if none modeled).
-fn run_props(marks: &[(String, MarkValue)]) -> String {
+fn run_props(marks: &[&crate::document::MarkSpan]) -> String {
     let (mut bold, mut italic, mut underline, mut strike) = (false, false, false, false);
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
@@ -765,17 +754,17 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     let mut lang: Option<&str> = None;
     // Vertical alignment: `superscript`/`subscript` (super wins if both present).
     let mut vert_align: Option<&'static str> = None;
-    for (name, val) in marks {
-        match name.as_str() {
+    for mark in marks {
+        match mark.name.as_str() {
             "strong" => bold = true,
             "em" => italic = true,
             "underline" => underline = true,
             "strike" => strike = true,
-            "fontSize" => sz = val.as_int(),
-            "fontFamily" => font = val.as_str(),
-            "color" => color = val.as_str(),
-            "highlight" => highlight = val.as_str(),
-            "lang" => lang = val.as_str(),
+            "fontSize" => sz = mark.value.as_int(),
+            "fontFamily" => font = mark.value.as_str(),
+            "color" => color = mark.value.as_str(),
+            "highlight" => highlight = mark.value.as_str(),
+            "lang" => lang = mark.value.as_str(),
             "super" => vert_align = Some("superscript"),
             "sub" if vert_align.is_none() => vert_align = Some("subscript"),
             _ => {}
@@ -824,7 +813,7 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
 }
 
 /// Emit run content, turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
-fn run_content(chars: &[char]) -> String {
+fn run_content(text: &str) -> String {
     let mut out = String::new();
     let mut buf = String::new();
     let flush = |out: &mut String, buf: &mut String| {
@@ -837,7 +826,7 @@ fn run_content(chars: &[char]) -> String {
             buf.clear();
         }
     };
-    for &c in chars {
+    for c in text.chars() {
         match c {
             '\t' => {
                 flush(&mut out, &mut buf);
@@ -852,14 +841,6 @@ fn run_content(chars: &[char]) -> String {
     }
     flush(&mut out, &mut buf);
     out
-}
-
-fn note_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
-    let end = i.saturating_add(1);
-    marks
-        .iter()
-        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == end)
-        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
 }
 
 /// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
@@ -882,101 +863,11 @@ fn note_reference_run(
     ))
 }
 
-/// The comment ids whose `comment` mark starts/ends exactly at `i` (sorted for determinism).
-fn comment_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The bookmark names whose `bookmark` mark starts/ends exactly at `i` (sorted for determinism).
-fn bookmark_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn bookmark_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The internal cross-reference target of a `link` mark (`#name` → `name`); external URL links aren't modeled by this codec.
-fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
-    marks
-        .iter()
-        .find(|m| m.name == crate::schema::MARK_LINK && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-        .and_then(|v| {
-            v.strip_prefix(crate::schema::CROSS_REF_PREFIX)
-                .map(std::string::ToString::to_string)
-        })
-}
-
-/// Whether a run must break before `j`: any mark-set change, note-ref, comment/bookmark boundary, or cross-reference change.
-fn run_breaks_at(
-    chars: &[char],
-    marks: &[crate::document::MarkSpan],
-    active: &[(String, MarkValue)],
-    active_change: Option<&(crate::snapshot::ChangeKind, String)>,
-    active_xref: Option<&String>,
-    j: usize,
-) -> bool {
-    marks_at(j, marks) != active
-        || change_at(marks, j).as_ref() != active_change
-        || cross_ref_at(marks, j).as_ref() != active_xref
-        || is_note_ref_placeholder(chars, marks, j)
-        || !comment_starts_at(marks, j).is_empty()
-        || !comment_ends_at(marks, j).is_empty()
-        || !bookmark_starts_at(marks, j).is_empty()
-        || !bookmark_ends_at(marks, j).is_empty()
-}
-
 /// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
 type ChangeIndex<'a> = BTreeMap<String, &'a crate::snapshot::ChangeView>;
 
 fn change_index(snap: &DocSnapshot) -> ChangeIndex<'_> {
     snap.changes.iter().map(|c| (c.id.clone(), c)).collect()
-}
-
-/// The tracked change anchoring char `i`, if any; insertion wins if both somehow overlap.
-fn change_at(
-    marks: &[crate::document::MarkSpan],
-    i: usize,
-) -> Option<(crate::snapshot::ChangeKind, String)> {
-    let find = |name: &str| {
-        marks
-            .iter()
-            .find(|m| m.name == name && i >= m.start && i < m.end)
-            .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
-    };
-    if let Some(id) = find(crate::schema::MARK_INS) {
-        return Some((crate::snapshot::ChangeKind::Ins, id));
-    }
-    find(crate::schema::MARK_DEL).map(|id| (crate::snapshot::ChangeKind::Del, id))
 }
 
 /// The `<w:ins>`/`<w:del>` open tag for a tracked change (docx id + author/date), wrapping the affected `<w:r>` runs.
@@ -997,7 +888,7 @@ fn change_open_tag(change: &crate::snapshot::ChangeView, docx_id: i64) -> String
 }
 
 /// Emit a *deleted* run's content as `<w:delText>` (OOXML requires it, not `w:t`); `\t`/`\n` still map as usual.
-fn del_run_content(chars: &[char]) -> String {
+fn del_run_content(text: &str) -> String {
     let mut out = String::new();
     let mut buf = String::new();
     let flush = |out: &mut String, buf: &mut String| {
@@ -1010,7 +901,7 @@ fn del_run_content(chars: &[char]) -> String {
             buf.clear();
         }
     };
-    for &c in chars {
+    for c in text.chars() {
         match c {
             '\t' => {
                 flush(&mut out, &mut buf);
@@ -1038,161 +929,110 @@ struct RunIds<'a, 'b> {
     bookmark_ids: &'a BTreeMap<String, i64>,
 }
 
-/// Comment-range/reference-run boundaries at char `i`: ends (+ reference run) close before starts open, so adjacent ranges don't collide.
-fn emit_comment_boundaries(
-    out: &mut String,
-    marks: &[crate::document::MarkSpan],
-    comment_ids: &BTreeMap<String, i64>,
-    i: usize,
-) {
-    for id in comment_ends_at(marks, i) {
-        if let Some(end) = super::comments::comment_range_end(&id, comment_ids) {
-            out.push_str(&end);
-        }
-        if let Some(rf) = super::comments::comment_reference_run(&id, comment_ids) {
-            out.push_str(&rf);
-        }
-    }
-    for id in comment_starts_at(marks, i) {
-        if let Some(start) = super::comments::comment_range_start(&id, comment_ids) {
-            out.push_str(&start);
-        }
-    }
-}
-
-/// Bookmark boundaries at char `i`: end (by id) before start (id + name) — empty elements sitting between runs.
-fn emit_bookmark_boundaries(
-    out: &mut String,
-    marks: &[crate::document::MarkSpan],
-    bookmark_ids: &BTreeMap<String, i64>,
-    i: usize,
-) {
-    for name in bookmark_ends_at(marks, i) {
-        if let Some(id) = bookmark_ids.get(&name) {
-            let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
-        }
-    }
-    for name in bookmark_starts_at(marks, i) {
-        if let Some(id) = bookmark_ids.get(&name) {
-            let _ = write!(
-                out,
-                r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#,
-                escape_attr(&name)
-            );
-        }
-    }
-}
-
-/// The `<w:ins>`/`<w:del>` wrapper (if any) for a run group anchored on `active_change`; deleted text uses `<w:delText>`.
-fn change_wrap(
-    active_change: Option<&(crate::snapshot::ChangeKind, String)>,
-    changes: &ChangeIndex,
-    change_ids: &BTreeMap<String, i64>,
-) -> (String, &'static str, bool) {
-    let Some((kind, id)) = active_change else {
-        return (String::new(), "", false);
-    };
-    let (Some(ch), Some(docx_id)) = (changes.get(id), change_ids.get(id)) else {
-        return (String::new(), "", false);
-    };
-    let close = match kind {
-        crate::snapshot::ChangeKind::Ins => "</w:ins>",
-        crate::snapshot::ChangeKind::Del => "</w:del>",
-    };
-    (
-        change_open_tag(ch, *docx_id),
-        close,
-        *kind == crate::snapshot::ChangeKind::Del,
-    )
-}
-
-/// The `<w:hyperlink w:anchor>` wrapper (if any) for a run group anchored on `active_xref`.
-fn xref_wrap(active_xref: Option<&String>) -> (String, &'static str) {
-    match active_xref {
-        Some(target) => (
-            format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)),
-            "</w:hyperlink>",
-        ),
-        None => (String::new(), ""),
-    }
-}
-
 /// Render a block's text + marks as `<w:r>` runs, starting a new run whenever the active
 /// mark set changes. A `note-ref` placeholder becomes its reference-element run; a
 /// `comment` mark emits range-start/end + reference; an `ins`/`del` mark wraps the run in
 /// `<w:ins>`/`<w:del>` (deleted runs use `<w:delText>`).
 fn render_runs(text: &str, marks: &[crate::document::MarkSpan], ids: &RunIds) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
+    let plan = InlinePlan::new(text, marks);
     let mut out = String::new();
-    let mut i = 0;
-    while i < n {
-        emit_comment_boundaries(&mut out, marks, ids.comment_ids, i);
-        emit_bookmark_boundaries(&mut out, marks, ids.bookmark_ids, i);
-        // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
-        if chars
-            .get(i)
-            .is_some_and(|&c| c == crate::schema::FIELD_PLACEHOLDER)
-            && let Some(note_id) = note_ref_at(marks, i)
-        {
-            if let Some(run) = note_reference_run(&note_id, ids.note_ids, ids.note_kinds) {
-                out.push_str(&run);
+    // Comment boundaries: ends (+ reference run) close before starts open, so
+    // adjacent ranges don't collide.
+    let emit_comment_boundaries =
+        |out: &mut String, boundary: &crate::export::RangeBoundary<'_>| {
+            for id in &boundary.ends {
+                if let Some(end) = super::comments::comment_range_end(id, ids.comment_ids) {
+                    out.push_str(&end);
+                }
+                if let Some(rf) = super::comments::comment_reference_run(id, ids.comment_ids) {
+                    out.push_str(&rf);
+                }
             }
-            i = i.saturating_add(1);
+            for id in &boundary.starts {
+                if let Some(start) = super::comments::comment_range_start(id, ids.comment_ids) {
+                    out.push_str(&start);
+                }
+            }
+        };
+    // Bookmark boundaries: end (by id) before start (id + name) — empty
+    // elements sitting between runs.
+    let emit_bookmark_boundaries =
+        |out: &mut String, boundary: &crate::export::RangeBoundary<'_>| {
+            for name in &boundary.ends {
+                if let Some(id) = ids.bookmark_ids.get(*name) {
+                    let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
+                }
+            }
+            for name in &boundary.starts {
+                if let Some(id) = ids.bookmark_ids.get(*name) {
+                    let _ = write!(
+                        out,
+                        r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#,
+                        escape_attr(name)
+                    );
+                }
+            }
+        };
+
+    for point in plan.points() {
+        emit_comment_boundaries(&mut out, &point.boundary.comments);
+        emit_bookmark_boundaries(&mut out, &point.boundary.bookmarks);
+        let Some(run) = &point.run else {
+            continue;
+        };
+        // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
+        if let Some(note_id) = run.note_reference {
+            if let Some(reference) = note_reference_run(note_id, ids.note_ids, ids.note_kinds) {
+                out.push_str(&reference);
+            }
             continue;
         }
-        let active = marks_at(i, marks);
-        let active_change = change_at(marks, i);
-        let active_xref = cross_ref_at(marks, i);
-        let mut j = i.saturating_add(1);
-        while j < n
-            && !run_breaks_at(
-                &chars,
-                marks,
-                &active,
-                active_change.as_ref(),
-                active_xref.as_ref(),
-                j,
-            )
-        {
-            j = j.saturating_add(1);
-        }
-        let (wrap_open, wrap_close, is_del) =
-            change_wrap(active_change.as_ref(), ids.changes, ids.change_ids);
-        let (xref_open, xref_close) = xref_wrap(active_xref.as_ref());
-        let rpr = run_props(&active);
+        // The `<w:ins>`/`<w:del>` wrapper (if any) for this run group; deleted text uses `<w:delText>`.
+        let (wrap_open, wrap_close, is_del) = match run.change {
+            Some(active_change) => match (
+                ids.changes.get(active_change.id),
+                ids.change_ids.get(active_change.id),
+            ) {
+                (Some(ch), Some(docx_id)) => {
+                    let close = match active_change.kind {
+                        crate::snapshot::ChangeKind::Ins => "</w:ins>",
+                        crate::snapshot::ChangeKind::Del => "</w:del>",
+                    };
+                    (
+                        change_open_tag(ch, *docx_id),
+                        close,
+                        active_change.kind == crate::snapshot::ChangeKind::Del,
+                    )
+                }
+                _ => (String::new(), "", false),
+            },
+            None => (String::new(), "", false),
+        };
+        // A cross-reference wraps the whole run group in `<w:hyperlink w:anchor>`, the outermost wrapper.
+        let (xref_open, xref_close) = match run.cross_reference() {
+            Some(target) => (
+                format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)),
+                "</w:hyperlink>",
+            ),
+            None => (String::new(), ""),
+        };
+        let rpr = run_props(&run.marks);
         out.push_str(&xref_open);
         out.push_str(&wrap_open);
         out.push_str("<w:r>");
         if !rpr.is_empty() {
             let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
         }
-        if let Some(slice) = chars.get(i..j) {
-            out.push_str(&if is_del {
-                del_run_content(slice)
-            } else {
-                run_content(slice)
-            });
+        if is_del {
+            out.push_str(&del_run_content(run.text));
+        } else {
+            out.push_str(&run_content(run.text));
         }
         out.push_str("</w:r>");
         out.push_str(wrap_close);
         out.push_str(xref_close);
-        i = j;
     }
-    for name in bookmark_ends_at(marks, n) {
-        if let Some(id) = ids.bookmark_ids.get(&name) {
-            let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
-        }
-    }
-    emit_comment_boundaries(&mut out, marks, ids.comment_ids, n);
     out
-}
-
-fn is_note_ref_placeholder(chars: &[char], marks: &[crate::document::MarkSpan], j: usize) -> bool {
-    chars
-        .get(j)
-        .is_some_and(|&c| c == crate::schema::FIELD_PLACEHOLDER)
-        && note_ref_at(marks, j).is_some()
 }
 
 fn jc_xml(b: &BlockView) -> String {

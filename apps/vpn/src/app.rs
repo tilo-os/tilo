@@ -24,10 +24,10 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EmptyState, ModalDialog, Widget};
+use ui::widget::{EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
 
 use crate::actions::{self, VPN_ACTION_TYPE};
-use crate::config::{self, Backend, CommandPlan};
+use crate::config::{self, CommandPlan};
 use crate::doc::VpnDoc;
 use crate::model::{
     ConnId, ConnKind, ConnStatus, Connection, Vault, human_ago, sample_vault, stub_connection,
@@ -333,6 +333,10 @@ pub struct VpnApp {
     /// applies it via the executor so it replays byte-identically on peers — the
     /// same path the Ctrl+K palette takes.
     actions: ui::ActionHost,
+    /// One-shot context supplied by the shell's typed tool service. It is
+    /// consumed only after the persisted vault has loaded, so a profile route
+    /// can select the real NetworkManager-backed connection by name.
+    pending_tool_intent: Option<os_actions::ToolIntent>,
 }
 
 impl Default for VpnApp {
@@ -345,7 +349,9 @@ impl VpnApp {
     /// The live app: starts empty. Only the user's real, persisted tunnels
     /// (held in the shared document) appear — no fabricated fleet.
     pub fn new() -> Self {
-        Self::build(Vault::default())
+        let mut app = Self::build(Vault::default());
+        app.pending_tool_intent = os_actions::tool_intent_from_env();
+        app
     }
 
     /// The hermetic `--shots` / demo build: seeded with a sample fleet so the
@@ -378,6 +384,32 @@ impl VpnApp {
             throughput: HashMap::new(),
             last_reconcile: None,
             actions: ui::ActionHost::new(),
+            pending_tool_intent: None,
+        }
+    }
+
+    fn apply_pending_tool_intent(&mut self, doc: &mut AutoCommit) {
+        let Some(intent) = self.pending_tool_intent.take() else {
+            return;
+        };
+        let os_actions::ToolIntent::Vpn { route, profile } = intent;
+        match route {
+            os_actions::VpnRoute::Overview | os_actions::VpnRoute::Import => {}
+            os_actions::VpnRoute::Profile | os_actions::VpnRoute::DnsRouting => {
+                let Some(profile) = profile else { return };
+                if let Some(id) = self
+                    .vault
+                    .connections
+                    .iter()
+                    .find(|connection| connection.name == profile)
+                    .map(|connection| connection.id)
+                {
+                    self.select(doc, id);
+                    self.detail_tab = DetailTab::Config;
+                } else {
+                    self.log(format!("VPN profile '{profile}' is no longer available"));
+                }
+            }
         }
     }
 
@@ -404,8 +436,8 @@ impl VpnApp {
     /// Reconcile each tunnel's stored status against the REAL kernel/process
     /// state (`ip link` for `WireGuard`, `pgrep` for `OpenVPN`). The stored toggle
     /// never overrides reality: a tunnel that dropped out-of-band flips back to
-    /// Disconnected, and one brought up elsewhere shows Connected. Gated on
-    /// `QOS_VPN_ALLOW_EXEC` (so hermetic tests spawn no probes) and throttled
+    /// Disconnected, and one brought up elsewhere shows Connected. Disabled
+    /// in hermetic tests and throttled
     /// to ~1 Hz. `Connecting` is left alone — that transient is owned by the
     /// in-flight command.
     fn reconcile_real_status(&mut self, doc: &mut AutoCommit) {
@@ -446,8 +478,8 @@ impl VpnApp {
 
     /// Poll REAL byte counters for every connected tunnel and fold them into
     /// the ephemeral throughput history. No sample is ever synthesized: if the
-    /// kernel has no counter for the interface, nothing is recorded. Gated on
-    /// `QOS_VPN_ALLOW_EXEC` and only runs for tunnels reporting Connected.
+    /// kernel has no counter for the interface, nothing is recorded. Disabled
+    /// in hermetic tests and only runs for tunnels reporting Connected.
     fn sample_throughput(&mut self) {
         if !config::exec_allowed() {
             return;
@@ -504,11 +536,6 @@ impl VpnApp {
     fn request_toggle(&mut self, id: ConnId) {
         let Some(c) = self.vault.get(id) else { return };
         let backend = config::default_backend(c.kind);
-        let backend = if backend == Backend::OpenVpnCli {
-            backend
-        } else {
-            Backend::WgQuick
-        };
         self.pending = Some(if c.is_connected() {
             Pending::Disconnect(id, config::disconnect_plan(c, backend))
         } else {
@@ -526,9 +553,7 @@ impl VpnApp {
     /// Apply the pending action (after the user confirms). State is changed
     /// **only if the real command actually succeeded** — the UI never claims
     /// a tunnel is connected on the strength of an optimistic guess. With
-    /// execution disabled (the default, no `QOS_VPN_ALLOW_EXEC=1`) the command
-    /// is refused, the tunnel stays in its real state, and the activity log
-    /// says so honestly.
+    /// NetworkManager remains the source of truth shared with quick settings.
     fn confirm_pending(&mut self, doc: &mut AutoCommit) {
         let Some(p) = self.pending.take() else { return };
         match p {
@@ -634,35 +659,38 @@ impl VpnApp {
                         path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
                     )
                     .unwrap_or(self.import_hint);
-                    let mut conn = config::parse_config(&stem, kind, &text);
-                    // Persist the RAW config into the app's data dir so the
-                    // real bring-up (`wg-quick up <path>` / `openvpn --config
-                    // <path>`) references the exact file — private key, DNS,
-                    // routes and all — not a lossy re-render of the parsed
-                    // fields. The stored basename becomes the interface name.
-                    let iface = config::iface_name(&conn);
-                    match config::persist_config(&iface, kind, &text) {
-                        Ok(saved) => {
-                            conn.config_path = Some(saved.to_string_lossy().into_owned());
+                    let conn = config::parse_config(&stem, kind, &text);
+                    // Hand the portal-selected file straight to NetworkManager.
+                    // It becomes the sole owner of the profile and its secrets;
+                    // Studio deliberately keeps no second raw private-key copy.
+                    let nm_kind = match kind {
+                        ConnKind::WireGuard => "wireguard",
+                        ConnKind::OpenVpn => "openvpn",
+                    };
+                    match config::exec_allowed()
+                        .then(|| os_actions::import_vpn_config(nm_kind, &path.to_string_lossy()))
+                    {
+                        None => self.log(format!(
+                            "parsed {} '{}' (host import disabled in test process)",
+                            kind.badge(),
+                            stem
+                        )),
+                        Some(Ok(())) => self.log(format!(
+                            "imported {} '{}' into NetworkManager",
+                            kind.badge(),
+                            stem
+                        )),
+                        Some(Err(e)) => {
                             self.log(format!(
-                                "imported {} '{}' → {}",
-                                kind.badge(),
-                                stem,
-                                saved.display()
-                            ));
-                        }
-                        Err(e) => {
-                            // Still add the parsed tunnel, but be honest that
-                            // it has no runnable config yet.
-                            self.log(format!(
-                                "imported {} '{}' (metadata only — could not save config: {e})",
+                                "could not import {} '{}' into NetworkManager: {e}",
                                 kind.badge(),
                                 stem
                             ));
+                            return true;
                         }
                     }
                     let id = conn.id;
-                    // The parse/persist above is the external import side effect;
+                    // NetworkManager import above is the external side effect;
                     // adding the resulting profile to the shared document is the
                     // same action the add form dispatches — one source of truth.
                     self.actions.dispatch(
@@ -1288,20 +1316,11 @@ impl VpnApp {
     }
 
     fn draw_switch(&self, scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
-        let track = if on {
-            theme.tokens.colors.semantic.success
-        } else {
-            theme.tokens.colors.neutral[3]
-        };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), track);
-        let kr = 9.0;
-        let kx = if on { r.x1 - kr - 3.0 } else { r.x0 + kr + 3.0 };
-        scene.fill(
-            Fill::NonZero,
+        Toggle::paint(
+            scene,
             t,
-            Color::WHITE,
-            None,
-            &Circle::new(Point::new(kx, r.center().y), kr),
+            theme,
+            &ToggleFace::new(r, on).on_color(theme.tokens.colors.semantic.success),
         );
     }
 
@@ -1639,7 +1658,7 @@ impl VpnApp {
             let note = if !c.is_connected() {
                 "Connect to read live throughput"
             } else if !config::exec_allowed() {
-                "Live metering needs QOS_VPN_ALLOW_EXEC=1"
+                "Live metering is unavailable in this test session"
             } else if latest.is_some() {
                 "Measuring…"
             } else {
@@ -2414,6 +2433,7 @@ impl Widget for VpnApp {
         // reconcile real interface state, then poll real throughput counters.
         self.drain_import(state);
         self.refresh(state);
+        self.apply_pending_tool_intent(state);
         self.sample_throughput();
     }
 
@@ -2751,6 +2771,27 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn typed_profile_context_selects_profile_and_config_tab_after_load() {
+        let mut app = VpnApp::new_demo();
+        app.pending_tool_intent = Some(os_actions::ToolIntent::Vpn {
+            route: os_actions::VpnRoute::Profile,
+            profile: Some("Work".into()),
+        });
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            app.vault.selected,
+            app.vault
+                .connections
+                .iter()
+                .find(|c| c.name == "Work")
+                .map(|c| c.id)
+        );
+        assert_eq!(app.detail_tab, DetailTab::Config);
+        assert!(app.pending_tool_intent.is_none());
+    }
+
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -2909,13 +2950,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial(vpn_env)]
-    fn import_persists_config_and_wires_real_bring_up() {
-        // The real import path end-to-end: a chosen .conf is read, parsed into
-        // a tunnel, AND its raw bytes persisted so the real bring-up command
-        // references the exact file. Redirect the data dir to a scratch space.
-        let scratch = std::env::temp_dir().join(format!("qos-vpn-import-{}", uuid::Uuid::new_v4()));
-        unsafe { std::env::set_var("XDG_DATA_HOME", &scratch) };
-
+    fn import_parses_metadata_without_duplicating_the_secret_file() {
+        // NetworkManager owns the imported profile and secrets. In a test
+        // process host import is disabled, but the editor artifact is parsed
+        // without retaining a second raw config/private-key file.
         let (mut app, mut doc) = demo_with_doc();
         let before = app.vault.connections.len();
         let raw = "[Interface]\nPrivateKey = c2VjcmV0\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = imported.example:51820\nAllowedIPs = 0.0.0.0/0\n";
@@ -2937,28 +2975,14 @@ mod tests {
         assert_eq!(imported.kind, ConnKind::WireGuard);
         assert_eq!(imported.dns, "9.9.9.9");
 
-        // The raw config was persisted and wired as the bring-up target.
-        let cfg = imported
-            .config_path()
-            .expect("import persists a runnable config");
-        assert!(
-            cfg.starts_with(scratch.to_str().unwrap()),
-            "config saved under data dir: {cfg}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(cfg).unwrap(),
-            raw,
-            "exact bytes preserved"
-        );
+        assert_eq!(imported.config_path(), None, "NetworkManager owns secrets");
 
-        // The REAL connect command references that persisted file.
+        // The live plan uses the shared NetworkManager backend.
         let plan = config::connect_plan(&imported, config::default_backend(imported.kind));
-        assert_eq!(plan.program, "wg-quick");
-        assert_eq!(plan.args, vec!["up".to_string(), cfg.to_string()]);
+        assert_eq!(plan.program, "nmcli");
+        assert_eq!(plan.args, vec!["connection", "up", imported.name.as_str()]);
 
         let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir_all(&scratch);
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]

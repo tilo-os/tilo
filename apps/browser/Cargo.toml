@@ -29,6 +29,7 @@ ui = { path = "../../ui", features = ["webview-adblock"] }
 # with a blocking client and cached under the user cache dir.
 reqwest = { workspace = true, features = ["blocking"], default-features = true }
 dirs.workspace = true
+url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
 # (.crx behind a small binary header); manifest.json describes them.

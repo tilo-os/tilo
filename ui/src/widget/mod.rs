@@ -161,6 +161,22 @@ pub trait Widget {
     fn is_enabled(&self) -> bool {
         true
     }
+
+    /// The focused widget wants platform text input (Wayland
+    /// `text-input-v3`, native IMEs elsewhere). `None` is intentionally the
+    /// default: enabling an IME for buttons, canvas tools or games makes the
+    /// compositor raise an on-screen keyboard over content that cannot accept
+    /// the committed text.
+    ///
+    /// Winit currently exposes the protocol's normal, password and terminal
+    /// purposes. Widgets should return the closest truthful value; the
+    /// compositor still receives the focus/enable/cursor lifecycle even when
+    /// a more specialised purpose (email, URL, numeric) is unavailable at the
+    /// toolkit boundary.
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        None
+    }
+
     /// Default `true`; the exception is a widget standing in for a process
     /// that has started but not drawn. Must **latch**: once `true`, never
     /// `false` again for the same content, or an un-presenting widget would
@@ -500,7 +516,7 @@ pub type Element = Box<dyn Widget>;
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
 mod checkbox;
-pub use checkbox::Checkbox;
+pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod row;

@@ -1,30 +1,18 @@
 //! A large `SyncCRDT` payload (a full-document snapshot — the late-join
 //! reply) does not fit in one socket read, so it arrives split across
-//! reads. `CollaborationManager::poll` must reassemble it from its
-//! persistent buffer instead of dropping the frame and desyncing the
-//! stream.
+//! reads. The typed RPC transport must reassemble it without truncation.
 
-use std::os::unix::net::UnixListener;
 use std::thread;
 use std::time::Duration;
 
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
+use crate::support::typed_collab::TypedBroker;
+use ui::collaboration::{CollabEvent, CollabRequest};
 
 #[test]
-#[serial_test::serial(quick_collab_sock)]
 fn large_frame_survives_split_reads() {
-    let socket_path =
-        std::env::temp_dir().join(format!("quick-collab-big-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path).expect("bind broker");
-    thread::spawn(move || ui::collaboration::broker::serve(listener));
-
-    // SAFETY: single-threaded env mutation before any manager connects.
-    unsafe {
-        std::env::set_var("QUICK_COLLAB_SOCK", &socket_path);
-    }
-    let mut a = CollaborationManager::new();
-    let mut b = CollaborationManager::new();
+    let broker = TypedBroker::new();
+    let mut a = broker.manager("alice");
+    let mut b = broker.manager("bob");
     thread::sleep(Duration::from_millis(150));
     let _ = a.poll();
     let _ = b.poll();
@@ -54,5 +42,4 @@ fn large_frame_survives_split_reads() {
 
     drop(a);
     drop(b);
-    let _ = std::fs::remove_file(&socket_path);
 }

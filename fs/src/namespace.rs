@@ -901,6 +901,18 @@ impl Namespace {
             .collect()
     }
 
+    /// Stable entry lookup used by the storage authority.  It intentionally
+    /// exposes logical metadata, never an underlying host path.
+    pub fn entry_for_node(&self, id: &str) -> Option<Entry> {
+        self.entry(id).filter(|_| self.reaches_root(id))
+    }
+
+    /// Resolve the current kernel inode for a stable CRDT node identity.
+    pub fn inode_for_node(&mut self, id: &str) -> Option<u64> {
+        self.entry_for_node(id)?;
+        Some(self.ino_for_id(id))
+    }
+
     pub fn node_hash(&self, id: &str) -> Option<Hash> {
         self.entry(id)?.hash
     }

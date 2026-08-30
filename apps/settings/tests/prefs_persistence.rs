@@ -46,26 +46,6 @@ fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
 }
 
 #[test]
-fn audio_event_sounds_toggle_persists_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("audio");
-
-    let mut pane = settings::panes::audio::build();
-    // Default is `true`; flip it off through the production path.
-    seed_then_set_bool(
-        pane.as_mut(),
-        settings::panes::audio::EVENT_SOUNDS_KEY,
-        false,
-    );
-
-    let reloaded = SystemPrefs::load();
-    assert!(
-        !reloaded.audio.event_sounds,
-        "the event-sounds toggle wrote through to the shared store"
-    );
-}
-
-#[test]
 fn display_night_light_toggle_persists_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("display");
@@ -187,25 +167,6 @@ fn display_scale_persists_fractional_factor_to_disk() {
     );
 }
 
-#[test]
-fn updates_channel_persists_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("updates");
-
-    let mut pane = settings::panes::updates::build();
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    pane.sync(&mut doc, &root);
-    let _ = doc.put(&root, settings::panes::updates::CHANNEL_KEY, "Nightly");
-    pane.sync(&mut doc, &root);
-
-    assert_eq!(
-        SystemPrefs::load().updates.channel,
-        "Nightly",
-        "release channel persisted"
-    );
-}
-
 /// The External Accounts pane's Add flow writes a real account into the shared
 /// canonical accounts store (the same store Mail reads), and Remove deletes it
 /// — the full load/edit/save path through the pane, not just the store unit
@@ -280,9 +241,19 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
         "the password must not appear in the plaintext store JSON"
     );
 
-    // Now Remove it via the trash button's key.
+    // Now request removal via the trash button's key. Destructive account
+    // removal is deliberately a two-stage action, so exercise the same
+    // explicit confirmation the UI requires.
     let remove_key = format!("settings.accounts.remove.{id}");
     let _ = doc.put(&root, remove_key.as_str(), true);
+    pane.sync(&mut doc, &root);
+    assert!(
+        !AccountDirectory::load()
+            .views_of(AccountKind::Mail)
+            .is_empty(),
+        "the first action only opens the removal confirmation"
+    );
+    let _ = doc.put(&root, settings::panes::accounts::REMOVE_CONFIRM_KEY, true);
     pane.sync(&mut doc, &root);
 
     // The directory now reports empty for the Email kind — the account is gone

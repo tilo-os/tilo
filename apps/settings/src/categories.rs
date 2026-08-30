@@ -60,6 +60,8 @@ pub enum Category {
     Appearance,
     Accessibility,
     Notifications,
+    DefaultApps,
+    Storage,
     ExternalAccounts,
     RegionFormats,
     Permissions,
@@ -83,6 +85,8 @@ impl Category {
         Category::Appearance,
         Category::Accessibility,
         Category::Notifications,
+        Category::DefaultApps,
+        Category::Storage,
         Category::Power,
         Category::TimeDate,
         Category::Users,
@@ -110,6 +114,8 @@ impl Category {
             Category::Appearance
             | Category::Accessibility
             | Category::Notifications
+            | Category::DefaultApps
+            | Category::Storage
             | Category::Power
             | Category::TimeDate
             | Category::Users
@@ -144,9 +150,11 @@ impl Category {
             Category::Appearance => "Appearance",
             Category::Accessibility => "Accessibility",
             Category::Notifications => "Notifications",
+            Category::DefaultApps => "Apps & Files",
+            Category::Storage => "Storage",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
-            Category::Permissions => "Permissions & Roles",
+            Category::Permissions => "Privacy & Security",
             Category::Updates => "Updates",
             Category::About => "About",
         }
@@ -159,7 +167,7 @@ impl Category {
             Category::Bluetooth => "Pair and manage Bluetooth devices",
             Category::Sound => "Output, input, volume, and system sounds",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
-            Category::MouseKeyboard => "Pointer speed, scrolling, and keyboard layout",
+            Category::MouseKeyboard => "Pointer speed, scrolling, and input sources",
             Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
             Category::TimeDate => "Clock, time zone, and how dates display",
             Category::Users => "Accounts on this device and their roles",
@@ -168,10 +176,12 @@ impl Category {
             Category::Appearance => "Theme, contrast, motion, and text size",
             Category::Accessibility => "Vision, pointer, typing, and hearing assists",
             Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
-            Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
+            Category::DefaultApps => "Your preferred apps for links and file types",
+            Category::Storage => "Apps, data, cache, and synced files",
+            Category::ExternalAccounts => "Accounts shared with compatible installed apps",
             Category::RegionFormats => "Currency, date, time, and measurement units",
-            Category::Permissions => "Roles and per-action permissions for this workspace",
-            Category::Updates => "System updates and release channel",
+            Category::Permissions => "Device security, privacy hardware, and workspace access",
+            Category::Updates => "Operating-system and firmware updates",
             Category::About => "Device identity and transfer",
         }
     }
@@ -192,6 +202,8 @@ impl Category {
             Category::Appearance => "\u{f03d8}", // md-palette
             Category::Accessibility => "\u{f02e6}", // md-human (universal access)
             Category::Notifications => "\u{f009a}", // md-bell
+            Category::DefaultApps => "\u{f09a6}", // application-cog
+            Category::Storage => "\u{f01bc}", // harddisk
             Category::ExternalAccounts => "\u{f015f}", // md-cloud
             Category::RegionFormats => "\u{f01e7}", // md-earth
             Category::Permissions => "\u{f088f}", // md-shield-account
@@ -324,6 +336,23 @@ impl Category {
                 "previews",
                 "badge",
             ],
+            Category::DefaultApps => &[
+                "default app",
+                "open with",
+                "file association",
+                "handler",
+                "browser",
+                "mail",
+                "pdf",
+            ],
+            Category::Storage => &[
+                "disk space",
+                "cache",
+                "cleanup",
+                "app data",
+                "synced files",
+                "backup",
+            ],
             Category::ExternalAccounts => &[
                 "email",
                 "mail",
@@ -355,10 +384,15 @@ impl Category {
                 "file access",
                 "collaboration",
                 "security",
+                "privacy",
+                "encryption",
+                "secure boot",
+                "firewall",
+                "camera",
+                "microphone",
             ],
             Category::Updates => &[
-                "software", "upgrade", "channel", "stable", "nightly", "version", "bootc",
-                "release",
+                "software", "upgrade", "version", "bootc", "firmware", "rollback", "release",
             ],
             Category::Power => &[
                 "battery",
@@ -428,6 +462,8 @@ impl Category {
             Category::Appearance => "appearance",
             Category::Accessibility => "accessibility",
             Category::Notifications => "notifications",
+            Category::DefaultApps => "default-apps",
+            Category::Storage => "storage",
             Category::ExternalAccounts => "external_accounts",
             Category::RegionFormats => "region_formats",
             Category::Permissions => "permissions",

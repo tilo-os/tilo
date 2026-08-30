@@ -23,6 +23,7 @@ pub mod lock_controller;
 pub mod lock_screen;
 pub mod metrics;
 pub mod native;
+pub mod osk_service;
 pub mod output_globals;
 pub mod pacing;
 pub mod present;
@@ -32,6 +33,7 @@ pub mod render_node;
 pub mod selection;
 pub mod state;
 pub mod surface_readback;
+pub mod switch_control;
 pub mod tab_binding;
 pub mod test_control;
 

@@ -35,6 +35,8 @@ pub fn font_choice(kind: &FontKind) -> FontChoice {
 #[derive(Clone, Debug)]
 pub struct LineRun {
     pub x: f32,
+    /// Vertical offset within the line box (used to baseline inline math).
+    pub y: f32,
     /// Canonical source text covered by this run.
     pub text: String,
     /// Painted text; differs only when an exercised discretionary break adds
@@ -43,6 +45,7 @@ pub struct LineRun {
     pub bold: bool,
     pub italic: bool,
     pub mono: bool,
+    pub math: Option<ui::math::Layout>,
     /// Char offset of this run's first character within the block's canonical
     /// text (see [`LaidBlock::text`]).
     pub char_start: usize,
@@ -68,7 +71,15 @@ pub enum LayoutKind {
     Paragraph,
     Quote,
     List,
+    Math,
     Separator,
+}
+
+#[derive(Clone, Debug)]
+pub struct LaidMath {
+    pub layout: ui::math::Layout,
+    pub x: f32,
+    pub y_offset: f32,
 }
 
 /// A laid-out block, ready to paint.
@@ -87,6 +98,8 @@ pub struct LaidBlock {
     pub lines: Vec<LaidLine>,
     /// Bullet/number glyph for list items.
     pub bullet: Option<String>,
+    /// Shared structured-math geometry for a MathML block.
+    pub math: Option<LaidMath>,
     /// The block's canonical selectable text: its words joined by single
     /// spaces. Char offsets in [`LineRun::char_start`] index into this.
     pub text: String,
@@ -202,6 +215,15 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             space_before: body * 0.4,
             fixed_height: None,
         },
+        Block::Math { .. } => BlockStyle {
+            kind: LayoutKind::Math,
+            size: body * 1.08,
+            force_italic: false,
+            force_bold: false,
+            indent: 0.0,
+            space_before: body,
+            fixed_height: None,
+        },
         Block::Separator => BlockStyle {
             kind: LayoutKind::Separator,
             size: body,
@@ -220,6 +242,7 @@ struct Word {
     bold: bool,
     italic: bool,
     mono: bool,
+    math: Option<ui::math::Layout>,
     w: f32,
     /// Whether a space separates this word from the previous one. `false` lets
     /// punctuation and clitics hug the preceding word across a style boundary.
@@ -342,6 +365,39 @@ pub fn layout_chapter(
         let st = style_for(block, body);
         y += st.space_before;
 
+        if let Block::Math { expr, source, .. } = block {
+            let math_layout = ui::math::layout(&expr.root, tr, st.size);
+            let vertical_pad = body * 0.35;
+            let height = math_layout.height as f32 + vertical_pad * 2.0;
+            let math_x = ((content_w - math_layout.width as f32) * 0.5).max(0.0);
+            laid.push(LaidBlock {
+                index,
+                kind: LayoutKind::Math,
+                top: y,
+                bottom: y + height,
+                size: st.size,
+                line_height: height,
+                indent: 0.0,
+                lines: vec![LaidLine {
+                    y,
+                    glyph_scale: 1.0,
+                    adjustment_ratio: 0.0,
+                    rtl: false,
+                    runs: vec![],
+                }],
+                bullet: None,
+                math: Some(LaidMath {
+                    layout: math_layout,
+                    x: math_x,
+                    y_offset: vertical_pad,
+                }),
+                text: source.clone(),
+                char_len: source.chars().count(),
+            });
+            y += height;
+            continue;
+        }
+
         if st.kind == LayoutKind::Separator {
             let h = st.fixed_height.unwrap_or(st.size * 1.6);
             laid.push(LaidBlock {
@@ -360,6 +416,7 @@ pub fn layout_chapter(
                     runs: vec![],
                 }],
                 bullet: None,
+                math: None,
                 text: String::new(),
                 char_len: 0,
             });
@@ -367,7 +424,7 @@ pub fn layout_chapter(
             continue;
         }
 
-        let line_height = st.size * 1.25 * settings.line_spacing;
+        let mut line_height = st.size * 1.25 * settings.line_spacing;
         let text_width = (content_w - st.indent).max(40.0);
         let space_w = measure_space(tr, st.size, base_family);
 
@@ -387,6 +444,40 @@ pub fn layout_chapter(
             } else {
                 base_family
             };
+            if let Some(expr) = &span.math {
+                let space_before = span.space_before;
+                if !canon.is_empty() && space_before {
+                    canon.push(' ');
+                    char_pos += 1;
+                }
+                let source_byte_start = canon.len();
+                let char_start = char_pos;
+                let char_len = span.text.chars().count();
+                canon.push_str(&span.text);
+                char_pos += char_len;
+                let math_layout = ui::math::layout(&expr.root, tr, st.size);
+                line_height = line_height.max(math_layout.height as f32 + st.size * 0.18);
+                words.push(Word {
+                    text: span.text.clone(),
+                    bold: false,
+                    italic: false,
+                    mono: false,
+                    w: math_layout.width as f32,
+                    math: Some(math_layout),
+                    space_before,
+                    char_start,
+                    char_len,
+                    source_byte_start,
+                    hyphen_break_before: false,
+                    hyphen_width_before: 0.0,
+                    natural_break_before: false,
+                    stretch_before: 0.0,
+                    shrink_before: 0.0,
+                    start_protrusion: 0.0,
+                    end_protrusion: 0.0,
+                });
+                continue;
+            }
             for (wi, w) in span.text.split_whitespace().enumerate() {
                 let space_before = if wi == 0 { span.space_before } else { true };
                 // A separating space is one canonical char between words.
@@ -486,6 +577,7 @@ pub fn layout_chapter(
                         bold,
                         italic,
                         mono,
+                        math: None,
                         w: fragment_width,
                         space_before: fragment_index == 0 && space_before,
                         char_start: char_start + chars_before,
@@ -576,6 +668,8 @@ pub fn layout_chapter(
                     && previous.bold == word.bold
                     && previous.italic == word.italic
                     && previous.mono == word.mono
+                    && previous.math.is_none()
+                    && word.math.is_none()
                     && previous.char_start + previous.char_len == word.char_start
                 {
                     previous.text.push_str(&word.text);
@@ -601,11 +695,16 @@ pub fn layout_chapter(
                 }
                 runs.push(LineRun {
                     x,
+                    y: word
+                        .math
+                        .as_ref()
+                        .map_or_else(|| 0.0, |math| (line_height - math.height as f32) * 0.5),
                     text: word.text.clone(),
                     display_text: word.text.clone(),
                     bold: word.bold,
                     italic: word.italic,
                     mono: word.mono,
+                    math: word.math.clone(),
                     char_start: word.char_start,
                     char_len: word.char_len,
                 });
@@ -667,6 +766,7 @@ pub fn layout_chapter(
             indent: st.indent,
             lines,
             bullet,
+            math: None,
             char_len: char_pos,
             text: canon,
         });
@@ -840,6 +940,52 @@ mod tests {
         // Lines are monotonically increasing in y.
         let ys: Vec<f32> = para_block.lines.iter().map(|l| l.y).collect();
         assert!(ys.windows(2).all(|w| w[1] > w[0]));
+    }
+
+    #[test]
+    fn math_block_uses_shared_two_dimensional_layout() {
+        let mut tr = TextRenderer::new();
+        let expr = ui::math::MathExpr {
+            root: vec![ui::math::Node::Frac {
+                num: vec![
+                    ui::math::Node::Char('x'),
+                    ui::math::Node::Sup {
+                        exp: vec![ui::math::Node::Char('2')],
+                    },
+                ],
+                den: vec![ui::math::Node::Sqrt {
+                    index: None,
+                    radicand: vec![ui::math::Node::Char('y')],
+                }],
+            }],
+        };
+        let layout = layout_chapter(
+            &mut tr,
+            &[Block::Math {
+                expr,
+                source: "(x^(2))/(sqrt(y))".into(),
+                display: true,
+            }],
+            420.0,
+            500.0,
+            &Settings::default(),
+            0,
+            "en-US",
+            &FontChoice::Serif,
+            1.0,
+            0,
+        );
+        let block = &layout.blocks[0];
+        let math = block.math.as_ref().expect("shared math layout attached");
+        assert_eq!(block.kind, LayoutKind::Math);
+        assert!(math.layout.height > f64::from(block.size) * 2.0);
+        assert!(math.x > 0.0, "display formula is centered in the measure");
+        assert!(
+            math.layout
+                .boxes
+                .iter()
+                .any(|math_box| matches!(math_box.kind, ui::math::BoxKind::FracBar))
+        );
     }
 
     #[test]
@@ -1098,6 +1244,7 @@ mod tests {
                 })
                 .collect(),
             bullet: None,
+            math: None,
             text: String::new(),
             char_len: 0,
         }

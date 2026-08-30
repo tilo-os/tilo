@@ -24,11 +24,14 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Avatar, Button, ButtonFace, ButtonStyle, Link, TextInput, Widget};
+use ui::widget::{
+    Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Link, TextInput, Widget,
+};
 
 use crate::date;
 use crate::doc::ContactsDoc;
@@ -3094,37 +3097,13 @@ fn menu_item_colored(
     );
 }
 
-/// Draw a checkbox in the export-selection list. Matches the look of the
-/// `ui` Checkbox widget (which can't be reused here — it requires a CRDT
-/// boolean path with no imperative checked-state API): accent fill + white
-/// tick when checked, otherwise a bordered empty box.
 fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checked: bool) {
-    let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-    if checked {
-        scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
-    } else {
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &shape);
-        scene.stroke(&Stroke::new(1.4), t, c.border_standard, None, &shape);
-    }
-    if checked {
-        // White check polyline, proportional to the box.
-        let x0 = rect.x0;
-        let y0 = rect.y0;
-        let w = rect.width();
-        let h = rect.height();
-        let mut p = BezPath::new();
-        p.move_to((x0 + w * 0.26, y0 + h * 0.52));
-        p.line_to((x0 + w * 0.44, y0 + h * 0.70));
-        p.line_to((x0 + w * 0.76, y0 + h * 0.30));
-        scene.stroke(
-            &Stroke::new(2.0).with_caps(vello::kurbo::Cap::Round),
-            t,
-            Color::WHITE,
-            None,
-            &p,
-        );
-    }
+    Checkbox::paint(
+        scene,
+        t,
+        theme,
+        &CheckboxFace::new(rect, checked).transparent_unchecked(),
+    );
 }
 
 fn draw_avatar(
@@ -3142,60 +3121,26 @@ fn draw_avatar(
 }
 
 fn draw_star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, filled: bool) {
-    let mut path = BezPath::new();
-    for i in 0..10 {
-        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
-        let rad = if i % 2 == 0 { r } else { r * 0.42 };
-        let p = Point::new(center.x + ang.cos() * rad, center.y + ang.sin() * rad);
-        if i == 0 {
-            path.move_to(p);
-        } else {
-            path.line_to(p);
-        }
-    }
-    path.close_path();
+    let rect = Rect::new(center.x - r, center.y - r, center.x + r, center.y + r);
     if filled {
-        scene.fill(Fill::NonZero, t, color, None, &path);
+        Icon::Star.draw_filled(scene, t, rect, color);
     } else {
-        scene.stroke(&Stroke::new(1.4), t, color, None, &path);
+        Icon::Star.draw(scene, t, rect, color);
     }
 }
 
 fn draw_calendar_glyph(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
-    let c = &theme.tokens.colors;
-    let inner = rect.inset(-0.0);
-    let g = Rect::new(
-        inner.center().x - 9.0,
-        inner.center().y - 8.0,
-        inner.center().x + 9.0,
-        inner.center().y + 9.0,
-    );
-    let shape = RoundedRect::from_rect(g, 2.0);
-    scene.stroke(&Stroke::new(1.4), t, c.text_dim, None, &shape);
-    scene.stroke(
-        &Stroke::new(1.4),
-        t,
-        c.text_dim,
-        None,
-        &Line::new((g.x0, g.y0 + 5.0), (g.x1, g.y0 + 5.0)),
-    );
+    let g = Rect::from_center_size(rect.center(), (18.0, 18.0));
+    Icon::Calendar.draw(scene, t, g, theme.tokens.colors.text_dim);
 }
 
 fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: bool) {
-    let c = &theme.tokens.colors;
-    let cx = rect.center().x;
-    let cy = rect.center().y;
-    let mut p = BezPath::new();
-    if left {
-        p.move_to((cx + 3.0, cy - 5.0));
-        p.line_to((cx - 3.0, cy));
-        p.line_to((cx + 3.0, cy + 5.0));
+    let icon = if left {
+        Icon::ChevronLeft
     } else {
-        p.move_to((cx - 3.0, cy - 5.0));
-        p.line_to((cx + 3.0, cy));
-        p.line_to((cx - 3.0, cy + 5.0));
-    }
-    scene.stroke(&Stroke::new(2.0), t, c.text_primary, None, &p);
+        Icon::ChevronRight
+    };
+    icon.draw(scene, t, rect, theme.tokens.colors.text_primary);
 }
 
 fn draw_toast(
@@ -3297,6 +3242,8 @@ impl Widget for ContactsApp {
             self.relayout = true;
             self.dirty = true;
         }
+
+        crate::priority_contacts::publish_if_changed(&self.store);
 
         self.search.sync(state, path);
         if let Some(form) = &mut self.form {

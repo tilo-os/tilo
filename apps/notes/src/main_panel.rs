@@ -459,12 +459,7 @@ impl Widget for MainPanel {
             let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
             self.editor.apply_layout(taffy, n, unshifted_origin);
             let editor_rect = self.editor.get_rect();
-            let last_block_bottom = self
-                .editor
-                .blocks()
-                .iter()
-                .map(|b| b.line.get_rect().y1)
-                .fold(editor_rect.y0, f64::max);
+            let last_block_bottom = self.editor.content_bottom();
             // Content height = where the lowest block actually ends,
             // minus the editor's top. This catches taffy under-reports
             // for flex-column overflow (same kludge ui::Scrollable uses

@@ -1,144 +1,291 @@
-//! Keyboard Shortcuts pane — a reference for the shortcuts qOS actually
-//! implements.
-//!
-//! This is an honest cheat-sheet, not an editor: every chord listed here is a
-//! real binding the compositor (`shell`) or the UI toolkit (`ui`) handles —
-//! the global chords come from the compositor's key dispatch (Super+K search,
-//! Super+Tab overview, Super+L lock, Escape to dismiss) and the editing chords
-//! from the toolkit's text input (Ctrl+A/C/V/X). Rebinding needs a settings
-//! schema the compositor reads back, which is a follow-up; rather than ship a
-//! rebinding UI that can't persist, this pane presents the current bindings
-//! clearly and says customization is coming.
+//! Editable compositor shortcuts. The Settings CRDT is only the form model;
+//! accepted bindings are validated and atomically persisted through the
+//! shared typed contract the compositor consumes.
 
+use crate::widgets::{caption, card, rows, setting_row_described};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+use std::collections::HashMap;
+use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Row, Spacer, Text, Widget};
+use ui::widget::{TextInput, Widget};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{Modifiers, WindowEvent};
 
-use crate::widgets::{El, caption, card, hgap, rows};
+const SEARCH: &str = "shortcuts.search";
+const OVERVIEW: &str = "shortcuts.overview";
+const LOCK: &str = "shortcuts.lock";
+const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
 
-/// One shortcut: what it does and the chord that triggers it.
-#[derive(Clone, Copy, Debug)]
-pub struct Shortcut {
-    pub action: &'static str,
-    pub chord: &'static str,
+fn entries() -> [(ShortcutAction, &'static str, &'static str, &'static str); 4] {
+    [
+        (
+            ShortcutAction::Search,
+            SEARCH,
+            "Open search",
+            "Search apps, documents, settings and actions",
+        ),
+        (
+            ShortcutAction::WorkspaceOverview,
+            OVERVIEW,
+            "Workspace overview",
+            "Show the infinite workspace map",
+        ),
+        (
+            ShortcutAction::Lock,
+            LOCK,
+            "Lock the screen",
+            "Always handled before applications",
+        ),
+        (
+            ShortcutAction::QuickSettings,
+            QUICK_SETTINGS,
+            "Quick Settings",
+            "Open the shell control surface",
+        ),
+    ]
 }
 
-/// Global compositor shortcuts — handled by the shell's key dispatch,
-/// available from anywhere in the session.
-pub const GLOBAL: &[Shortcut] = &[
-    Shortcut {
-        action: "Open search",
-        chord: "Super  K",
-    },
-    Shortcut {
-        action: "Toggle workspace overview",
-        chord: "Super  Tab",
-    },
-    Shortcut {
-        action: "Lock the screen",
-        chord: "Super  L",
-    },
-    Shortcut {
-        action: "Dismiss the current overlay",
-        chord: "Esc",
-    },
-];
+pub struct ShortcutPane {
+    config: ShortcutConfig,
+    last_text: HashMap<ShortcutAction, String>,
+    needs_seed: bool,
+    composed: Option<Box<dyn Widget>>,
+    rect: Rect,
+}
 
-/// Text-editing shortcuts — handled by the toolkit's text input, available in
-/// any editable field across every qOS app.
-pub const EDITING: &[Shortcut] = &[
-    Shortcut {
-        action: "Select all",
-        chord: "Ctrl  A",
-    },
-    Shortcut {
-        action: "Copy",
-        chord: "Ctrl  C",
-    },
-    Shortcut {
-        action: "Paste",
-        chord: "Ctrl  V",
-    },
-    Shortcut {
-        action: "Cut",
-        chord: "Ctrl  X",
-    },
-];
+impl Default for ShortcutPane {
+    fn default() -> Self {
+        let config = ShortcutConfig::load();
+        let last_text = config
+            .bindings
+            .iter()
+            .map(|(a, c)| (*a, c.display()))
+            .collect();
+        Self {
+            config,
+            last_text,
+            needs_seed: true,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+}
+
+impl ShortcutPane {
+    fn composition(&self) -> Box<dyn Widget> {
+        let mut system = Vec::new();
+        for (action, key, label, description) in entries() {
+            let placeholder = self
+                .config
+                .bindings
+                .get(&action)
+                .map(KeyChord::display)
+                .unwrap_or_default();
+            system.push(setting_row_described(
+                label,
+                description,
+                Box::new(
+                    TextInput::new(Vec::new())
+                        .with_id(key)
+                        .with_on_change_path(key)
+                        .with_placeholder(&placeholder)
+                        .with_font_size(13.0),
+                ),
+            ));
+        }
+        crate::widgets::cards(vec![
+            card("System", rows(system)),
+            card(
+                "Safety and conflicts",
+                rows(vec![caption(
+                    "Type a chord such as Super+K. Printable keys require a modifier. Reserved emergency and virtual-terminal chords cannot be changed; duplicate chords are rejected without replacing the working binding.",
+                )]),
+            ),
+            card(
+                "Application shortcuts",
+                rows(vec![caption(
+                    "Applications own commands inside their windows. System bindings win only for the actions above, so apps remain free to expose their own shortcut editor.",
+                )]),
+            ),
+        ])
+    }
+
+    fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
+        match state.get(root, key) {
+            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                automerge::ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
+            _ => None,
+        }
+    }
+}
 
 pub fn build() -> Box<dyn Widget> {
-    let global = card(
-        "System",
-        rows(GLOBAL.iter().map(|s| shortcut_row(*s)).collect()),
-    );
-    let editing = card(
-        "Text editing",
-        rows(EDITING.iter().map(|s| shortcut_row(*s)).collect()),
-    );
-    let note = card(
-        "About shortcuts",
-        rows(vec![caption(
-            "These are the shortcuts qOS handles today. Individual apps add \
-             their own; custom rebinding is coming to a future release.",
-        )]),
-    );
-    crate::widgets::cards(vec![global, editing, note])
+    Box::new(ShortcutPane::default())
 }
 
-/// One shortcut row: the action on the left, the chord rendered as keycaps on
-/// the right. The keycaps are direct children of the row (a nested Row would
-/// seize the full width and wrap below the action); as direct children the
-/// action sizes to content and the caps sit at the right edge.
-fn shortcut_row(s: Shortcut) -> El {
-    let mut row = Row::new()
-        .push(Box::new(Text::new(s.action).with_size(13.0)))
-        .push(Box::new(Spacer::new()));
-    // The chord string separates keys with double spaces (e.g. "Super  K"); a
-    // keycap per token reads like a physical shortcut.
-    for (i, key) in s.chord.split("  ").enumerate() {
-        if i != 0 {
-            row = row.push(hgap(6.0));
+impl Widget for ShortcutPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self.needs_seed {
+            for (action, key, _, _) in entries() {
+                let value = self
+                    .config
+                    .bindings
+                    .get(&action)
+                    .map(KeyChord::display)
+                    .unwrap_or_default();
+                let _ = state.put(root, key, value.clone());
+                self.last_text.insert(action, value);
+            }
+            self.needs_seed = false;
         }
-        row = row.push(keycap(key));
+        for (action, key, _, _) in entries() {
+            let Some(value) = Self::read_text(state, root, key) else {
+                continue;
+            };
+            if self.last_text.get(&action) == Some(&value) {
+                continue;
+            }
+            let valid = KeyChord::parse(&value).and_then(|chord| {
+                self.config
+                    .set(action, chord)
+                    .map_err(|_| "shortcut conflicts with another system action")
+            });
+            if valid.is_ok() && self.config.save().is_ok() {
+                self.last_text.insert(action, value);
+            } else if let Some(previous) = self.last_text.get(&action) {
+                let _ = state.put(root, key, previous.clone());
+            }
+        }
+        if let Some(c) = &mut self.composed {
+            c.sync(state, root);
+        }
     }
-    Box::new(row)
-}
 
-/// A single key rendered as a subtle bordered "cap".
-fn keycap(label: &str) -> El {
-    let theme = Theme::dark();
-    Box::new(ui::widget::Badge::pill(label, theme.bg_hover))
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let mut c = self.composition();
+        let child = c.build_layout(taffy, theme, node_map);
+        self.composed = Some(c);
+        let node = taffy
+            .new_with_children(
+                taffy::Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + (l.location.x + l.size.width) as f64,
+            origin.y + (l.location.y + l.size.height) as f64,
+        );
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+        }
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if let Some(c) = &mut self.composed {
+            c.draw(scene, transform, text, theme, presence);
+        }
+    }
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let Some(c) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&cn) = children.first()
+        {
+            c.handle_event(
+                event, scale, modifiers, state, path, handled, focus, cn, taffy,
+            );
+        }
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.composed
+            .as_ref()
+            .map(|c| c.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.composed
+            .as_mut()
+            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+    fn name(&self) -> &'static str {
+        "ShortcutPane"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use taffy::{NodeId, TaffyTree};
-
     #[test]
-    fn every_shortcut_has_action_and_chord() {
-        for s in GLOBAL.iter().chain(EDITING.iter()) {
-            assert!(!s.action.is_empty(), "shortcut missing action");
-            assert!(!s.chord.is_empty(), "shortcut missing chord");
-        }
+    fn seeds_real_default_bindings() {
+        let mut pane = ShortcutPane::default();
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            ShortcutPane::read_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
+            Some("Super+k")
+        );
     }
-
     #[test]
-    fn lists_the_real_compositor_chords() {
-        // Guard against drift: the pane must advertise the chords the shell
-        // actually dispatches (Super+K search, Super+Tab overview, Super+L
-        // lock) — not invented ones.
-        let actions: Vec<&str> = GLOBAL.iter().map(|s| s.action).collect();
-        assert!(actions.iter().any(|a| a.contains("search")));
-        assert!(actions.iter().any(|a| a.contains("overview")));
-        assert!(actions.iter().any(|a| a.contains("Lock")));
-    }
-
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+    fn conflicting_edit_is_rolled_back() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new("shortcut_conflict");
+        let mut pane = ShortcutPane::default();
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        let _ = doc.put(&automerge::ROOT, LOCK, "Super+k");
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            ShortcutPane::read_text(&doc, &automerge::ROOT, LOCK).as_deref(),
+            Some("Super+l")
+        );
     }
 }

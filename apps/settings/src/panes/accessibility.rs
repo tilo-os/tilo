@@ -31,8 +31,10 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
-use crate::prefs::{AccessibilityPrefs, AppearancePrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described};
+use crate::prefs::{
+    AccessibilityPrefs, AppearancePrefs, ColorFilter, ScreenReaderVoice, SwitchKeyPair, SystemPrefs,
+};
+use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -48,6 +50,48 @@ pub const OSK_KEY: &str = "a11y.on_screen_keyboard";
 // Hearing + screen reader.
 pub const VISUAL_ALERTS_KEY: &str = "a11y.visual_alerts";
 pub const SCREEN_READER_KEY: &str = "a11y.screen_reader";
+pub const COLOR_FILTER_KEY: &str = "a11y.color_filter";
+pub const MAGNIFIER_KEY: &str = "a11y.magnifier";
+pub const CURSOR_CROSSHAIR_KEY: &str = "a11y.cursor_crosshair";
+pub const THICK_CARET_KEY: &str = "a11y.thick_text_caret";
+pub const SWITCH_CONTROL_KEY: &str = "a11y.switch_control";
+pub const SWITCH_KEYS_KEY: &str = "a11y.switch_keys";
+pub const SWITCH_SCAN_KEY: &str = "a11y.switch_scan";
+pub const READER_RATE_KEY: &str = "a11y.reader_rate";
+pub const READER_VOICE_KEY: &str = "a11y.reader_voice";
+const OSK_PACKAGE_ID: &str = "dev.qos.osk";
+const OSK_PACKAGE_KIND: &str = "service";
+
+fn osk_service_installed() -> bool {
+    launcher::registry::list_installed()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| launcher::manifest::read_manifest(&entry.manifest_path).ok())
+        .any(|manifest| {
+            manifest.package_id == OSK_PACKAGE_ID
+                && manifest.kind == OSK_PACKAGE_KIND
+                && manifest.entrypoint.gui_bin().is_some()
+        })
+}
+
+fn executable_available(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            let candidate = dir.join(name);
+            std::fs::metadata(candidate).is_ok_and(|m| m.is_file())
+        })
+    })
+}
+
+fn tts_capability() -> Option<&'static str> {
+    if executable_available("speech-dispatcher") {
+        Some("Speech Dispatcher")
+    } else if executable_available("espeak-ng") {
+        Some("eSpeak NG")
+    } else {
+        None
+    }
+}
 
 pub struct AccessibilityPane {
     appearance: AppearancePrefs,
@@ -113,6 +157,32 @@ impl AccessibilityPane {
                     Self::toggle("a11y.reduce_motion", REDUCE_MOTION_KEY),
                 ),
                 choice_row("Text size", Box::new(size)),
+                choice_row(
+                    "Colour filter",
+                    Box::new(
+                        Dropdown::new(
+                            ColorFilter::OPTIONS
+                                .iter()
+                                .map(|s| (*s).to_string())
+                                .collect(),
+                            COLOR_FILTER_KEY,
+                        )
+                        .with_id("a11y.color_filter")
+                        .with_placeholder(self.access.color_filter.label()),
+                    ),
+                ),
+                choice_row(
+                    "Magnifier lens",
+                    Box::new(
+                        Dropdown::new(vec!["Off".into(), "2×".into(), "3×".into()], MAGNIFIER_KEY)
+                            .with_id("a11y.magnifier")
+                            .with_placeholder(match self.access.magnifier_zoom {
+                                2 => "2×",
+                                3 => "3×",
+                                _ => "Off",
+                            }),
+                    ),
+                ),
             ]),
         );
 
@@ -135,10 +205,32 @@ impl AccessibilityPane {
                     Self::toggle("a11y.large_cursor", LARGE_CURSOR_KEY),
                 ),
                 choice_row("Cursor size", Box::new(cursor)),
+                setting_row_described(
+                    "Pointer crosshair",
+                    "Draw high-contrast guide lines through the pointer",
+                    Self::toggle("a11y.cursor_crosshair", CURSOR_CROSSHAIR_KEY),
+                ),
+                setting_row_described(
+                    "Thicker text cursor",
+                    "Use a wider insertion caret in qOS applications",
+                    Self::toggle("a11y.thick_text_caret", THICK_CARET_KEY),
+                ),
             ]),
         );
 
         // --- Typing.
+        let osk_row = if osk_service_installed() {
+            setting_row_described(
+                "On-screen keyboard",
+                "Show the keyboard automatically for focused text fields",
+                Self::toggle("a11y.on_screen_keyboard", OSK_KEY),
+            )
+        } else {
+            value_row(
+                "On-screen keyboard",
+                "Not installed — add the signed dev.qos.osk system package",
+            )
+        };
         let typing_card = card(
             "Typing",
             rows(vec![
@@ -152,29 +244,129 @@ impl AccessibilityPane {
                     "Ignore brief, accidental key presses",
                     Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY),
                 ),
+                osk_row,
                 setting_row_described(
-                    "On-screen keyboard",
-                    "Show a keyboard for typing without a physical one",
-                    Self::toggle("a11y.osk", OSK_KEY),
+                    "Switch control",
+                    "Translate a hardware switch pair into standard Tab and Enter actions",
+                    Self::toggle("a11y.switch_control", SWITCH_CONTROL_KEY),
+                ),
+                choice_row(
+                    "Switch keys (next / activate)",
+                    Box::new(
+                        Dropdown::new(
+                            SwitchKeyPair::OPTIONS
+                                .iter()
+                                .map(|s| (*s).to_string())
+                                .collect(),
+                            SWITCH_KEYS_KEY,
+                        )
+                        .with_id("a11y.switch_keys")
+                        .with_placeholder(self.access.switch_key_pair.label()),
+                    ),
+                ),
+                choice_row(
+                    "Automatic scan",
+                    Box::new(
+                        Dropdown::new(
+                            vec![
+                                "Manual".into(),
+                                "1 second".into(),
+                                "2 seconds".into(),
+                                "3 seconds".into(),
+                            ],
+                            SWITCH_SCAN_KEY,
+                        )
+                        .with_id("a11y.switch_scan")
+                        .with_placeholder(
+                            match self.access.switch_scan_ms {
+                                1000 => "1 second",
+                                2000 => "2 seconds",
+                                3000 => "3 seconds",
+                                _ => "Manual",
+                            },
+                        ),
+                    ),
                 ),
             ]),
         );
 
-        // --- Hearing + screen reader.
-        let hearing_card = card(
-            "Hearing & screen reader",
-            rows(vec![
-                setting_row_described(
-                    "Visual alerts",
-                    "Flash the screen instead of playing an alert sound",
-                    Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY),
-                ),
+        // Working cross-application assists stay writable here. Capabilities
+        // without an apply path remain status rows below so Settings never
+        // promises an inert preference.
+        let reader_rows = if let Some(backend) = tts_capability() {
+            vec![
                 setting_row_described(
                     "Screen reader",
-                    "Read the interface aloud (AT-SPI)",
+                    "Read focused controls and live announcements aloud",
                     Self::toggle("a11y.screen_reader", SCREEN_READER_KEY),
                 ),
-            ]),
+                value_row("Speech engine", backend),
+                choice_row(
+                    "Speech rate",
+                    Box::new(
+                        Dropdown::new(
+                            vec![
+                                "Slow".into(),
+                                "Default".into(),
+                                "Fast".into(),
+                                "Very fast".into(),
+                            ],
+                            READER_RATE_KEY,
+                        )
+                        .with_id("a11y.reader_rate")
+                        .with_placeholder(
+                            match self.access.screen_reader_rate {
+                                0..=75 => "Slow",
+                                76..=115 => "Default",
+                                116..=160 => "Fast",
+                                _ => "Very fast",
+                            },
+                        ),
+                    ),
+                ),
+                choice_row(
+                    "Voice",
+                    Box::new(
+                        Dropdown::new(
+                            ScreenReaderVoice::OPTIONS
+                                .iter()
+                                .map(|s| (*s).to_string())
+                                .collect(),
+                            READER_VOICE_KEY,
+                        )
+                        .with_id("a11y.reader_voice")
+                        .with_placeholder(self.access.screen_reader_voice.label()),
+                    ),
+                ),
+            ]
+        } else {
+            vec![value_row(
+                "Screen reader",
+                "Unavailable — install Speech Dispatcher or eSpeak NG",
+            )]
+        };
+        let advanced_card = card(
+            "More assistive technology",
+            rows(
+                reader_rows
+                    .into_iter()
+                    .chain([
+                        setting_row_described(
+                            "Visual alerts",
+                            "Flash a clear screen-edge alert when a notification arrives",
+                            Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY),
+                        ),
+                        value_row(
+                            "Application focus highlight",
+                            "Not yet available for non-qOS applications",
+                        ),
+                        value_row(
+                            "Live captions",
+                            "Unavailable — no local speech-to-text engine is installed",
+                        ),
+                    ])
+                    .collect(),
+            ),
         );
 
         let explainer = card(
@@ -182,8 +374,16 @@ impl AccessibilityPane {
             rows(vec![caption(
                 "Vision comforts are the same settings the Appearance pane \
                  offers — changing them here or there updates one shared value. \
-                 The pointer, typing, and hearing assists are read by the \
-                 compositor's input and accessibility layer.",
+                 Pointer sizing, sticky keys and slow keys are applied by the \
+                 compositor's input layer. Colour filters, the magnifier and \
+                 pointer guides are final-scene compositor effects. Text-caret \
+                 width is owned by the shared toolkit. The screen reader reloads in every \
+                 qOS app and visual alerts are rendered by shell chrome. The \
+                 on-screen keyboard is a sandboxed system service: the \
+                 compositor starts it on a private input-method socket and \
+                 keeps its surface out of workspace tiles. \
+                 Unsupported capabilities are identified explicitly instead \
+                 of being stored as inert toggles.",
             )]),
         );
 
@@ -191,7 +391,7 @@ impl AccessibilityPane {
             vision_card,
             pointer_card,
             typing_card,
-            hearing_card,
+            advanced_card,
             explainer,
         ])
     }
@@ -257,6 +457,45 @@ impl Widget for AccessibilityPane {
             seed_bool(state, OSK_KEY, self.access.on_screen_keyboard);
             seed_bool(state, VISUAL_ALERTS_KEY, self.access.visual_alerts);
             seed_bool(state, SCREEN_READER_KEY, self.access.screen_reader);
+            let _ = state.put(root, COLOR_FILTER_KEY, self.access.color_filter.label());
+            let _ = state.put(
+                root,
+                MAGNIFIER_KEY,
+                match self.access.magnifier_zoom {
+                    2 => "2×",
+                    3 => "3×",
+                    _ => "Off",
+                },
+            );
+            seed_bool(state, CURSOR_CROSSHAIR_KEY, self.access.cursor_crosshair);
+            seed_bool(state, THICK_CARET_KEY, self.access.thick_text_caret);
+            seed_bool(state, SWITCH_CONTROL_KEY, self.access.switch_control);
+            let _ = state.put(root, SWITCH_KEYS_KEY, self.access.switch_key_pair.label());
+            let _ = state.put(
+                root,
+                SWITCH_SCAN_KEY,
+                match self.access.switch_scan_ms {
+                    1000 => "1 second",
+                    2000 => "2 seconds",
+                    3000 => "3 seconds",
+                    _ => "Manual",
+                },
+            );
+            let _ = state.put(
+                root,
+                READER_RATE_KEY,
+                match self.access.screen_reader_rate {
+                    0..=75 => "Slow",
+                    76..=115 => "Default",
+                    116..=160 => "Fast",
+                    _ => "Very fast",
+                },
+            );
+            let _ = state.put(
+                root,
+                READER_VOICE_KEY,
+                self.access.screen_reader_voice.label(),
+            );
             self.needs_seed = false;
         }
 
@@ -316,6 +555,75 @@ impl Widget for AccessibilityPane {
             &mut self.access.screen_reader,
             Self::read_bool(state, root, SCREEN_READER_KEY),
         );
+        adopt(
+            &mut self.access.cursor_crosshair,
+            Self::read_bool(state, root, CURSOR_CROSSHAIR_KEY),
+        );
+        adopt(
+            &mut self.access.thick_text_caret,
+            Self::read_bool(state, root, THICK_CARET_KEY),
+        );
+        adopt(
+            &mut self.access.switch_control,
+            Self::read_bool(state, root, SWITCH_CONTROL_KEY),
+        );
+        if let Some(label) = Self::read_str(state, root, SWITCH_KEYS_KEY)
+            && let Some(pair) = SwitchKeyPair::from_label(&label)
+            && pair != self.access.switch_key_pair
+        {
+            self.access.switch_key_pair = pair;
+            changed = true;
+        }
+        if let Some(label) = Self::read_str(state, root, SWITCH_SCAN_KEY) {
+            let ms = match label.as_str() {
+                "1 second" => 1000,
+                "2 seconds" => 2000,
+                "3 seconds" => 3000,
+                _ => 0,
+            };
+            if ms != self.access.switch_scan_ms {
+                self.access.switch_scan_ms = ms;
+                changed = true;
+            }
+        }
+
+        if let Some(label) = Self::read_str(state, root, COLOR_FILTER_KEY)
+            && let Some(filter) = ColorFilter::from_label(&label)
+            && filter != self.access.color_filter
+        {
+            self.access.color_filter = filter;
+            changed = true;
+        }
+        if let Some(label) = Self::read_str(state, root, MAGNIFIER_KEY) {
+            let zoom = match label.as_str() {
+                "2×" => 2,
+                "3×" => 3,
+                _ => 1,
+            };
+            if zoom != self.access.magnifier_zoom {
+                self.access.magnifier_zoom = zoom;
+                changed = true;
+            }
+        }
+        if let Some(label) = Self::read_str(state, root, READER_RATE_KEY) {
+            let rate = match label.as_str() {
+                "Slow" => 65,
+                "Fast" => 140,
+                "Very fast" => 185,
+                _ => 100,
+            };
+            if rate != self.access.screen_reader_rate {
+                self.access.screen_reader_rate = rate;
+                changed = true;
+            }
+        }
+        if let Some(label) = Self::read_str(state, root, READER_VOICE_KEY)
+            && let Some(voice) = ScreenReaderVoice::from_label(&label)
+            && voice != self.access.screen_reader_voice
+        {
+            self.access.screen_reader_voice = voice;
+            changed = true;
+        }
 
         if let Some(label) = Self::read_str(state, root, CURSOR_SIZE_KEY)
             && let Some(px) = AccessibilityPrefs::cursor_size_px(&label)

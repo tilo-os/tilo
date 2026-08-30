@@ -276,8 +276,8 @@ An app can be granted read participation in a space: it sees shared
 documents and cannot originate a change to one. If that is your launch:
 
 - `QOS_PARTICIPATION=read-only` is set. Render a viewer.
-- **No identity is bound**, so `QOS_USER_IDENTITY` is unset and
-  `runtime-identity::load()` finds nothing. You hold no signing key, so
+- **No identity broker is handed over**, so `QOS_IDENTITY_BROKER_FD` is unset
+  and `runtime-identity::load()` finds nothing. You hold no signing authority, so
   there is no authored change for anything to reject.
 - The workspace is bound read-only and served read-only, and the document
   control socket refuses edits with the read-only-filesystem message.
@@ -312,8 +312,9 @@ After all three layers, your `main()` sees:
 - `QOS_PACKAGE_ID=<your reverse-DNS id>`.
 - `QOS_SVC_<NAME>_FD=<fd>` for every service the launcher opened.
 - `DBUS_SESSION_BUS_ADDRESS` (only if a portal is `via-host`).
-- `QOS_USER_IDENTITY` — path to the user identity, unless you are a
-  read-only participant, in which case there is no identity to point at.
+- `QOS_IDENTITY_BROKER_FD` — one inherited, connected signing capability,
+  unless you are a read-only participant. It exposes public metadata and a
+  bounded sign operation, never a key or host path.
 - `QOS_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
   capability names you. Absent otherwise.
 - `HTTPS_PROXY` / `ALL_PROXY` / `QOS_NET_GATE` — only when your egress is
