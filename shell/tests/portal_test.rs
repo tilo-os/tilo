@@ -16,8 +16,7 @@ use shell::portal::{
     ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::state::{
-    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Principal, Subject, Workspace,
-    WorkspaceId,
+    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, Principal, Subject, Workspace, WorkspaceId,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;

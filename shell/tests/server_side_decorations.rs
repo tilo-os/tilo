@@ -116,8 +116,7 @@ impl Harness {
     fn new() -> Self {
         let event_loop: EventLoop<'static, shell::compositor::state::State> =
             EventLoop::try_new().expect("calloop");
-        let mut display: Display<shell::compositor::state::State> =
-            Display::new().expect("display");
+        let display: Display<shell::compositor::state::State> = Display::new().expect("display");
         let state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
 
         let (server_side, client_side) = UnixStream::pair().expect("socketpair");

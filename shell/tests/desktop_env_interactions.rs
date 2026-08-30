@@ -888,7 +888,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     // starts off the right edge at scroll_x = 0.
     let (tree, strip_id, ids) = single_strip_tree(&[100, 200, 300, 400]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
-    let layout = lay_out_host(&mut host);
+    let _layout = lay_out_host(&mut host);
 
     let last_id = ids[3];
     let row_rect = host.group_row_rect_for_tests(strip_id).unwrap();
