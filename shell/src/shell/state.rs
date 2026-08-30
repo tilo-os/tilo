@@ -2407,7 +2407,10 @@ impl WorkspaceTree {
             match doc.get(obj, key).ok().flatten() {
                 Some((Value::Scalar(v), _)) => match v.as_ref() {
                     ScalarValue::Uint(n) => Some(*n),
-                    ScalarValue::Int(n) => Some(*n as u64),
+                    // A negative `Int` has no sane `order`/id reading, so
+                    // treat it as absent rather than wrapping it into a
+                    // huge `u64` via a bit-reinterpreting cast.
+                    ScalarValue::Int(n) => u64::try_from(*n).ok(),
                     _ => None,
                 },
                 _ => None,
@@ -2474,8 +2477,13 @@ impl WorkspaceTree {
                     groups.push(ReplicatedGroup {
                         id: gid,
                         order: uint(&group_entry, "order").unwrap_or(u64::MAX),
-                        width: uint(&group_entry, "width_permille")
-                            .map(|p| WindowWidth::Fraction(p.min(u64::from(u16::MAX)) as u16)),
+                        width: uint(&group_entry, "width_permille").map(|p| {
+                            // Clamped into u16's range on the line
+                            // above, so this never actually truncates.
+                            WindowWidth::Fraction(
+                                u16::try_from(p.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
+                            )
+                        }),
                         maximized: match doc.get(&group_entry, "maximized").ok().flatten() {
                             Some((Value::Scalar(v), _)) => match v.as_ref() {
                                 ScalarValue::Boolean(b) => Some(*b),
@@ -2600,7 +2608,13 @@ impl WorkspaceTree {
             .collect();
         let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
         for sid in foreign {
-            let rep = by_strip.remove(&sid).expect("key just listed");
+            // `sid` came from `by_strip.keys()` just above and `BTreeMap`
+            // keys don't repeat, so this always finds an entry — but
+            // `continue` rather than `.expect()` costs nothing and can't
+            // panic if that invariant ever slips.
+            let Some(rep) = by_strip.remove(&sid) else {
+                continue;
+            };
             peer_groups.extend(rep.groups);
         }
         // No strip of ours to put them in, so one is made.
@@ -2755,7 +2769,7 @@ impl WorkspaceTree {
                     let mut tab = tab;
                     if !is_local(tid) {
                         if tab.title != rep.title {
-                            tab.title = rep.title.clone();
+                            tab.title.clone_from(&rep.title);
                             *changed = true;
                         }
                         if let Some(tile) = rep.tile.clone() {
@@ -2843,10 +2857,10 @@ impl WorkspaceTree {
                 // waypoint — the remote tile has nothing to add.
                 match current {
                     Some(
-                        TileContent::Foreign { app_id: local, .. }
-                        | TileContent::PeerWindow { app_id: local, .. },
+                        matched @ (TileContent::Foreign { app_id: local, .. }
+                        | TileContent::PeerWindow { app_id: local, .. }),
                     ) if local.eq_ignore_ascii_case(&app_id) => {
-                        return current.cloned().expect("matched a Some");
+                        return matched.clone();
                     }
                     _ => {}
                 }
@@ -3301,6 +3315,12 @@ impl WorkspaceTree {
     /// should call this to flow doc-side changes out via
     /// [`Self::export_changes_since`]. `active_strip`/`active_group`
     /// stay cache-only.
+    ///
+    /// # Panics
+    ///
+    /// Never panics: every doc write is best-effort (the cache is the
+    /// source of truth), so a write that fails just skips the nested
+    /// entries it would have contained rather than aborting the seed.
     pub fn seed_doc_from_cache(&mut self) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
         let _ = self
@@ -3310,20 +3330,23 @@ impl WorkspaceTree {
         // concurrent appends can clobber.
         let workspaces_id = match self.doc.get(&ROOT, "workspaces").ok().flatten() {
             Some((_, id)) => id,
-            None => self
-                .doc
-                .put_object(&ROOT, "workspaces", ObjType::List)
-                .expect("create workspaces list"),
+            None => {
+                let Ok(id) = self.doc.put_object(&ROOT, "workspaces", ObjType::List) else {
+                    // No doc-side list to seed into; the cache stays the
+                    // source of truth either way.
+                    return;
+                };
+                id
+            }
         };
         let current_len = self.doc.length(&workspaces_id);
         for i in (0..current_len).rev() {
             let _ = self.doc.delete(&workspaces_id, i);
         }
         for (i, ws) in self.workspaces.iter().enumerate() {
-            let entry = self
-                .doc
-                .insert_object(&workspaces_id, i, ObjType::Map)
-                .expect("insert workspace map");
+            let Ok(entry) = self.doc.insert_object(&workspaces_id, i, ObjType::Map) else {
+                continue;
+            };
             let _ = self.doc.put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
             let _ = self.doc.put(&entry, "name", ws.name.clone());
             // Room identity travels with the workspace: a peer hydrating
@@ -3333,38 +3356,36 @@ impl WorkspaceTree {
             if let Some(owner) = &ws.owner {
                 let _ = self.doc.put(&entry, "owner", owner.clone());
             }
-            let caps_id = self
-                .doc
-                .put_object(&entry, "capabilities", ObjType::Map)
-                .expect("create capabilities map");
-            for cap in &ws.capabilities {
-                if let Ok(blob) = serde_json::to_vec(cap) {
-                    let _ = self.doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
+            if let Ok(caps_id) = self.doc.put_object(&entry, "capabilities", ObjType::Map) {
+                for cap in &ws.capabilities {
+                    if let Ok(blob) = serde_json::to_vec(cap) {
+                        let _ = self.doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
+                    }
                 }
             }
             // Nested strips + window_groups so per-group maximized +
             // width_permille writes have a doc-side path to land in.
-            let strips_id = self
-                .doc
-                .put_object(&entry, "strips", ObjType::List)
-                .expect("create strips list");
+            let Ok(strips_id) = self.doc.put_object(&entry, "strips", ObjType::List) else {
+                continue;
+            };
             for (j, strip) in ws.strips.iter().enumerate() {
-                let strip_entry = self
-                    .doc
-                    .insert_object(&strips_id, j, ObjType::Map)
-                    .expect("insert strip map");
+                let Ok(strip_entry) = self.doc.insert_object(&strips_id, j, ObjType::Map) else {
+                    continue;
+                };
                 let _ = self
                     .doc
                     .put(&strip_entry, "id", ScalarValue::Uint(strip.id.raw()));
-                let groups_id = self
-                    .doc
-                    .put_object(&strip_entry, "window_groups", ObjType::List)
-                    .expect("create window_groups list");
+                let Ok(groups_id) =
+                    self.doc
+                        .put_object(&strip_entry, "window_groups", ObjType::List)
+                else {
+                    continue;
+                };
                 for (k, group) in strip.window_groups.iter().enumerate() {
-                    let group_entry = self
-                        .doc
-                        .insert_object(&groups_id, k, ObjType::Map)
-                        .expect("insert window_group map");
+                    let Ok(group_entry) = self.doc.insert_object(&groups_id, k, ObjType::Map)
+                    else {
+                        continue;
+                    };
                     let _ = self
                         .doc
                         .put(&group_entry, "id", ScalarValue::Uint(group.id));
@@ -3380,15 +3401,15 @@ impl WorkspaceTree {
                     );
                     // `tile_json` is a JSON-blob shim for `TileContent`
                     // rather than a full per-variant CRDT structure.
-                    let tabs_id = self
-                        .doc
-                        .put_object(&group_entry, "tabs", ObjType::List)
-                        .expect("create tabs list");
+                    let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List)
+                    else {
+                        continue;
+                    };
                     for (l, tab) in group.tabs.iter().enumerate() {
-                        let tab_entry = self
-                            .doc
-                            .insert_object(&tabs_id, l, ObjType::Map)
-                            .expect("insert tab map");
+                        let Ok(tab_entry) = self.doc.insert_object(&tabs_id, l, ObjType::Map)
+                        else {
+                            continue;
+                        };
                         let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab.id));
                         let _ = self.doc.put(&tab_entry, "title", tab.title.clone());
                         if let Ok(blob) = serde_json::to_vec(&tab.tile) {
