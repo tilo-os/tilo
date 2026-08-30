@@ -166,6 +166,8 @@ pub enum LaunchError {
     NoDisplay,
     /// No active workspace — both the app's sandbox policy and room.
     NoWorkspace,
+    /// A typed intent addresses shell chrome, not an application package.
+    ShellOwnedIntent,
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -191,6 +193,9 @@ impl LaunchError {
                 "the compositor has not published a Wayland socket yet".to_string()
             }
             LaunchError::NoWorkspace => "there is no active workspace to open it in".to_string(),
+            LaunchError::ShellOwnedIntent => {
+                "this destination belongs to shell chrome, not an application".to_string()
+            }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
             }
@@ -815,7 +820,8 @@ pub fn launch_with_uri(
 /// validation or cannot be serialised into the launched process's
 /// environment.
 pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
-    launch_with_context(intent.package_id(), room, None, None, Some(intent))
+    let package_id = intent.package_id().ok_or(LaunchError::ShellOwnedIntent)?;
+    launch_with_context(package_id, room, None, None, Some(intent))
 }
 
 fn launch_with_context(
@@ -1453,6 +1459,17 @@ mod tests {
         assert!(
             !message.contains("install"),
             "user-facing text must not talk about installing: {message}"
+        );
+    }
+
+    #[test]
+    fn shell_owned_intent_never_falls_through_to_the_app_registry() {
+        let intent = ToolIntent::WorkspaceSettings {
+            route: os_actions::WorkspaceSettingsRoute::Members,
+        };
+        assert_eq!(
+            launch_tool_intent(&intent, RoomId::new()).unwrap_err(),
+            LaunchError::ShellOwnedIntent
         );
     }
 

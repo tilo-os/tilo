@@ -252,7 +252,7 @@ pub struct ChromeState {
     pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
     pub quick_settings: QuickSettingsState,
-    /// `Some` while the workspace-settings modal's Name input is in
+    /// `Some` while the workspace lens's Name input is in
     /// text-entry mode — the edit buffer, which may diverge from the
     /// persisted name until Enter commits it.
     pub editing_workspace_name: Option<String>,
@@ -269,6 +269,10 @@ pub struct ChromeState {
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
     pub ws_settings_tab: WsTab,
+    /// Window-logical bounds of the top-bar workspace pill. Published by the
+    /// top bar without bumping revision so the workspace lens can animate
+    /// from the exact context that opened it.
+    pub workspace_settings_anchor: vello::kurbo::Rect,
     /// The Permissions tab's in-progress grant. Lives here (not the
     /// overlay host) so it survives a re-render, and holds picker
     /// indices rather than a resolved capability so a subject leaving
@@ -390,6 +394,7 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             osd: None,
             ws_settings_tab: WsTab::default(),
+            workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
             revision: 0,
             pending_grants: VecDeque::new(),
@@ -537,6 +542,23 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Reveal one authoritative workspace-settings destination. All shell
+    /// entry points use this instead of independently coordinating a tab and
+    /// overlay. The caller owns the ordinary action-level repaint boundary.
+    pub fn open_workspace_settings(&mut self, tab: WsTab) {
+        self.ws_settings_tab = tab;
+        self.overlays.ws_settings = true;
+    }
+
+    /// The top-bar workspace capsule is both the context indicator and the
+    /// close affordance, so it alone needs toggle semantics. Contextual links
+    /// always call [`Self::open_workspace_settings`] and can never close an
+    /// already-open destination by accident.
+    pub fn toggle_workspace_settings(&mut self) {
+        self.overlays.ws_settings = !self.overlays.ws_settings;
+        self.bump();
     }
 
     /// Focus is four coordinates, not one; setting all four in one place
