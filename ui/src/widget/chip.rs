@@ -27,12 +27,30 @@ use crate::tokens::colors::AccentChip;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
+              matrix math; it never panics or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
 const HEIGHT: f64 = 28.0;
 const PAD_X: f64 = 12.0;
 const GAP: f64 = 6.0;
 const DOT_D: f64 = 8.0;
 const X_D: f64 = 14.0;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent configuration/state bit (is a \
+              toggle, current toggle value, is removable, toggled-this-frame, \
+              removed-this-frame); merging them into a bitflags/enum would \
+              not change behavior"
+)]
 pub struct Chip {
     label: String,
     selectable: bool,
@@ -65,12 +83,14 @@ impl Chip {
     }
 
     /// Make the chip a toggle (a filter). Clicking the body flips selection.
+    #[must_use]
     pub fn selectable(mut self) -> Self {
         self.selectable = true;
         self
     }
 
     /// Set the initial selected state (implies [`selectable`](Self::selectable)).
+    #[must_use]
     pub fn selected(mut self, on: bool) -> Self {
         self.selectable = true;
         self.selected = on;
@@ -78,12 +98,14 @@ impl Chip {
     }
 
     /// Show a trailing "×" that removes the chip when clicked.
+    #[must_use]
     pub fn removable(mut self) -> Self {
         self.removable = true;
         self
     }
 
     /// Add a small leading colour dot (e.g. a calendar/category colour).
+    #[must_use]
     pub fn with_dot(mut self, color: Color) -> Self {
         self.dot = Some(color);
         self
@@ -222,6 +244,7 @@ impl ChipStyle {
     }
 
     /// Fade the whole chip by `alpha` (clamped to `0.0..=1.0`).
+    #[must_use]
     pub fn with_alpha(mut self, alpha: f32) -> Self {
         self.alpha = alpha.clamp(0.0, 1.0);
         self
@@ -234,6 +257,11 @@ impl Chip {
     /// shorter scales with it, so a caller that wants a bigger pill gets
     /// proportionally bigger type instead of a lonely small label floating
     /// in a tall capsule.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to 0.75..=1.6 just above, so the f32 cast can't \
+                  truncate anything that matters for a UI scale factor"
+    )]
     pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
         theme.tokens.typography.scale.sm * (height / HEIGHT).clamp(0.75, 1.6) as f32
     }
@@ -294,11 +322,15 @@ impl Chip {
         // 0.18 fill / full-strength border the selected widget state uses,
         // so a rail of these reads identically to a row of real Chips.
         if !style.bare {
-            let (bg, border) = match (style.resolved, style.tint, style.ghost) {
-                (Some(c), _, false) => (c.fill, c.border),
-                (_, _, true) => (colors.surface_white_5, colors.border_standard),
-                (_, Some(t), _) => (t.with_alpha_factor(0.18), t),
-                (_, None, _) => (colors.surface_white_5, colors.border_standard),
+            let quiet = (colors.surface_white_5, colors.border_standard);
+            let (bg, border) = if style.ghost {
+                quiet
+            } else if let Some(c) = style.resolved {
+                (c.fill, c.border)
+            } else if let Some(t) = style.tint {
+                (t.with_alpha_factor(0.18), t)
+            } else {
+                quiet
             };
             scene.fill(Fill::NonZero, transform, fade(bg, 1.0), None, &pill);
             let stroke = if style.ghost {
@@ -374,7 +406,7 @@ impl Chip {
             &shown,
             size,
             fade(label_col, 1.0),
-            transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
+            translated(transform, x, cy - f64::from(lh) / 2.0),
             None,
         );
     }
@@ -399,7 +431,10 @@ fn truncate_to_width(
     // Labels here are workspace names — short enough that a linear scan
     // costs less than the branchy binary search it would replace.
     for take in (1..chars.len()).rev() {
-        let mut cand: String = chars[..take].iter().collect();
+        let Some(prefix) = chars.get(..take) else {
+            continue;
+        };
+        let mut cand: String = prefix.iter().collect();
         cand.push('…');
         let (w, _) = text_renderer.measure(&cand, size, None);
         if f64::from(w) <= avail {
@@ -412,6 +447,11 @@ fn truncate_to_width(
 impl Widget for Chip {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "approx/HEIGHT are small pixel dimensions well within f32's \
+                  exact-integer range; taffy's Style requires f32"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -419,9 +459,9 @@ impl Widget for Chip {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Approximate width from a fixed advance; measure() refines it.
+        let char_count = u32::try_from(self.label.chars().count()).unwrap_or(u32::MAX);
         let approx = PAD_X * 2.0
-            + self.label.chars().count() as f64
-                * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
+            + f64::from(char_count) * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
             + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
             + if self.removable { GAP + X_D } else { 0.0 };
         let node = taffy.leaf_node(Style {
@@ -436,6 +476,11 @@ impl Widget for Chip {
         node
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "intrinsic_width()/HEIGHT are small pixel dimensions well \
+                  within f32's exact-integer range; taffy's Size requires f32"
+    )]
     fn measure(
         &mut self,
         _k: taffy::Size<Option<f32>>,
@@ -509,7 +554,7 @@ impl Widget for Chip {
             &self.label,
             size,
             label_col,
-            transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
+            translated(transform, x, cy - f64::from(lh) / 2.0),
             None,
         );
         x += f64::from(lw);
@@ -617,10 +662,9 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(60.0),
                 },
                 |k, a, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
-                        .unwrap_or(taffy::Size::ZERO)
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
                 },
             )
             .unwrap();
