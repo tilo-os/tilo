@@ -193,84 +193,86 @@ pub fn md5_hex(input: &[u8]) -> String {
     s
 }
 
-fn md5(input: &[u8]) -> [u8; 16] {
-    const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
-        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
-        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-    ];
-    const K: [u32; 64] = [
-        0xd76a_a478,
-        0xe8c7_b756,
-        0x2420_70db,
-        0xc1bd_ceee,
-        0xf57c_0faf,
-        0x4787_c62a,
-        0xa830_4613,
-        0xfd46_9501,
-        0x6980_98d8,
-        0x8b44_f7af,
-        0xffff_5bb1,
-        0x895c_d7be,
-        0x6b90_1122,
-        0xfd98_7193,
-        0xa679_438e,
-        0x49b4_0821,
-        0xf61e_2562,
-        0xc040_b340,
-        0x265e_5a51,
-        0xe9b6_c7aa,
-        0xd62f_105d,
-        0x0244_1453,
-        0xd8a1_e681,
-        0xe7d3_fbc8,
-        0x21e1_cde6,
-        0xc337_07d6,
-        0xf4d5_0d87,
-        0x455a_14ed,
-        0xa9e3_e905,
-        0xfcef_a3f8,
-        0x676f_02d9,
-        0x8d2a_4c8a,
-        0xfffa_3942,
-        0x8771_f681,
-        0x6d9d_6122,
-        0xfde5_380c,
-        0xa4be_ea44,
-        0x4bde_cfa9,
-        0xf6bb_4b60,
-        0xbebf_bc70,
-        0x289b_7ec6,
-        0xeaa1_27fa,
-        0xd4ef_3085,
-        0x0488_1d05,
-        0xd9d4_d039,
-        0xe6db_99e5,
-        0x1fa2_7cf8,
-        0xc4ac_5665,
-        0xf429_2244,
-        0x432a_ff97,
-        0xab94_23a7,
-        0xfc93_a039,
-        0x655b_59c3,
-        0x8f0c_cc92,
-        0xffef_f47d,
-        0x8584_5dd1,
-        0x6fa8_7e4f,
-        0xfe2c_e6e0,
-        0xa301_4314,
-        0x4e08_11a1,
-        0xf753_7e82,
-        0xbd3a_f235,
-        0x2ad7_d2bb,
-        0xeb86_d391,
-    ];
+/// Per-round left-rotate amounts (RFC 1321 §3.4).
+const MD5_S: [u32; 64] = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+];
 
-    let mut a0: u32 = 0x6745_2301;
-    let mut b0: u32 = 0xefcd_ab89;
-    let mut c0: u32 = 0x98ba_dcfe;
-    let mut d0: u32 = 0x1032_5476;
+/// Per-round additive constants — the integer part of `abs(sin(i + 1))`,
+/// `i` in radians (RFC 1321 §3.4).
+const MD5_K: [u32; 64] = [
+    0xd76a_a478,
+    0xe8c7_b756,
+    0x2420_70db,
+    0xc1bd_ceee,
+    0xf57c_0faf,
+    0x4787_c62a,
+    0xa830_4613,
+    0xfd46_9501,
+    0x6980_98d8,
+    0x8b44_f7af,
+    0xffff_5bb1,
+    0x895c_d7be,
+    0x6b90_1122,
+    0xfd98_7193,
+    0xa679_438e,
+    0x49b4_0821,
+    0xf61e_2562,
+    0xc040_b340,
+    0x265e_5a51,
+    0xe9b6_c7aa,
+    0xd62f_105d,
+    0x0244_1453,
+    0xd8a1_e681,
+    0xe7d3_fbc8,
+    0x21e1_cde6,
+    0xc337_07d6,
+    0xf4d5_0d87,
+    0x455a_14ed,
+    0xa9e3_e905,
+    0xfcef_a3f8,
+    0x676f_02d9,
+    0x8d2a_4c8a,
+    0xfffa_3942,
+    0x8771_f681,
+    0x6d9d_6122,
+    0xfde5_380c,
+    0xa4be_ea44,
+    0x4bde_cfa9,
+    0xf6bb_4b60,
+    0xbebf_bc70,
+    0x289b_7ec6,
+    0xeaa1_27fa,
+    0xd4ef_3085,
+    0x0488_1d05,
+    0xd9d4_d039,
+    0xe6db_99e5,
+    0x1fa2_7cf8,
+    0xc4ac_5665,
+    0xf429_2244,
+    0x432a_ff97,
+    0xab94_23a7,
+    0xfc93_a039,
+    0x655b_59c3,
+    0x8f0c_cc92,
+    0xffef_f47d,
+    0x8584_5dd1,
+    0x6fa8_7e4f,
+    0xfe2c_e6e0,
+    0xa301_4314,
+    0x4e08_11a1,
+    0xf753_7e82,
+    0xbd3a_f235,
+    0x2ad7_d2bb,
+    0xeb86_d391,
+];
 
+/// Pad `input` per RFC 1321 §3.1 (append `0x80`, zero-pad to `56 mod 64`,
+/// append the 64-bit little-endian bit length) so it splits evenly into
+/// 64-byte blocks.
+fn md5_pad(input: &[u8]) -> Vec<u8> {
     let mut msg = input.to_vec();
     let bit_len = (input.len() as u64).wrapping_mul(8);
     msg.push(0x80);
@@ -278,49 +280,58 @@ fn md5(input: &[u8]) -> [u8; 16] {
         msg.push(0);
     }
     msg.extend_from_slice(&bit_len.to_le_bytes());
+    msg
+}
 
-    for chunk in msg.chunks_exact(64) {
-        let mut words = [0u32; 16];
-        for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(4)) {
-            // `chunks_exact(4)` always yields four bytes, so this never fails.
-            if let Ok(le) = <[u8; 4]>::try_from(bytes) {
-                *word = u32::from_le_bytes(le);
-            }
+/// Compress one 64-byte block into the running digest state (RFC 1321 §3.4).
+fn md5_compress(state: &mut [u32; 4], chunk: &[u8]) {
+    let mut words = [0u32; 16];
+    for (word, bytes) in words.iter_mut().zip(chunk.chunks_exact(4)) {
+        // `chunks_exact(4)` always yields four bytes, so this never fails.
+        if let Ok(le) = <[u8; 4]>::try_from(bytes) {
+            *word = u32::from_le_bytes(le);
         }
-        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
-        for (round, (&kc, &shift)) in K.iter().zip(S.iter()).enumerate() {
-            // The word index is masked to four bits, so it always selects one
-            // of the sixteen words and the fallback below is unreachable.
-            // `round` is at most 63, so the wrapping never engages either.
-            let (mix, idx) = match round {
-                0..=15 => ((b & c) | (!b & d), round & 0b1111),
-                16..=31 => (
-                    (d & b) | (!d & c),
-                    round.wrapping_mul(5).wrapping_add(1) & 0b1111,
-                ),
-                32..=47 => (b ^ c ^ d, round.wrapping_mul(3).wrapping_add(5) & 0b1111),
-                _ => (c ^ (b | !d), round.wrapping_mul(7) & 0b1111),
-            };
-            let mix = mix
-                .wrapping_add(a)
-                .wrapping_add(kc)
-                .wrapping_add(words.get(idx).copied().unwrap_or(0));
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(mix.rotate_left(shift));
-        }
-        a0 = a0.wrapping_add(a);
-        b0 = b0.wrapping_add(b);
-        c0 = c0.wrapping_add(c);
-        d0 = d0.wrapping_add(d);
     }
+    let [mut a, mut b, mut c, mut d] = *state;
+    for (round, (&kc, &shift)) in MD5_K.iter().zip(MD5_S.iter()).enumerate() {
+        // The word index is masked to four bits, so it always selects one of
+        // the sixteen words and the fallback below is unreachable. `round`
+        // is at most 63, so the wrapping never engages either.
+        let (mix, idx) = match round {
+            0..=15 => ((b & c) | (!b & d), round & 0b1111),
+            16..=31 => (
+                (d & b) | (!d & c),
+                round.wrapping_mul(5).wrapping_add(1) & 0b1111,
+            ),
+            32..=47 => (b ^ c ^ d, round.wrapping_mul(3).wrapping_add(5) & 0b1111),
+            _ => (c ^ (b | !d), round.wrapping_mul(7) & 0b1111),
+        };
+        let mix = mix
+            .wrapping_add(a)
+            .wrapping_add(kc)
+            .wrapping_add(words.get(idx).copied().unwrap_or(0));
+        a = d;
+        d = c;
+        c = b;
+        b = b.wrapping_add(mix.rotate_left(shift));
+    }
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+}
 
+fn md5(input: &[u8]) -> [u8; 16] {
+    let mut state: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+    let msg = md5_pad(input);
+    for chunk in msg.chunks_exact(64) {
+        md5_compress(&mut state, chunk);
+    }
     let mut out = [0u8; 16];
-    out[0..4].copy_from_slice(&a0.to_le_bytes());
-    out[4..8].copy_from_slice(&b0.to_le_bytes());
-    out[8..12].copy_from_slice(&c0.to_le_bytes());
-    out[12..16].copy_from_slice(&d0.to_le_bytes());
+    out[0..4].copy_from_slice(&state[0].to_le_bytes());
+    out[4..8].copy_from_slice(&state[1].to_le_bytes());
+    out[8..12].copy_from_slice(&state[2].to_le_bytes());
+    out[12..16].copy_from_slice(&state[3].to_le_bytes());
     out
 }
 
