@@ -1507,104 +1507,6 @@ impl Widget for NotesApp {
         self.assemble_root(taffy, node_map, narrow, content_node)
     }
 
-    /// Style for the sidebar node depending on the narrow/wide layout mode.
-    /// Narrow: an absolutely-positioned overlay drawer pinned to the left
-    /// edge of the content row, full height, taken out of flow so the
-    /// editor keeps the whole width underneath it. Wide: a fixed-width
-    /// column so the split is deterministic (no flexbox squeezing).
-    fn sidebar_style(narrow: bool) -> Style {
-        if narrow {
-            Style {
-                position: taffy::Position::Absolute,
-                inset: taffy::Rect {
-                    left: length(0.0_f32),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
-                    height: Dimension::percent(1.0),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }
-        } else {
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
-                    height: Dimension::percent(1.0),
-                },
-                min_size: Size {
-                    width: Dimension::length(160.0),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }
-        }
-    }
-
-    /// Assemble the outer flex column: an optional top bar (narrow only)
-    /// above the content row. No status-bar row — the note's status floats
-    /// as a transient bubble (see `draw_status_bubble`), so the content
-    /// column spans to the window bottom and reclaims the strip's height.
-    fn assemble_root(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        narrow: bool,
-        content_node: NodeId,
-    ) -> NodeId {
-        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
-        if narrow {
-            #[allow(
-                clippy::unwrap_used,
-                reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
-            )]
-            let topbar_node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                })
-                .unwrap();
-            self.topbar_node = Some(topbar_node);
-            column_children.push(topbar_node);
-        } else {
-            self.topbar_node = None;
-        }
-        column_children.push(content_node);
-
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on freshly-built children cannot fail — see ui::widget::TaffyTreeExt"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &column_children,
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
-    }
-
     // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
     // which never happens here — every id it's called with is one this
     // widget (or a child it just laid out) received from its own
@@ -1816,6 +1718,168 @@ impl Widget for NotesApp {
         );
     }
 
+    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
+    /// open it captures pointer/keys so the page tree behaves like a
+    /// modal flyout over the editor.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
+
+    /// The default routing once none of the modal overlays above claimed
+    /// the event: sidebar + editor, then the title-rename / dirty-save /
+    /// last-mouse / status bookkeeping every event needs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
+
+    fn name(&self) -> &'static str {
+        "NotesApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.palette.is_visible()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.palette
+            .is_visible()
+            .then(|| Widget::ime_cursor_rect(&self.palette))
+            .flatten()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.self_dirty
+            || self.sidebar.needs_redraw()
+            || self.main.needs_redraw()
+            || self.shortcuts.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.self_dirty = false;
+        self.sidebar.mark_drawn();
+        self.main.mark_drawn();
+        self.shortcuts.mark_drawn();
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        // The root rect is the whole window — always paint, never cull.
+        self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl NotesApp {
+    /// Style for the sidebar node depending on the narrow/wide layout mode.
+    /// Narrow: an absolutely-positioned overlay drawer pinned to the left
+    /// edge of the content row, full height, taken out of flow so the
+    /// editor keeps the whole width underneath it. Wide: a fixed-width
+    /// column so the split is deterministic (no flexbox squeezing).
+    fn sidebar_style(narrow: bool) -> Style {
+        if narrow {
+            Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(0.0_f32),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
+                },
+                size: Size {
+                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
+                    height: Dimension::percent(1.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            }
+        } else {
+            Style {
+                size: Size {
+                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
+                    height: Dimension::percent(1.0),
+                },
+                min_size: Size {
+                    width: Dimension::length(160.0),
+                    height: Dimension::auto(),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            }
+        }
+    }
+
+    /// Assemble the outer flex column: an optional top bar (narrow only)
+    /// above the content row. No status-bar row — the note's status floats
+    /// as a transient bubble (see `draw_status_bubble`), so the content
+    /// column spans to the window bottom and reclaims the strip's height.
+    fn assemble_root(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        narrow: bool,
+        content_node: NodeId,
+    ) -> NodeId {
+        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
+        if narrow {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
+            )]
+            let topbar_node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                })
+                .unwrap();
+            self.topbar_node = Some(topbar_node);
+            column_children.push(topbar_node);
+        } else {
+            self.topbar_node = None;
+        }
+        column_children.push(content_node);
+
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_with_children on freshly-built children cannot fail — see ui::widget::TaffyTreeExt"
+        )]
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    gap: taffy::Size {
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
+                    },
+                    ..Default::default()
+                },
+                &column_children,
+            )
+            .unwrap();
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+        root
+    }
+
     /// The shortcuts overlay is fully blocking when visible: it either
     /// consumes the key itself, or every other event is swallowed so
     /// nothing reaches the editor underneath.
@@ -1978,13 +2042,6 @@ impl Widget for NotesApp {
         true
     }
 
-    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
-    /// open it captures pointer/keys so the page tree behaves like a
-    /// modal flyout over the editor.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
     fn handle_narrow_drawer(
         &mut self,
         event: &WindowEvent,
@@ -2085,13 +2142,6 @@ impl Widget for NotesApp {
         true
     }
 
-    /// The default routing once none of the modal overlays above claimed
-    /// the event: sidebar + editor, then the title-rename / dirty-save /
-    /// last-mouse / status bookkeeping every event needs.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
     fn route_to_children(
         &mut self,
         event: &WindowEvent,
@@ -2186,52 +2236,6 @@ impl Widget for NotesApp {
         // count + save indicator stay current. Cheap — the StatusBar
         // diffs internally.
         self.refresh_status();
-    }
-
-    fn name(&self) -> &'static str {
-        "NotesApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        self.palette.is_visible()
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.palette
-            .is_visible()
-            .then(|| Widget::ime_cursor_rect(&self.palette))
-            .flatten()
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.self_dirty
-            || self.sidebar.needs_redraw()
-            || self.main.needs_redraw()
-            || self.shortcuts.needs_redraw()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.self_dirty = false;
-        self.sidebar.mark_drawn();
-        self.main.mark_drawn();
-        self.shortcuts.mark_drawn();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        // The root rect is the whole window — always paint, never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
 

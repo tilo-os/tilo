@@ -2922,7 +2922,7 @@ mod tests {
 
     #[test]
     fn group_pruned_after_close_fade_completes() {
-        use std::time::{Duration, Instant};
+        use std::time::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
@@ -3285,7 +3285,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn group_prune_keeps_node_ids_aligned_in_debug() {
-        use std::time::{Duration, Instant};
+        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // Non-adjacent prune indices (0, 2) verify the

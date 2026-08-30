@@ -402,10 +402,13 @@ impl NotificationStack {
             &label,
             title_size,
             ctx.theme.tokens.colors.text_dim,
-            ctx.transform.pre_translate((
-                card_rect.x0 + CARD_PADDING_X,
-                card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
-            )),
+            ctx.transform.pre_translate(
+                (
+                    card_rect.x0 + CARD_PADDING_X,
+                    card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
+                )
+                    .into(),
+            ),
             Some(f64_to_f32_lossy(TOAST_WIDTH - CARD_PADDING_X * 2.0)),
         );
         card_rect
@@ -463,8 +466,9 @@ impl NotificationStack {
             &label,
             body_size,
             ctx.theme.tokens.colors.text_dim,
-            ctx.transform
-                .pre_translate((text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0)),
+            ctx.transform.pre_translate(
+                (text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0).into(),
+            ),
             Some(f64_to_f32_lossy(
                 TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X,
             )),

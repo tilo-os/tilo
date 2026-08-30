@@ -388,6 +388,7 @@ fn count_to_f64(n: usize) -> f64 {
     clippy::cast_possible_truncation,
     reason = "toolbar axis extents never approach f32::MAX"
 )]
+#[cfg(test)]
 fn to_f32(v: f64) -> f32 {
     v as f32
 }
